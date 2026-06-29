@@ -57,9 +57,18 @@ impl Renderer {
         }))
         .map_err(|e| format!("request_device failed: {e}"))?;
 
-        let config = surface
+        let mut config = surface
             .get_default_config(&adapter, desc.width.max(1), desc.height.max(1))
             .ok_or_else(|| "surface is not supported by the chosen adapter".to_string())?;
+
+        // GL33 presents gamma-naive: the engine's already-sRGB 8-bit colors go
+        // straight to the framebuffer. Render to a non-sRGB surface so
+        // wgpu doesn't apply a second linear->sRGB encode on write.
+        let linear = config.format.remove_srgb_suffix();
+        if linear != config.format && surface.get_capabilities(&adapter).formats.contains(&linear) {
+            config.format = linear;
+        }
+
         surface.configure(&device, &config);
 
         let gfx2d = Gfx2d::new(&device, &queue, config.format, bc_supported);
