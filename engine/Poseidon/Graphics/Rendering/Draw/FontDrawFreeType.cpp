@@ -1,5 +1,4 @@
 #include <Poseidon/Graphics/Core/Engine.hpp>
-#include <PoseidonGL33/TextureGL33.hpp>
 #include <Poseidon/Graphics/Rendering/Draw/Font.hpp>
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
@@ -39,15 +38,12 @@ void ClearFreeTypeAtlasTextures()
 // after TextBankGL33::ForceReloadAll dropped every handle in the
 // bank for an F5 hot-reload).  The CPU-side atlas pixels in
 // FontRenderer's pages are still valid, but our cached
-// Ref<Texture> points at a TextureGL33 with _surface.GetTexture()=0
+// Ref<Texture> points at a texture whose GPU surface is gone
 // — UpdateDynamic on that would write to a dead handle and the
 // next bind samples zero alpha (= invisible text).
 static bool IsTextureGpuValid(Texture* tex)
 {
-    if (!tex)
-        return false;
-    auto* gl = static_cast<class TextureGL33*>(tex);
-    return gl->GetHandle() != 0;
+    return tex && tex->IsGpuResident();
 }
 
 static void SyncAtlasTextures(Engine* engine, Poseidon::ui::FontRenderer* fr)

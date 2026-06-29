@@ -75,6 +75,12 @@ class Texture : public RemoveLLinks
 
     virtual bool VerifyChecksum(const MipInfo& mip) const = 0; // verify consistency
 
+    //! True if this texture currently has live GPU storage. Used by the
+    //! FreeType glyph-atlas sync to detect a texture whose backend surface was
+    //! freed underneath it (e.g. after a hot-reload) so it re-uploads instead of
+    //! sampling a dead handle.
+    virtual bool IsGpuResident() const { return true; }
+
     const char* Name() const { return _name; }
     const RStringB& GetName() const { return _name; }
     void SetName(RStringB name);

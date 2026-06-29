@@ -5,14 +5,15 @@
 
 #include <wgpu_renderer.h>
 
+#include <vector>
+
 struct SDL_Window;
 
 namespace Poseidon
 {
+class TextureBankWgpu;
 
-// Inherits EngineDummy's no-op stubs for the full Engine surface and overrides
-// only what's needed to own an SDL window and clear + present via the Rust crate.
-// No real drawing yet.
+// Inherits from EngineDummy, so we don't have to add manual stubs for all the missing virtual functions.
 class EngineWgpu : public EngineDummy
 {
   public:
@@ -36,21 +37,40 @@ class EngineWgpu : public EngineDummy
     bool IsWindowed() const override;
     bool CanBeWindowed() const override;
 
+    AbstractTextBank* TextBank() override;
+
+    void InitDraw(bool clear, PackedColor color) override;
+    void FinishDraw() override;
     void NextFrame() override;
+    void Clear(bool clearZ, bool clearColor, PackedColor color) override;
+
+    void Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect2DAbs& clip) override;
+    void DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& clip, int specFlags) override;
+    void DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& clip,
+                  int specFlags) override;
+    void DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, const Rect2DAbs& clip) override;
 
     void OnWindowResized(int w, int h) override;
 
   private:
     void ResizeSurface(int w, int h);
+    // Append a fan of triangles, merging with the previous batch when texture +
+    // blend match (consecutive vertices are contiguous in the buffer).
+    void AppendTriangles(uint64_t texture, uint32_t blend, const WgrVertex2D* verts, int count);
 
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
+    TextureBankWgpu* _wbank = nullptr;
     int _w = 0;
     int _h = 0;
     bool _windowed = true;
     bool _open = false;
     bool _focused = true;
     bool _mouseGrab = true;
+
+    float _clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    std::vector<WgrVertex2D> _verts;
+    std::vector<WgrDraw2DBatch> _batches;
 };
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params);

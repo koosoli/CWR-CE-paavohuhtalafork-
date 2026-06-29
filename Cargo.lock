@@ -942,6 +942,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "glam"
+version = "0.33.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7f22fb22f065b308be0d8724e3706c7fa3fc2a6c7d6899df4cad7860e7a75436"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "glob"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3931,8 +3940,11 @@ dependencies = [
 name = "wgpu_renderer"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
+ "glam",
  "pollster",
  "raw-window-handle",
+ "slotmap",
  "wgpu",
 ]
 

@@ -51,6 +51,42 @@ typedef struct WgrLogCallbacks
     void* user;
 } WgrLogCallbacks;
 
+/* One screen-space vertex for 2D rendering. `x`/`y` are window pixels (origin
+ * top-left), `u`/`v` are texture coordinates, `color` is 0xAARRGGBB. */
+typedef struct WgrVertex2D
+{
+    float    x, y;
+    float    u, v;
+    uint32_t color;
+} WgrVertex2D;
+
+typedef enum WgrBlend
+{
+    WGR_BLEND_OPAQUE   = 0,
+    WGR_BLEND_ALPHA    = 1,
+    WGR_BLEND_ADDITIVE = 2
+} WgrBlend;
+
+/* A contiguous run of triangle-list vertices sharing one texture + blend mode.
+ * `texture_id` is a 64-bit generational handle from wgr_texture_create (a Rust
+ * slotmap key); 0 selects the built-in 1x1 white texture. */
+typedef struct WgrDraw2DBatch
+{
+    uint64_t texture_id;
+    uint32_t first_vertex; /* index into the vertex array */
+    uint32_t vertex_count; /* multiple of 3 */
+    uint32_t blend;        /* WgrBlend */
+    uint32_t _pad;         /* keep size/alignment in sync with the #[repr(C)] Rust struct */
+} WgrDraw2DBatch;
+
+typedef enum WgrTexFormat
+{
+    WGR_TEX_RGBA8 = 0,
+    WGR_TEX_BC1   = 1, /* DXT1 */
+    WGR_TEX_BC2   = 2, /* DXT3 */
+    WGR_TEX_BC3   = 3  /* DXT5 */
+} WgrTexFormat;
+
 WGR_API const char* wgr_version(void);
 
 /* Returns NULL on failure (reason reported via `log` if supplied). `log` may be NULL. */
@@ -61,6 +97,22 @@ WGR_API void wgr_resize(WgrRenderer* renderer, uint32_t width, uint32_t height);
 
 /* Returns 0 on success (incl. transient skipped frames), negative on error. */
 WGR_API int32_t wgr_clear_and_present(WgrRenderer* renderer, float r, float g, float b, float a);
+
+/* Upload a single-level texture in `format`; returns a non-zero id, or 0 on
+ * failure. `byte_len` must match the format: RGBA8 = width*height*4; BC* = the
+ * block-payload size (ceil(w/4)*ceil(h/4) * 8 for BC1, * 16 for BC2/BC3). */
+WGR_API uint64_t wgr_texture_create(WgrRenderer* renderer, uint32_t width, uint32_t height, int32_t format,
+                                    const uint8_t* data, uint32_t byte_len);
+
+/* Replace the pixels of an existing RGBA8 texture. */
+WGR_API void wgr_texture_update(WgrRenderer* renderer, uint64_t id, const uint8_t* rgba, uint32_t byte_len);
+
+WGR_API void wgr_texture_destroy(WgrRenderer* renderer, uint64_t id);
+
+/* Clear to (r,g,b,a), draw all 2D batches, and present. `verts`/`batches` may be
+ * null when their count is 0 (clear-only frame). Returns 0 on success. */
+WGR_API int32_t wgr_render_2d(WgrRenderer* renderer, float r, float g, float b, float a, const WgrVertex2D* verts,
+                              uint32_t vert_count, const WgrDraw2DBatch* batches, uint32_t batch_count);
 
 #ifdef __cplusplus
 } /* extern "C" */

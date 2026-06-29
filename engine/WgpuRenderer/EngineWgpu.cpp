@@ -1,10 +1,14 @@
 #include "EngineWgpu.hpp"
+#include "TextureBankWgpu.hpp"
 
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
 #include <Poseidon/Graphics/Shared/WindowMode.hpp>
 #include <Poseidon/Graphics/Shared/WindowPlacement.hpp>
+#include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
+#include <Poseidon/Graphics/Textures/TexturePreload.hpp>
+#include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/Foundation/Types/Memtype.h> // DWORD
 
 #include <SDL3/SDL.h>
@@ -155,6 +159,8 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
         return;
     }
 
+    _wbank = new TextureBankWgpu(_renderer);
+
     _open = true;
     if (_mouseGrab)
         SDL_SetWindowRelativeMouseMode(_window, true);
@@ -167,6 +173,9 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
 
 EngineWgpu::~EngineWgpu()
 {
+    if (_wbank) {
+        _wbank->Detach();
+    }
     if (_renderer)
     {
         wgr_destroy(_renderer);
@@ -177,6 +186,11 @@ EngineWgpu::~EngineWgpu()
         SDL_DestroyWindow(_window);
         _window = nullptr;
     }
+}
+
+AbstractTextBank* EngineWgpu::TextBank()
+{
+    return _wbank;
 }
 
 RString EngineWgpu::GetDebugName() const
@@ -233,14 +247,251 @@ void EngineWgpu::ResizeSurface(int w, int h)
 
 void EngineWgpu::OnWindowResized(int w, int h)
 {
+    if (w <= 0 || h <= 0)
+        return;
     ResizeSurface(w, h);
+    FireResizePostHook(w, h);
+}
+
+namespace
+{
+
+uint32_t BlendForSpec(int spec)
+{
+    const render::Backend b = render::SplitLegacy(spec).backend;
+    if (render::Has(b, render::Backend::IsAlpha) || render::Has(b, render::Backend::IsAlphaFog) ||
+        render::Has(b, render::Backend::IsTransparent))
+        return WGR_BLEND_ALPHA;
+    return WGR_BLEND_OPAQUE;
+}
+
+WgrVertex2D MakeVertex(float x, float y, float u, float v, PackedColor c)
+{
+    return WgrVertex2D{x, y, u, v, static_cast<uint32_t>(static_cast<DWORD>(c))};
+}
+
+uint64_t ResolveTexture(const MipInfo& mip)
+{
+    if (auto* t = static_cast<TextureWgpu*>(mip._texture))
+    {
+        return t->EnsureUploaded();
+    }
+    return 0;
+}
+
+} // namespace
+
+void EngineWgpu::InitDraw(bool clear, PackedColor color)
+{
+    _verts.clear();
+    _batches.clear();
+    if (clear)
+    {
+        _clear[0] = color.R8() / 255.0f;
+        _clear[1] = color.G8() / 255.0f;
+        _clear[2] = color.B8() / 255.0f;
+        _clear[3] = 1.0f;
+    }
+    else
+    {
+        _clear[0] = _clear[1] = _clear[2] = 0.0f;
+        _clear[3] = 1.0f;
+    }
+    if (_wbank)
+    {
+        _wbank->StartFrame();
+    }
+}
+
+void EngineWgpu::Clear(bool /*clearZ*/, bool clearColor, PackedColor color)
+{
+    if (clearColor)
+    {
+        _clear[0] = color.R8() / 255.0f;
+        _clear[1] = color.G8() / 255.0f;
+        _clear[2] = color.B8() / 255.0f;
+        _clear[3] = 1.0f;
+    }
+}
+
+void EngineWgpu::FinishDraw()
+{
+    if (_wbank)
+    {
+        _wbank->FinishFrame();
+    }
 }
 
 void EngineWgpu::NextFrame()
 {
-    if (_renderer) // nothing drawn yet — clear to a recognizable color
-        wgr_clear_and_present(_renderer, 0.10f, 0.20f, 0.45f, 1.0f);
-    EngineDummy::NextFrame(); // base frame timing
+    if (_renderer)
+    {
+        wgr_render_2d(_renderer, _clear[0], _clear[1], _clear[2], _clear[3],
+                      _verts.empty() ? nullptr : _verts.data(), static_cast<uint32_t>(_verts.size()),
+                      _batches.empty() ? nullptr : _batches.data(), static_cast<uint32_t>(_batches.size()));
+    }
+    _verts.clear();
+    _batches.clear();
+    EngineDummy::NextFrame();
+}
+
+void EngineWgpu::AppendTriangles(uint64_t texture, uint32_t blend, const WgrVertex2D* verts, int count)
+{
+    if (count <= 0)
+    {
+        return;
+    }
+
+    const uint32_t first = static_cast<uint32_t>(_verts.size());
+    _verts.insert(_verts.end(), verts, verts + count);
+
+    if (!_batches.empty() && _batches.back().texture_id == texture && _batches.back().blend == blend)
+    {
+        _batches.back().vertex_count += static_cast<uint32_t>(count);
+        return;
+    }
+    WgrDraw2DBatch batch{};
+    batch.texture_id = texture;
+    batch.first_vertex = first;
+    batch.vertex_count = static_cast<uint32_t>(count);
+    batch.blend = blend;
+    _batches.push_back(batch);
+}
+
+void EngineWgpu::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect2DAbs& clip)
+{
+    if (!pars.mip.IsOK())
+        return;
+
+    // Clip the destination rect to the (window-limited) clip rect, carrying the UV range with it. 
+    float xBeg = rect.x, xEnd = xBeg + rect.w;
+    float yBeg = rect.y, yEnd = yBeg + rect.h;
+
+    float uBeg = 0, vBeg = 0, uEnd = 1, vEnd = 1;
+
+    const float xc = floatMax(clip.x, 0.0f);
+    const float yc = floatMax(clip.y, 0.0f);
+    const float xec = floatMin(clip.x + clip.w, static_cast<float>(_w));
+    const float yec = floatMin(clip.y + clip.h, static_cast<float>(_h));
+
+    if (xBeg < xc)
+    {
+        uBeg = (xc - xBeg) / rect.w, xBeg = xc;
+    }
+    if (xEnd > xec)
+    {
+        uEnd = 1 - (xEnd - xec) / rect.w, xEnd = xec;
+    }
+    if (yBeg < yc)
+    {
+        vBeg = (yc - yBeg) / rect.h, yBeg = yc;
+    }
+    if (yEnd > yec)
+    {
+        vEnd = 1 - (yEnd - yec) / rect.h, yEnd = yec;
+    }
+
+    if (xBeg >= xEnd || yBeg >= yEnd)
+    {
+        return;
+    }
+
+    const float uTL = pars.uTL + uBeg * (pars.uTR - pars.uTL) + vBeg * (pars.uBL - pars.uTL);
+    const float uTR = pars.uTL + uEnd * (pars.uTR - pars.uTL) + vBeg * (pars.uBL - pars.uTL);
+    const float uBL = pars.uTL + uBeg * (pars.uTR - pars.uTL) + vEnd * (pars.uBL - pars.uTL);
+    const float uBR = pars.uTL + uEnd * (pars.uTR - pars.uTL) + vEnd * (pars.uBL - pars.uTL);
+
+    const float vTL = pars.vTL + uBeg * (pars.vTR - pars.vTL) + vBeg * (pars.vBL - pars.vTL);
+    const float vTR = pars.vTL + uEnd * (pars.vTR - pars.vTL) + vBeg * (pars.vBL - pars.vTL);
+    const float vBL = pars.vTL + uBeg * (pars.vTR - pars.vTL) + vEnd * (pars.vBL - pars.vTL);
+    const float vBR = pars.vTL + uEnd * (pars.vTR - pars.vTL) + vEnd * (pars.vBL - pars.vTL);
+
+    const WgrVertex2D tl = MakeVertex(xBeg, yBeg, uTL, vTL, pars.colorTL);
+    const WgrVertex2D tr = MakeVertex(xEnd, yBeg, uTR, vTR, pars.colorTR);
+    const WgrVertex2D br = MakeVertex(xEnd, yEnd, uBR, vBR, pars.colorBR);
+    const WgrVertex2D bl = MakeVertex(xBeg, yEnd, uBL, vBL, pars.colorBL);
+    const WgrVertex2D quad[6] = {tl, tr, br, tl, br, bl};
+
+    AppendTriangles(ResolveTexture(pars.mip), BlendForSpec(pars.spec), quad, 6);
+}
+
+void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& /*clip*/,
+                          int specFlags)
+{
+    if (!mip.IsOK() || n < 3)
+    {
+        return;
+    }
+
+    // TODO: Implement clipping
+    const uint64_t tex = ResolveTexture(mip);
+    const uint32_t blend = BlendForSpec(specFlags);
+    std::vector<WgrVertex2D> tris;
+    tris.reserve(static_cast<size_t>(n - 2) * 3);
+    auto conv = [](const Vertex2DAbs& v) { return MakeVertex(v.x, v.y, v.u, v.v, v.color); };
+    for (int i = 1; i + 1 < n; i++)
+    {
+        tris.push_back(conv(vertices[0]));
+        tris.push_back(conv(vertices[i]));
+        tris.push_back(conv(vertices[i + 1]));
+    }
+    AppendTriangles(tex, blend, tris.data(), static_cast<int>(tris.size()));
+}
+
+void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& /*clip*/,
+                          int specFlags)
+{
+    if (!mip.IsOK() || n < 3)
+    {
+        return;
+    }
+    // TODO: Implement clipping
+
+    const float x2d = static_cast<float>(Left2D());
+    const float y2d = static_cast<float>(Top2D());
+    const uint64_t tex = ResolveTexture(mip);
+    const uint32_t blend = BlendForSpec(specFlags);
+    std::vector<WgrVertex2D> tris;
+    tris.reserve(static_cast<size_t>(n - 2) * 3);
+    auto conv = [&](const Vertex2DPixel& v) { return MakeVertex(v.x + x2d, v.y + y2d, v.u, v.v, v.color); };
+    for (int i = 1; i + 1 < n; i++)
+    {
+        tris.push_back(conv(vertices[0]));
+        tris.push_back(conv(vertices[i]));
+        tris.push_back(conv(vertices[i + 1]));
+    }
+    AppendTriangles(tex, blend, tris.data(), static_cast<int>(tris.size()));
+}
+
+void EngineWgpu::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, const Rect2DAbs& clip)
+{
+    // Convert the line to a textured quad
+    float x0 = line.beg.x, y0 = line.beg.y, x1 = line.end.x, y1 = line.end.y;
+
+    Texture* tex = GPreloadedTextures.New(TextureLine);
+    const MipInfo& mip = TextBank()->UseMipmap(tex, 1, 1);
+
+    const int specFlags = NoZBuf | IsAlpha | ClampU | ClampV | IsAlphaFog;
+    const float dx = x1 - x0, dy = y1 - y0;
+    const float dSize2 = dx * dx + dy * dy;
+    const float invDSize = dSize2 > 0 ? InvSqrt(dSize2) : 1;
+
+    const float pdx = +dy * invDSize, pdy = -dx * invDSize;
+    const float w = 3.0f;
+    x0 -= pdx * (w * 0.5f);
+    x1 -= pdx * (w * 0.5f);
+    y0 -= pdy * (w * 0.5f);
+    y1 -= pdy * (w * 0.5f);
+    const float x0Side = x0 + pdx * w, y0Side = y0 + pdy * w;
+    const float x1Side = x1 + pdx * w, y1Side = y1 + pdy * w;
+
+    Vertex2DAbs vertices[4];
+    vertices[0].x = x0, vertices[0].y = y0, vertices[0].u = 0, vertices[0].v = 0.25f, vertices[0].color = c0;
+    vertices[1].x = x0Side, vertices[1].y = y0Side, vertices[1].u = 0, vertices[1].v = 1, vertices[1].color = c0;
+    vertices[2].x = x1Side, vertices[2].y = y1Side, vertices[2].u = 0.1f, vertices[2].v = 1, vertices[2].color = c1;
+    vertices[3].x = x1, vertices[3].y = y1, vertices[3].u = 0.1f, vertices[3].v = 0.25f, vertices[3].color = c1;
+
+    DrawPoly(mip, vertices, 4, clip, specFlags);
 }
 
 void EngineWgpu::HandleEvents()
@@ -254,29 +505,40 @@ void EngineWgpu::HandleEvents()
             case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
                 _open = false;
                 if (GApp)
+                {
                     GApp->m_closeRequest = true;
+                }
                 break;
             case SDL_EVENT_WINDOW_RESIZED:
             {
                 int pw = _w, ph = _h;
                 if (_window)
+                {
                     SDL_GetWindowSizeInPixels(_window, &pw, &ph);
-                ResizeSurface(pw, ph);
+                }
+                OnWindowResized(pw, ph);
                 break;
             }
             case SDL_EVENT_WINDOW_FOCUS_GAINED:
                 _focused = true;
                 if (GApp)
+                {
                     GApp->m_appActive = true;
-                if (_mouseGrab && _window)
+                }
+                if (_mouseGrab && _window) {
                     SDL_SetWindowRelativeMouseMode(_window, true);
+                }
                 break;
             case SDL_EVENT_WINDOW_FOCUS_LOST:
                 _focused = false;
                 if (GApp)
+                {
                     GApp->m_appActive = false;
+                }
                 if (_window)
+                {
                     SDL_SetWindowRelativeMouseMode(_window, false);
+                }
                 break;
             case SDL_EVENT_KEY_DOWN:
                 if (!event.key.repeat)
@@ -293,9 +555,12 @@ void EngineWgpu::HandleEvents()
             {
                 int btn = event.button.button - 1;
                 if (btn == 1)
+                {
                     btn = 2;
-                else if (btn == 2)
+                }
+                else if (btn == 2) {
                     btn = 1;
+                }
                 SDLInput_BufferMouseButton(btn, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
                 break;
             }
