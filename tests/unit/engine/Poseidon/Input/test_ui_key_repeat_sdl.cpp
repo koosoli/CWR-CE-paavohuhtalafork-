@@ -26,7 +26,8 @@ std::filesystem::path SourceRoot()
 
 TEST_CASE("UI key repeat uses SDL system repeat events", "[input][ui-repeat]")
 {
-    const std::string glWindow = ReadTextFile(SourceRoot() / "engine" / "PoseidonGL33" / "SDLEventWindow.hpp");
+    const std::string glWindow =
+        ReadTextFile(SourceRoot() / "engine" / "Poseidon" / "Graphics" / "Shared" / "SDLEventWindow.hpp");
     const std::string dummyWindow =
         ReadTextFile(SourceRoot() / "engine" / "Poseidon" / "Graphics" / "Dummy" / "EngineDummy.cpp");
     const std::string dispatch =

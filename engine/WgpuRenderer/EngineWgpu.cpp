@@ -16,16 +16,6 @@
 #include <cstdint>
 #include <cstring>
 
-extern void SDLInput_BufferKeyEvent(SDL_Scancode sc, bool down, DWORD timestamp);
-extern void SDLInput_BufferMouseButton(int btn, bool down);
-extern void SDLInput_BufferMouseMotion(float dx, float dy);
-extern void SDLInput_BufferMouseWheel(float dy);
-extern void SDLInput_GamepadAdded(SDL_JoystickID which);
-extern void SDLInput_GamepadRemoved(SDL_JoystickID which);
-extern void SDLInput_BufferUIKeyEvent(SDL_Keycode key, bool down);
-extern void SDLInput_BufferUICharEvent(const char* text);
-extern void SetMouseAcquired(bool acquired);
-
 namespace Poseidon
 {
 
@@ -161,18 +151,12 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
 
     _wbank = new TextureBankWgpu(_renderer);
 
-    _open = true;
-    if (_mouseGrab)
-        SDL_SetWindowRelativeMouseMode(_window, true);
-    SDL_StartTextInput(_window);
-
-    ::SetMouseAcquired(true);
-    if (GApp)
-        GApp->m_appActive = true;
+    _eventWindow.Attach(_window, _w, _h);
 }
 
 EngineWgpu::~EngineWgpu()
 {
+    _eventWindow.Detach();
     if (_wbank) {
         _wbank->Detach();
     }
@@ -221,18 +205,6 @@ bool EngineWgpu::IsWindowed() const
 bool EngineWgpu::CanBeWindowed() const
 {
     return true;
-}
-
-bool EngineWgpu::IsOpen() const
-{
-    return _open;
-}
-
-void EngineWgpu::SetMouseGrab(bool grab)
-{
-    _mouseGrab = grab;
-    if (_window)
-        SDL_SetWindowRelativeMouseMode(_window, grab && _focused);
 }
 
 void EngineWgpu::ResizeSurface(int w, int h)
@@ -492,85 +464,6 @@ void EngineWgpu::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1,
     vertices[3].x = x1, vertices[3].y = y1, vertices[3].u = 0.1f, vertices[3].v = 0.25f, vertices[3].color = c1;
 
     DrawPoly(mip, vertices, 4, clip, specFlags);
-}
-
-void EngineWgpu::HandleEvents()
-{
-    SDL_Event event;
-    while (SDL_PollEvent(&event))
-    {
-        switch (event.type)
-        {
-            case SDL_EVENT_QUIT:
-            case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
-                _open = false;
-                if (GApp)
-                {
-                    GApp->m_closeRequest = true;
-                }
-                break;
-            case SDL_EVENT_WINDOW_RESIZED:
-            {
-                int pw = _w, ph = _h;
-                if (_window)
-                {
-                    SDL_GetWindowSizeInPixels(_window, &pw, &ph);
-                }
-                OnWindowResized(pw, ph);
-                break;
-            }
-            case SDL_EVENT_WINDOW_FOCUS_GAINED:
-                _focused = true;
-                if (GApp)
-                {
-                    GApp->m_appActive = true;
-                }
-                if (_mouseGrab && _window) {
-                    SDL_SetWindowRelativeMouseMode(_window, true);
-                }
-                break;
-            case SDL_EVENT_WINDOW_FOCUS_LOST:
-                _focused = false;
-                if (GApp)
-                {
-                    GApp->m_appActive = false;
-                }
-                if (_window)
-                {
-                    SDL_SetWindowRelativeMouseMode(_window, false);
-                }
-                break;
-            case SDL_EVENT_KEY_DOWN:
-                if (!event.key.repeat)
-                    SDLInput_BufferKeyEvent(event.key.scancode, true, Foundation::GlobalTickCount());
-                SDLInput_BufferUIKeyEvent(event.key.key, true);
-                break;
-            case SDL_EVENT_KEY_UP:
-                SDLInput_BufferKeyEvent(event.key.scancode, false, Foundation::GlobalTickCount());
-                SDLInput_BufferUIKeyEvent(event.key.key, false);
-                break;
-            case SDL_EVENT_TEXT_INPUT: SDLInput_BufferUICharEvent(event.text.text); break;
-            case SDL_EVENT_MOUSE_BUTTON_DOWN:
-            case SDL_EVENT_MOUSE_BUTTON_UP:
-            {
-                int btn = event.button.button - 1;
-                if (btn == 1)
-                {
-                    btn = 2;
-                }
-                else if (btn == 2) {
-                    btn = 1;
-                }
-                SDLInput_BufferMouseButton(btn, event.type == SDL_EVENT_MOUSE_BUTTON_DOWN);
-                break;
-            }
-            case SDL_EVENT_MOUSE_MOTION: SDLInput_BufferMouseMotion(event.motion.xrel, event.motion.yrel); break;
-            case SDL_EVENT_MOUSE_WHEEL: SDLInput_BufferMouseWheel(event.wheel.y); break;
-            case SDL_EVENT_GAMEPAD_ADDED: SDLInput_GamepadAdded(event.gdevice.which); break;
-            case SDL_EVENT_GAMEPAD_REMOVED: SDLInput_GamepadRemoved(event.gdevice.which); break;
-            default: break;
-        }
-    }
 }
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params)

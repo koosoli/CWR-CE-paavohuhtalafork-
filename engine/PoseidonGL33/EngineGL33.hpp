@@ -23,7 +23,7 @@ class TextBankGL33;
 #include <Poseidon/Graphics/Core/Engine.hpp>
 #include <Poseidon/Graphics/Core/TLVertex.hpp>
 #include <Poseidon/Graphics/Rendering/RenderPassDescriptor.hpp>
-#include <PoseidonGL33/SDLEventWindow.hpp>
+#include <Poseidon/Graphics/Shared/SDLEventWindow.hpp>
 
 enum PixelShaderSpecular
 {

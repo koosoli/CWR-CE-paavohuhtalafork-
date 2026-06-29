@@ -2,6 +2,7 @@
 
 #include <Poseidon/Graphics/Dummy/EngineDummy.hpp>
 #include <Poseidon/Graphics/GraphicsEngineFactory.hpp> // GraphicsEngineParams
+#include <Poseidon/Graphics/Shared/SDLEventWindow.hpp>
 
 #include <wgpu_renderer.h>
 
@@ -27,9 +28,10 @@ class EngineWgpu : public EngineDummy
     RString GetDebugName() const override;
     RString GetRendererName() const override;
 
-    void HandleEvents() override;
-    bool IsOpen() const override;
-    void SetMouseGrab(bool grab) override;
+    void HandleEvents() override { _eventWindow.HandleEvents(); }
+    bool IsOpen() const override { return _eventWindow.IsOpen(); }
+    void SetMouseGrab(bool grab) override { _eventWindow.SetMouseGrab(grab); }
+    bool IsMouseGrabbed() const override { return _eventWindow.IsMouseGrabbed(); }
 
     int Width() const override;
     int Height() const override;
@@ -61,12 +63,10 @@ class EngineWgpu : public EngineDummy
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
     TextureBankWgpu* _wbank = nullptr;
+    SDLEventWindow _eventWindow;
     int _w = 0;
     int _h = 0;
     bool _windowed = true;
-    bool _open = false;
-    bool _focused = true;
-    bool _mouseGrab = true;
 
     float _clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     std::vector<WgrVertex2D> _verts;
