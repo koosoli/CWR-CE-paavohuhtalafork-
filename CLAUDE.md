@@ -35,9 +35,9 @@ Test trees live under `tests/` — `unit/` (C++), `integration/` (SQF-driven, ru
 **Integration tests** need game data and the Trident CLI (`tri`, a Rust tool in `engine/Trident/`):
 
 ```sh
-cargo build --manifest-path engine/Trident/Cargo.toml
+cargo build -p tri   # repo-root Cargo workspace; binary lands in ./target/<profile>/
 # copy .trident.env.example -> .trident.env, set OFPR_GAME_DIR (built binaries) and OFPR_DATA_DIR (Demo data)
-./engine/Trident/target/debug/tri test -j6 --retries 2 tests/integration
+./target/debug/tri test -j6 --retries 2 tests/integration
 ```
 
 The recommended local layout puts Demo data in `packages/Demo` (the whole `packages/` tree is gitignored).
@@ -56,10 +56,15 @@ The top-level `CMakeLists.txt` sets a large block of `-Wno-*` suppressions; thes
 
 ## Rust components
 
-Two independent Cargo workspaces, separate from the CMake build:
+A single Cargo workspace at the repo root (`Cargo.toml`) holds every crate, sharing one `Cargo.lock` and `target/`. Profiles (`dbg`/`rwdi`/`rel`) and `resolver = "3"` live in the root manifest. Members:
 
 - `engine/Trident/` — `tri`, the test runner / integration tool.
+- `engine/WgpuRenderer/rust/` — `wgpu_renderer`, the Rust side of the wgpu graphics backend (a `cdylib` linked into the game via corrosion; see below).
 - `mserver/` — master-server service and tooling crates (`Archive`, `CLI`, `Client`, `MasterService`). Standard `cargo fmt` / `cargo clippy` / `cargo test` / `cargo build`.
+
+All members declare `rust-version = "1.87"` (wgpu 29's MSRV) so the workspace's MSRV-aware resolver doesn't hold shared dependencies back to older, incompatible versions.
+
+The **wgpu backend** (`engine/WgpuRenderer/`) is a `POSEIDON_ENABLE_WGPU`-gated graphics backend: the Rust `cdylib` is built by corrosion (fetched via CMake `FetchContent`) and driven from C++ (`EngineWgpu`) across a hand-written C ABI (`include/wgpu_renderer.h`). GL33 stays the default; select it at runtime with `--render wgpu`.
 
 ## Architecture
 
