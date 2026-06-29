@@ -100,7 +100,6 @@ impl TextureRegistry {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
-        sampler: &wgpu::Sampler,
         tex: &TextureData,
     ) -> u64 {
         let TextureData { width, height, format, bytes } = *tex;
@@ -131,10 +130,7 @@ impl TextureRegistry {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgr_texture_bind"),
             layout,
-            entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(sampler) },
-            ],
+            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
         });
 
         let key = self.map.insert(Texture2D { texture, bind_group });

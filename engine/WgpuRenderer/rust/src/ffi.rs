@@ -49,6 +49,22 @@ pub enum WgrBlend {
     Additive = 2,
 }
 
+// Mirror of the C++ `Sampler2DFlags` / GL33's `_samplerObjects` index. The bits
+// double as the index into the renderer's 8 samplers.
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct WgrSampler2D(pub u32);
+
+impl WgrSampler2D {
+    pub const CLAMP_U: u32 = 1;
+    pub const CLAMP_V: u32 = 2;
+    pub const POINT: u32 = 4;
+
+    pub fn index(self) -> usize {
+        self.0 as usize
+    }
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WgrDraw2DBatch {
@@ -56,6 +72,7 @@ pub struct WgrDraw2DBatch {
     pub first_vertex: u32,
     pub vertex_count: u32,
     pub blend: WgrBlend,
+    pub sampler: WgrSampler2D,
 }
 
 pub type WgrRenderer = Renderer;

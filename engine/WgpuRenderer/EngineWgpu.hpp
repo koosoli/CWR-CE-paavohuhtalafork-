@@ -14,6 +14,23 @@ namespace Poseidon
 {
 class TextureBankWgpu;
 
+enum class Sampler2DFlags : uint32_t
+{
+    None = 0,
+    ClampU = 1,
+    ClampV = 2,
+    Point = 4,
+};
+
+constexpr Sampler2DFlags operator|(Sampler2DFlags a, Sampler2DFlags b)
+{
+    return static_cast<Sampler2DFlags>(static_cast<uint32_t>(a) | static_cast<uint32_t>(b));
+}
+constexpr Sampler2DFlags& operator|=(Sampler2DFlags& a, Sampler2DFlags b)
+{
+    return a = a | b;
+}
+
 // Inherits from EngineDummy, so we don't have to add manual stubs for all the missing virtual functions.
 class EngineWgpu : public EngineDummy
 {
@@ -56,9 +73,9 @@ class EngineWgpu : public EngineDummy
 
   private:
     void ResizeSurface(int w, int h);
-    // Append a fan of triangles, merging with the previous batch when texture +
-    // blend match (consecutive vertices are contiguous in the buffer).
-    void AppendTriangles(uint64_t texture, uint32_t blend, const WgrVertex2D* verts, int count);
+    // Append triangles, merging with the previous batch when texture + blend +
+    // sampler match (consecutive vertices are contiguous in the buffer).
+    void AppendTriangles(uint64_t texture, WgrBlend blend, Sampler2DFlags sampler, const WgrVertex2D* verts, int count);
 
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;

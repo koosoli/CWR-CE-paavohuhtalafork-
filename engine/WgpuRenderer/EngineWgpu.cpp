@@ -179,13 +179,26 @@ void EngineWgpu::OnWindowResized(int w, int h)
 namespace
 {
 
-uint32_t BlendForSpec(int spec)
+WgrBlend BlendForSpec(int spec)
 {
     const render::Backend b = render::SplitLegacy(spec).backend;
     if (render::Has(b, render::Backend::IsAlpha) || render::Has(b, render::Backend::IsAlphaFog) ||
         render::Has(b, render::Backend::IsTransparent))
         return WGR_BLEND_ALPHA;
     return WGR_BLEND_OPAQUE;
+}
+
+Sampler2DFlags SamplerForSpec(int spec)
+{
+    const render::Backend b = render::SplitLegacy(spec).backend;
+    Sampler2DFlags s = Sampler2DFlags::None;
+    if (render::Has(b, render::Backend::ClampU))
+        s |= Sampler2DFlags::ClampU;
+    if (render::Has(b, render::Backend::ClampV))
+        s |= Sampler2DFlags::ClampV;
+    if (render::Has(b, render::Backend::PointSampling))
+        s |= Sampler2DFlags::Point;
+    return s;
 }
 
 WgrVertex2D MakeVertex(float x, float y, float u, float v, PackedColor c)
@@ -258,17 +271,20 @@ void EngineWgpu::NextFrame()
     EngineDummy::NextFrame();
 }
 
-void EngineWgpu::AppendTriangles(uint64_t texture, uint32_t blend, const WgrVertex2D* verts, int count)
+void EngineWgpu::AppendTriangles(uint64_t texture, WgrBlend blend, Sampler2DFlags sampler, const WgrVertex2D* verts,
+                                 int count)
 {
     if (count <= 0)
     {
         return;
     }
 
+    const uint32_t samplerBits = static_cast<uint32_t>(sampler);
     const uint32_t first = static_cast<uint32_t>(_verts.size());
     _verts.insert(_verts.end(), verts, verts + count);
 
-    if (!_batches.empty() && _batches.back().texture_id == texture && _batches.back().blend == blend)
+    if (!_batches.empty() && _batches.back().texture_id == texture && _batches.back().blend == blend &&
+        _batches.back().sampler == samplerBits)
     {
         _batches.back().vertex_count += static_cast<uint32_t>(count);
         return;
@@ -278,6 +294,7 @@ void EngineWgpu::AppendTriangles(uint64_t texture, uint32_t blend, const WgrVert
     batch.first_vertex = first;
     batch.vertex_count = static_cast<uint32_t>(count);
     batch.blend = blend;
+    batch.sampler = samplerBits;
     _batches.push_back(batch);
 }
 
@@ -298,7 +315,7 @@ void EngineWgpu::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rec
     const WgrVertex2D bl = MakeVertex(c.xBeg, c.yEnd, c.uBL, c.vBL, pars.colorBL);
     const WgrVertex2D quad[6] = {tl, tr, br, tl, br, bl};
 
-    AppendTriangles(ResolveTexture(pars.mip), BlendForSpec(pars.spec), quad, 6);
+    AppendTriangles(ResolveTexture(pars.mip), BlendForSpec(pars.spec), SamplerForSpec(pars.spec), quad, 6);
 }
 
 void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& clip, int specFlags)
@@ -322,7 +339,8 @@ void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n
     }
 
     const uint64_t tex = ResolveTexture(mip);
-    const uint32_t blend = BlendForSpec(specFlags);
+    const WgrBlend blend = BlendForSpec(specFlags);
+    const Sampler2DFlags sampler = SamplerForSpec(specFlags);
     std::vector<WgrVertex2D> tris;
     tris.reserve(static_cast<size_t>(n - 2) * 3);
     auto conv = [](const Vertex2DAbs& v) { return MakeVertex(v.x, v.y, v.u, v.v, v.color); };
@@ -332,7 +350,7 @@ void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n
         tris.push_back(conv(vertices[i]));
         tris.push_back(conv(vertices[i + 1]));
     }
-    AppendTriangles(tex, blend, tris.data(), static_cast<int>(tris.size()));
+    AppendTriangles(tex, blend, sampler, tris.data(), static_cast<int>(tris.size()));
 }
 
 void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& clip,
@@ -359,7 +377,8 @@ void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int
     const float x2d = static_cast<float>(Left2D());
     const float y2d = static_cast<float>(Top2D());
     const uint64_t tex = ResolveTexture(mip);
-    const uint32_t blend = BlendForSpec(specFlags);
+    const WgrBlend blend = BlendForSpec(specFlags);
+    const Sampler2DFlags sampler = SamplerForSpec(specFlags);
     std::vector<WgrVertex2D> tris;
     tris.reserve(static_cast<size_t>(n - 2) * 3);
     auto conv = [&](const Vertex2DPixel& v) { return MakeVertex(v.x + x2d, v.y + y2d, v.u, v.v, v.color); };
@@ -369,7 +388,7 @@ void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int
         tris.push_back(conv(vertices[i]));
         tris.push_back(conv(vertices[i + 1]));
     }
-    AppendTriangles(tex, blend, tris.data(), static_cast<int>(tris.size()));
+    AppendTriangles(tex, blend, sampler, tris.data(), static_cast<int>(tris.size()));
 }
 
 void EngineWgpu::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, const Rect2DAbs& clip)

@@ -75,9 +75,14 @@ typedef struct WgrDraw2DBatch
     uint64_t texture_id;
     uint32_t first_vertex; /* index into the vertex array */
     uint32_t vertex_count; /* multiple of 3 */
-    uint32_t blend;        /* WgrBlend */
-    uint32_t _pad;         /* keep size/alignment in sync with the #[repr(C)] Rust struct */
+    WgrBlend blend;
+    uint32_t sampler;      /* sampler index: point<<2 | clampV<<1 | clampU */
 } WgrDraw2DBatch;
+
+#ifdef __cplusplus
+static_assert(sizeof(WgrBlend) == 4, "WgrBlend must be 4 bytes to match the Rust #[repr(u32)] enum");
+static_assert(sizeof(WgrDraw2DBatch) == 24, "WgrDraw2DBatch layout must match the Rust #[repr(C)] struct");
+#endif
 
 typedef enum WgrTexFormat
 {
