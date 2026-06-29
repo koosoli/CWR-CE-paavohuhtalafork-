@@ -4,8 +4,7 @@
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
-#include <Poseidon/Graphics/Shared/WindowMode.hpp>
-#include <Poseidon/Graphics/Shared/WindowPlacement.hpp>
+#include <Poseidon/Graphics/Shared/SdlWindow.hpp>
 #include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
@@ -67,69 +66,20 @@ void DescribeSurface(SDL_Window* window, WgrSurfaceDesc& desc)
 
 EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.useWindow)
 {
-    if (!SDL_Init(SDL_INIT_VIDEO))
-    {
-        LOG_ERROR(Graphics, "Wgpu: SDL_Init(VIDEO) failed: {}", SDL_GetError());
+    SdlGameWindowDesc wd;
+    wd.title = "Poseidon [WGPU]";
+    wd.width = params.width;
+    wd.height = params.height;
+    wd.useWindow = params.useWindow;
+    wd.displayMode = params.displayMode;
+    const SdlGameWindow win = CreateGameWindow(wd);
+    if (!win.window)
         return;
-    }
 
-    int desktopW = 0, desktopH = 0, desktopRefresh = 0;
-    if (const SDL_DisplayMode* dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay()))
-    {
-        desktopW = dm->w;
-        desktopH = dm->h;
-        desktopRefresh = static_cast<int>(dm->refresh_rate + 0.5f);
-    }
-
-    DisplayPlacementInput displayCfg;
-    displayCfg.displayMode = params.displayMode.empty() ? (params.useWindow ? "windowed" : "borderless")
-                                                        : params.displayMode;
-    if (params.useWindow && displayCfg.displayMode != "windowed") {
-        displayCfg.displayMode = "windowed";
-    }
-    if (!params.useWindow && displayCfg.displayMode == "windowed") {
-        displayCfg.displayMode = "borderless";
-    }
-    displayCfg.width = params.width;
-    displayCfg.height = params.height;
-
-    const WindowPlacement placement = ResolveWindowPlacement(displayCfg, desktopW, desktopH, desktopRefresh);
-
-    Uint32 flags = SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    switch (placement.mode)
-    {
-        case WindowMode::Fullscreen:
-        case WindowMode::Borderless: flags |= SDL_WINDOW_BORDERLESS; break;
-        case WindowMode::Windowed: flags |= SDL_WINDOW_RESIZABLE; break;
-    }
-
-    _window = SDL_CreateWindow("Poseidon [WGPU]", placement.width, placement.height, flags);
-    if (!_window)
-    {
-        LOG_ERROR(Graphics, "Wgpu: SDL_CreateWindow failed: {}", SDL_GetError());
-        return;
-    }
-
-    if (placement.mode == WindowMode::Borderless)
-    {
-#ifndef _WIN32
-        SDL_SetWindowFullscreenMode(_window, nullptr);
-        if (!SDL_SetWindowFullscreen(_window, true))
-            LOG_WARN(Graphics, "Wgpu: SDL_SetWindowFullscreen(true) failed: {}", SDL_GetError());
-#else
-        if (placement.posX != WindowPlacement::kCentered)
-            SDL_SetWindowPosition(_window, placement.posX, placement.posY);
-#endif
-    }
-    else if (placement.posX != WindowPlacement::kCentered)
-    {
-        SDL_SetWindowPosition(_window, placement.posX, placement.posY);
-    }
-
-    _w = placement.width;
-    _h = placement.height;
-    SDL_GetWindowSizeInPixels(_window, &_w, &_h);
-    _windowed = (placement.mode == WindowMode::Windowed);
+    _window = win.window;
+    _w = win.widthPx;
+    _h = win.heightPx;
+    _windowed = win.windowed;
 
     WgrSurfaceDesc desc{};
     DescribeSurface(_window, desc);

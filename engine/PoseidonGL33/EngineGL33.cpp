@@ -1,6 +1,7 @@
 #include <PoseidonGL33/EngineGL33.hpp>
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Core/Config/EngineConfig.hpp>
+#include <Poseidon/Graphics/Shared/SdlWindow.hpp>
 #include <Poseidon/Graphics/Shared/WindowPlacement.hpp>
 
 #include <SDL3/SDL.h>
@@ -266,121 +267,56 @@ EngineGL33::EngineGL33(int width, int height, bool windowed, int bpp)
     LOG_INFO(Graphics, "GL33: Initializing engine — bootstrap {}x{} {}bpp {} before display.cfg/user overrides", _w,
              _h, _pixelSize, _windowed ? "windowed" : "fullscreen");
 
-    // SDL3 initialization
-    if (!SDL_Init(SDL_INIT_VIDEO))
-    {
-        LOG_ERROR(Graphics, "GL33: SDL_Init failed: {}", SDL_GetError());
-        return;
-    }
-
-    // Request OpenGL 3.3 Core Profile
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
-
-    // Forward-compatible flag is required by Apple's GL implementation
-    // for any 3.3 Core context; harmless on Win/Linux.  Debug flag opens
-    // GL_CONTEXT_FLAG_DEBUG_BIT so KHR_debug callbacks can fire — kept
-    // on in all builds because the day-to-day RelWithDebInfo build is
-    // what we develop against, and gating on _DEBUG would leave us without
-    // the per-error GL log there.
-    SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG | SDL_GL_CONTEXT_DEBUG_FLAG);
-
-    SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
-    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
-    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
-
-    // The default framebuffer is single-sampled on purpose: every frame
-    // renders into the offscreen frame target (BindFrameRenderTarget), which
-    // carries the MSAA samples — 8x at render scale 1, 4x at SSAA scales —
-    // and resolves into the window with a blit.  A multisampled window
-    // framebuffer would make the scaled-resolve blit illegal
-    // (GL_INVALID_OPERATION: scaling blits need single-sampled targets) and
-    // glReadPixels on it is out-of-spec anyway.
-
-    // Resolve final placement (mode + size + position) from the engine
-    // config, the --window override, and the target display's desktop
-    // mode.  Borderless is forced to native desktop resolution at (0,0)
-    // so DWM (Win10 1903+) detects it and engages independent flip —
-    // without this, "borderless" produces a chromeless window the size
-    // of the configured w/h, defeating the whole point of the mode.
     auto& engineCfg = GApp->GetConfig().GetEngineConfig();
-    DisplayPlacementInput displayCfg;
-    displayCfg.displayMode = engineCfg.displayMode;
-    // --window forces Windowed regardless of saved displayMode (dev /
-    // testing ergonomics).  appConfig already collapses --window into
-    // displayMode = "windowed" during arg parsing, but be defensive.
-    if (windowed && displayCfg.displayMode != "windowed")
-        displayCfg.displayMode = "windowed";
-    if (!windowed && displayCfg.displayMode == "windowed")
-        displayCfg.displayMode = "borderless";
-    displayCfg.width = _w;
-    displayCfg.height = _h;
-
-    int desktopW = 0, desktopH = 0, desktopRefresh = 0;
-    if (const SDL_DisplayMode* dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay()))
+    SdlGameWindowDesc wd;
+    wd.title = "Poseidon [GL33]";
+    wd.width = _w;
+    wd.height = _h;
+    // --window forces Windowed regardless of saved displayMode (dev / testing
+    // ergonomics); the helper applies that coercion.
+    wd.useWindow = windowed;
+    wd.displayMode = engineCfg.displayMode;
+    wd.extraFlags = SDL_WINDOW_OPENGL;
+    wd.preCreate = []
     {
-        desktopW = dm->w;
-        desktopH = dm->h;
-        desktopRefresh = (int)(dm->refresh_rate + 0.5f);
-    }
-    const WindowPlacement placement = ResolveWindowPlacement(displayCfg, desktopW, desktopH, desktopRefresh);
-    _windowMode = placement.mode;
+        // Request OpenGL 3.3 Core Profile.
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3);
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE);
 
-    // On Windows, Borderless avoids SDL's fullscreen state machine
-    // because Win11 + OpenGL can promote that path to exclusive on the
-    // first SwapWindow (libsdl-org/SDL#12791).  On Linux/macOS we *do*
-    // want the compositor's real desktop-fullscreen state so shell
-    // work-area reservations (GNOME top bar, etc.) don't treat the game
-    // as a regular borderless window.
-    //
-    // Windowed mode keeps the standard resizable bordered window.
-    // SDL_WINDOW_HIGH_PIXEL_DENSITY: opt into native-pixel rendering on
-    // HighDPI displays (Retina, Windows 200% scaling).  Without this
-    // flag SDL renders at *logical* pixels and blits up — content looks
-    // blurry.  The SDL_GetWindowSizeInPixels readback below already
-    // handles the size correctly; this flag makes the readback
-    // actually return higher-than-logical numbers when the display has
-    // a pixel density > 1.
-    Uint32 flags = SDL_WINDOW_OPENGL | SDL_WINDOW_HIGH_PIXEL_DENSITY;
-    switch (placement.mode)
-    {
-        case WindowMode::Fullscreen:
-        case WindowMode::Borderless:
-            flags |= SDL_WINDOW_BORDERLESS;
-            break;
-        case WindowMode::Windowed:
-            flags |= SDL_WINDOW_RESIZABLE;
-            break;
-    }
+        // Forward-compatible flag is required by Apple's GL implementation
+        // for any 3.3 Core context; harmless on Win/Linux.  Debug flag opens
+        // GL_CONTEXT_FLAG_DEBUG_BIT so KHR_debug callbacks can fire — kept
+        // on in all builds because the day-to-day RelWithDebInfo build is
+        // what we develop against, and gating on _DEBUG would leave us without
+        // the per-error GL log there.
+        SDL_GL_SetAttribute(SDL_GL_CONTEXT_FLAGS, SDL_GL_CONTEXT_FORWARD_COMPATIBLE_FLAG | SDL_GL_CONTEXT_DEBUG_FLAG);
 
-    _sdlWindow = SDL_CreateWindow("Poseidon [GL33]", placement.width, placement.height, flags);
-    if (!_sdlWindow)
-    {
-        LOG_ERROR(Graphics, "GL33: SDL_CreateWindow failed: {}", SDL_GetError());
+        SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+        SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
+        SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
+
+        // The default framebuffer is single-sampled on purpose: every frame
+        // renders into the offscreen frame target (BindFrameRenderTarget), which
+        // carries the MSAA samples — 8x at render scale 1, 4x at SSAA scales —
+        // and resolves into the window with a blit.  A multisampled window
+        // framebuffer would make the scaled-resolve blit illegal
+        // (GL_INVALID_OPERATION: scaling blits need single-sampled targets) and
+        // glReadPixels on it is out-of-spec anyway.
+    };
+
+    const SdlGameWindow win = CreateGameWindow(wd);
+    if (!win.window)
         return;
-    }
 
-    if (placement.mode == WindowMode::Borderless)
+    _sdlWindow = win.window;
+    _windowMode = win.mode;
+    _w = win.widthPx;
+    _h = win.heightPx;
+    if (win.refreshHz > 0)
     {
-#ifndef _WIN32
-        SDL_SetWindowFullscreenMode(_sdlWindow, nullptr);
-        if (!SDL_SetWindowFullscreen(_sdlWindow, true))
-            LOG_WARN(Graphics, "GL33: SDL_SetWindowFullscreen(true) failed for borderless startup: {}", SDL_GetError());
-#else
-        if (placement.posX != WindowPlacement::kCentered)
-            SDL_SetWindowPosition(_sdlWindow, placement.posX, placement.posY);
-#endif
+        _refreshRate = win.refreshHz;
     }
-    else if (placement.posX != WindowPlacement::kCentered)
-    {
-        SDL_SetWindowPosition(_sdlWindow, placement.posX, placement.posY);
-    }
-
-    _w = placement.width;
-    _h = placement.height;
-    if (placement.refreshHz > 0)
-        _refreshRate = placement.refreshHz;
 
     // Create OpenGL context
     _glContext = SDL_GL_CreateContext(_sdlWindow);
