@@ -23,8 +23,7 @@ function(register_trident_integration_ctests)
         set(_cargo_profile "debug")
     endif()
     set(_tri_cargo "${CMAKE_SOURCE_DIR}/target/${_cargo_profile}/${_tri_name}")
-    set(_tri_cargo_legacy "${CMAKE_SOURCE_DIR}/engine/Trident/target/${_cargo_profile}/${_tri_name}")
-    set(_tri_executables "${_tri_dist};${_tri_cargo};${_tri_cargo_legacy}")
+    set(_tri_executables "${_tri_dist};${_tri_cargo}")
 
     set(_integration_roots
         flows

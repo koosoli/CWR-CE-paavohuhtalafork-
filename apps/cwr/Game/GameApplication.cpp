@@ -1457,6 +1457,9 @@ void GameApplication::RegisterGraphicsBackends()
 {
     RegisterDummyGraphicsBackend();
     RegisterGL33GraphicsBackend();
+#if POSEIDON_ENABLE_WGPU
+    RegisterWgpuGraphicsBackend();
+#endif
 }
 
 bool GameApplication::InitializeInput()

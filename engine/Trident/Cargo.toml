@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 description = "Playwright-style test orchestrator for CWR game instances"
 license = "MIT"
-rust-version = "1.79"
+rust-version = "1.87"
 
 [dependencies]
 clap = { version = "4", features = ["derive", "env", "color"] }

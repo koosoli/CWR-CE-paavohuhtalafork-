@@ -154,6 +154,19 @@ option(POSEIDON_DISABLE_PCH "Disable precompiled headers (include self-containme
 # preset turns it on. Requires a clang toolchain built with -fsanitize=fuzzer.
 option(POSEIDON_BUILD_FUZZERS "Build libFuzzer network harnesses" OFF)
 
+# Modern Rust/wgpu graphics backend (interop infrastructure).
+# Auto-disabled with a warning if cargo is not found, so a missing Rust
+# toolchain never breaks the C++ build.
+option(POSEIDON_ENABLE_WGPU "Build the Rust/wgpu graphics backend" ON)
+if(POSEIDON_ENABLE_WGPU)
+    find_program(CARGO_EXECUTABLE cargo)
+    if(NOT CARGO_EXECUTABLE)
+        message(WARNING "POSEIDON_ENABLE_WGPU is ON but 'cargo' was not found; "
+                        "disabling the wgpu backend. Install a Rust toolchain to enable it.")
+        set(POSEIDON_ENABLE_WGPU OFF)
+    endif()
+endif()
+
 configure_file(
     ${CMAKE_SOURCE_DIR}/cmake/BuildConfig.h.in
     ${CMAKE_BINARY_DIR}/generated/BuildConfig.h
@@ -195,6 +208,9 @@ add_subdirectory(engine/Poseidon)
 add_subdirectory(engine/PoseidonGL33)
 add_subdirectory(engine/PoseidonOpenAL)
 add_subdirectory(engine/PoseidonFormats)
+if(POSEIDON_ENABLE_WGPU)
+    add_subdirectory(engine/WgpuRenderer)
+endif()
 add_subdirectory(tests/unit/engine/Poseidon/Foundation)
 add_subdirectory(apps/tools/Evaluator)
 add_subdirectory(tests/unit/apps/Evaluator)

@@ -1,10 +1,11 @@
 [workspace]
-resolver = "2"
+resolver = "3"
 members = [
     "engine/Trident",
+    "engine/WgpuRenderer/rust",
     "mserver/Archive",
-    "mserver/Client",
     "mserver/CLI",
+    "mserver/Client",
     "mserver/MasterService",
 ]
 

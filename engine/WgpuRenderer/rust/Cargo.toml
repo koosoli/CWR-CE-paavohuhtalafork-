@@ -1,0 +1,17 @@
+[package]
+name = "wgpu_renderer"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.87" # wgpu 29 MSRV
+description = "WGPU graphics backend for Cold War Assault (Rust side of the C ABI)"
+license = "GPL-3.0-or-later"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+wgpu = "29.0"
+# must match the version wgpu re-exports
+raw-window-handle = "0.6"
+pollster = "0.4"

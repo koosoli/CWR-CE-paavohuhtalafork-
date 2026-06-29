@@ -44,12 +44,18 @@ target_include_directories(PoseidonGame PRIVATE
     $<$<COMPILE_LANGUAGE:RC>:${CMAKE_SOURCE_DIR}/engine/Poseidon/Foundation/Platform>
 )
 
+set(WGPU_LIB "")
+if(POSEIDON_ENABLE_WGPU)
+    set(WGPU_LIB WgpuRenderer)
+endif()
+
 # Link against libraries (Poseidon transitively brings in folded support/runtime code and externals)
 if(WIN32)
     target_link_libraries(PoseidonGame PRIVATE
         GameBase
         Poseidon
         PoseidonGL33
+        ${WGPU_LIB}
         PoseidonOpenAL
         # Windows system libraries
         winmm.lib
@@ -62,12 +68,18 @@ else()
         -Wl,--start-group
         GameBase
         PoseidonGL33
+        ${WGPU_LIB}
         Poseidon
         PoseidonOpenAL
         -Wl,--end-group
         pthread
         dl
     )
+endif()
+
+if(POSEIDON_ENABLE_WGPU)
+    target_compile_definitions(PoseidonGame PRIVATE POSEIDON_ENABLE_WGPU=1)
+    wgpu_renderer_stage_dll(PoseidonGame)
 endif()
 
 # Use WINDOWS subsystem (WIN32 flag); AttachConsole at runtime handles CLI output
