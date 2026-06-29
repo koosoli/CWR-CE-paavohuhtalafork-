@@ -5,6 +5,7 @@
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
 #include <Poseidon/Graphics/Shared/SdlWindow.hpp>
+#include <Poseidon/Graphics/Rendering/Primitives/Draw2DGeometry.hpp>
 #include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
@@ -285,67 +286,41 @@ void EngineWgpu::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rec
     if (!pars.mip.IsOK())
         return;
 
-    // Clip the destination rect to the (window-limited) clip rect, carrying the UV range with it. 
-    float xBeg = rect.x, xEnd = xBeg + rect.w;
-    float yBeg = rect.y, yEnd = yBeg + rect.h;
-
-    float uBeg = 0, vBeg = 0, uEnd = 1, vEnd = 1;
-
-    const float xc = floatMax(clip.x, 0.0f);
-    const float yc = floatMax(clip.y, 0.0f);
-    const float xec = floatMin(clip.x + clip.w, static_cast<float>(_w));
-    const float yec = floatMin(clip.y + clip.h, static_cast<float>(_h));
-
-    if (xBeg < xc)
-    {
-        uBeg = (xc - xBeg) / rect.w, xBeg = xc;
-    }
-    if (xEnd > xec)
-    {
-        uEnd = 1 - (xEnd - xec) / rect.w, xEnd = xec;
-    }
-    if (yBeg < yc)
-    {
-        vBeg = (yc - yBeg) / rect.h, yBeg = yc;
-    }
-    if (yEnd > yec)
-    {
-        vEnd = 1 - (yEnd - yec) / rect.h, yEnd = yec;
-    }
-
-    if (xBeg >= xEnd || yBeg >= yEnd)
+    Draw2DCorners c;
+    if (!ClipDraw2DRect(pars, rect, clip, static_cast<float>(_w), static_cast<float>(_h), c))
     {
         return;
     }
 
-    const float uTL = pars.uTL + uBeg * (pars.uTR - pars.uTL) + vBeg * (pars.uBL - pars.uTL);
-    const float uTR = pars.uTL + uEnd * (pars.uTR - pars.uTL) + vBeg * (pars.uBL - pars.uTL);
-    const float uBL = pars.uTL + uBeg * (pars.uTR - pars.uTL) + vEnd * (pars.uBL - pars.uTL);
-    const float uBR = pars.uTL + uEnd * (pars.uTR - pars.uTL) + vEnd * (pars.uBL - pars.uTL);
-
-    const float vTL = pars.vTL + uBeg * (pars.vTR - pars.vTL) + vBeg * (pars.vBL - pars.vTL);
-    const float vTR = pars.vTL + uEnd * (pars.vTR - pars.vTL) + vBeg * (pars.vBL - pars.vTL);
-    const float vBL = pars.vTL + uBeg * (pars.vTR - pars.vTL) + vEnd * (pars.vBL - pars.vTL);
-    const float vBR = pars.vTL + uEnd * (pars.vTR - pars.vTL) + vEnd * (pars.vBL - pars.vTL);
-
-    const WgrVertex2D tl = MakeVertex(xBeg, yBeg, uTL, vTL, pars.colorTL);
-    const WgrVertex2D tr = MakeVertex(xEnd, yBeg, uTR, vTR, pars.colorTR);
-    const WgrVertex2D br = MakeVertex(xEnd, yEnd, uBR, vBR, pars.colorBR);
-    const WgrVertex2D bl = MakeVertex(xBeg, yEnd, uBL, vBL, pars.colorBL);
+    const WgrVertex2D tl = MakeVertex(c.xBeg, c.yBeg, c.uTL, c.vTL, pars.colorTL);
+    const WgrVertex2D tr = MakeVertex(c.xEnd, c.yBeg, c.uTR, c.vTR, pars.colorTR);
+    const WgrVertex2D br = MakeVertex(c.xEnd, c.yEnd, c.uBR, c.vBR, pars.colorBR);
+    const WgrVertex2D bl = MakeVertex(c.xBeg, c.yEnd, c.uBL, c.vBL, pars.colorBL);
     const WgrVertex2D quad[6] = {tl, tr, br, tl, br, bl};
 
     AppendTriangles(ResolveTexture(pars.mip), BlendForSpec(pars.spec), quad, 6);
 }
 
-void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& /*clip*/,
-                          int specFlags)
+void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& clip, int specFlags)
 {
     if (!mip.IsOK() || n < 3)
     {
         return;
     }
 
-    // TODO: Implement clipping
+    constexpr int maxN = 32;
+    Vertex2DAbs scratch1[maxN];
+    Vertex2DAbs scratch2[maxN];
+    vertices = ClipPoly2D(vertices, n, clip, scratch1, scratch2);
+    if (!vertices)
+    {
+        return;
+    }
+    if (n > maxN)
+    {
+        n = maxN;
+    }
+
     const uint64_t tex = ResolveTexture(mip);
     const uint32_t blend = BlendForSpec(specFlags);
     std::vector<WgrVertex2D> tris;
@@ -360,14 +335,26 @@ void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n
     AppendTriangles(tex, blend, tris.data(), static_cast<int>(tris.size()));
 }
 
-void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& /*clip*/,
+void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& clip,
                           int specFlags)
 {
     if (!mip.IsOK() || n < 3)
     {
         return;
     }
-    // TODO: Implement clipping
+
+    constexpr int maxN = 32;
+    Vertex2DPixel scratch1[maxN];
+    Vertex2DPixel scratch2[maxN];
+    vertices = ClipPoly2D(vertices, n, clip, scratch1, scratch2);
+    if (!vertices)
+    {
+        return;
+    }
+    if (n > maxN)
+    {
+        n = maxN;
+    }
 
     const float x2d = static_cast<float>(Left2D());
     const float y2d = static_cast<float>(Top2D());
@@ -387,31 +374,13 @@ void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int
 
 void EngineWgpu::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, const Rect2DAbs& clip)
 {
-    // Convert the line to a textured quad
-    float x0 = line.beg.x, y0 = line.beg.y, x1 = line.end.x, y1 = line.end.y;
-
     Texture* tex = GPreloadedTextures.New(TextureLine);
     const MipInfo& mip = TextBank()->UseMipmap(tex, 1, 1);
 
     const int specFlags = NoZBuf | IsAlpha | ClampU | ClampV | IsAlphaFog;
-    const float dx = x1 - x0, dy = y1 - y0;
-    const float dSize2 = dx * dx + dy * dy;
-    const float invDSize = dSize2 > 0 ? InvSqrt(dSize2) : 1;
-
-    const float pdx = +dy * invDSize, pdy = -dx * invDSize;
-    const float w = 3.0f;
-    x0 -= pdx * (w * 0.5f);
-    x1 -= pdx * (w * 0.5f);
-    y0 -= pdy * (w * 0.5f);
-    y1 -= pdy * (w * 0.5f);
-    const float x0Side = x0 + pdx * w, y0Side = y0 + pdy * w;
-    const float x1Side = x1 + pdx * w, y1Side = y1 + pdy * w;
 
     Vertex2DAbs vertices[4];
-    vertices[0].x = x0, vertices[0].y = y0, vertices[0].u = 0, vertices[0].v = 0.25f, vertices[0].color = c0;
-    vertices[1].x = x0Side, vertices[1].y = y0Side, vertices[1].u = 0, vertices[1].v = 1, vertices[1].color = c0;
-    vertices[2].x = x1Side, vertices[2].y = y1Side, vertices[2].u = 0.1f, vertices[2].v = 1, vertices[2].color = c1;
-    vertices[3].x = x1, vertices[3].y = y1, vertices[3].u = 0.1f, vertices[3].v = 0.25f, vertices[3].color = c1;
+    LineToQuad(line, c0, c1, vertices);
 
     DrawPoly(mip, vertices, 4, clip, specFlags);
 }
