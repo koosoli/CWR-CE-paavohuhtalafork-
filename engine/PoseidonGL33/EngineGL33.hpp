@@ -12,6 +12,7 @@ class TextureGL33;
 class TextBankGL33;
 
 #include <Poseidon/Graphics/Core/MatrixConversion.hpp>
+#include <Poseidon/Graphics/Core/MeshVertex.hpp>
 #include <Poseidon/Graphics/Core/RenderState.hpp>
 
 // GL33 has no D3D profiling scopes; the macro is a no-op here.
@@ -194,13 +195,6 @@ struct QueueGL33
     QueueGL33();
     int Allocate(TextureGL33* tex, int level, int spec, int minI, int maxI, int tip);
     void Free(int i);
-};
-
-struct SVertex
-{
-    Vector3P pos;
-    Vector3P norm;
-    Poseidon::UVPair t0;
 };
 
 // Free-function override for hot-reload — when set (typically via CLI

@@ -5,14 +5,25 @@ use raw_window_handle::{
 
 use crate::ffi::{WgrPlatform, WgrSurfaceDesc};
 
+#[cfg(windows)]
+unsafe extern "system" {
+    fn GetModuleHandleW(name: *const u16) -> *mut core::ffi::c_void;
+}
+
 pub fn build_handles(desc: &WgrSurfaceDesc) -> Result<(RawDisplayHandle, RawWindowHandle), String> {
     match desc.platform {
         WgrPlatform::Win32 => {
             let hwnd =
                 std::num::NonZeroIsize::new(desc.window as isize).ok_or_else(|| "win32: null HWND".to_string())?;
+            let mut handle = Win32WindowHandle::new(hwnd);
+            #[cfg(windows)]
+            {
+                let hinstance = unsafe { GetModuleHandleW(std::ptr::null()) } as isize;
+                handle.hinstance = std::num::NonZeroIsize::new(hinstance);
+            }
             Ok((
                 RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
-                RawWindowHandle::Win32(Win32WindowHandle::new(hwnd)),
+                RawWindowHandle::Win32(handle),
             ))
         }
         WgrPlatform::Xlib => {

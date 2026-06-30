@@ -1,33 +1,19 @@
-mod textures;
-
-pub use textures::TexFormat;
-
 use glam::Vec2;
 
-use crate::ffi::{WgrBlend, WgrDraw2DBatch, WgrSampler2D, WgrVertex2D};
-use textures::{TextureData, TextureRegistry};
+use crate::ffi::{WgrBlend, WgrDraw2DBatch, WgrVertex2D};
+use crate::textures::SharedTextures;
 
 pub struct Gfx2d {
     globals_buffer: wgpu::Buffer,
     globals_bind: wgpu::BindGroup,
-    texture_layout: wgpu::BindGroupLayout,
-    #[allow(dead_code)]
-    samplers: [wgpu::Sampler; 8],
-    sampler_binds: [wgpu::BindGroup; 8],
     pipelines: [wgpu::RenderPipeline; 3],
 
     vbuf: Option<wgpu::Buffer>,
     vbuf_cap: u64,
-
-    white_bind: wgpu::BindGroup,
-    #[allow(dead_code)]
-    white_tex: wgpu::Texture,
-
-    registry: TextureRegistry,
 }
 
 impl Gfx2d {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, surface_format: wgpu::TextureFormat, bc_supported: bool) -> Self {
+    pub fn new(device: &wgpu::Device, textures: &SharedTextures, surface_format: wgpu::TextureFormat) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgr_2d_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
@@ -47,30 +33,6 @@ impl Gfx2d {
             }],
         });
 
-        let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgr_2d_texture_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
-
-        let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgr_2d_sampler_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                count: None,
-            }],
-        });
-
         let globals_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_2d_globals"),
             // 16 bytes: vec2 screen size + vec2 padding.
@@ -84,42 +46,9 @@ impl Gfx2d {
             entries: &[wgpu::BindGroupEntry { binding: 0, resource: globals_buffer.as_entire_binding() }],
         });
 
-        let samplers: [wgpu::Sampler; 8] = std::array::from_fn(|i| {
-            let i = i as u32;
-            let point = i & WgrSampler2D::POINT != 0;
-            let wrap = |clamp: bool| {
-                if clamp {
-                    wgpu::AddressMode::ClampToEdge
-                } else {
-                    wgpu::AddressMode::Repeat
-                }
-            };
-            let filter = if point { wgpu::FilterMode::Nearest } else { wgpu::FilterMode::Linear };
-            device.create_sampler(&wgpu::SamplerDescriptor {
-                label: Some("wgr_2d_sampler"),
-                address_mode_u: wrap(i & WgrSampler2D::CLAMP_U != 0),
-                address_mode_v: wrap(i & WgrSampler2D::CLAMP_V != 0),
-                address_mode_w: wgpu::AddressMode::ClampToEdge,
-                mag_filter: filter,
-                min_filter: filter,
-                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
-                ..Default::default()
-            })
-        });
-        let sampler_binds: [wgpu::BindGroup; 8] = std::array::from_fn(|i| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("wgr_2d_sampler_bind"),
-                layout: &sampler_layout,
-                entries: &[wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: wgpu::BindingResource::Sampler(&samplers[i]),
-                }],
-            })
-        });
-
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_2d_pipeline_layout"),
-            bind_group_layouts: &[Some(&globals_layout), Some(&texture_layout), Some(&sampler_layout)],
+            bind_group_layouts: &[Some(&globals_layout), Some(&textures.texture_layout), Some(&textures.sampler_layout)],
             immediate_size: 0,
         });
 
@@ -184,68 +113,7 @@ impl Gfx2d {
         };
         let pipelines = [make_pipeline(None), make_pipeline(Some(alpha)), make_pipeline(Some(additive))];
 
-        let white_tex = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("wgr_2d_white"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &white_tex,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &[0xFF, 0xFF, 0xFF, 0xFF],
-            wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4), rows_per_image: Some(1) },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
-        );
-        let white_view = white_tex.create_view(&wgpu::TextureViewDescriptor::default());
-        let white_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wgr_2d_white_bind"),
-            layout: &texture_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&white_view) }],
-        });
-
-        Gfx2d {
-            globals_buffer,
-            globals_bind,
-            texture_layout,
-            samplers,
-            sampler_binds,
-            pipelines,
-            vbuf: None,
-            vbuf_cap: 0,
-            white_bind,
-            white_tex,
-            registry: TextureRegistry::new(bc_supported),
-        }
-    }
-
-    pub fn texture_create(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        width: u32,
-        height: u32,
-        format: TexFormat,
-        data: &[u8],
-    ) -> u64 {
-        let tex = TextureData { width, height, format, bytes: data };
-        self.registry.create(device, queue, &self.texture_layout, &tex)
-    }
-
-    pub fn texture_update(&mut self, queue: &wgpu::Queue, handle: u64, data: &[u8]) {
-        self.registry.update_rgba(queue, handle, data);
-    }
-
-    pub fn texture_destroy(&mut self, handle: u64) {
-        self.registry.destroy(handle);
+        Gfx2d { globals_buffer, globals_bind, pipelines, vbuf: None, vbuf_cap: 0 }
     }
 
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, screen: Vec2, verts: &[WgrVertex2D]) {
@@ -270,7 +138,7 @@ impl Gfx2d {
         queue.write_buffer(self.vbuf.as_ref().unwrap(), 0, bytes);
     }
 
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, batches: &[WgrDraw2DBatch]) {
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, textures: &SharedTextures, batches: &[WgrDraw2DBatch]) {
         let Some(vbuf) = self.vbuf.as_ref() else { return };
         pass.set_vertex_buffer(0, vbuf.slice(..));
         pass.set_bind_group(0, &self.globals_bind, &[]);
@@ -279,11 +147,9 @@ impl Gfx2d {
                 continue;
             }
             let pipeline = self.pipelines.get(b.blend as usize).unwrap_or(&self.pipelines[WgrBlend::Alpha as usize]);
-            let bind = self.registry.get(b.texture_id).map_or(&self.white_bind, |t| &t.bind_group);
-            let sampler = self.sampler_binds.get(b.sampler.index()).unwrap_or(&self.sampler_binds[0]);
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(1, bind, &[]);
-            pass.set_bind_group(2, sampler, &[]);
+            pass.set_bind_group(1, textures.texture_bind(b.texture_id), &[]);
+            pass.set_bind_group(2, textures.sampler_bind(b.sampler.index()), &[]);
             pass.draw(b.first_vertex..(b.first_vertex + b.vertex_count), 0..1);
         }
     }

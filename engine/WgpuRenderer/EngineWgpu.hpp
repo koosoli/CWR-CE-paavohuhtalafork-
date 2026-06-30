@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Poseidon/Graphics/Core/MatrixConversion.hpp>
 #include <Poseidon/Graphics/Dummy/EngineDummy.hpp>
 #include <Poseidon/Graphics/GraphicsEngineFactory.hpp> // GraphicsEngineParams
 #include <Poseidon/Graphics/Shared/SDLEventWindow.hpp>
@@ -69,6 +70,15 @@ class EngineWgpu : public EngineDummy
                   int specFlags) override;
     void DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, const Rect2DAbs& clip) override;
 
+    bool GetTL() const override { return true; }
+    bool GetTLOnSurface() const override { return true; }
+    VertexBuffer* CreateVertexBuffer(const Shape& src, VBType type) override;
+    void PrepareMeshTL(const LightList& lights, const Matrix4& modelToWorld,
+                       const render::LegacySpec& spec) override;
+    void BeginMeshTL(const Shape& sMesh, int spec, bool dynamic) override;
+    void EndMeshTL(const Shape& sMesh) override;
+    void DrawSectionTL(const Shape& sMesh, int beg, int end) override;
+
     void OnWindowResized(int w, int h) override;
 
   private:
@@ -76,6 +86,8 @@ class EngineWgpu : public EngineDummy
     // Append triangles, merging with the previous batch when texture + blend +
     // sampler match (consecutive vertices are contiguous in the buffer).
     void AppendTriangles(uint64_t texture, WgrBlend blend, Sampler2DFlags sampler, const WgrVertex2D* verts, int count);
+    // Rebuild the camera-relative view/projection for this frame from the scene
+    void BuildFrameCamera();
 
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
@@ -88,6 +100,13 @@ class EngineWgpu : public EngineDummy
     float _clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     std::vector<WgrVertex2D> _verts;
     std::vector<WgrDraw2DBatch> _batches;
+
+    GfxMatrix _proj{};
+    GfxMatrix _view{};
+    float _cameraPos[3] = {0.0f, 0.0f, 0.0f};
+    GfxMatrix _world{};                // camera-relative world for the current mesh
+    bool _frameCameraReady = false;    // view/proj rebuilt at the frame's first mesh draw
+    std::vector<WgrDraw3D> _draws3d;
 };
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params);

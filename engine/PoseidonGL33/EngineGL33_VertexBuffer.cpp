@@ -3,6 +3,7 @@
 #include <PoseidonGL33/TextureGL33.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/Poly.hpp>
+#include <Poseidon/Graphics/Rendering/Primitives/MeshBuild.hpp>
 #include <Poseidon/Graphics/Core/GLBufferMap.hpp>
 #include <Poseidon/Graphics/Core/GLClear.hpp>
 #include <Poseidon/Graphics/Core/GLIndexBuffer.hpp>
@@ -17,13 +18,6 @@ using namespace Poseidon::Dev;
 #include <glad/gl.h>
 
 
-// Index range per mesh section.
-struct VBSectionInfo
-{
-    int beg, end;
-    int begVertex, endVertex;
-};
-
 // Self-contained VBO/IBO/VAO per shape.
 class VertexBufferGL33 : public VertexBuffer
 {
@@ -36,7 +30,7 @@ class VertexBufferGL33 : public VertexBuffer
     bool _dynamic = false;
     int _vertexCount = 0;
     int _indexCount = 0;
-    AutoArray<VBSectionInfo> _sections;
+    AutoArray<Poseidon::render::mesh::MeshSection> _sections;
 
   public:
     VertexBufferGL33() = default;
@@ -90,20 +84,7 @@ void VertexBufferGL33::CopyVertices(const Shape& src)
         return;
     }
 
-    const UVPair* uv = &src.UV(0);
-    const Vector3* pos = &src.Pos(0);
-    const Vector3* norm = &src.Norm(0);
-    for (int i = src.NVertex(); --i >= 0;)
-    {
-        sData->pos = Vector3P(pos->X(), pos->Y(), pos->Z());
-        // Normals are negated (matches D3D11 convention)
-        sData->norm = Vector3P(-norm->X(), -norm->Y(), -norm->Z());
-        pos++;
-        norm++;
-        sData->t0 = *uv;
-        uv++;
-        sData++;
-    }
+    Poseidon::render::mesh::BuildVertices(src, sData);
 
     glUnmapBuffer(GL_ARRAY_BUFFER);
 }
@@ -133,13 +114,7 @@ bool VertexBufferGL33::Init(const Shape& src, VBType type)
     CopyVertices(src);
 
     // Count total indices (fan triangulation: N-gon → N-2 triangles)
-    int indices = 0;
-    for (Offset o = src.BeginFaces(); o < src.EndFaces(); src.NextFace(o))
-    {
-        const Poly& poly = src.Face(o);
-        PoseidonAssert(poly.N() >= 3);
-        indices += (poly.N() - 2) * 3;
-    }
+    int indices = Poseidon::render::mesh::CountIndices(src);
     _indexCount = indices;
 
     if (indices > 0)
@@ -159,46 +134,10 @@ bool VertexBufferGL33::Init(const Shape& src, VBType type)
             return false;
         }
 
-        for (Offset o = src.BeginFaces(); o < src.EndFaces(); src.NextFace(o))
-        {
-            const Poly& poly = src.Face(o);
-            for (int i = 2; i < poly.N(); i++)
-            {
-                *iData++ = poly.GetVertex(0);
-                *iData++ = poly.GetVertex(i - 1);
-                *iData++ = poly.GetVertex(i);
-            }
-        }
+        Poseidon::render::mesh::BuildIndices(src, iData);
         glUnmapBuffer(GL_ELEMENT_ARRAY_BUFFER);
 
-        // Build per-section index ranges
-        _sections.Realloc(src.NSections());
-        _sections.Resize(src.NSections());
-        int start = 0;
-        for (int i = 0; i < src.NSections(); i++)
-        {
-            const ShapeSection& sec = src.GetSection(i);
-            int size = 0;
-            int minV = INT_MAX;
-            int maxV = 0;
-            for (Offset o = sec.beg; o < sec.end; src.NextFace(o))
-            {
-                const Poly& face = src.Face(o);
-                PoseidonAssert(face.N() >= 3);
-                size += (face.N() - 2) * 3;
-                for (int vv = 0; vv < face.N(); vv++)
-                {
-                    int vi = face.GetVertex(vv);
-                    saturateMin(minV, vi);
-                    saturateMax(maxV, vi);
-                }
-            }
-            _sections[i].beg = start;
-            _sections[i].end = start + size;
-            _sections[i].begVertex = minV;
-            _sections[i].endVertex = maxV + 1;
-            start += size;
-        }
+        Poseidon::render::mesh::BuildSections(src, _sections);
     }
 
     SetupVertexAttribs();
@@ -238,8 +177,8 @@ void EngineGL33::DrawSectionTL(const Shape& sMesh, int beg, int end)
     PoseidonAssert(end > beg);
     PoseidonAssert(end <= buf->_sections.Size());
 
-    const VBSectionInfo& siBeg = buf->_sections[beg];
-    const VBSectionInfo& siEnd = buf->_sections[end - 1];
+    const Poseidon::render::mesh::MeshSection& siBeg = buf->_sections[beg];
+    const Poseidon::render::mesh::MeshSection& siEnd = buf->_sections[end - 1];
 
     int indexCount = siEnd.end - siBeg.beg;
     if (indexCount <= 0)

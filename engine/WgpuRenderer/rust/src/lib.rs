@@ -1,11 +1,15 @@
 mod ffi;
 mod gfx2d;
+mod gfx3d;
 mod handles;
 mod log;
+mod textures;
 
-use crate::ffi::{WgrDraw2DBatch, WgrVertex2D};
-use crate::gfx2d::{Gfx2d, TexFormat};
+use crate::ffi::{WgrDraw2DBatch, WgrDraw3D, WgrMeshVertex, WgrVertex2D};
+use crate::gfx2d::Gfx2d;
+use crate::gfx3d::Gfx3d;
 use crate::log::{LogSink, log_level};
+use crate::textures::{SharedTextures, TextureFormat, TextureData};
 
 pub struct Renderer {
     log: LogSink,
@@ -14,7 +18,9 @@ pub struct Renderer {
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    textures: SharedTextures,
     gfx2d: Gfx2d,
+    gfx3d: Gfx3d,
 }
 
 impl Renderer {
@@ -71,9 +77,11 @@ impl Renderer {
 
         surface.configure(&device, &config);
 
-        let gfx2d = Gfx2d::new(&device, &queue, config.format, bc_supported);
+        let textures = SharedTextures::new(&device, &queue, bc_supported);
+        let gfx2d = Gfx2d::new(&device, &textures, config.format);
+        let gfx3d = Gfx3d::new(&device, &textures, config.format);
 
-        Ok(Self { log, surface, device, queue, config, gfx2d })
+        Ok(Self { log, surface, device, queue, config, textures, gfx2d, gfx3d })
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -104,19 +112,27 @@ impl Renderer {
     }
 
     fn render_2d(&mut self, clear: [f32; 4], verts: &[WgrVertex2D], batches: &[WgrDraw2DBatch]) -> Result<(), String> {
+        self.render_frame(clear, &ffi::IDENTITY, &ffi::IDENTITY, &[], verts, batches)
+    }
+
+    fn render_frame(&mut self, clear: [f32; 4], proj: &[f32; 16], view: &[f32; 16], draws3d: &[WgrDraw3D],
+                    verts: &[WgrVertex2D], batches: &[WgrDraw2DBatch]) -> Result<(), String> {
         let screen = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
         self.gfx2d.prepare(&self.device, &self.queue, screen, verts);
+        self.gfx3d.ensure_depth(&self.device, self.config.width, self.config.height);
+        self.gfx3d.prepare(&self.device, &self.queue, proj, view, draws3d);
 
         let Some(frame) = self.acquire()? else { return Ok(()) };
 
-        let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let color = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = self.gfx3d.depth_view().ok_or("depth target missing")?;
         let mut encoder =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wgr_2d") });
+            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wgr_frame") });
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("wgr_2d_pass"),
+                label: Some("wgr_3d_pass"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
+                    view: &color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
@@ -129,27 +145,58 @@ impl Renderer {
                         store: wgpu::StoreOp::Store,
                     },
                 })],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: depth,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.gfx3d.draw(&mut pass, &self.textures, draws3d);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wgr_2d_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.gfx2d.draw(&mut pass, batches);
+            self.gfx2d.draw(&mut pass, &self.textures, batches);
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
     }
 
-    fn texture_create(&mut self, width: u32, height: u32, format: TexFormat, data: &[u8]) -> u64 {
-        self.gfx2d.texture_create(&self.device, &self.queue, width, height, format, data)
+    fn texture_create(&mut self, width: u32, height: u32, format: TextureFormat, data: &[u8]) -> u64 {
+        self.textures.create(&self.device, &self.queue, &TextureData { width, height, format, bytes: data })
     }
 
     fn texture_update(&mut self, handle: u64, data: &[u8]) {
-        self.gfx2d.texture_update(&self.queue, handle, data);
+        self.textures.update_rgba(&self.queue, handle, data);
     }
 
     fn texture_destroy(&mut self, handle: u64) {
-        self.gfx2d.texture_destroy(handle);
+        self.textures.destroy(handle);
+    }
+
+    fn mesh_create(&mut self, verts: &[WgrMeshVertex], indices: &[u16]) -> u64 {
+        self.gfx3d.mesh_create(&self.device, verts, indices)
+    }
+
+    fn mesh_destroy(&mut self, handle: u64) {
+        self.gfx3d.mesh_destroy(handle);
     }
 }

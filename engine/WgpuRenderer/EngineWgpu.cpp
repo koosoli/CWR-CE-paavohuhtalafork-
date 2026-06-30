@@ -4,11 +4,15 @@
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
+#include <Poseidon/Graphics/Core/MeshVertex.hpp>
 #include <Poseidon/Graphics/Shared/SdlWindow.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/Draw2DGeometry.hpp>
+#include <Poseidon/Graphics/Rendering/Primitives/MeshBuild.hpp>
 #include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
+#include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
+#include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/Foundation/Types/Memtype.h> // DWORD
 
 #include <SDL3/SDL.h>
@@ -62,6 +66,27 @@ void DescribeSurface(SDL_Window* window, WgrSurfaceDesc& desc)
     }
 #endif
 }
+
+class VertexBufferWgpu : public VertexBuffer
+{
+  public:
+    WgrRenderer* renderer = nullptr;
+    uint64_t mesh = 0;
+    AutoArray<render::mesh::MeshSection> sections;
+
+    VertexBufferWgpu(WgrRenderer* r, uint64_t m) : renderer(r), mesh(m) {}
+    ~VertexBufferWgpu() override
+    {
+        if (renderer && mesh)
+        {
+            wgr_mesh_destroy(renderer, mesh);
+        }
+    }
+
+    void Update(const Shape& /*src*/, bool /*dynamic*/) override {
+        // TODO: implement dynamic mesh updates
+    }
+};
 
 } // namespace
 
@@ -221,6 +246,8 @@ void EngineWgpu::InitDraw(bool clear, PackedColor color)
 {
     _verts.clear();
     _batches.clear();
+    _draws3d.clear();
+    _frameCameraReady = false;
     if (clear)
     {
         _clear[0] = color.R8() / 255.0f;
@@ -262,12 +289,15 @@ void EngineWgpu::NextFrame()
 {
     if (_renderer)
     {
-        wgr_render_2d(_renderer, _clear[0], _clear[1], _clear[2], _clear[3],
-                      _verts.empty() ? nullptr : _verts.data(), static_cast<uint32_t>(_verts.size()),
-                      _batches.empty() ? nullptr : _batches.data(), static_cast<uint32_t>(_batches.size()));
+        wgr_render_frame(_renderer, _clear[0], _clear[1], _clear[2], _clear[3], reinterpret_cast<const float*>(&_proj),
+                         reinterpret_cast<const float*>(&_view), _draws3d.empty() ? nullptr : _draws3d.data(),
+                         static_cast<uint32_t>(_draws3d.size()), _verts.empty() ? nullptr : _verts.data(),
+                         static_cast<uint32_t>(_verts.size()), _batches.empty() ? nullptr : _batches.data(),
+                         static_cast<uint32_t>(_batches.size()));
     }
     _verts.clear();
     _batches.clear();
+    _draws3d.clear();
     EngineDummy::NextFrame();
 }
 
@@ -402,6 +432,140 @@ void EngineWgpu::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1,
     LineToQuad(line, c0, c1, vertices);
 
     DrawPoly(mip, vertices, 4, clip, specFlags);
+}
+
+VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType /*type*/)
+{
+    if (!_renderer || src.NVertex() <= 0)
+    {
+        return nullptr;
+    }
+
+    const int nv = src.NVertex();
+    const int ni = render::mesh::CountIndices(src);
+    if (ni <= 0)
+    {
+        return nullptr;
+
+    }
+
+    static_assert(sizeof(SVertex) == sizeof(WgrMeshVertex), "SVertex must match WgrMeshVertex");
+    std::vector<SVertex> verts(static_cast<size_t>(nv));
+    render::mesh::BuildVertices(src, verts.data());
+    std::vector<VertexIndex> indices(static_cast<size_t>(ni));
+    render::mesh::BuildIndices(src, indices.data());
+
+    const uint64_t mesh = wgr_mesh_create(
+        _renderer,
+        reinterpret_cast<const WgrMeshVertex*>(verts.data()),
+        static_cast<uint32_t>(nv),
+        reinterpret_cast<const uint16_t*>(indices.data()),
+        static_cast<uint32_t>(ni)
+    );
+
+    if (!mesh)
+    {
+        return nullptr;
+    }
+
+    auto* buf = new VertexBufferWgpu(_renderer, mesh);
+    render::mesh::BuildSections(src, buf->sections);
+    return buf;
+}
+
+void EngineWgpu::BuildFrameCamera()
+{
+    _proj = GfxMatrix{};
+    _view = GfxMatrix{};
+    _cameraPos[0] = _cameraPos[1] = _cameraPos[2] = 0.0f;
+
+    if (!GScene)
+    {
+        return;
+    }
+
+    Camera* camera = GScene->GetCamera();
+    if (!camera)
+    {
+        return;
+    }
+
+    // Camera-relative: the view's translation is dropped (the per-object world
+    // matrix is already offset by the camera position).  Mirrors GL33's
+    // BuildFrameState so the same matrices reach the shader.
+    ConvertMatrix(_view, camera->InverseScaled());
+    _view._41 = 0;
+    _view._42 = 0;
+    _view._43 = 0;
+    ConvertProjectionMatrix(_proj, camera->ProjectionNormal(), 0);
+
+    const Vector3 pos = camera->Position();
+    _cameraPos[0] = static_cast<float>(pos.X());
+    _cameraPos[1] = static_cast<float>(pos.Y());
+    _cameraPos[2] = static_cast<float>(pos.Z());
+}
+
+void EngineWgpu::PrepareMeshTL(const LightList& /*lights*/, const Matrix4& modelToWorld,
+                               const render::LegacySpec& /*spec*/)
+{
+    if (!_frameCameraReady)
+    {
+        BuildFrameCamera();
+        _frameCameraReady = true;
+    }
+
+    ConvertMatrix(_world, modelToWorld);
+    _world._41 -= _cameraPos[0];
+    _world._42 -= _cameraPos[1];
+    _world._43 -= _cameraPos[2];
+}
+
+void EngineWgpu::BeginMeshTL(const Shape& sMesh, int /*spec*/, bool dynamic)
+{
+    if (VertexBuffer* vb = sMesh.GetVertexBuffer())
+    {
+        vb->Update(sMesh, dynamic);
+    }
+}
+
+void EngineWgpu::EndMeshTL(const Shape& /*sMesh*/) {}
+
+void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
+{
+    if (!_renderer)
+    {
+        return;
+    }
+
+    auto* buf = static_cast<VertexBufferWgpu*>(sMesh.GetVertexBuffer());
+    if (!buf || buf->sections.Size() == 0 || end <= beg || end > buf->sections.Size())
+    {
+        return;
+    }
+
+    const render::mesh::MeshSection& siBeg = buf->sections[beg];
+    const render::mesh::MeshSection& siEnd = buf->sections[end - 1];
+    const int indexCount = siEnd.end - siBeg.beg;
+    if (indexCount <= 0)
+    {
+        return;
+    }
+
+    uint64_t tex = 0;
+    if (auto* t = static_cast<TextureWgpu*>(sMesh.GetSection(beg).properties.GetTexture()))
+    {
+        tex = t->EnsureUploaded();
+    }
+
+    WgrDraw3D d{};
+    d.mesh = buf->mesh;
+    d.index_begin = static_cast<uint32_t>(siBeg.beg);
+    d.index_count = static_cast<uint32_t>(indexCount);
+    d.texture_id = tex;
+    std::memcpy(d.world, &_world, sizeof(d.world));
+    d.blend = WGR_BLEND_OPAQUE;
+    d.sampler = 0;
+    _draws3d.push_back(d);
 }
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params)

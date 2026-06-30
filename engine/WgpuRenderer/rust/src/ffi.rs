@@ -2,11 +2,11 @@ use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use glam::Vec2;
+use glam::{Vec2, Vec3};
 
 use crate::Renderer;
-use crate::gfx2d::TexFormat;
 use crate::log::{LogSink, log_level};
+use crate::textures::TextureFormat;
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,6 +74,34 @@ pub struct WgrDraw2DBatch {
     pub blend: WgrBlend,
     pub sampler: WgrSampler2D,
 }
+
+// Object-space mesh vertex; matches the engine's SVertex (pos, normal, uv).
+// glam types are #[repr(C)] and ABI-identical to [f32; 3]/[f32; 2].
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrMeshVertex {
+    pub pos: Vec3,
+    pub norm: Vec3,
+    pub uv: Vec2,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrDraw3D {
+    pub mesh: u64,
+    pub index_begin: u32,
+    pub index_count: u32,
+    pub texture_id: u64,
+    // Column-major. Must stay [f32; 16] (align 4) to match the C side's
+    // float[16]; glam::Mat4 has 16-byte align and would change the struct layout.
+    pub world: [f32; 16],
+    pub blend: WgrBlend,
+    pub sampler: WgrSampler2D,
+}
+
+// Layouts must match wgpu_renderer.h exactly (the C side static_asserts the same).
+const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
+const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 96);
 
 pub type WgrRenderer = Renderer;
 
@@ -178,7 +206,7 @@ pub unsafe extern "C" fn wgr_texture_create(
         return 0;
     }
     catch_unwind(AssertUnwindSafe(|| {
-        let Some(fmt) = TexFormat::from_i32(format) else {
+        let Some(fmt) = TextureFormat::from_i32(format) else {
             return 0;
         };
         let renderer = unsafe { &mut *renderer };
@@ -259,3 +287,109 @@ pub unsafe extern "C" fn wgr_render_2d(
     }))
     .unwrap_or(-3)
 }
+
+/// # Safety
+/// `renderer` must be live; `verts`/`indices` must each point to at least the
+/// given number of elements, or be null (in which case 0 is returned).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_mesh_create(
+    renderer: *mut WgrRenderer,
+    verts: *const WgrMeshVertex,
+    vert_count: u32,
+    indices: *const u16,
+    index_count: u32,
+) -> u64 {
+    if renderer.is_null() || verts.is_null() || indices.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let verts = unsafe { std::slice::from_raw_parts(verts, vert_count as usize) };
+        let indices = unsafe { std::slice::from_raw_parts(indices, index_count as usize) };
+        renderer.mesh_create(verts, indices)
+    }))
+    .unwrap_or(0)
+}
+
+/// # Safety
+/// `renderer` must be a live pointer from `wgr_create`, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_mesh_destroy(renderer: *mut WgrRenderer, id: u64) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &mut *renderer }.mesh_destroy(id);
+    }));
+}
+
+/// # Safety
+/// `renderer` must be live. `proj`/`view` must each point to 16 floats or be
+/// null (treated as identity). Each draw/vertex/batch array may be null only
+/// when its count is 0; otherwise it must hold the given number of elements.
+#[unsafe(no_mangle)]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn wgr_render_frame(
+    renderer: *mut WgrRenderer,
+    r: f32,
+    g: f32,
+    b: f32,
+    a: f32,
+    proj: *const f32,
+    view: *const f32,
+    draws3d: *const WgrDraw3D,
+    draw_count: u32,
+    verts: *const WgrVertex2D,
+    vert_count: u32,
+    batches: *const WgrDraw2DBatch,
+    batch_count: u32,
+) -> i32 {
+    if renderer.is_null() {
+        return -1;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let read_mat = |p: *const f32| -> [f32; 16] {
+            if p.is_null() {
+                IDENTITY
+            } else {
+                let mut m = [0.0f32; 16];
+                m.copy_from_slice(unsafe { std::slice::from_raw_parts(p, 16) });
+                m
+            }
+        };
+        let proj = read_mat(proj);
+        let view = read_mat(view);
+        let draws3d: &[WgrDraw3D] = if draws3d.is_null() || draw_count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(draws3d, draw_count as usize) }
+        };
+        let verts: &[WgrVertex2D] = if verts.is_null() || vert_count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(verts, vert_count as usize) }
+        };
+        let batches: &[WgrDraw2DBatch] = if batches.is_null() || batch_count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(batches, batch_count as usize) }
+        };
+        match renderer.render_frame([r, g, b, a], &proj, &view, draws3d, verts, batches) {
+            Ok(()) => 0,
+            Err(e) => {
+                renderer.log.log(log_level::ERROR, &format!("render_frame: {e}"));
+                -2
+            }
+        }
+    }))
+    .unwrap_or(-3)
+}
+
+#[rustfmt::skip]
+pub(crate) const IDENTITY: [f32; 16] = [
+    1.0, 0.0, 0.0, 0.0,
+    0.0, 1.0, 0.0, 0.0,
+    0.0, 0.0, 1.0, 0.0,
+    0.0, 0.0, 0.0, 1.0,
+];
