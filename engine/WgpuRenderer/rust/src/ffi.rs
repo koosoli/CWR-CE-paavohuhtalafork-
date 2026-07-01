@@ -328,6 +328,27 @@ pub unsafe extern "C" fn wgr_mesh_create(
 }
 
 /// # Safety
+/// `renderer` must be live; `verts` must point to at least `vert_count`
+/// elements, or be null (in which case this is a no-op). `id` must be a handle
+/// returned by `wgr_mesh_create` (unknown handles are ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_mesh_update(
+    renderer: *mut WgrRenderer,
+    id: u64,
+    verts: *const WgrMeshVertex,
+    vert_count: u32,
+) {
+    if renderer.is_null() || verts.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let verts = unsafe { std::slice::from_raw_parts(verts, vert_count as usize) };
+        renderer.mesh_update(id, verts);
+    }));
+}
+
+/// # Safety
 /// `renderer` must be a live pointer from `wgr_create`, or null.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wgr_mesh_destroy(renderer: *mut WgrRenderer, id: u64) {

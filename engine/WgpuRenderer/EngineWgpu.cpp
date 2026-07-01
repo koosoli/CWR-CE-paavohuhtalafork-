@@ -85,9 +85,14 @@ class VertexBufferWgpu : public VertexBuffer
   public:
     WgrRenderer* renderer = nullptr;
     uint64_t mesh = 0;
+    int vertexCount = 0;
+    bool isDynamic = false;
     AutoArray<render::mesh::MeshSection> sections;
 
-    VertexBufferWgpu(WgrRenderer* r, uint64_t m) : renderer(r), mesh(m) {}
+    VertexBufferWgpu(WgrRenderer* r, uint64_t m, int nv, bool dynamic)
+        : renderer(r), mesh(m), vertexCount(nv), isDynamic(dynamic)
+    {
+    }
     ~VertexBufferWgpu() override
     {
         if (renderer && mesh)
@@ -96,9 +101,23 @@ class VertexBufferWgpu : public VertexBuffer
         }
     }
 
-    void Update(const Shape& /*src*/, bool /*dynamic*/) override
+    // Re-upload vertex data when the shape has been animated. Mirrors GL33's
+    // VertexBufferGL33::Update: refresh when the buffer is dynamic by type, the
+    // caller flags this draw as dynamic, or animation dirtied the buffer.
+    void Update(const Shape& src, bool dynamic) override
     {
-        // TODO: implement dynamic mesh updates
+        if (!renderer || !mesh || (!isDynamic && !dynamic && !bufferDirty))
+        {
+            return;
+        }
+        if (src.NVertex() != vertexCount)
+        {
+            return;
+        }
+        std::vector<SVertex> verts(static_cast<size_t>(vertexCount));
+        render::mesh::BuildVertices(src, verts.data());
+        wgr_mesh_update(renderer, mesh, reinterpret_cast<const WgrMeshVertex*>(verts.data()), U32(vertexCount));
+        bufferDirty = false;
     }
 };
 
@@ -545,7 +564,7 @@ void EngineWgpu::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1,
     DrawPoly(mip, vertices, 4, clip, specFlags);
 }
 
-VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType /*type*/)
+VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType type)
 {
     if (!_renderer || src.NVertex() <= 0)
     {
@@ -579,7 +598,8 @@ VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType /*type*/)
         return nullptr;
     }
 
-    auto* buf = new VertexBufferWgpu(_renderer, mesh);
+    const bool dynamic = (type == VBDynamic || type == VBSmallDiscardable);
+    auto* buf = new VertexBufferWgpu(_renderer, mesh, nv, dynamic);
     render::mesh::BuildSections(src, buf->sections);
     return buf;
 }

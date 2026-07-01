@@ -14,6 +14,7 @@ struct Mesh {
     vbuf: wgpu::Buffer,
     ibuf: wgpu::Buffer,
     index_count: u32,
+    vert_count: u32,
 }
 
 // Holds a dynamic uniform buffer + its bind group, regrown as the frame needs.
@@ -225,7 +226,7 @@ impl Gfx3d {
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wgr_3d_vbuf"),
             contents: bytemuck::cast_slice(verts),
-            usage: wgpu::BufferUsages::VERTEX,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wgr_3d_ibuf"),
@@ -236,8 +237,22 @@ impl Gfx3d {
             vbuf,
             ibuf,
             index_count: indices.len() as u32,
+            vert_count: verts.len() as u32,
         });
         key.data().as_ffi()
+    }
+
+    // Re-upload vertex data for an existing (dynamic) mesh, e.g. a skeletally
+    // animated character whose vertices are CPU-transformed each frame. The
+    // topology (indices) is unchanged; only positions/normals/uvs are rewritten.
+    pub fn mesh_update(&mut self, queue: &wgpu::Queue, handle: u64, verts: &[WgrMeshVertex]) {
+        let Some(mesh) = self.meshes.get(KeyData::from_ffi(handle).into()) else {
+            return;
+        };
+        if verts.is_empty() || verts.len() as u32 > mesh.vert_count {
+            return;
+        }
+        queue.write_buffer(&mesh.vbuf, 0, bytemuck::cast_slice(verts));
     }
 
     pub fn mesh_destroy(&mut self, handle: u64) {

@@ -268,6 +268,11 @@ extern "C"
     WGR_API WgrMesh wgr_mesh_create(WgrRenderer* renderer, const WgrMeshVertex* verts, uint32_t vert_count,
                                     const uint16_t* indices, uint32_t index_count);
 
+    /* Re-upload vertex data for an existing mesh (dynamic / animated shapes).
+     * The topology (indices) is unchanged; `vert_count` must not exceed the
+     * mesh's original vertex count. */
+    WGR_API void wgr_mesh_update(WgrRenderer* renderer, WgrMesh id, const WgrMeshVertex* verts, uint32_t vert_count);
+
     WGR_API void wgr_mesh_destroy(WgrRenderer* renderer, WgrMesh id);
 
     /* Render + present one frame. Returns 0 on success (incl. transient skipped

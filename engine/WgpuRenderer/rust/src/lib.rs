@@ -264,6 +264,10 @@ impl Renderer {
         self.gfx3d.mesh_create(&self.device, verts, indices)
     }
 
+    fn mesh_update(&mut self, handle: u64, verts: &[WgrMeshVertex]) {
+        self.gfx3d.mesh_update(&self.queue, handle, verts);
+    }
+
     fn mesh_destroy(&mut self, handle: u64) {
         self.gfx3d.mesh_destroy(handle);
     }
