@@ -2,11 +2,33 @@ use std::ffi::c_void;
 use std::os::raw::c_char;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use glam::{Vec2, Vec3};
-
 use crate::Renderer;
 use crate::log::{LogSink, log_level};
 use crate::textures::TextureFormat;
+
+pub type WgrVec2 = glam::Vec2;
+pub type WgrVec3 = glam::Vec3;
+pub type WgrVec4 = [f32; 4];
+pub type WgrMat4 = [f32; 16];
+
+#[repr(C)]
+pub struct WgrSlice<T> {
+    pub data: *const T,
+    pub len: u32,
+}
+
+impl<T> WgrSlice<T> {
+    /// # Safety
+    /// `data` must be null (only when `len` is 0) or point to at least `len`
+    /// elements of `T` that outlive the returned slice.
+    unsafe fn as_slice<'a>(&self) -> &'a [T] {
+        if self.data.is_null() || self.len == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(self.data, self.len as usize) }
+        }
+    }
+}
 
 #[repr(i32)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -35,8 +57,11 @@ pub struct WgrLogCallbacks {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WgrVertex2D {
-    pub pos: Vec2,
-    pub uv: Vec2,
+    // pos.x/y = window pixels, pos.z = depth.
+    pub pos: WgrVec3,
+    pub rhw: f32,
+    pub fog: f32,
+    pub uv: WgrVec2,
     pub color: u32,
 }
 
@@ -65,6 +90,16 @@ impl WgrSampler2D {
     }
 }
 
+// Depth-buffer interaction for a batch
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub enum WgrDepthMode {
+    None = 0,
+    Test = 1,
+    TestWrite = 2,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WgrDraw2DBatch {
@@ -73,16 +108,16 @@ pub struct WgrDraw2DBatch {
     pub vertex_count: u32,
     pub blend: WgrBlend,
     pub sampler: WgrSampler2D,
+    pub depth: u32,
 }
 
 // Object-space mesh vertex; matches the engine's SVertex (pos, normal, uv).
-// glam types are #[repr(C)] and ABI-identical to [f32; 3]/[f32; 2].
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WgrMeshVertex {
-    pub pos: Vec3,
-    pub norm: Vec3,
-    pub uv: Vec2,
+    pub pos: WgrVec3,
+    pub norm: WgrVec3,
+    pub uv: WgrVec2,
 }
 
 #[repr(C)]
@@ -92,16 +127,58 @@ pub struct WgrDraw3D {
     pub index_begin: u32,
     pub index_count: u32,
     pub texture_id: u64,
-    // Column-major. Must stay [f32; 16] (align 4) to match the C side's
-    // float[16]; glam::Mat4 has 16-byte align and would change the struct layout.
-    pub world: [f32; 16],
+    pub world: WgrMat4,
     pub blend: WgrBlend,
     pub sampler: WgrSampler2D,
+    pub camera: u32,
 }
 
-// Layouts must match wgpu_renderer.h exactly (the C side static_asserts the same).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrCamera {
+    pub proj: WgrMat4,
+    pub view: WgrMat4,
+    // fog_color = rgb + pad
+    pub fog_color: WgrVec4,
+    // fog_params = {start, inv_range, enabled, pad}
+    pub fog_params: WgrVec4,
+}
+
+#[repr(u32)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WgrCmdKind {
+    Draw2D = 0,
+    Draw3D = 1,
+    ClearDepth = 2,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrCmd {
+    pub kind: u32,
+    pub arg: u32,
+}
+
+#[repr(C)]
+pub struct WgrFrame {
+    pub clear: WgrVec4,
+    pub fog_color: WgrVec3,
+    pub cameras: WgrSlice<WgrCamera>,
+    pub draws3d: WgrSlice<WgrDraw3D>,
+    pub verts: WgrSlice<WgrVertex2D>,
+    pub batches: WgrSlice<WgrDraw2DBatch>,
+    pub cmds: WgrSlice<WgrCmd>,
+}
+
+// Layouts must match wgpu_renderer.hpp exactly (the C++ side static_asserts the same).
+const _: () = assert!(std::mem::size_of::<WgrVertex2D>() == 32);
+const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 96);
+const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 104);
+const _: () = assert!(std::mem::size_of::<WgrCamera>() == 160);
+const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
+const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrFrame>() == 112);
 
 pub type WgrRenderer = Renderer;
 
@@ -123,7 +200,10 @@ pub unsafe extern "C" fn wgr_create(
             return std::ptr::null_mut();
         };
         let sink = match unsafe { log.as_ref() } {
-            Some(l) => LogSink { cb: l.log, user: l.user },
+            Some(l) => LogSink {
+                cb: l.log,
+                user: l.user,
+            },
             None => LogSink::none(),
         };
         match Renderer::new(desc, sink) {
@@ -132,7 +212,10 @@ pub unsafe extern "C" fn wgr_create(
                 Box::into_raw(Box::new(renderer))
             }
             Err(e) => {
-                sink.log(log_level::ERROR, &format!("wgpu renderer creation failed: {e}"));
+                sink.log(
+                    log_level::ERROR,
+                    &format!("wgpu renderer creation failed: {e}"),
+                );
                 std::ptr::null_mut()
             }
         }
@@ -162,32 +245,6 @@ pub unsafe extern "C" fn wgr_resize(renderer: *mut WgrRenderer, width: u32, heig
     let _ = catch_unwind(AssertUnwindSafe(|| {
         unsafe { &mut *renderer }.resize(width, height);
     }));
-}
-
-/// # Safety
-/// `renderer` must be a live pointer from `wgr_create`, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_clear_and_present(
-    renderer: *mut WgrRenderer,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-) -> i32 {
-    if renderer.is_null() {
-        return -1;
-    }
-    catch_unwind(AssertUnwindSafe(|| {
-        let renderer = unsafe { &mut *renderer };
-        match renderer.clear_and_present(r, g, b, a) {
-            Ok(()) => 0,
-            Err(e) => {
-                renderer.log.log(log_level::ERROR, &format!("clear_and_present: {e}"));
-                -2
-            }
-        }
-    }))
-    .unwrap_or(-3)
 }
 
 /// # Safety
@@ -248,47 +305,6 @@ pub unsafe extern "C" fn wgr_texture_destroy(renderer: *mut WgrRenderer, id: u64
 }
 
 /// # Safety
-/// `renderer` must be live. `verts`/`batches` may be null only when their count is
-/// 0; otherwise each must point to at least the given number of elements.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_render_2d(
-    renderer: *mut WgrRenderer,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-    verts: *const WgrVertex2D,
-    vert_count: u32,
-    batches: *const WgrDraw2DBatch,
-    batch_count: u32,
-) -> i32 {
-    if renderer.is_null() {
-        return -1;
-    }
-    catch_unwind(AssertUnwindSafe(|| {
-        let renderer = unsafe { &mut *renderer };
-        let verts: &[WgrVertex2D] = if verts.is_null() || vert_count == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(verts, vert_count as usize) }
-        };
-        let batches: &[WgrDraw2DBatch] = if batches.is_null() || batch_count == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(batches, batch_count as usize) }
-        };
-        match renderer.render_2d([r, g, b, a], verts, batches) {
-            Ok(()) => 0,
-            Err(e) => {
-                renderer.log.log(log_level::ERROR, &format!("render_2d: {e}"));
-                -2
-            }
-        }
-    }))
-    .unwrap_or(-3)
-}
-
-/// # Safety
 /// `renderer` must be live; `verts`/`indices` must each point to at least the
 /// given number of elements, or be null (in which case 0 is returned).
 #[unsafe(no_mangle)]
@@ -324,72 +340,42 @@ pub unsafe extern "C" fn wgr_mesh_destroy(renderer: *mut WgrRenderer, id: u64) {
 }
 
 /// # Safety
-/// `renderer` must be live. `proj`/`view` must each point to 16 floats or be
-/// null (treated as identity). Each draw/vertex/batch array may be null only
-/// when its count is 0; otherwise it must hold the given number of elements.
+/// `renderer` and `frame` must be live pointers. Each slice in `*frame` must be
+/// valid for its `len` (or null with len 0). Indices carried by `frame.cmds` /
+/// `frame.draws3d` (batch, draw, camera) must be in range for their slices.
 #[unsafe(no_mangle)]
-#[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn wgr_render_frame(
     renderer: *mut WgrRenderer,
-    r: f32,
-    g: f32,
-    b: f32,
-    a: f32,
-    proj: *const f32,
-    view: *const f32,
-    draws3d: *const WgrDraw3D,
-    draw_count: u32,
-    verts: *const WgrVertex2D,
-    vert_count: u32,
-    batches: *const WgrDraw2DBatch,
-    batch_count: u32,
+    frame: *const WgrFrame,
 ) -> i32 {
-    if renderer.is_null() {
+    if renderer.is_null() || frame.is_null() {
         return -1;
     }
     catch_unwind(AssertUnwindSafe(|| {
         let renderer = unsafe { &mut *renderer };
-        let read_mat = |p: *const f32| -> [f32; 16] {
-            if p.is_null() {
-                IDENTITY
-            } else {
-                let mut m = [0.0f32; 16];
-                m.copy_from_slice(unsafe { std::slice::from_raw_parts(p, 16) });
-                m
-            }
-        };
-        let proj = read_mat(proj);
-        let view = read_mat(view);
-        let draws3d: &[WgrDraw3D] = if draws3d.is_null() || draw_count == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(draws3d, draw_count as usize) }
-        };
-        let verts: &[WgrVertex2D] = if verts.is_null() || vert_count == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(verts, vert_count as usize) }
-        };
-        let batches: &[WgrDraw2DBatch] = if batches.is_null() || batch_count == 0 {
-            &[]
-        } else {
-            unsafe { std::slice::from_raw_parts(batches, batch_count as usize) }
-        };
-        match renderer.render_frame([r, g, b, a], &proj, &view, draws3d, verts, batches) {
+        let frame = unsafe { &*frame };
+        let cameras = unsafe { frame.cameras.as_slice() };
+        let draws3d = unsafe { frame.draws3d.as_slice() };
+        let verts = unsafe { frame.verts.as_slice() };
+        let batches = unsafe { frame.batches.as_slice() };
+        let cmds = unsafe { frame.cmds.as_slice() };
+        match renderer.render_frame(
+            frame.clear,
+            frame.fog_color.to_array(),
+            cameras,
+            draws3d,
+            verts,
+            batches,
+            cmds,
+        ) {
             Ok(()) => 0,
             Err(e) => {
-                renderer.log.log(log_level::ERROR, &format!("render_frame: {e}"));
+                renderer
+                    .log
+                    .log(log_level::ERROR, &format!("render_frame: {e}"));
                 -2
             }
         }
     }))
     .unwrap_or(-3)
 }
-
-#[rustfmt::skip]
-pub(crate) const IDENTITY: [f32; 16] = [
-    1.0, 0.0, 0.0, 0.0,
-    0.0, 1.0, 0.0, 0.0,
-    0.0, 0.0, 1.0, 0.0,
-    0.0, 0.0, 0.0, 1.0,
-];

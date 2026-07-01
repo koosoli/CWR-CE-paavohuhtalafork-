@@ -5,11 +5,13 @@ mod handles;
 mod log;
 mod textures;
 
-use crate::ffi::{WgrDraw2DBatch, WgrDraw3D, WgrMeshVertex, WgrVertex2D};
+use crate::ffi::{
+    WgrCamera, WgrCmd, WgrCmdKind, WgrDraw2DBatch, WgrDraw3D, WgrMeshVertex, WgrVertex2D,
+};
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::Gfx3d;
 use crate::log::{LogSink, log_level};
-use crate::textures::{SharedTextures, TextureFormat, TextureData};
+use crate::textures::{SharedTextures, TextureData, TextureFormat};
 
 pub struct Renderer {
     log: LogSink,
@@ -48,13 +50,19 @@ impl Renderer {
         let info = adapter.get_info();
         log.log(
             log_level::INFO,
-            &format!("wgpu adapter: {} ({:?}, {:?})", info.name, info.backend, info.device_type),
+            &format!(
+                "wgpu adapter: {} ({:?}, {:?})",
+                info.name, info.backend, info.device_type
+            ),
         );
 
         let bc_features = adapter.features() & wgpu::Features::TEXTURE_COMPRESSION_BC;
         let bc_supported = !bc_features.is_empty();
         if !bc_supported {
-            log.log(log_level::WARN, "wgpu adapter lacks TEXTURE_COMPRESSION_BC; DXT textures will fail to upload");
+            log.log(
+                log_level::WARN,
+                "wgpu adapter lacks TEXTURE_COMPRESSION_BC; DXT textures will fail to upload",
+            );
         }
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
@@ -81,7 +89,16 @@ impl Renderer {
         let gfx2d = Gfx2d::new(&device, &textures, config.format);
         let gfx3d = Gfx3d::new(&device, &textures, config.format);
 
-        Ok(Self { log, surface, device, queue, config, textures, gfx2d, gfx3d })
+        Ok(Self {
+            log,
+            surface,
+            device,
+            queue,
+            config,
+            textures,
+            gfx2d,
+            gfx3d,
+        })
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -107,46 +124,80 @@ impl Renderer {
         }
     }
 
-    fn clear_and_present(&mut self, r: f32, g: f32, b: f32, a: f32) -> Result<(), String> {
-        self.render_2d([r, g, b, a], &[], &[])
-    }
-
-    fn render_2d(&mut self, clear: [f32; 4], verts: &[WgrVertex2D], batches: &[WgrDraw2DBatch]) -> Result<(), String> {
-        self.render_frame(clear, &ffi::IDENTITY, &ffi::IDENTITY, &[], verts, batches)
-    }
-
-    fn render_frame(&mut self, clear: [f32; 4], proj: &[f32; 16], view: &[f32; 16], draws3d: &[WgrDraw3D],
-                    verts: &[WgrVertex2D], batches: &[WgrDraw2DBatch]) -> Result<(), String> {
+    #[allow(clippy::too_many_arguments)]
+    fn render_frame(
+        &mut self,
+        clear: [f32; 4],
+        fog: [f32; 3],
+        cameras: &[WgrCamera],
+        draws3d: &[WgrDraw3D],
+        verts: &[WgrVertex2D],
+        batches: &[WgrDraw2DBatch],
+        cmds: &[WgrCmd],
+    ) -> Result<(), String> {
         let screen = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
-        self.gfx2d.prepare(&self.device, &self.queue, screen, verts);
-        self.gfx3d.ensure_depth(&self.device, self.config.width, self.config.height);
-        self.gfx3d.prepare(&self.device, &self.queue, proj, view, draws3d);
+        self.gfx2d
+            .prepare(&self.device, &self.queue, screen, fog, verts);
+        self.gfx3d
+            .ensure_depth(&self.device, self.config.width, self.config.height);
+        self.gfx3d
+            .prepare(&self.device, &self.queue, cameras, draws3d);
 
-        let Some(frame) = self.acquire()? else { return Ok(()) };
+        let Some(frame) = self.acquire()? else {
+            return Ok(());
+        };
 
-        let color = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let depth = self.gfx3d.depth_view().ok_or("depth target missing")?;
-        let mut encoder =
-            self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: Some("wgr_frame") });
-        {
+        let color = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let depth = self
+            .gfx3d
+            .depth_view()
+            .ok_or("depth target missing")?
+            .clone();
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("wgr_frame"),
+            });
+
+        // Replay the command stream as one or more segments split at CLEAR_DEPTH.
+        // The first segment clears colour; every segment clears depth. Within a
+        // segment, 2D and 3D draws render interleaved in submission order.
+        let mut first = true;
+        let mut start = 0usize;
+        loop {
+            let end = cmds[start..]
+                .iter()
+                .position(|c| c.kind == WgrCmdKind::ClearDepth as u32)
+                .map(|p| start + p)
+                .unwrap_or(cmds.len());
+
+            let color_load = if first {
+                wgpu::LoadOp::Clear(wgpu::Color {
+                    r: clear[0] as f64,
+                    g: clear[1] as f64,
+                    b: clear[2] as f64,
+                    a: clear[3] as f64,
+                })
+            } else {
+                wgpu::LoadOp::Load
+            };
+            first = false;
+
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("wgr_3d_pass"),
+                label: Some("wgr_segment"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color,
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: clear[0] as f64,
-                            g: clear[1] as f64,
-                            b: clear[2] as f64,
-                            a: clear[3] as f64,
-                        }),
+                        load: color_load,
                         store: wgpu::StoreOp::Store,
                     },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: depth,
+                    view: &depth,
                     depth_ops: Some(wgpu::Operations {
                         load: wgpu::LoadOp::Clear(1.0),
                         store: wgpu::StoreOp::Store,
@@ -157,31 +208,48 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.gfx3d.draw(&mut pass, &self.textures, draws3d);
+
+            for cmd in &cmds[start..end] {
+                if cmd.kind == WgrCmdKind::Draw2D as u32 {
+                    if let Some(b) = batches.get(cmd.arg as usize) {
+                        self.gfx2d.draw_one(&mut pass, &self.textures, b);
+                    }
+                } else if cmd.kind == WgrCmdKind::Draw3D as u32 {
+                    if let Some(d) = draws3d.get(cmd.arg as usize) {
+                        self.gfx3d.draw_one(&mut pass, &self.textures, d, cmd.arg);
+                    }
+                }
+            }
+            drop(pass);
+
+            if end >= cmds.len() {
+                break;
+            }
+            start = end + 1;
         }
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("wgr_2d_pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            self.gfx2d.draw(&mut pass, &self.textures, batches);
-        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
     }
 
-    fn texture_create(&mut self, width: u32, height: u32, format: TextureFormat, data: &[u8]) -> u64 {
-        self.textures.create(&self.device, &self.queue, &TextureData { width, height, format, bytes: data })
+    fn texture_create(
+        &mut self,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        data: &[u8],
+    ) -> u64 {
+        self.textures.create(
+            &self.device,
+            &self.queue,
+            &TextureData {
+                width,
+                height,
+                format,
+                bytes: data,
+            },
+        )
     }
 
     fn texture_update(&mut self, handle: u64, data: &[u8]) {

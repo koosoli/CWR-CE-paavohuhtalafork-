@@ -81,7 +81,10 @@ struct TextureRegistry {
 
 impl TextureRegistry {
     fn new(bc_supported: bool) -> Self {
-        TextureRegistry { map: SlotMap::with_key(), bc_supported }
+        TextureRegistry {
+            map: SlotMap::with_key(),
+            bc_supported,
+        }
     }
 
     fn get(&self, handle: u64) -> Option<&Texture2D> {
@@ -104,7 +107,12 @@ impl TextureRegistry {
         layout: &wgpu::BindGroupLayout,
         tex: &TextureData,
     ) -> u64 {
-        let TextureData { width, height, format, bytes } = *tex;
+        let TextureData {
+            width,
+            height,
+            format,
+            bytes,
+        } = *tex;
         if width == 0 || height == 0 {
             return 0;
         }
@@ -117,7 +125,11 @@ impl TextureRegistry {
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_texture"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -132,10 +144,16 @@ impl TextureRegistry {
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgr_texture_bind"),
             layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&view),
+            }],
         });
 
-        let key = self.map.insert(Texture2D { texture, bind_group });
+        let key = self.map.insert(Texture2D {
+            texture,
+            bind_group,
+        });
         key.data().as_ffi()
     }
 
@@ -146,7 +164,14 @@ impl TextureRegistry {
         if let Some(t) = self.map.get(KeyData::from_ffi(handle).into()) {
             let size = t.texture.size();
             if (data.len() as u32) >= size.width * size.height * 4 {
-                write_pixels(queue, &t.texture, size.width, size.height, TextureFormat::Rgba8, data);
+                write_pixels(
+                    queue,
+                    &t.texture,
+                    size.width,
+                    size.height,
+                    TextureFormat::Rgba8,
+                    data,
+                );
             }
         }
     }
@@ -200,7 +225,11 @@ impl SharedTextures {
                     wgpu::AddressMode::Repeat
                 }
             };
-            let filter = if point { wgpu::FilterMode::Nearest } else { wgpu::FilterMode::Linear };
+            let filter = if point {
+                wgpu::FilterMode::Nearest
+            } else {
+                wgpu::FilterMode::Linear
+            };
             device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("wgr_sampler"),
                 address_mode_u: wrap(i & WgrSampler2D::CLAMP_U != 0),
@@ -225,7 +254,11 @@ impl SharedTextures {
 
         let white_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_white"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -233,12 +266,22 @@ impl SharedTextures {
             usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        write_pixels(queue, &white_tex, 1, 1, TextureFormat::Rgba8, &[0xFF, 0xFF, 0xFF, 0xFF]);
+        write_pixels(
+            queue,
+            &white_tex,
+            1,
+            1,
+            TextureFormat::Rgba8,
+            &[0xFF, 0xFF, 0xFF, 0xFF],
+        );
         let white_view = white_tex.create_view(&wgpu::TextureViewDescriptor::default());
         let white_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgr_white_bind"),
             layout: &texture_layout,
-            entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&white_view) }],
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(&white_view),
+            }],
         });
 
         SharedTextures {
@@ -254,16 +297,21 @@ impl SharedTextures {
 
     // Texture bind group for `handle`, falling back to the 1x1 white texture.
     pub fn texture_bind(&self, handle: u64) -> &wgpu::BindGroup {
-        self.registry.get(handle).map_or(&self.white_bind, |t| &t.bind_group)
+        self.registry
+            .get(handle)
+            .map_or(&self.white_bind, |t| &t.bind_group)
     }
 
     // Sampler bind group for a `point<<2 | clampV<<1 | clampU` index.
     pub fn sampler_bind(&self, index: usize) -> &wgpu::BindGroup {
-        self.sampler_binds.get(index).unwrap_or(&self.sampler_binds[0])
+        self.sampler_binds
+            .get(index)
+            .unwrap_or(&self.sampler_binds[0])
     }
 
     pub fn create(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, tex: &TextureData) -> u64 {
-        self.registry.create(device, queue, &self.texture_layout, tex)
+        self.registry
+            .create(device, queue, &self.texture_layout, tex)
     }
 
     pub fn update_rgba(&mut self, queue: &wgpu::Queue, handle: u64, data: &[u8]) {
@@ -275,7 +323,14 @@ impl SharedTextures {
     }
 }
 
-fn write_pixels(queue: &wgpu::Queue, texture: &wgpu::Texture, width: u32, height: u32, format: TextureFormat, data: &[u8]) {
+fn write_pixels(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    width: u32,
+    height: u32,
+    format: TextureFormat,
+    data: &[u8],
+) {
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
@@ -289,6 +344,10 @@ fn write_pixels(queue: &wgpu::Queue, texture: &wgpu::Texture, width: u32, height
             bytes_per_row: Some(format.bytes_per_row(width)),
             rows_per_image: Some(format.rows(height)),
         },
-        wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: 1,
+        },
     );
 }

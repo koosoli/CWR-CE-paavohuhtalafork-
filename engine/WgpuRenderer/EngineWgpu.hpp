@@ -5,8 +5,9 @@
 #include <Poseidon/Graphics/GraphicsEngineFactory.hpp> // GraphicsEngineParams
 #include <Poseidon/Graphics/Shared/SDLEventWindow.hpp>
 
-#include <wgpu_renderer.h>
+#include <wgpu_renderer.hpp>
 
+#include <span>
 #include <vector>
 
 struct SDL_Window;
@@ -73,21 +74,43 @@ class EngineWgpu : public EngineDummy
     bool GetTL() const override { return true; }
     bool GetTLOnSurface() const override { return true; }
     VertexBuffer* CreateVertexBuffer(const Shape& src, VBType type) override;
+    void UpdateFrameCamera() override;
     void PrepareMeshTL(const LightList& lights, const Matrix4& modelToWorld,
                        const render::LegacySpec& spec) override;
     void BeginMeshTL(const Shape& sMesh, int spec, bool dynamic) override;
     void EndMeshTL(const Shape& sMesh) override;
     void DrawSectionTL(const Shape& sMesh, int beg, int end) override;
 
+    // Software-T&L path: 3D-in-UI objects (e.g. the menu laptop) arrive here with
+    // CPU-projected screen-space vertices, drawn depth-tested like 2D-with-depth.
+    void PrepareMesh(const render::LegacySpec& spec) override;
+    void BeginMesh(TLVertexTable& mesh, const render::LegacySpec& spec) override;
+    void EndMesh(TLVertexTable& mesh) override;
+    void PrepareTriangle(const MipInfo& mip, int specFlags) override;
+    void DrawSection(const FaceArray& face, Offset beg, Offset end) override;
+
     void OnWindowResized(int w, int h) override;
 
   private:
+    // A camera-relative view/projection plus the world-space camera position the
+    // per-object world matrices are offset by.
+    struct CameraEntry
+    {
+        GfxMatrix proj;
+        GfxMatrix view;
+        float pos[3];
+    };
+
     void ResizeSurface(int w, int h);
-    // Append triangles, merging with the previous batch when texture + blend +
-    // sampler match (consecutive vertices are contiguous in the buffer).
-    void AppendTriangles(uint64_t texture, WgrBlend blend, Sampler2DFlags sampler, const WgrVertex2D* verts, int count);
-    // Rebuild the camera-relative view/projection for this frame from the scene
-    void BuildFrameCamera();
+    // Append triangles under command `kind` (DRAW_2D or DRAW_SCREEN), merging with
+    // the previous batch only when it is the most recent command of the same kind
+    // and texture + blend + sampler match.
+    void AppendTriangles(uint64_t texture, WgrBlend blend, Sampler2DFlags sampler, WgrDepthMode depth,
+                         std::span<const WgrVertex2D> verts);
+    // Push a camera entry built from the current scene camera and make it active.
+    void PushSceneCamera();
+    // Establish a camera for the frame's first 3D draw if none has been pushed yet.
+    void EnsureCamera();
 
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
@@ -100,13 +123,19 @@ class EngineWgpu : public EngineDummy
     float _clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};
     std::vector<WgrVertex2D> _verts;
     std::vector<WgrDraw2DBatch> _batches;
-
-    GfxMatrix _proj{};
-    GfxMatrix _view{};
-    float _cameraPos[3] = {0.0f, 0.0f, 0.0f};
-    GfxMatrix _world{};                // camera-relative world for the current mesh
-    bool _frameCameraReady = false;    // view/proj rebuilt at the frame's first mesh draw
     std::vector<WgrDraw3D> _draws3d;
+    std::vector<WgrCmd> _cmds;
+
+    std::vector<CameraEntry> _cameras;
+    uint32_t _currentCamera = 0;
+    bool _haveCamera = false;
+    GfxMatrix _world{}; // camera-relative world for the current mesh
+
+    TLVertexTable* _swMesh = nullptr;
+    uint64_t _swTexture = 0;
+    WgrBlend _swBlend = WGR_BLEND_OPAQUE;
+    Sampler2DFlags _swSampler = Sampler2DFlags::None;
+    WgrDepthMode _swDepth = WGR_DEPTH_TEST_WRITE;
 };
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params);

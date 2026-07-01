@@ -6,9 +6,12 @@
 #include <Poseidon/Foundation/Framework/Log.hpp>
 #include <Poseidon/Graphics/Core/MeshVertex.hpp>
 #include <Poseidon/Graphics/Shared/SdlWindow.hpp>
+#include <Poseidon/Graphics/Core/TLVertex.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/Draw2DGeometry.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/MeshBuild.hpp>
+#include <Poseidon/Graphics/Rendering/Primitives/Poly.hpp>
 #include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
+#include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
@@ -19,6 +22,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <span>
 
 namespace Poseidon
 {
@@ -26,10 +30,19 @@ namespace Poseidon
 namespace
 {
 
+// Narrowing conversion to the 32-bit width the FFI uses for counts / indices.
+template <typename T>
+constexpr uint32_t U32(T value)
+{
+    return uint32_t(value);
+}
+
 void WgrLogThunk(int32_t level, const char* msg, void* /*user*/)
 {
     if (!msg)
+    {
         return;
+    }
     switch (level)
     {
         case WGR_LOG_TRACE:
@@ -83,7 +96,8 @@ class VertexBufferWgpu : public VertexBuffer
         }
     }
 
-    void Update(const Shape& /*src*/, bool /*dynamic*/) override {
+    void Update(const Shape& /*src*/, bool /*dynamic*/) override
+    {
         // TODO: implement dynamic mesh updates
     }
 };
@@ -100,7 +114,9 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     wd.displayMode = params.displayMode;
     const SdlGameWindow win = CreateGameWindow(wd);
     if (!win.window)
+    {
         return;
+    }
 
     _window = win.window;
     _w = win.widthPx;
@@ -109,8 +125,8 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
 
     WgrSurfaceDesc desc{};
     DescribeSurface(_window, desc);
-    desc.width = static_cast<uint32_t>(_w > 0 ? _w : 1);
-    desc.height = static_cast<uint32_t>(_h > 0 ? _h : 1);
+    desc.width = U32(_w > 0 ? _w : 1);
+    desc.height = U32(_h > 0 ? _h : 1);
 
     const WgrLogCallbacks log{&WgrLogThunk, nullptr};
     LOG_INFO(Graphics, "Wgpu: creating renderer {} ({}x{}), crate v{}", GetRendererName().Data(), _w, _h,
@@ -133,7 +149,8 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
 EngineWgpu::~EngineWgpu()
 {
     _eventWindow.Detach();
-    if (_wbank) {
+    if (_wbank)
+    {
         _wbank->Detach();
     }
     if (_renderer)
@@ -186,17 +203,23 @@ bool EngineWgpu::CanBeWindowed() const
 void EngineWgpu::ResizeSurface(int w, int h)
 {
     if (w <= 0 || h <= 0)
+    {
         return;
+    }
     _w = w;
     _h = h;
     if (_renderer)
-        wgr_resize(_renderer, static_cast<uint32_t>(w), static_cast<uint32_t>(h));
+    {
+        wgr_resize(_renderer, U32(w), U32(h));
+    }
 }
 
 void EngineWgpu::OnWindowResized(int w, int h)
 {
     if (w <= 0 || h <= 0)
+    {
         return;
+    }
     ResizeSurface(w, h);
     FireResizePostHook(w, h);
 }
@@ -209,7 +232,9 @@ WgrBlend BlendForSpec(int spec)
     const render::Backend b = render::SplitLegacy(spec).backend;
     if (render::Has(b, render::Backend::IsAlpha) || render::Has(b, render::Backend::IsAlphaFog) ||
         render::Has(b, render::Backend::IsTransparent))
+    {
         return WGR_BLEND_ALPHA;
+    }
     return WGR_BLEND_OPAQUE;
 }
 
@@ -218,17 +243,52 @@ Sampler2DFlags SamplerForSpec(int spec)
     const render::Backend b = render::SplitLegacy(spec).backend;
     Sampler2DFlags s = Sampler2DFlags::None;
     if (render::Has(b, render::Backend::ClampU))
+    {
         s |= Sampler2DFlags::ClampU;
+    }
     if (render::Has(b, render::Backend::ClampV))
+    {
         s |= Sampler2DFlags::ClampV;
+    }
     if (render::Has(b, render::Backend::PointSampling))
+    {
         s |= Sampler2DFlags::Point;
+    }
     return s;
+}
+
+WgrDepthMode DepthForSpec(int spec)
+{
+    const render::Backend b = render::SplitLegacy(spec).backend;
+    // NoZBuf (sky) skips depth entirely; NoZWrite (transparent meshes) tests but
+    // doesn't occlude; otherwise opaque geometry tests and writes.
+    if (render::Has(b, render::Backend::NoZBuf))
+    {
+        return WGR_DEPTH_NONE;
+    }
+    if (render::Has(b, render::Backend::NoZWrite))
+    {
+        return WGR_DEPTH_TEST;
+    }
+    return WGR_DEPTH_TEST_WRITE;
+}
+
+// Pack an engine PackedColor into the FFI's 0xAARRGGBB WgrRgba8.
+WgrRgba8 PackColor(PackedColor c)
+{
+    return U32(static_cast<DWORD>(c));
 }
 
 WgrVertex2D MakeVertex(float x, float y, float u, float v, PackedColor c)
 {
-    return WgrVertex2D{x, y, u, v, static_cast<uint32_t>(static_cast<DWORD>(c))};
+    return WgrVertex2D {{x, y, 0.0f}, 1.0f, 1.0f, {u, v}, PackColor(c)};
+}
+
+WgrVertex2D MakeScreenVertex(const TLVertex& v)
+{
+    // Fog blend factor = specular alpha (GL33's vFogTC): 255 -> keep colour, 0 -> full fog.
+    const float fog = v.specular.A8() / 255.0f;
+    return WgrVertex2D {{v.pos[0], v.pos[1], v.pos[2]}, v.rhw, fog, {v.t0.u, v.t0.v}, PackColor(v.color)};
 }
 
 uint64_t ResolveTexture(const MipInfo& mip)
@@ -247,7 +307,11 @@ void EngineWgpu::InitDraw(bool clear, PackedColor color)
     _verts.clear();
     _batches.clear();
     _draws3d.clear();
-    _frameCameraReady = false;
+    _cmds.clear();
+    _cameras.clear();
+    _currentCamera = 0;
+    _haveCamera = false;
+    _swMesh = nullptr;
     if (clear)
     {
         _clear[0] = color.R8() / 255.0f;
@@ -266,7 +330,7 @@ void EngineWgpu::InitDraw(bool clear, PackedColor color)
     }
 }
 
-void EngineWgpu::Clear(bool /*clearZ*/, bool clearColor, PackedColor color)
+void EngineWgpu::Clear(bool clearZ, bool clearColor, PackedColor color)
 {
     if (clearColor)
     {
@@ -274,6 +338,10 @@ void EngineWgpu::Clear(bool /*clearZ*/, bool clearColor, PackedColor color)
         _clear[1] = color.G8() / 255.0f;
         _clear[2] = color.B8() / 255.0f;
         _clear[3] = 1.0f;
+    }
+    if (clearZ)
+    {
+        _cmds.push_back(WgrCmd { WGR_CMD_CLEAR_DEPTH, 0 });
     }
 }
 
@@ -289,43 +357,86 @@ void EngineWgpu::NextFrame()
 {
     if (_renderer)
     {
-        wgr_render_frame(_renderer, _clear[0], _clear[1], _clear[2], _clear[3], reinterpret_cast<const float*>(&_proj),
-                         reinterpret_cast<const float*>(&_view), _draws3d.empty() ? nullptr : _draws3d.data(),
-                         static_cast<uint32_t>(_draws3d.size()), _verts.empty() ? nullptr : _verts.data(),
-                         static_cast<uint32_t>(_verts.size()), _batches.empty() ? nullptr : _batches.data(),
-                         static_cast<uint32_t>(_batches.size()));
+        static_assert(sizeof(CameraEntry::proj) == 64 && sizeof(CameraEntry::view) == 64,
+                      "CameraEntry matrices must be 16 floats to match WgrCamera");
+        static_assert(sizeof(WgrCamera::proj) == 64 && sizeof(WgrCamera::view) == 64,
+                      "WgrCamera matrices must be 16 floats");
+        const Color& fog = FogColor();
+        // Distance fog for the 3D path, matching GL33's BuildFrameState: the
+        // scene's fog range drives a linear fog factor per vertex. Folded into
+        // each camera UBO (see WgrCamera). The 2D/sky path fogs separately via
+        // per-vertex specular alpha.
+        float fogStart = 0.0f, fogInvRange = 0.0f, fogEnabled = 0.0f;
+        if (GScene)
+        {
+            fogStart = GScene->GetFogMinRange();
+            const float fogEnd = GScene->GetFogMaxRange();
+            fogInvRange = (fogEnd > fogStart) ? 1.0f / (fogEnd - fogStart) : 0.0f;
+            fogEnabled = 1.0f;
+        }
+
+        std::vector<WgrCamera> cameras(_cameras.size());
+        for (size_t i = 0; i < _cameras.size(); i++)
+        {
+            std::memcpy(cameras[i].proj.m, &_cameras[i].proj, sizeof(cameras[i].proj.m));
+            std::memcpy(cameras[i].view.m, &_cameras[i].view, sizeof(cameras[i].view.m));
+            cameras[i].fog_color = {fog.R(), fog.G(), fog.B(), 1.0f};
+            cameras[i].fog_params = {fogStart, fogInvRange, fogEnabled, 0.0f};
+        }
+
+        WgrFrame frame{};
+        frame.clear = {_clear[0], _clear[1], _clear[2], _clear[3]};
+        frame.fog_color = {fog.R(), fog.G(), fog.B()};
+        frame.cameras = cameras;
+        frame.draws3d = _draws3d;
+        frame.verts = _verts;
+        frame.batches = _batches;
+        frame.cmds = _cmds;
+        wgr_render_frame(_renderer, &frame);
     }
     _verts.clear();
     _batches.clear();
     _draws3d.clear();
+    _cmds.clear();
+    _cameras.clear();
+    _haveCamera = false;
+    _currentCamera = 0;
     EngineDummy::NextFrame();
 }
 
-void EngineWgpu::AppendTriangles(uint64_t texture, WgrBlend blend, Sampler2DFlags sampler, const WgrVertex2D* verts,
-                                 int count)
+void EngineWgpu::AppendTriangles(uint64_t texture, WgrBlend blend, Sampler2DFlags sampler, WgrDepthMode depth,
+                                 std::span<const WgrVertex2D> verts)
 {
-    if (count <= 0)
+    if (verts.empty())
     {
         return;
     }
 
-    const uint32_t samplerBits = static_cast<uint32_t>(sampler);
-    const uint32_t first = static_cast<uint32_t>(_verts.size());
-    _verts.insert(_verts.end(), verts, verts + count);
+    const uint32_t samplerBits = U32(sampler);
+    const uint32_t first = U32(_verts.size());
+    _verts.insert(_verts.end(), verts.begin(), verts.end());
 
-    if (!_batches.empty() && _batches.back().texture_id == texture && _batches.back().blend == blend &&
-        _batches.back().sampler == samplerBits)
+    // Merge only when the previous command is this same batch; an intervening 3D
+    // draw, depth clear, or any state change must break the run so submission
+    // order and per-batch state are preserved.
+    const bool canMerge = !_batches.empty() && !_cmds.empty() && _cmds.back().kind == WGR_CMD_DRAW_2D &&
+                          _cmds.back().arg == _batches.size() - 1 && _batches.back().texture_id == texture &&
+                          _batches.back().blend == blend && _batches.back().sampler == samplerBits &&
+                          _batches.back().depth == depth;
+    if (canMerge)
     {
-        _batches.back().vertex_count += static_cast<uint32_t>(count);
+        _batches.back().vertex_count += U32(verts.size());
         return;
     }
     WgrDraw2DBatch batch{};
     batch.texture_id = texture;
     batch.first_vertex = first;
-    batch.vertex_count = static_cast<uint32_t>(count);
+    batch.vertex_count = U32(verts.size());
     batch.blend = blend;
     batch.sampler = samplerBits;
+    batch.depth = depth;
     _batches.push_back(batch);
+    _cmds.push_back(WgrCmd{WGR_CMD_DRAW_2D, U32(_batches.size() - 1)});
 }
 
 void EngineWgpu::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect2DAbs& clip)
@@ -345,7 +456,7 @@ void EngineWgpu::Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rec
     const WgrVertex2D bl = MakeVertex(c.xBeg, c.yEnd, c.uBL, c.vBL, pars.colorBL);
     const WgrVertex2D quad[6] = {tl, tr, br, tl, br, bl};
 
-    AppendTriangles(ResolveTexture(pars.mip), BlendForSpec(pars.spec), SamplerForSpec(pars.spec), quad, 6);
+    AppendTriangles(ResolveTexture(pars.mip), BlendForSpec(pars.spec), SamplerForSpec(pars.spec), WGR_DEPTH_NONE, quad);
 }
 
 void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& clip, int specFlags)
@@ -380,7 +491,7 @@ void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n
         tris.push_back(conv(vertices[i]));
         tris.push_back(conv(vertices[i + 1]));
     }
-    AppendTriangles(tex, blend, sampler, tris.data(), static_cast<int>(tris.size()));
+    AppendTriangles(tex, blend, sampler, WGR_DEPTH_NONE, tris);
 }
 
 void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int n, const Rect2DPixel& clip,
@@ -418,7 +529,7 @@ void EngineWgpu::DrawPoly(const MipInfo& mip, const Vertex2DPixel* vertices, int
         tris.push_back(conv(vertices[i]));
         tris.push_back(conv(vertices[i + 1]));
     }
-    AppendTriangles(tex, blend, sampler, tris.data(), static_cast<int>(tris.size()));
+    AppendTriangles(tex, blend, sampler, WGR_DEPTH_NONE, tris);
 }
 
 void EngineWgpu::DrawLine(const Line2DAbs& line, PackedColor c0, PackedColor c1, const Rect2DAbs& clip)
@@ -458,9 +569,9 @@ VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType /*type*/)
     const uint64_t mesh = wgr_mesh_create(
         _renderer,
         reinterpret_cast<const WgrMeshVertex*>(verts.data()),
-        static_cast<uint32_t>(nv),
+        U32(nv),
         reinterpret_cast<const uint16_t*>(indices.data()),
-        static_cast<uint32_t>(ni)
+        U32(ni)
     );
 
     if (!mesh)
@@ -473,51 +584,56 @@ VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType /*type*/)
     return buf;
 }
 
-void EngineWgpu::BuildFrameCamera()
+void EngineWgpu::PushSceneCamera()
 {
-    _proj = GfxMatrix{};
-    _view = GfxMatrix{};
-    _cameraPos[0] = _cameraPos[1] = _cameraPos[2] = 0.0f;
+    CameraEntry entry{};
 
-    if (!GScene)
+    Camera* camera = GScene ? GScene->GetCamera() : nullptr;
+    if (camera)
     {
-        return;
+        // Camera-relative: the view's translation is dropped (the per-object world
+        // matrix is already offset by the camera position).  Mirrors GL33's
+        // BuildFrameState so the same matrices reach the shader.
+        ConvertMatrix(entry.view, camera->InverseScaled());
+        entry.view._41 = 0;
+        entry.view._42 = 0;
+        entry.view._43 = 0;
+        ConvertProjectionMatrix(entry.proj, camera->ProjectionNormal(), 0);
+
+        const Vector3 pos = camera->Position();
+        entry.pos[0] = pos.X();
+        entry.pos[1] = pos.Y();
+        entry.pos[2] = pos.Z();
     }
 
-    Camera* camera = GScene->GetCamera();
-    if (!camera)
+    _cameras.push_back(entry);
+    _currentCamera = U32(_cameras.size() - 1);
+    _haveCamera = true;
+}
+
+void EngineWgpu::EnsureCamera()
+{
+    if (!_haveCamera)
     {
-        return;
+        PushSceneCamera();
     }
+}
 
-    // Camera-relative: the view's translation is dropped (the per-object world
-    // matrix is already offset by the camera position).  Mirrors GL33's
-    // BuildFrameState so the same matrices reach the shader.
-    ConvertMatrix(_view, camera->InverseScaled());
-    _view._41 = 0;
-    _view._42 = 0;
-    _view._43 = 0;
-    ConvertProjectionMatrix(_proj, camera->ProjectionNormal(), 0);
-
-    const Vector3 pos = camera->Position();
-    _cameraPos[0] = static_cast<float>(pos.X());
-    _cameraPos[1] = static_cast<float>(pos.Y());
-    _cameraPos[2] = static_cast<float>(pos.Z());
+void EngineWgpu::UpdateFrameCamera()
+{
+    PushSceneCamera();
 }
 
 void EngineWgpu::PrepareMeshTL(const LightList& /*lights*/, const Matrix4& modelToWorld,
                                const render::LegacySpec& /*spec*/)
 {
-    if (!_frameCameraReady)
-    {
-        BuildFrameCamera();
-        _frameCameraReady = true;
-    }
+    EnsureCamera();
+    const CameraEntry& cam = _cameras[_currentCamera];
 
     ConvertMatrix(_world, modelToWorld);
-    _world._41 -= _cameraPos[0];
-    _world._42 -= _cameraPos[1];
-    _world._43 -= _cameraPos[2];
+    _world._41 -= cam.pos[0];
+    _world._42 -= cam.pos[1];
+    _world._43 -= cam.pos[2];
 }
 
 void EngineWgpu::BeginMeshTL(const Shape& sMesh, int /*spec*/, bool dynamic)
@@ -559,13 +675,67 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
 
     WgrDraw3D d{};
     d.mesh = buf->mesh;
-    d.index_begin = static_cast<uint32_t>(siBeg.beg);
-    d.index_count = static_cast<uint32_t>(indexCount);
+    d.index_begin = U32(siBeg.beg);
+    d.index_count = U32(indexCount);
     d.texture_id = tex;
-    std::memcpy(d.world, &_world, sizeof(d.world));
+    std::memcpy(d.world.m, &_world, sizeof(d.world.m));
     d.blend = WGR_BLEND_OPAQUE;
     d.sampler = 0;
+    d.camera = _currentCamera;
     _draws3d.push_back(d);
+    _cmds.push_back(WgrCmd{WGR_CMD_DRAW_3D, U32(_draws3d.size() - 1)});
+}
+
+void EngineWgpu::PrepareMesh(const render::LegacySpec& /*spec*/)
+{
+    _swMesh = nullptr;
+}
+
+void EngineWgpu::BeginMesh(TLVertexTable& mesh, const render::LegacySpec& /*spec*/)
+{
+    _swMesh = &mesh;
+}
+
+void EngineWgpu::EndMesh(TLVertexTable& /*mesh*/)
+{
+    _swMesh = nullptr;
+}
+
+void EngineWgpu::PrepareTriangle(const MipInfo& mip, int specFlags)
+{
+    _swTexture = ResolveTexture(mip);
+    _swBlend = BlendForSpec(specFlags);
+    _swSampler = SamplerForSpec(specFlags);
+    _swDepth = DepthForSpec(specFlags);
+}
+
+void EngineWgpu::DrawSection(const FaceArray& face, Offset beg, Offset end)
+{
+    if (!_swMesh)
+    {
+        return;
+    }
+    const TLVertex* verts = _swMesh->VertexData();
+
+    std::vector<WgrVertex2D> tris;
+    for (Offset i = beg; i < end; face.Next(i))
+    {
+        const Poly& f = face[i];
+        const int n = f.N();
+        if (n < 3)
+        {
+            continue;
+        }
+        const VertexIndex* idx = f.GetVertexList();
+        const WgrVertex2D v0 = MakeScreenVertex(verts[idx[0]]);
+        for (int k = 1; k + 1 < n; k++)
+        {
+            tris.push_back(v0);
+            tris.push_back(MakeScreenVertex(verts[idx[k]]));
+            tris.push_back(MakeScreenVertex(verts[idx[k + 1]]));
+        }
+    }
+    AppendTriangles(_swTexture, _swBlend, _swSampler, _swDepth, tris);
 }
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params)

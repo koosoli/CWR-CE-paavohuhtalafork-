@@ -25,7 +25,11 @@ class TextureBankWgpu : public AbstractTextBank
 
     int Find(RStringB name) const;
     Ref<Texture> Load(RStringB name) override;
-    Ref<Texture> LoadInterpolated(RStringB, RStringB, float) override { return nullptr; }
+    // TODO: real two-texture blend; for now load whichever source dominates.
+    Ref<Texture> LoadInterpolated(RStringB n1, RStringB n2, float factor) override
+    {
+        return Load(factor < 0.5f ? n1 : n2);
+    }
     MipInfo UseMipmap(Texture* tex, int level, int top) override;
 
     void Compact() override {}

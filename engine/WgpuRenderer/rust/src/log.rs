@@ -18,7 +18,10 @@ pub struct LogSink {
 
 impl LogSink {
     pub fn none() -> Self {
-        LogSink { cb: None, user: std::ptr::null_mut() }
+        LogSink {
+            cb: None,
+            user: std::ptr::null_mut(),
+        }
     }
 
     pub fn log(&self, level: i32, msg: &str) {

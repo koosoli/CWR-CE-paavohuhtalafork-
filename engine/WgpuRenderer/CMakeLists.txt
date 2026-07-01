@@ -3,7 +3,7 @@
 # Two halves:
 #   rust/        the `wgpu_renderer` crate, built as a cdylib via corrosion
 #   *.cpp        the C++ Engine backend that drives the crate over the C ABI
-#                (include/wgpu_renderer.h)
+#                (include/wgpu_renderer.hpp)
 
 cmake_minimum_required(VERSION 3.25)
 

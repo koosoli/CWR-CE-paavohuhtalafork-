@@ -3,7 +3,7 @@
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
 #include <Poseidon/Foundation/Types/Pointers.hpp>
 
-#include <wgpu_renderer.h>
+#include <wgpu_renderer.hpp>
 
 #include <cstdint>
 
@@ -48,7 +48,7 @@ class TextureWgpu : public Texture
     int AHeight(int) const override { return _h; }
     int ANMipmaps() const override { return _nMipmaps > 0 ? _nMipmaps : 1; }
     void ASetNMipmaps(int) override {}
-    Color GetPixel(int, float, float) const override { return HBlack; }
+    Color GetPixel(int level, float u, float v) const override;
 
     bool IsTransparent() const override { return _src && _src->IsTransparent(); }
     bool IsAlpha() const override { return _dynamic || (_src && _src->IsAlpha()); }

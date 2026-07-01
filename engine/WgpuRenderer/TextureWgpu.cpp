@@ -43,13 +43,13 @@ int BcFormatFor(PacFormat fmt)
     switch (fmt)
     {
         case PacDXT1:
-            return WGR_TEX_BC1;
+            return WGR_TEXTURE_BC1;
         case PacDXT2:
         case PacDXT3:
-            return WGR_TEX_BC2;
+            return WGR_TEXTURE_BC2;
         case PacDXT4:
         case PacDXT5:
-            return WGR_TEX_BC3;
+            return WGR_TEXTURE_BC3;
         default:
             return -1;
     }
@@ -121,7 +121,7 @@ void TextureWgpu::InitDynamic(int w, int h, const void* rgba, uint32_t size)
     _nMipmaps = 1;
     if (WgrRenderer* r = _bank ? _bank->Renderer() : nullptr)
     {
-        _gpuHandle = wgr_texture_create(r, static_cast<uint32_t>(w), static_cast<uint32_t>(h), WGR_TEX_RGBA8,
+        _gpuHandle = wgr_texture_create(r, static_cast<uint32_t>(w), static_cast<uint32_t>(h), WGR_TEXTURE_RGBA8,
                                         static_cast<const uint8_t*>(rgba), size);
     }
     if (!_gpuHandle)
@@ -140,6 +140,30 @@ void TextureWgpu::UpdateDynamic(const void* rgba, uint32_t size)
     {
         wgr_texture_update(r, _gpuHandle, static_cast<const uint8_t*>(rgba), size);
     }
+}
+
+// CPU-side pixel read, mirroring TextureGL33::GetPixel (without interpolation).
+// Used by Scene::SetSkyTexture to derive the fog / background colour from the sky
+// texture — a stub here left the fog and horizon black. Decodes the requested mip
+// to its dest format and samples it.
+Color TextureWgpu::GetPixel(int level, float u, float v) const
+{
+    if (!_src || _nMipmaps <= 0)
+    {
+        return HWhite;
+    }
+    if (level < 0 || level >= _nMipmaps)
+    {
+        level = 0;
+    }
+
+    PacLevelMem mip = _mipmaps[level];
+    std::vector<char> mem(static_cast<size_t>(mip._pitch) * mip._h);
+    if (mem.empty() || !_src->GetMipmapData(mem.data(), mip, level))
+    {
+        return HWhite;
+    }
+    return mip.GetPixel(mem.data(), u, v);
 }
 
 uint64_t TextureWgpu::EnsureUploaded()
@@ -183,7 +207,7 @@ uint64_t TextureWgpu::EnsureUploaded()
             if (img.valid())
             {
                 _gpuHandle = wgr_texture_create(r, static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height),
-                                                WGR_TEX_RGBA8, img.rgba.data(), static_cast<uint32_t>(img.rgba.size()));
+                                                WGR_TEXTURE_RGBA8, img.rgba.data(), static_cast<uint32_t>(img.rgba.size()));
                 _w = img.width;
                 _h = img.height;
             }
