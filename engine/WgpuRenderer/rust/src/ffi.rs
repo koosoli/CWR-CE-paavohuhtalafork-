@@ -131,7 +131,13 @@ pub struct WgrDraw3D {
     pub blend: WgrBlend,
     pub sampler: WgrSampler2D,
     pub camera: u32,
+    // Skinning: index of this draw's 128-matrix palette block in WgrFrame.palette
+    // (block b spans matrices [b*128 .. b*128+128)). NO_PALETTE = not skinned.
+    pub palette_slot: u32,
+    pub _pad: u32,
 }
+
+pub const NO_PALETTE: u32 = 0xFFFF_FFFF;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -168,17 +174,21 @@ pub struct WgrFrame {
     pub verts: WgrSlice<WgrVertex2D>,
     pub batches: WgrSlice<WgrDraw2DBatch>,
     pub cmds: WgrSlice<WgrCmd>,
+    // Bone-matrix pool for skinned draws: one 128-matrix block per palette slot,
+    // world already pre-multiplied in (palette[i] = world * boneMatrix[i]). Length is a
+    // multiple of 128.
+    pub palette: WgrSlice<WgrMat4>,
 }
 
 // Layouts must match wgpu_renderer.hpp exactly (the C++ side static_asserts the same).
 const _: () = assert!(std::mem::size_of::<WgrVertex2D>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 104);
+const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 112);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 160);
 const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrFrame>() == 112);
+const _: () = assert!(std::mem::size_of::<WgrFrame>() == 128);
 
 pub type WgrRenderer = Renderer;
 
@@ -305,46 +315,69 @@ pub unsafe extern "C" fn wgr_texture_destroy(renderer: *mut WgrRenderer, id: u64
 }
 
 /// # Safety
-/// `renderer` must be live; `verts`/`indices` must each point to at least the
-/// given number of elements, or be null (in which case 0 is returned).
+/// `renderer` must be live; `verts`/`indices` must each be a valid slice (data
+/// valid for its length, or null with length 0; 0 is returned if either empty).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wgr_mesh_create(
     renderer: *mut WgrRenderer,
-    verts: *const WgrMeshVertex,
-    vert_count: u32,
-    indices: *const u16,
-    index_count: u32,
+    verts: WgrSlice<WgrMeshVertex>,
+    indices: WgrSlice<u16>,
 ) -> u64 {
-    if renderer.is_null() || verts.is_null() || indices.is_null() {
+    if renderer.is_null() {
         return 0;
     }
     catch_unwind(AssertUnwindSafe(|| {
         let renderer = unsafe { &mut *renderer };
-        let verts = unsafe { std::slice::from_raw_parts(verts, vert_count as usize) };
-        let indices = unsafe { std::slice::from_raw_parts(indices, index_count as usize) };
+        let verts = unsafe { verts.as_slice() };
+        let indices = unsafe { indices.as_slice() };
         renderer.mesh_create(verts, indices)
     }))
     .unwrap_or(0)
 }
 
 /// # Safety
-/// `renderer` must be live; `verts` must point to at least `vert_count`
-/// elements, or be null (in which case this is a no-op). `id` must be a handle
-/// returned by `wgr_mesh_create` (unknown handles are ignored).
+/// `renderer` must be live; `verts` must be a valid slice (its data valid for its
+/// length, or null with length 0). `id` must be a handle returned by
+/// `wgr_mesh_create` (unknown handles are ignored).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wgr_mesh_update(
     renderer: *mut WgrRenderer,
     id: u64,
-    verts: *const WgrMeshVertex,
-    vert_count: u32,
+    verts: WgrSlice<WgrMeshVertex>,
 ) {
-    if renderer.is_null() || verts.is_null() {
+    if renderer.is_null() {
         return;
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let renderer = unsafe { &mut *renderer };
-        let verts = unsafe { std::slice::from_raw_parts(verts, vert_count as usize) };
+        let verts = unsafe { verts.as_slice() };
         renderer.mesh_update(id, verts);
+    }));
+}
+
+/// Attach per-vertex skinning data to an existing mesh: 4 bone indices and 4
+/// quantised weights per vertex (each `4 * vert_count` bytes). Weights are
+/// `Unorm8x4` (0..255 -> 0..1) and should sum to ~1 per vertex.
+///
+/// # Safety
+/// `renderer` must be live; `bones` and `weights` must each be a valid slice of
+/// `4 * vert_count` bytes (data valid for its length, or null with length 0).
+/// `id` must be a `wgr_mesh_create` handle.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_mesh_set_skin(
+    renderer: *mut WgrRenderer,
+    id: u64,
+    bones: WgrSlice<u8>,
+    weights: WgrSlice<u8>,
+) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let bones = unsafe { bones.as_slice() };
+        let weights = unsafe { weights.as_slice() };
+        renderer.mesh_set_skin(id, bones, weights);
     }));
 }
 
@@ -380,6 +413,7 @@ pub unsafe extern "C" fn wgr_render_frame(
         let verts = unsafe { frame.verts.as_slice() };
         let batches = unsafe { frame.batches.as_slice() };
         let cmds = unsafe { frame.cmds.as_slice() };
+        let palette = unsafe { frame.palette.as_slice() };
         match renderer.render_frame(
             frame.clear,
             frame.fog_color.to_array(),
@@ -388,6 +422,7 @@ pub unsafe extern "C" fn wgr_render_frame(
             verts,
             batches,
             cmds,
+            palette,
         ) {
             Ok(()) => 0,
             Err(e) => {

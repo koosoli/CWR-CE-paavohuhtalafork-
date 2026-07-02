@@ -73,6 +73,7 @@ class EngineWgpu : public EngineDummy
 
     bool GetTL() const override { return true; }
     bool GetTLOnSurface() const override { return true; }
+    bool UsesGpuSkinning() const override { return true; }
     VertexBuffer* CreateVertexBuffer(const Shape& src, VBType type) override;
     void UpdateFrameCamera() override;
     void PrepareMeshTL(const LightList& lights, const Matrix4& modelToWorld,
@@ -125,11 +126,17 @@ class EngineWgpu : public EngineDummy
     std::vector<WgrDraw2DBatch> _batches;
     std::vector<WgrDraw3D> _draws3d;
     std::vector<WgrCmd> _cmds;
+    // Bone-matrix pool for skinned draws (128-matrix blocks; world pre-multiplied in).
+    std::vector<WgrMat4> _palette;
 
     std::vector<CameraEntry> _cameras;
     uint32_t _currentCamera = 0;
     bool _haveCamera = false;
-    GfxMatrix _world{}; // camera-relative world for the current mesh
+    GfxMatrix _world{};   // camera-relative world for the current mesh
+    Matrix4 _worldM{};    // same, as an engine Matrix4 (for pre-multiplying into skin palettes)
+    // Palette slot for the current skinned mesh, pre-multiplied once in BeginMeshTL
+    // and shared by all its sections; WGR_NO_PALETTE when the mesh isn't skinned.
+    uint32_t _currentPaletteSlot = WGR_NO_PALETTE;
 
     TLVertexTable* _swMesh = nullptr;
     uint64_t _swTexture = 0;

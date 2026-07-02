@@ -86,14 +86,23 @@ enum VBType
 	VBSmallDiscardable, // never animated, may be discarded, small
 };
 
+class AnimationRTWeights;
+
 class VertexBuffer : public RemoveLLinks
 {
 public:
 	bool bufferDirty = false; // Set by InvalidateBuffer() when animation modifies vertices
+	// Set by a GPU-skinning backend when this buffer was drawn through the HW-TL
+	// skinned path; read (and cleared) by the animation system to skip the CPU
+	// skinning of shapes the GPU already skins.
+	bool drawnSkinned = false;
 	~VertexBuffer() override {}
 
 	// update vertices if necessary
 	virtual void Update(const Shape &src, bool dynamic) = 0;
+
+	virtual void SetSkinData(const AnimationRTWeights &weights, const Shape &bindShape) {}
+	virtual void SetPalette(const Matrix4 *mats, int count) {}
 };
 
 // array of vertices, corresponds to vertex buffer

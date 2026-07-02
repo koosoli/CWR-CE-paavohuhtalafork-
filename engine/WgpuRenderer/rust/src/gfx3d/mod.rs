@@ -1,10 +1,14 @@
 use slotmap::{Key, KeyData, SlotMap};
 use wgpu::util::DeviceExt;
 
-use crate::ffi::{WgrCamera, WgrDraw3D, WgrMeshVertex};
+use crate::ffi::{WgrCamera, WgrDraw3D, WgrMat4, WgrMeshVertex, NO_PALETTE};
 use crate::textures::SharedTextures;
 
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
+
+// The engine's bone-palette cap (MATRIX_4_ARRAY(matrix, 128)); one skinned draw
+// occupies this many matrices in the palette pool and in the shader UBO.
+const PALETTE_SIZE: usize = 128;
 
 slotmap::new_key_type! {
     struct MeshKey;
@@ -15,6 +19,9 @@ struct Mesh {
     ibuf: wgpu::Buffer,
     index_count: u32,
     vert_count: u32,
+    // Per-vertex skin data (4 bone indices + 4 weights, 8 bytes/vertex); present
+    // only for skinned meshes.
+    skin: Option<wgpu::Buffer>,
 }
 
 // Holds a dynamic uniform buffer + its bind group, regrown as the frame needs.
@@ -90,8 +97,11 @@ impl DynUbo {
 pub struct Gfx3d {
     cameras: DynUbo,
     world: DynUbo,
+    // Skinned draws: one PALETTE_SIZE-matrix block per slot, dynamic-offset UBO.
+    palette: DynUbo,
 
     pipelines: [wgpu::RenderPipeline; 3],
+    skinned_pipelines: [wgpu::RenderPipeline; 3],
 
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_size: (u32, u32),
@@ -109,11 +119,15 @@ impl Gfx3d {
             label: Some("wgr_3d_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader3d.wgsl").into()),
         });
+        let skinned_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgr_3d_skinned_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shader3d_skinned.wgsl").into()),
+        });
 
-        // Both UBOs are dynamic-offset: the camera buffer holds one entry per
-        // distinct view/proj this frame, the world buffer one per draw.
-        // Camera UBO is read by both stages (vertex: proj/view + fog factor;
-        // fragment: fog_color). World UBO is vertex-only.
+        // Dynamic-offset UBOs: camera holds one entry per distinct view/proj this
+        // frame, world one per draw, palette one PALETTE_SIZE-matrix block per
+        // skinned draw. Camera is read by both stages (vertex: proj/view + fog
+        // factor; fragment: fog_color); world/palette are vertex-only.
         let cameras = DynUbo::new(
             device,
             "wgr_3d_camera_layout",
@@ -121,12 +135,30 @@ impl Gfx3d {
             wgpu::ShaderStages::VERTEX_FRAGMENT,
         );
         let world = DynUbo::new(device, "wgr_3d_world_layout", 64, wgpu::ShaderStages::VERTEX);
+        let palette = DynUbo::new(
+            device,
+            "wgr_3d_palette_layout",
+            (PALETTE_SIZE * std::mem::size_of::<WgrMat4>()) as u64,
+            wgpu::ShaderStages::VERTEX,
+        );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_3d_pipeline_layout"),
             bind_group_layouts: &[
                 Some(&cameras.layout),
                 Some(&world.layout),
+                Some(&textures.texture_layout),
+                Some(&textures.sampler_layout),
+            ],
+            immediate_size: 0,
+        });
+        // Skinned layout swaps the per-draw world matrix (group 1) for the bone
+        // palette; groups 0/2/3 (camera/texture/sampler) are identical.
+        let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgr_3d_skinned_pipeline_layout"),
+            bind_group_layouts: &[
+                Some(&cameras.layout),
+                Some(&palette.layout),
                 Some(&textures.texture_layout),
                 Some(&textures.sampler_layout),
             ],
@@ -139,16 +171,27 @@ impl Gfx3d {
             step_mode: wgpu::VertexStepMode::Vertex,
             attributes: &attrs,
         };
+        // Skin buffer: 8 bytes/vertex — Uint8x4 bone indices + Unorm8x4 weights.
+        let skin_attrs = wgpu::vertex_attr_array![3 => Uint8x4, 4 => Unorm8x4];
+        let skin_layout = wgpu::VertexBufferLayout {
+            array_stride: 8,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &skin_attrs,
+        };
 
-        let make_pipeline = |blend: Option<wgpu::BlendState>, depth_write: bool| {
+        let make_pipeline = |layout: &wgpu::PipelineLayout,
+                             module: &wgpu::ShaderModule,
+                             buffers: &[wgpu::VertexBufferLayout],
+                             blend: Option<wgpu::BlendState>,
+                             depth_write: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("wgr_3d_pipeline"),
-                layout: Some(&pipeline_layout),
+                layout: Some(layout),
                 vertex: wgpu::VertexState {
-                    module: &shader,
+                    module,
                     entry_point: Some("vs_main"),
                     compilation_options: Default::default(),
-                    buffers: std::slice::from_ref(&vbuf_layout),
+                    buffers,
                 },
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
@@ -164,7 +207,7 @@ impl Gfx3d {
                 }),
                 multisample: wgpu::MultisampleState::default(),
                 fragment: Some(wgpu::FragmentState {
-                    module: &shader,
+                    module,
                     entry_point: Some("fs_main"),
                     compilation_options: Default::default(),
                     targets: &[Some(wgpu::ColorTargetState {
@@ -198,16 +241,25 @@ impl Gfx3d {
             },
             alpha: wgpu::BlendComponent::OVER,
         };
+        let plain_buffers = std::slice::from_ref(&vbuf_layout);
+        let skinned_buffers = [vbuf_layout.clone(), skin_layout];
         let pipelines = [
-            make_pipeline(None, true),
-            make_pipeline(Some(alpha), false),
-            make_pipeline(Some(additive), false),
+            make_pipeline(&pipeline_layout, &shader, plain_buffers, None, true),
+            make_pipeline(&pipeline_layout, &shader, plain_buffers, Some(alpha), false),
+            make_pipeline(&pipeline_layout, &shader, plain_buffers, Some(additive), false),
+        ];
+        let skinned_pipelines = [
+            make_pipeline(&skinned_layout, &skinned_shader, &skinned_buffers, None, true),
+            make_pipeline(&skinned_layout, &skinned_shader, &skinned_buffers, Some(alpha), false),
+            make_pipeline(&skinned_layout, &skinned_shader, &skinned_buffers, Some(additive), false),
         ];
 
         Gfx3d {
             cameras,
             world,
+            palette,
             pipelines,
+            skinned_pipelines,
             depth: None,
             depth_size: (0, 0),
             meshes: SlotMap::with_key(),
@@ -238,8 +290,31 @@ impl Gfx3d {
             ibuf,
             index_count: indices.len() as u32,
             vert_count: verts.len() as u32,
+            skin: None,
         });
         key.data().as_ffi()
+    }
+
+    // Attach interleaved per-vertex skin data (4 bone indices + 4 weights).
+    pub fn mesh_set_skin(&mut self, device: &wgpu::Device, handle: u64, bones: &[u8], weights: &[u8]) {
+        let Some(mesh) = self.meshes.get_mut(KeyData::from_ffi(handle).into()) else {
+            return;
+        };
+        let n = mesh.vert_count as usize;
+        if bones.len() < n * 4 || weights.len() < n * 4 {
+            return;
+        }
+        // Interleave to 8 bytes/vertex: [b0 b1 b2 b3 w0 w1 w2 w3].
+        let mut data = Vec::with_capacity(n * 8);
+        for v in 0..n {
+            data.extend_from_slice(&bones[v * 4..v * 4 + 4]);
+            data.extend_from_slice(&weights[v * 4..v * 4 + 4]);
+        }
+        mesh.skin = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wgr_3d_skin"),
+            contents: &data,
+            usage: wgpu::BufferUsages::VERTEX,
+        }));
     }
 
     // Re-upload vertex data for an existing (dynamic) mesh, e.g. a skeletally
@@ -290,13 +365,16 @@ impl Gfx3d {
         self.depth.as_ref().map(|(_, v)| v)
     }
 
-    // Upload every camera and every draw's world matrix; regrow the dynamic UBOs.
+    // Upload cameras, per-draw world matrices, and the skinned-draw bone palette;
+    // regrow the dynamic UBOs. `palette` is a flat pool of PALETTE_SIZE-matrix
+    // blocks, one per palette slot (world already pre-multiplied in on the C++ side).
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         cameras: &[WgrCamera],
         draws: &[WgrDraw3D],
+        palette: &[WgrMat4],
     ) {
         if !cameras.is_empty() {
             self.cameras.ensure(device, cameras.len());
@@ -313,6 +391,21 @@ impl Gfx3d {
                     buf,
                     i as u64 * self.world.stride,
                     bytemuck::bytes_of(&d.world),
+                );
+            }
+        }
+        // One dynamic-UBO slot per PALETTE_SIZE-matrix block. A block is exactly
+        // the UBO bind size, so slot s lives at s * stride.
+        let slots = palette.len() / PALETTE_SIZE;
+        if slots > 0 {
+            self.palette.ensure(device, slots);
+            let buf = self.palette.buf.as_ref().unwrap();
+            for s in 0..slots {
+                let block = &palette[s * PALETTE_SIZE..(s + 1) * PALETTE_SIZE];
+                queue.write_buffer(
+                    buf,
+                    s as u64 * self.palette.stride,
+                    bytemuck::cast_slice(block),
                 );
             }
         }
@@ -341,21 +434,47 @@ impl Gfx3d {
         if d.index_begin + d.index_count > mesh.index_count {
             return;
         }
+
+        let camera_off = &[(d.camera as u64 * self.cameras.stride) as u32];
+        let index_range = d.index_begin..(d.index_begin + d.index_count);
+
+        // Skinned path: needs a palette slot AND the mesh to carry skin data.
+        // Group 1 becomes the bone palette; groups 0/2/3 are shared.
+        let skinned = d.palette_slot != NO_PALETTE;
+        if let (true, Some(skin), Some(palette_bind)) =
+            (skinned, mesh.skin.as_ref(), self.palette.bind.as_ref())
+        {
+            let pipeline = self
+                .skinned_pipelines
+                .get(d.blend as usize)
+                .unwrap_or(&self.skinned_pipelines[0]);
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(0, camera_bind, camera_off);
+            pass.set_bind_group(
+                1,
+                palette_bind,
+                &[(d.palette_slot as u64 * self.palette.stride) as u32],
+            );
+            pass.set_bind_group(2, textures.texture_bind(d.texture_id), &[]);
+            pass.set_bind_group(3, textures.sampler_bind(d.sampler.index()), &[]);
+            pass.set_vertex_buffer(0, mesh.vbuf.slice(..));
+            pass.set_vertex_buffer(1, skin.slice(..));
+            pass.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint16);
+            pass.draw_indexed(index_range, 0, 0..1);
+            return;
+        }
+
         let pipeline = self
             .pipelines
             .get(d.blend as usize)
             .unwrap_or(&self.pipelines[0]);
         pass.set_pipeline(pipeline);
-        pass.set_bind_group(
-            0,
-            camera_bind,
-            &[(d.camera as u64 * self.cameras.stride) as u32],
-        );
+        pass.set_bind_group(0, camera_bind, camera_off);
         pass.set_bind_group(1, world_bind, &[(index as u64 * self.world.stride) as u32]);
         pass.set_bind_group(2, textures.texture_bind(d.texture_id), &[]);
         pass.set_bind_group(3, textures.sampler_bind(d.sampler.index()), &[]);
         pass.set_vertex_buffer(0, mesh.vbuf.slice(..));
         pass.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(d.index_begin..(d.index_begin + d.index_count), 0, 0..1);
+        pass.draw_indexed(index_range, 0, 0..1);
     }
 }

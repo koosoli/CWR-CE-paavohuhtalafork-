@@ -167,9 +167,18 @@ struct WgrDraw2DBatch
     WgrDepthMode depth;
 };
 
+/* Sentinel for WgrDraw3D::palette_slot: this draw is not skinned. */
+#define WGR_NO_PALETTE 0xFFFFFFFFu
+
+/* Matrices per palette block (the engine's own bone-palette cap). Each skinned
+ * draw's palette occupies this many matrices in WgrFrame.palette. */
+#define WGR_PALETTE_SIZE 128
+
 /* A section [index_begin, index_begin+index_count) of `mesh`, textured with
  * `texture_id` (0 = built-in white), transformed by the camera-relative `world`
- * matrix. `camera` indexes WgrFrame.cameras. */
+ * matrix. `camera` indexes WgrFrame.cameras. For skinned draws, `palette_slot`
+ * indexes a 128-matrix block in WgrFrame.palette (world pre-multiplied in) and `world`
+ * is ignored; WGR_NO_PALETTE = not skinned (use `world`). */
 struct WgrDraw3D
 {
     WgrMesh mesh;
@@ -180,6 +189,8 @@ struct WgrDraw3D
     WgrBlend blend;
     uint32_t sampler;
     uint32_t camera;
+    uint32_t palette_slot;
+    uint32_t _pad;
 };
 
 /* A view + projection pair, plus the frame's fog state. Fog is frame-global but
@@ -220,6 +231,10 @@ struct WgrFrame
     WgrSlice<WgrVertex2D> verts;
     WgrSlice<WgrDraw2DBatch> batches;
     WgrSlice<WgrCmd> cmds;
+    /* Bone-matrix pool for skinned draws: one 128-matrix block per palette slot,
+     * world already pre-multiplied in (palette[i] = world * boneMatrix[i]). Length is a
+     * multiple of 128. Empty if no skinned draws. */
+    WgrSlice<WgrMat4> palette;
 };
 
 // --- Layout guards (mirror rust/src/ffi.rs) ----------------------------------
@@ -234,10 +249,10 @@ static_assert(sizeof(WgrBlend) == 4, "WgrBlend must be 4 bytes to match the Rust
 static_assert(sizeof(WgrVertex2D) == 32, "WgrVertex2D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrMeshVertex) == 32, "WgrMeshVertex must match the engine SVertex layout");
 static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrDraw3D) == 104, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrDraw3D) == 112, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 160, "WgrCamera layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCmd) == 8, "WgrCmd layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrFrame) == 112, "WgrFrame layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFrame) == 128, "WgrFrame layout must match the Rust #[repr(C)] struct");
 
 // --- Functions ---------------------------------------------------------------
 
@@ -265,13 +280,18 @@ extern "C"
 
     /* Create a static mesh from interleaved vertices + 16-bit triangle-list
      * indices; returns a non-zero handle, or 0 on failure. */
-    WGR_API WgrMesh wgr_mesh_create(WgrRenderer* renderer, const WgrMeshVertex* verts, uint32_t vert_count,
-                                    const uint16_t* indices, uint32_t index_count);
+    WGR_API WgrMesh wgr_mesh_create(WgrRenderer* renderer, WgrSlice<WgrMeshVertex> verts, WgrSlice<uint16_t> indices);
 
     /* Re-upload vertex data for an existing mesh (dynamic / animated shapes).
-     * The topology (indices) is unchanged; `vert_count` must not exceed the
+     * The topology (indices) is unchanged; the vertex count must not exceed the
      * mesh's original vertex count. */
-    WGR_API void wgr_mesh_update(WgrRenderer* renderer, WgrMesh id, const WgrMeshVertex* verts, uint32_t vert_count);
+    WGR_API void wgr_mesh_update(WgrRenderer* renderer, WgrMesh id, WgrSlice<WgrMeshVertex> verts);
+
+    /* Attach per-vertex skinning data to a mesh: 4 bone indices + 4 quantised
+     * weights per vertex (each buffer `4 * vert_count` bytes). Weights are
+     * Unorm8x4 (0..255 -> 0..1) and should sum to ~1 per vertex. */
+    WGR_API void wgr_mesh_set_skin(WgrRenderer* renderer, WgrMesh id, WgrSlice<uint8_t> bones,
+                                   WgrSlice<uint8_t> weights);
 
     WGR_API void wgr_mesh_destroy(WgrRenderer* renderer, WgrMesh id);
 

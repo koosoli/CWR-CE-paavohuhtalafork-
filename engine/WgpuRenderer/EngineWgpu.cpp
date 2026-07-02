@@ -14,6 +14,7 @@
 #include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
+#include <Poseidon/World/Simulation/Animation/RtAnimation.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/Foundation/Types/Memtype.h> // DWORD
@@ -35,6 +36,11 @@ template <typename T>
 constexpr uint32_t U32(T value)
 {
     return uint32_t(value);
+}
+
+WgrSlice<WgrMeshVertex> AsMeshVerts(const std::vector<SVertex>& v)
+{
+    return { reinterpret_cast<const WgrMeshVertex*>(v.data()), U32(v.size()) };
 }
 
 void WgrLogThunk(int32_t level, const char* msg, void* /*user*/)
@@ -80,6 +86,9 @@ void DescribeSurface(SDL_Window* window, WgrSurfaceDesc& desc)
 #endif
 }
 
+// Reserved palette index for unweighted vertices
+constexpr int kReservedBone = WGR_PALETTE_SIZE - 1;
+
 class VertexBufferWgpu : public VertexBuffer
 {
   public:
@@ -88,6 +97,13 @@ class VertexBufferWgpu : public VertexBuffer
     int vertexCount = 0;
     bool isDynamic = false;
     AutoArray<render::mesh::MeshSection> sections;
+
+    // GPU skinning state
+    // `skinned` flips on once SetSkinData has uploaded the bind pose + weights
+    // `palette` holds the current frame's model-space bone matrices
+    bool skinned = false;
+    int paletteCount = 0;
+    std::vector<Matrix4> palette;
 
     VertexBufferWgpu(WgrRenderer* r, uint64_t m, int nv, bool dynamic)
         : renderer(r), mesh(m), vertexCount(nv), isDynamic(dynamic)
@@ -103,10 +119,11 @@ class VertexBufferWgpu : public VertexBuffer
 
     // Re-upload vertex data when the shape has been animated. Mirrors GL33's
     // VertexBufferGL33::Update: refresh when the buffer is dynamic by type, the
-    // caller flags this draw as dynamic, or animation dirtied the buffer.
+    // caller flags this draw as dynamic, or animation dirtied the buffer. Skinned
+    // meshes stay at bind pose (the GPU transforms them), so Update is a no-op.
     void Update(const Shape& src, bool dynamic) override
     {
-        if (!renderer || !mesh || (!isDynamic && !dynamic && !bufferDirty))
+        if (skinned || !renderer || !mesh || (!isDynamic && !dynamic && !bufferDirty))
         {
             return;
         }
@@ -116,8 +133,62 @@ class VertexBufferWgpu : public VertexBuffer
         }
         std::vector<SVertex> verts(static_cast<size_t>(vertexCount));
         render::mesh::BuildVertices(src, verts.data());
-        wgr_mesh_update(renderer, mesh, reinterpret_cast<const WgrMeshVertex*>(verts.data()), U32(vertexCount));
+        wgr_mesh_update(renderer, mesh, AsMeshVerts(verts));
         bufferDirty = false;
+    }
+
+    // One-time: upload the bind pose (OrigPos/OrigNorm) + per-vertex bone indices
+    // and weights, marking the mesh eligible for the skinned pipeline.
+    void SetSkinData(const AnimationRTWeights& weightTable, const Shape& bindShape) override
+    {
+        if (skinned || !renderer || !mesh || bindShape.NVertex() != vertexCount)
+        {
+            return;
+        }
+
+        std::vector<SVertex> verts(static_cast<size_t>(vertexCount));
+        std::vector<uint8_t> bones(static_cast<size_t>(vertexCount) * 4, 0);
+        std::vector<uint8_t> weights(static_cast<size_t>(vertexCount) * 4, 0);
+        const AnimationRTWeight* wData = weightTable.Data();
+        for (int i = 0; i < vertexCount; i++)
+        {
+            const Vector3 p = bindShape.OrigPos(i);
+            const Vector3 n = bindShape.OrigNorm(i);
+            verts[i].pos = Vector3P(p.X(), p.Y(), p.Z());
+            verts[i].norm = Vector3P(-n.X(), -n.Y(), -n.Z());
+            verts[i].t0 = bindShape.UV(i);
+
+            const AnimationRTWeight& w = wData[i];
+            const int n4 = w.Size() < 4 ? w.Size() : 4;
+            if (n4 <= 0)
+            {
+                // Unweighted: full weight on the reserved (world-only) bone
+                bones[i * 4] = kReservedBone;
+                weights[i * 4] = 255;
+                continue;
+            }
+            for (int k = 0; k < n4; k++)
+            {
+                bones[i * 4 + k] = static_cast<uint8_t>(w[k].GetSel());
+                // Scale weights from 0...1 to 0...255
+                int q = static_cast<int>(w[k].GetWeight() * 255.0f + 0.5f);
+                weights[i * 4 + k] = static_cast<uint8_t>(q < 0 ? 0 : (q > 255 ? 255 : q));
+            }
+        }
+
+        wgr_mesh_update(renderer, mesh, AsMeshVerts(verts));
+        wgr_mesh_set_skin(renderer, mesh, bones, weights);
+        skinned = true;
+    }
+
+    void SetPalette(const Matrix4* mats, int count) override
+    {
+        if (count > kReservedBone)
+        {
+            count = kReservedBone; // never overwrite the reserved slot
+        }
+        paletteCount = count;
+        palette.assign(mats, mats + count);
     }
 };
 
@@ -327,6 +398,7 @@ void EngineWgpu::InitDraw(bool clear, PackedColor color)
     _batches.clear();
     _draws3d.clear();
     _cmds.clear();
+    _palette.clear();
     _cameras.clear();
     _currentCamera = 0;
     _haveCamera = false;
@@ -382,7 +454,7 @@ void EngineWgpu::NextFrame()
                       "WgrCamera matrices must be 16 floats");
         const Color& fog = FogColor();
         // Distance fog for the 3D path, matching GL33's BuildFrameState: the
-        // scene's fog range drives a linear fog factor per vertex. Folded into
+        // scene's fog range drives a linear fog factor per vertex. Packed into
         // each camera UBO (see WgrCamera). The 2D/sky path fogs separately via
         // per-vertex specular alpha.
         float fogStart = 0.0f, fogInvRange = 0.0f, fogEnabled = 0.0f;
@@ -411,12 +483,14 @@ void EngineWgpu::NextFrame()
         frame.verts = _verts;
         frame.batches = _batches;
         frame.cmds = _cmds;
+        frame.palette = _palette;
         wgr_render_frame(_renderer, &frame);
     }
     _verts.clear();
     _batches.clear();
     _draws3d.clear();
     _cmds.clear();
+    _palette.clear();
     _cameras.clear();
     _haveCamera = false;
     _currentCamera = 0;
@@ -587,10 +661,8 @@ VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType type)
 
     const uint64_t mesh = wgr_mesh_create(
         _renderer,
-        reinterpret_cast<const WgrMeshVertex*>(verts.data()),
-        U32(nv),
-        reinterpret_cast<const uint16_t*>(indices.data()),
-        U32(ni)
+        AsMeshVerts(verts),
+        WgrSlice<uint16_t>{reinterpret_cast<const uint16_t*>(indices.data()), U32(ni)}
     );
 
     if (!mesh)
@@ -654,17 +726,49 @@ void EngineWgpu::PrepareMeshTL(const LightList& /*lights*/, const Matrix4& model
     _world._41 -= cam.pos[0];
     _world._42 -= cam.pos[1];
     _world._43 -= cam.pos[2];
+
+    _worldM = modelToWorld;
+    _worldM.SetPosition(modelToWorld.Position() - Vector3(cam.pos[0], cam.pos[1], cam.pos[2]));
 }
 
 void EngineWgpu::BeginMeshTL(const Shape& sMesh, int /*spec*/, bool dynamic)
 {
-    if (VertexBuffer* vb = sMesh.GetVertexBuffer())
+    _currentPaletteSlot = WGR_NO_PALETTE;
+
+    auto* buf = static_cast<VertexBufferWgpu*>(sMesh.GetVertexBuffer());
+    if (!buf)
     {
-        vb->Update(sMesh, dynamic);
+        return;
     }
+
+    buf->Update(sMesh, dynamic);
+
+    if (!buf->skinned || buf->paletteCount <= 0)
+    {
+        return;
+    }
+
+    // Feedback to the animation system: this mesh is GPU-skinned so its CPU skinning can be skipped next frame
+    buf->drawnSkinned = true;
+    _currentPaletteSlot = U32(_palette.size() / WGR_PALETTE_SIZE);
+    const size_t base = _palette.size();
+    _palette.resize(base + WGR_PALETTE_SIZE);
+    for (int i = 0; i < buf->paletteCount; i++)
+    {
+        GfxMatrix g;
+        ConvertMatrix(g, _worldM * buf->palette[i]);
+        std::memcpy(_palette[base + i].m, &g, sizeof(_palette[base + i].m));
+    }
+    // Reserved slot: bare world, so unweighted verts get world*pos.
+    GfxMatrix gw;
+    ConvertMatrix(gw, _worldM);
+    std::memcpy(_palette[base + kReservedBone].m, &gw, sizeof(_palette[base + kReservedBone].m));
 }
 
-void EngineWgpu::EndMeshTL(const Shape& /*sMesh*/) {}
+void EngineWgpu::EndMeshTL(const Shape& /*sMesh*/)
+{
+    _currentPaletteSlot = WGR_NO_PALETTE;
+}
 
 void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
 {
@@ -702,6 +806,7 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
     d.blend = WGR_BLEND_OPAQUE;
     d.sampler = 0;
     d.camera = _currentCamera;
+    d.palette_slot = _currentPaletteSlot;
     _draws3d.push_back(d);
     _cmds.push_back(WgrCmd{WGR_CMD_DRAW_3D, U32(_draws3d.size() - 1)});
 }

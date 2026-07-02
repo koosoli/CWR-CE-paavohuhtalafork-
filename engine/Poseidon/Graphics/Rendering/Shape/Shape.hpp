@@ -952,6 +952,16 @@ class LODShape: public RefCountWithLinks
 	int FindSpecLevel( float resolution ) const;
 	bool IsSpecLevel( int level, float resolution ) const;
 
+	// A normal (graphical, drawn) LOD, as opposed to any of the special levels
+	// (geometry / memory / view / land-contact / roadway / paths / hitpoints).
+	bool IsNormalLevel( int level ) const
+	{
+		return level >= 0 && level != _memory && level != _geometry && level != _geometryFire &&
+		       level != _geometryView && level != _geometryViewPilot && level != _geometryViewGunner &&
+		       level != _geometryViewCommander && level != _geometryViewCargo && level != _landContact &&
+		       level != _roadway && level != _paths && level != _hitpoints;
+	}
+
 	// Check if point is inside the shape geometry
 	bool IsInside( Vector3Par pos ) const;
 

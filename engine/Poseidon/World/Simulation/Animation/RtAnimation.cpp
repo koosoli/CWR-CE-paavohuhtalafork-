@@ -1,5 +1,6 @@
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/World/Simulation/Animation/RtAnimation.hpp>
+#include <Poseidon/Graphics/Core/Engine.hpp>
 #include <Poseidon/Asset/Formats/RTM/RTMReader.hpp>
 #include <Poseidon/IO/Streams/QBStream.hpp>
 #include <Poseidon/Foundation/Types/ScopeLock.hpp>
@@ -1003,6 +1004,26 @@ void AnimationRT::ApplyMatrices(const WeightInfo& lWeights, LODShape* lShape, in
         ApplyMatricesIdentity(lShape, level);
         return;
     }
+
+    // GPU skinning: hand the palette + weights to the renderer for graphical LODs
+    if (GEngine && GEngine->UsesGpuSkinning() && lShape->IsNormalLevel(level))
+    {
+        Shape* shape = lShape->Level(level);
+        VertexBuffer* vb = shape ? shape->GetVertexBuffer() : nullptr;
+        if (shape && vb && shape->OriginalPosValid())
+        {
+            vb->SetSkinData(lWeights[level], *shape);
+            vb->SetPalette(matrices.Data(), matrices.Size());
+            const bool skipCpu = vb->drawnSkinned;
+            // the upcoming draw re-sets it if HW-TL
+            vb->drawnSkinned = false;
+            if (skipCpu)
+            {
+                return;
+            }
+        }
+    }
+
     const AnimationRTWeights& weights = lWeights[level];
     if (weights.IsSimple())
     {

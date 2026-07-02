@@ -865,6 +865,11 @@ class Engine : public IGraphicsEngine
     /// SwitchWindowed (the request is async, confirmation comes via events).
     virtual void OnFullscreenChanged(bool /*windowed*/) {}
 
+    // True if this backend does skeletal skinning on the GPU. When set, the
+    // animation system additionally hands the bone palette + per-vertex weights
+    // to the renderer (VertexBuffer::SetSkinData/SetPalette) for graphical LODs.
+    virtual bool UsesGpuSkinning() const { return false; }
+
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy
     // when the viewport changes.

@@ -6,7 +6,7 @@ mod log;
 mod textures;
 
 use crate::ffi::{
-    WgrCamera, WgrCmd, WgrCmdKind, WgrDraw2DBatch, WgrDraw3D, WgrMeshVertex, WgrVertex2D,
+    WgrCamera, WgrCmd, WgrCmdKind, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex, WgrVertex2D,
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::Gfx3d;
@@ -134,6 +134,7 @@ impl Renderer {
         verts: &[WgrVertex2D],
         batches: &[WgrDraw2DBatch],
         cmds: &[WgrCmd],
+        palette: &[WgrMat4],
     ) -> Result<(), String> {
         let screen = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
         self.gfx2d
@@ -141,7 +142,7 @@ impl Renderer {
         self.gfx3d
             .ensure_depth(&self.device, self.config.width, self.config.height);
         self.gfx3d
-            .prepare(&self.device, &self.queue, cameras, draws3d);
+            .prepare(&self.device, &self.queue, cameras, draws3d, palette);
 
         let Some(frame) = self.acquire()? else {
             return Ok(());
@@ -266,6 +267,11 @@ impl Renderer {
 
     fn mesh_update(&mut self, handle: u64, verts: &[WgrMeshVertex]) {
         self.gfx3d.mesh_update(&self.queue, handle, verts);
+    }
+
+    fn mesh_set_skin(&mut self, handle: u64, bones: &[u8], weights: &[u8]) {
+        self.gfx3d
+            .mesh_set_skin(&self.device, handle, bones, weights);
     }
 
     fn mesh_destroy(&mut self, handle: u64) {
