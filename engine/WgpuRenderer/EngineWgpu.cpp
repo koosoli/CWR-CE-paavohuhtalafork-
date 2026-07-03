@@ -5,10 +5,12 @@
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
 #include <Poseidon/Graphics/Core/MeshVertex.hpp>
+#include <Poseidon/Graphics/Core/ZBiasMath.hpp>
 #include <Poseidon/Graphics/Shared/SdlWindow.hpp>
 #include <Poseidon/Graphics/Core/TLVertex.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/Draw2DGeometry.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/MeshBuild.hpp>
+#include <Poseidon/Graphics/Rendering/BuildRenderPassDescriptor.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/Poly.hpp>
 #include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
@@ -21,7 +23,9 @@
 
 #include <SDL3/SDL.h>
 
+#include <algorithm>
 #include <cstdint>
+#include <cstdlib>
 #include <cstring>
 #include <span>
 
@@ -363,6 +367,47 @@ WgrDepthMode DepthForSpec(int spec)
     return WGR_DEPTH_TEST_WRITE;
 }
 
+// Translate a built RenderPassDescriptor into the fields the 3D FFI carries.
+// Reusing BuildRenderPassDescriptor keeps the wgpu backend's blend / depth /
+// alpha-test / decal choices identical to GL33's.
+WgrBlend BlendFromDesc(render::BlendMode b)
+{
+    switch (b)
+    {
+        case render::BlendMode::AlphaBlend:
+            return WGR_BLEND_ALPHA;
+        case render::BlendMode::Additive:
+            return WGR_BLEND_ADDITIVE;
+        case render::BlendMode::Shadow:
+            return WGR_BLEND_SHADOW;
+        case render::BlendMode::Opaque:
+        default:
+            return WGR_BLEND_OPAQUE;
+    }
+}
+
+WgrDepthMode DepthFromDesc(render::DepthMode d)
+{
+    switch (d)
+    {
+        case render::DepthMode::Disabled:
+            return WGR_DEPTH_NONE;
+        case render::DepthMode::ReadOnly:
+        case render::DepthMode::Shadow:
+            return WGR_DEPTH_TEST;
+        case render::DepthMode::Normal:
+        default:
+            return WGR_DEPTH_TEST_WRITE;
+    }
+}
+
+// Cutout threshold in [0,1]; 0 when the draw isn't alpha-tested.
+float AlphaRefFromDesc(const render::RenderPassDescriptor& desc)
+{
+    const bool test = desc.alpha == render::AlphaMode::Test || desc.alpha == render::AlphaMode::TestAndBlend;
+    return test ? desc.alphaRef / 255.0f : 0.0f;
+}
+
 // Pack an engine PackedColor into the FFI's 0xAARRGGBB WgrRgba8.
 WgrRgba8 PackColor(PackedColor c)
 {
@@ -466,13 +511,15 @@ void EngineWgpu::NextFrame()
             fogEnabled = 1.0f;
         }
 
+        const float shadowStrength = GetShadowFactor() / 256.0f;
+
         std::vector<WgrCamera> cameras(_cameras.size());
         for (size_t i = 0; i < _cameras.size(); i++)
         {
             std::memcpy(cameras[i].proj.m, &_cameras[i].proj, sizeof(cameras[i].proj.m));
             std::memcpy(cameras[i].view.m, &_cameras[i].view, sizeof(cameras[i].view.m));
             cameras[i].fog_color = {fog.R(), fog.G(), fog.B(), 1.0f};
-            cameras[i].fog_params = {fogStart, fogInvRange, fogEnabled, 0.0f};
+            cameras[i].params = {fogStart, fogInvRange, fogEnabled, shadowStrength};
         }
 
         WgrFrame frame{};
@@ -731,8 +778,9 @@ void EngineWgpu::PrepareMeshTL(const LightList& /*lights*/, const Matrix4& model
     _worldM.SetPosition(modelToWorld.Position() - Vector3(cam.pos[0], cam.pos[1], cam.pos[2]));
 }
 
-void EngineWgpu::BeginMeshTL(const Shape& sMesh, int /*spec*/, bool dynamic)
+void EngineWgpu::BeginMeshTL(const Shape& sMesh, int spec, bool dynamic)
 {
+    _meshSpec = spec;
     _currentPaletteSlot = WGR_NO_PALETTE;
 
     auto* buf = static_cast<VertexBufferWgpu*>(sMesh.GetVertexBuffer());
@@ -797,18 +845,64 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
         tex = t->EnsureUploaded();
     }
 
+    const int sectionSpec = sMesh.GetSection(beg).properties.Special();
+    const int effectiveSpec = _meshSpec | sectionSpec;
+
+    render::BuildContext ctx;
+    ctx.isIn3DPass = true;
+    ctx.shadowAlphaRef = static_cast<std::uint8_t>(std::min(255, (GetShadowFactor() * 7) >> 4));
+    const render::RenderPassDescriptor desc =
+        render::BuildRenderPassDescriptor(render::SplitLegacy(effectiveSpec), ctx);
+
     WgrDraw3D d{};
     d.mesh = buf->mesh;
     d.index_begin = U32(siBeg.beg);
     d.index_count = U32(indexCount);
     d.texture_id = tex;
     std::memcpy(d.world.m, &_world, sizeof(d.world.m));
-    d.blend = WGR_BLEND_OPAQUE;
-    d.sampler = 0;
+    d.blend = BlendFromDesc(desc.blend);
+    d.sampler = U32(SamplerForSpec(effectiveSpec));
+    d.depth = DepthFromDesc(desc.depth);
+    d.alpha_ref = AlphaRefFromDesc(desc);
+    // Polygon-offset selection (ignored for shadows, which get their own offset):
+    //  - OnSurface routing (roads / footprint decals): the light decal offset.
+    //  - Otherwise ZBias overlay faces (traffic-sign decals etc.) flagged via
+    //    SetBias(level*5): a stronger, level-scaled offset. GL33 leaves these to a
+    //    biased projection it never actually applies for HW-T&L, so they z-fight in
+    //    wgpu; the level-scaled offset resolves them without over-biasing roads.
+    d.flags = 0;
+    if (desc.blend != render::BlendMode::Shadow)
+    {
+        if (desc.surface == render::SurfaceMode::OnSurface)
+        {
+            d.flags |= WGR_DRAW3D_ON_SURFACE;
+        }
+        else if (_bias > 0)
+        {
+            const uint32_t level = std::clamp(_bias / 5, 1, 3);
+            d.flags |= level << WGR_DRAW3D_ZBIAS_SHIFT;
+        }
+    }
     d.camera = _currentCamera;
     d.palette_slot = _currentPaletteSlot;
     _draws3d.push_back(d);
     _cmds.push_back(WgrCmd{WGR_CMD_DRAW_3D, U32(_draws3d.size() - 1)});
+}
+
+void EngineWgpu::GetZCoefs(float& zAdd, float& zMult)
+{
+    // The software-T&L path (footsteps, tyre tracks, UI overlays) is depth-tested
+    // against GPU-projected geometry; wgpu needs ~16x GL33's software z-bias to
+    // clear the CPU-vs-GPU depth divergence (empirically). WGR_SW_ZBIAS_MULT tunes it.
+    static const float mult = []
+    {
+        const char* v = std::getenv("WGR_SW_ZBIAS_MULT");
+        const float m = v ? std::strtof(v, nullptr) : 16.0f;
+        return m > 0.0f ? m : 16.0f;
+    }();
+    const auto c = render::zbias::SoftwareCoefs(_bias);
+    zAdd = c.zAdd * mult;
+    zMult = 1.0f - (1.0f - c.zMult) * mult;
 }
 
 void EngineWgpu::PrepareMesh(const render::LegacySpec& /*spec*/)

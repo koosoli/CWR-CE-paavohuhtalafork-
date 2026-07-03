@@ -32,7 +32,9 @@ fn vs_main(
     // Pre-multiply by w so the rasteriser interpolates perspective-correctly
     // (matches GL33's VSScreen). Plain 2D passes z=0, rhw=1 -> w=1, depth 0.
     let w = 1.0 / rhw_fog.x;
-    out.clip = vec4<f32>(ndc * w, pos.z * w, w);
+    // Reversed-Z to match the 3D pipelines (near->1, far->0; GreaterEqual, clear 0).
+    // Plain 2D passes z=0 -> reversed 1.0 (nearest), so it always wins the depth test.
+    out.clip = vec4<f32>(ndc * w, (1.0 - pos.z) * w, w);
     out.uv = uv;
     // color is in BGRA order -> swizzle to RGBA
     out.color = color.zyxw;

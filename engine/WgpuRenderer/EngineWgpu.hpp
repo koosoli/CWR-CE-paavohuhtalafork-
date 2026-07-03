@@ -90,6 +90,10 @@ class EngineWgpu : public EngineDummy
     void PrepareTriangle(const MipInfo& mip, int specFlags) override;
     void DrawSection(const FaceArray& face, Offset beg, Offset end) override;
 
+    void SetBias(int value) override { _bias = value; }
+    int GetBias() override { return _bias; }
+    void GetZCoefs(float& zAdd, float& zMult) override;
+
     void OnWindowResized(int w, int h) override;
 
   private:
@@ -134,6 +138,12 @@ class EngineWgpu : public EngineDummy
     bool _haveCamera = false;
     GfxMatrix _world{};   // camera-relative world for the current mesh
     Matrix4 _worldM{};    // same, as an engine Matrix4 (for pre-multiplying into skin palettes)
+    // Object-level spec from BeginMeshTL (IsShadow / OnSurface / z-bias / fog);
+    // combined with each section's material spec in DrawSectionTL.
+    int _meshSpec = 0;
+    // Current z-bias level (engine sets it via SetBias before each draw): decals
+    // 0x10, ZBias overlay faces level*5, shadows 0x10/0x20. 0 = no bias.
+    int _bias = 0;
     // Palette slot for the current skinned mesh, pre-multiplied once in BeginMeshTL
     // and shared by all its sections; WGR_NO_PALETTE when the mesh isn't skinned.
     uint32_t _currentPaletteSlot = WGR_NO_PALETTE;

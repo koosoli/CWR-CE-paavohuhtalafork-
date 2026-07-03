@@ -75,7 +75,7 @@ impl Gfx2d {
         };
 
         // (test, write): plain 2D / sky use (false,false); transparent meshes
-        // (false… ) — see callers below. test gates LessEqual vs Always.
+        // (false… ) — see callers below. test gates GreaterEqual (reversed-Z) vs Always.
         let make_pipeline = |blend: Option<wgpu::BlendState>, test: bool, write: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("wgr_2d_pipeline"),
@@ -95,7 +95,8 @@ impl Gfx2d {
                     format: DEPTH_FORMAT,
                     depth_write_enabled: Some(write),
                     depth_compare: Some(if test {
-                        wgpu::CompareFunction::LessEqual
+                        // Reverse Z
+                        wgpu::CompareFunction::GreaterEqual
                     } else {
                         wgpu::CompareFunction::Always
                     }),

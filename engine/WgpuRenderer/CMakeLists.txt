@@ -66,13 +66,18 @@ set_target_properties(WgpuRenderer PROPERTIES
 )
 
 function(wgpu_renderer_stage_dll APP_TARGET)
-    add_custom_command(TARGET ${APP_TARGET} POST_BUILD
+    set(_stamp ${CMAKE_CURRENT_BINARY_DIR}/${APP_TARGET}_stage_wgpu.stamp)
+    add_custom_command(
+        OUTPUT ${_stamp}
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:wgpu_renderer-shared> $<TARGET_FILE_DIR:${APP_TARGET}>
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:wgpu_renderer-shared> ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
+        DEPENDS $<TARGET_FILE:wgpu_renderer-shared> wgpu_renderer-shared ${APP_TARGET}
         COMMENT "Staging wgpu_renderer cdylib for ${APP_TARGET}"
         VERBATIM
     )
+    add_custom_target(${APP_TARGET}_stage_wgpu ALL DEPENDS ${_stamp})
 endfunction()

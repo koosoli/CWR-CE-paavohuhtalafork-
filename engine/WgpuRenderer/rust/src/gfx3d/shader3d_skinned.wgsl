@@ -10,11 +10,19 @@
 // skin weight get a single weight of 1.0 pointing at a reserved bone whose
 // palette entry is just `world`, so this shader needs no zero-weight fallback.
 
+// Frame-global scalars sharing the camera UBO (no room for a 5th bind group).
+struct FrameParams {
+    fog_start: f32,
+    fog_inv_range: f32,
+    fog_enabled: f32, // 0 = off, 1 = on
+    shadow_strength: f32,
+};
+
 struct Frame {
     proj: mat4x4<f32>,
     view: mat4x4<f32>,
     fog_color: vec4<f32>,
-    fog_params: vec4<f32>, // {start, inv_range, enabled, pad}
+    params: FrameParams,
 };
 
 // 128 = the engine's own bone-palette cap (MATRIX_4_ARRAY(matrix, 128)).
@@ -26,6 +34,11 @@ struct Palette {
 @group(1) @binding(0) var<uniform> palette: Palette;
 @group(2) @binding(0) var tex: texture_2d<f32>;
 @group(3) @binding(0) var samp: sampler;
+
+// Baked per-pipeline (see shader3d.wgsl) — cutout threshold + shadow-darken flag.
+override alpha_ref: f32 = 0.0;
+override is_shadow: f32 = 0.0;
+override depth_bias: f32 = 0.0;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -51,17 +64,26 @@ fn vs_main(
         + weights.w * (palette.m[bones.w] * p);
 
     out.clip = frame.proj * frame.view * world_pos;
+    // Reversed-Z (near->1, far->0); see shader3d.wgsl. GreaterEqual + clear-to-0.
+    out.clip.z = out.clip.w - out.clip.z;
+    out.clip.z += depth_bias * out.clip.w;
     out.uv = uv;
 
     let dist = length(world_pos.xyz);
-    let fog_factor = clamp(1.0 - (dist - frame.fog_params.x) * frame.fog_params.y, 0.0, 1.0);
-    out.fog = select(1.0, fog_factor, frame.fog_params.z > 0.5);
+    let fog_factor = clamp(1.0 - (dist - frame.params.fog_start) * frame.params.fog_inv_range, 0.0, 1.0);
+    out.fog = select(1.0, fog_factor, frame.params.fog_enabled > 0.5);
     return out;
 }
 
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let base = textureSample(tex, samp, in.uv);
+    if (base.a < alpha_ref) {
+        discard;
+    }
+    if (is_shadow > 0.5) {
+        return vec4<f32>(0.0, 0.0, 0.0, frame.params.shadow_strength * base.a);
+    }
     let rgb = mix(frame.fog_color.rgb, base.rgb, in.fog);
     return vec4<f32>(rgb, base.a);
 }

@@ -72,6 +72,9 @@ pub enum WgrBlend {
     Opaque = 0,
     Alpha = 1,
     Additive = 2,
+    // Per-poly shadow darken: color = dst*(1-srcA). The fragment outputs black
+    // with alpha = shadow strength.
+    Shadow = 3,
 }
 
 // Mirror of the C++ `Sampler2DFlags` / GL33's `_samplerObjects` index. The bits
@@ -134,10 +137,32 @@ pub struct WgrDraw3D {
     // Skinning: index of this draw's 128-matrix palette block in WgrFrame.palette
     // (block b spans matrices [b*128 .. b*128+128)). NO_PALETTE = not skinned.
     pub palette_slot: u32,
+    pub depth: WgrDepthMode,
+    // Alpha-test cutout threshold in [0,1]; a fragment is discarded when its
+    // sampled alpha is below this. 0 disables the test.
+    pub alpha_ref: f32,
+    pub flags: u32,
     pub _pad: u32,
 }
 
 pub const NO_PALETTE: u32 = 0xFFFF_FFFF;
+
+// Bits for WgrDraw3D::flags (mirror WgrDraw3DFlags in wgpu_renderer.hpp).
+pub const DRAW3D_ON_SURFACE: u32 = 1;
+// ZBias overlay level (1..3) in bits 8-9.
+pub const DRAW3D_ZBIAS_SHIFT: u32 = 8;
+pub const DRAW3D_ZBIAS_MASK: u32 = 0x300;
+
+// Frame-global scalars carried in the camera UBO (no room for a 5th bind group).
+// Distinct concerns (distance fog, shadow darkening) sharing the ride.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrFrameParams {
+    pub fog_start: f32,
+    pub fog_inv_range: f32,
+    pub fog_enabled: f32, // 0 = off, 1 = on
+    pub shadow_strength: f32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -146,8 +171,7 @@ pub struct WgrCamera {
     pub view: WgrMat4,
     // fog_color = rgb + pad
     pub fog_color: WgrVec4,
-    // fog_params = {start, inv_range, enabled, pad}
-    pub fog_params: WgrVec4,
+    pub params: WgrFrameParams,
 }
 
 #[repr(u32)]
@@ -184,7 +208,8 @@ pub struct WgrFrame {
 const _: () = assert!(std::mem::size_of::<WgrVertex2D>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 112);
+const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 120);
+const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 160);
 const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);

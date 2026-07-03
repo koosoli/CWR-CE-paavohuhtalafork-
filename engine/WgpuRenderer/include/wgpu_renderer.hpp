@@ -91,7 +91,8 @@ enum WgrBlend : uint32_t
 {
     WGR_BLEND_OPAQUE = 0,
     WGR_BLEND_ALPHA = 1,
-    WGR_BLEND_ADDITIVE = 2
+    WGR_BLEND_ADDITIVE = 2,
+    WGR_BLEND_SHADOW = 3
 };
 
 /* Depth-buffer interaction for a 2D/screen batch. Plain 2D and depth-disabled
@@ -170,6 +171,21 @@ struct WgrDraw2DBatch
 /* Sentinel for WgrDraw3D::palette_slot: this draw is not skinned. */
 #define WGR_NO_PALETTE 0xFFFFFFFFu
 
+/* Bits for WgrDraw3D::flags. */
+enum WgrDraw3DFlags : uint32_t
+{
+    /* Road / decal / footprint overlay: pull the draw toward the camera with a
+     * polygon-offset (mirrors GL33's SetPolygonOffsetForDecals on OnSurface
+     * routing) so it wins the depth test against the coplanar terrain. */
+    WGR_DRAW3D_ON_SURFACE = 1,
+
+    /* ZBias overlay level (1..3) in bits 8-9, for non-OnSurface geometry that the
+     * engine biased via SetBias(level*5) (e.g. traffic-sign overlay faces). Gets a
+     * stronger, level-scaled polygon-offset than a plain surface decal. */
+    WGR_DRAW3D_ZBIAS_SHIFT = 8,
+    WGR_DRAW3D_ZBIAS_MASK = 0x300
+};
+
 /* Matrices per palette block (the engine's own bone-palette cap). Each skinned
  * draw's palette occupies this many matrices in WgrFrame.palette. */
 #define WGR_PALETTE_SIZE 128
@@ -190,19 +206,35 @@ struct WgrDraw3D
     uint32_t sampler;
     uint32_t camera;
     uint32_t palette_slot;
+    WgrDepthMode depth;
+    /* Alpha-test cutout threshold in [0,1]: a fragment is discarded when its
+     * sampled alpha is below this. 0 disables the test (nothing discarded).
+     * Mirrors GL33's per-draw alphaRef (IsAlpha ~1/255, IsTransparent 0xC0). */
+    float alpha_ref;
+    uint32_t flags; // WgrDraw3DFlags
     uint32_t _pad;
 };
 
-/* A view + projection pair, plus the frame's fog state. Fog is frame-global but
- * carried here so the 3D shader reads it without a 5th bind group (wgpu's default
- * maxBindGroups is 4). fog_color = rgb (+pad); fog_params = {start, inv_range,
- * enabled, pad}. */
+/* Frame-global scalars carried in the camera UBO so the 3D shader can read them
+ * without a 5th bind group (wgpu's default maxBindGroups is 4). Distinct concerns
+ * (distance fog, shadow darkening) that happen to share this ride for that reason.
+ * shadow_strength = GetShadowFactor()/256, read by WGR_BLEND_SHADOW draws. */
+struct WgrFrameParams
+{
+    float fog_start;
+    float fog_inv_range;
+    float fog_enabled; // 0 = off, 1 = on
+    float shadow_strength;
+};
+
+/* A view + projection pair, plus the frame-global params (see WgrFrameParams).
+ * fog_color = rgb (+pad). */
 struct WgrCamera
 {
     WgrMat4 proj;
     WgrMat4 view;
     WgrVec4 fog_color;
-    WgrVec4 fog_params;
+    WgrFrameParams params;
 };
 
 /* One entry in the frame's submission-ordered command stream. */
@@ -249,7 +281,8 @@ static_assert(sizeof(WgrBlend) == 4, "WgrBlend must be 4 bytes to match the Rust
 static_assert(sizeof(WgrVertex2D) == 32, "WgrVertex2D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrMeshVertex) == 32, "WgrMeshVertex must match the engine SVertex layout");
 static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrDraw3D) == 112, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrDraw3D) == 120, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 160, "WgrCamera layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCmd) == 8, "WgrCmd layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrame) == 128, "WgrFrame layout must match the Rust #[repr(C)] struct");
