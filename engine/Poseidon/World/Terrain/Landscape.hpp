@@ -495,11 +495,6 @@ class Landscape: public SerializeClass
 
 	//float GetActiveWater( WaterLevel &level );
 	
-	bool TextureIsSimple( int txt ) const
-	{
-		return _texture[txt].offsetUV;
-	}
-
 	public:
 	Landscape( Engine *engine, World *world, bool nets=false ); // default data
 	~Landscape();
@@ -606,6 +601,8 @@ class Landscape: public SerializeClass
 	void OnTimeSkipped(); // time skipped, react accordingly
 
 	Texture *GetTexture( int id ) const;
+	int GetNTextures() const {return _texture.Size();}
+	bool TextureIsSimple( int txt ) const {return _texture[txt].offsetUV;}
 
 	// data access
 	GeographyInfo GetGeography( int x, int z ) const;

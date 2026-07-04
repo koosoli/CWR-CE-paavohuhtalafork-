@@ -121,7 +121,7 @@ void TextureWgpu::InitDynamic(int w, int h, const void* rgba, uint32_t size)
     _nMipmaps = 1;
     if (WgrRenderer* r = _bank ? _bank->Renderer() : nullptr)
     {
-        _gpuHandle = wgr_texture_create(r, static_cast<uint32_t>(w), static_cast<uint32_t>(h), WGR_TEXTURE_RGBA8,
+        _gpuHandle = wgr_texture_create(r, static_cast<uint32_t>(w), static_cast<uint32_t>(h), WGR_TEXTURE_RGBA8, 1, 0,
                                         static_cast<const uint8_t*>(rgba), size);
     }
     if (!_gpuHandle)
@@ -184,17 +184,31 @@ uint64_t TextureWgpu::EnsureUploaded()
     const int bcFormat = BcFormatFor(dst);
     if (bcFormat >= 0 && _src)
     {
-        const auto layout = render::mipmap::ComputeLayout(dst, _w, _h);
-        std::vector<uint8_t> blocks(static_cast<size_t>(layout.dataSize));
-        if (_src->GetMipmapData(blocks.data(), _mipmaps[0], 0))
+        // Full mip chain, tightly packed as wgr_texture_create expects: PAA mips
+        // halve exactly, so level i is (_w>>i, _h>>i).
+        std::vector<uint8_t> blocks;
+        bool ok = true;
+        for (int i = 0; i < _nMipmaps; i++)
+        {
+            const auto layout = render::mipmap::ComputeLayout(dst, _mipmaps[i]._w, _mipmaps[i]._h);
+            const size_t off = blocks.size();
+            blocks.resize(off + layout.dataSize);
+            if (!_src->GetMipmapData(blocks.data() + off, _mipmaps[i], i))
+            {
+                ok = false;
+                break;
+            }
+        }
+        if (ok && !blocks.empty())
         {
             _gpuHandle = wgr_texture_create(r, static_cast<uint32_t>(_w), static_cast<uint32_t>(_h), bcFormat,
-                                            blocks.data(), static_cast<uint32_t>(blocks.size()));
+                                            static_cast<uint32_t>(_nMipmaps), 0, blocks.data(),
+                                            static_cast<uint32_t>(blocks.size()));
         }
     }
 
     // Fallback (non-DXT formats, or a failed block upload): decode the whole file
-    // to RGBA8 via the shared PAA decoder and upload that.
+    // to RGBA8 via the shared PAA decoder
     if (!_gpuHandle)
     {
         QIFStreamB stream;
@@ -207,7 +221,8 @@ uint64_t TextureWgpu::EnsureUploaded()
             if (img.valid())
             {
                 _gpuHandle = wgr_texture_create(r, static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height),
-                                                WGR_TEXTURE_RGBA8, img.rgba.data(), static_cast<uint32_t>(img.rgba.size()));
+                                                WGR_TEXTURE_RGBA8, 1, WGR_TEXTURE_GEN_MIPS, img.rgba.data(),
+                                                static_cast<uint32_t>(img.rgba.size()));
                 _w = img.width;
                 _h = img.height;
             }

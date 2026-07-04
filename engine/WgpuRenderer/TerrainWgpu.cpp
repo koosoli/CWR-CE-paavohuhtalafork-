@@ -1,7 +1,10 @@
 #include "TerrainWgpu.hpp"
 
 #include "EngineWgpu.hpp"
+#include "TextureWgpu.hpp"
 
+#include <Poseidon/Graphics/Textures/TextureBank.hpp>
+#include <Poseidon/IO/ParamFileExt.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
@@ -135,23 +138,10 @@ bool TerrainWgpu::UploadIfNeeded(const Landscape& land)
     params.data_scale = 1.0f;
     wgr_terrain_set_heightmap(_renderer, heights.data(), &params);
 
-    // Placeholder ground texture: a 64x64 two-tone check so UV tiling is visible.
-    constexpr int groundN = 64;
-    std::vector<uint8_t> px(static_cast<size_t>(groundN) * groundN * 4);
-    for (int y = 0; y < groundN; y++)
-    {
-        for (int x = 0; x < groundN; x++)
-        {
-            const bool c = ((x / 8) + (y / 8)) & 1;
-            uint8_t* p = &px[(static_cast<size_t>(y) * groundN + x) * 4];
-            p[0] = c ? 96 : 72;
-            p[1] = c ? 128 : 104;
-            p[2] = c ? 72 : 56;
-            p[3] = 255;
-        }
-    }
-    wgr_terrain_set_ground_textures(_renderer, 1, groundN, groundN, WGR_TEXTURE_RGBA8, px.data(),
-                                    static_cast<uint32_t>(px.size()));
+    UploadGroundTextures(land);
+    UploadIndexMap(land);
+    UploadJitterMap(land);
+    UploadDetailNoise();
 
     BuildQuadtree(land);
 
@@ -159,6 +149,107 @@ bool TerrainWgpu::UploadIfNeeded(const Landscape& land)
     _uploadedRange = range;
     _uploadedName = name;
     return true;
+}
+
+void TerrainWgpu::UploadGroundTextures(const Landscape& land)
+{
+    // Each Landscape texture becomes one bindless layer at native size, format,
+    // and mip chain, through the shared texture bank path. Missing/failed
+    // textures stay handle 0 = the renderer's white fallback.
+    const int layers = std::max(1, land.GetNTextures());
+    std::vector<uint64_t> handles(static_cast<size_t>(layers), 0);
+    for (int i = 0; i < layers; i++)
+    {
+        if (auto* tex = static_cast<TextureWgpu*>(land.GetTexture(i)))
+        {
+            handles[i] = tex->EnsureUploaded();
+        }
+    }
+    wgr_terrain_set_ground_layers(_renderer, handles.data(), static_cast<uint32_t>(handles.size()));
+}
+
+void TerrainWgpu::UploadIndexMap(const Landscape& land)
+{
+    const int n = land.GetLandRange();
+    if (n <= 0)
+    {
+        return;
+    }
+    // Cells must never index past the bound ground layers (the binding_array
+    // carries at most WGR_TERRAIN_MAX_GROUND_LAYERS views).
+    const int maxLayer = std::min(std::max(1, land.GetNTextures()),
+                                  static_cast<int>(WGR_TERRAIN_MAX_GROUND_LAYERS)) - 1;
+    std::vector<uint16_t> indices(static_cast<size_t>(n) * n);
+    for (int z = 0; z < n; z++)
+    {
+        for (int x = 0; x < n; x++)
+        {
+            // Same (col=x, row=z) orientation as the heightmap upload;
+            // GetTexture(z, x) == GetTex(x, z) is the land cell's layer index.
+            // Bit 15 marks non-simple (transition) textures, which map exactly
+            // once onto their cell instead of tiling — the GL33 path's
+            // ClampU|ClampV (see Landscape::ClampFlags).
+            const int layer = std::clamp(land.GetTexture(z, x), 0, maxLayer);
+            uint16_t entry = static_cast<uint16_t>(layer);
+            if (!land.TextureIsSimple(layer))
+            {
+                entry |= 0x8000;
+            }
+            indices[static_cast<size_t>(z) * n + x] = entry;
+        }
+    }
+    wgr_terrain_set_index_map(_renderer, static_cast<uint32_t>(n), static_cast<uint32_t>(n), indices.data());
+}
+
+void TerrainWgpu::UploadJitterMap(const Landscape& land)
+{
+    const int n = land.GetLandRange();
+    if (n <= 0)
+    {
+        return;
+    }
+    // Per-grid-point random UV offsets (Landscape::_random). GetRandomColor
+    // yields at most +-0.7 UV, so the snorm quantisation loses nothing next to
+    // the source's own 0.1 granularity.
+    std::vector<int8_t> offsets(2 * static_cast<size_t>(n) * n);
+    for (int z = 0; z < n; z++)
+    {
+        for (int x = 0; x < n; x++)
+        {
+            float u = 0.0f;
+            float v = 0.0f;
+            land.GetRandomColor(x, z, u, v);
+            const size_t at = 2 * (static_cast<size_t>(z) * n + x);
+            offsets[at + 0] = static_cast<int8_t>(std::lround(u * 127.0f));
+            offsets[at + 1] = static_cast<int8_t>(std::lround(v * 127.0f));
+        }
+    }
+    wgr_terrain_set_jitter_map(_renderer, static_cast<uint32_t>(n), static_cast<uint32_t>(n), offsets.data());
+}
+
+void TerrainWgpu::UploadDetailNoise()
+{
+    // Global config-driven texture; load once for the renderer's lifetime,
+    // through the shared texture bank like any other texture.
+    if (_detailNoiseTried)
+    {
+        return;
+    }
+    _detailNoiseTried = true;
+
+    const ParamEntry& names = Remaster >> "CfgDetailTextures";
+    RStringB detailName = names >> "detail";
+    _detailNoise = GlobLoadTexture(detailName);
+    Texture* tex = _detailNoise;
+    if (tex == nullptr)
+    {
+        return;
+    }
+    const uint64_t handle = static_cast<TextureWgpu*>(tex)->EnsureUploaded();
+    if (handle != 0)
+    {
+        wgr_terrain_set_detail_layer(_renderer, handle);
+    }
 }
 
 void TerrainWgpu::DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)

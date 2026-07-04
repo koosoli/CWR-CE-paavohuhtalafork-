@@ -2,10 +2,13 @@ use wgpu::util::DeviceExt;
 
 use crate::ffi::{WgrTerrainNode, WgrTerrainParams};
 use crate::gfx3d::DEPTH_FORMAT;
-use crate::textures::TextureFormat;
 
 // Grid mesh resolution: GRID_N quads per axis, (GRID_N+1)^2 vertices, u16 indices.
 const GRID_N: u32 = 32;
+
+// Capacity of the ground binding_array (and the device binding-array limit we
+// request). Must match WGR_TERRAIN_MAX_GROUND_LAYERS in wgpu_renderer.hpp.
+pub const TERRAIN_MAX_GROUND_LAYERS: u32 = 512;
 
 pub struct Terrain
 {
@@ -18,9 +21,17 @@ pub struct Terrain
     group1_bind: wgpu::BindGroup,
     have_heightmap: bool,
 
-    #[allow(dead_code)] // kept alive: group2_bind references its view
-    ground: wgpu::Texture,
+    // group2 resources; group2_bind holds views into all of them. Kept so any
+    // one can be replaced and the bind group rebuilt.
+    ground_views: Vec<wgpu::TextureView>,
+    // Fills unused binding_array slots when PARTIALLY_BOUND is unavailable.
+    pad_view: wgpu::TextureView,
+    partially_bound: bool,
+    index_map: wgpu::Texture,
+    detail_view: wgpu::TextureView,
+    jitter_map: wgpu::Texture,
     ground_sampler: wgpu::Sampler,
+    ground_clamp_sampler: wgpu::Sampler,
     group2_bind: wgpu::BindGroup,
 
     grid_vbuf: wgpu::Buffer,
@@ -32,7 +43,6 @@ pub struct Terrain
     instance_count: u32,
 
     pipeline: wgpu::RenderPipeline,
-    bc_supported: bool,
     max_dim: u32,
 }
 
@@ -43,7 +53,8 @@ impl Terrain
         queue: &wgpu::Queue,
         camera_layout: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
-        bc_supported: bool,
+        partially_bound: bool,
+        white_view: wgpu::TextureView,
     ) -> Self
     {
         // group 1 (vertex): terrain params UBO + heightmap (R32Float, textureLoad).
@@ -65,7 +76,9 @@ impl Terrain
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
-                    visibility: wgpu::ShaderStages::VERTEX,
+                    // Vertex displaces by the height; fragment reads it again for a
+                    // per-pixel, LOD/morph-independent normal (even lighting).
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -76,7 +89,10 @@ impl Terrain
             ],
         });
 
-        // group 2 (fragment): ground texture array + filtering sampler.
+        // group 2 (fragment): bindless ground texture binding_array + filtering
+        // sampler + per-cell index map (uint, textureLoad) + high-frequency
+        // detail noise texture + an edge-extending sampler for clamped
+        // transition tiles (index-map bit 15) + per-grid-point jitter map.
         let group2_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_terrain_group2_layout"),
             entries: &[
@@ -85,15 +101,51 @@ impl Terrain
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
-                    count: None,
+                    count: Some(std::num::NonZeroU32::new(TERRAIN_MAX_GROUND_LAYERS).unwrap()),
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 1,
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Uint,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
                     count: None,
                 },
             ],
@@ -132,8 +184,23 @@ impl Terrain
         );
         let group1_bind = make_group1(device, &group1_layout, &params_ubo, &heightmap_view);
 
-        let ground = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("wgr_terrain_ground"),
+        // Stand-ins so the bind group is valid before any upload. Ground = the
+        // shared 1x1 white; detail alpha = 0.5 (so the shader's 2*alpha
+        // modulation is a no-op); index map = layer 0.
+        let ground_views = vec![white_view.clone()];
+        let index_map = create_index_map(device, 1, 1);
+        queue.write_texture(
+            texel_copy(&index_map),
+            bytemuck::bytes_of(&0u16),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(2),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        let detail = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_terrain_detail_neutral"),
             size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
             mip_level_count: 1,
             sample_count: 1,
@@ -143,8 +210,8 @@ impl Terrain
             view_formats: &[],
         });
         queue.write_texture(
-            texel_copy(&ground),
-            &[0xFF, 0xFF, 0xFF, 0xFF],
+            texel_copy(&detail),
+            &[0x80, 0x80, 0x80, 0x80],
             wgpu::TexelCopyBufferLayout {
                 offset: 0,
                 bytes_per_row: Some(4),
@@ -152,10 +219,22 @@ impl Terrain
             },
             wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
         );
-        let ground_view = ground.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
+        // The view keeps the neutral stand-in texture alive.
+        let detail_view = detail.create_view(&wgpu::TextureViewDescriptor::default());
+        // Zero jitter until a real map arrives.
+        let jitter_map = create_jitter_map(device, 1, 1);
+        queue.write_texture(
+            texel_copy(&jitter_map),
+            &[0u8, 0u8],
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(2),
+                rows_per_image: Some(1),
+            },
+            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+        );
+        // 16x anisotropy: terrain is the worst case for isotropic mip selection
+        // (large planes at grazing angles), and GL33's samplers already use it.
         let ground_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("wgr_terrain_ground_sampler"),
             address_mode_u: wgpu::AddressMode::Repeat,
@@ -163,10 +242,35 @@ impl Terrain
             address_mode_w: wgpu::AddressMode::ClampToEdge,
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 16,
             ..Default::default()
         });
-        let group2_bind = make_group2(device, &group2_layout, &ground_view, &ground_sampler);
+        // For clamped transition tiles: edge-extends the tile past its own cell
+        // (GL33's ClampU|ClampV) instead of wrapping.
+        let ground_clamp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_terrain_ground_clamp_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 16,
+            ..Default::default()
+        });
+        let group2_bind = make_group2(
+            device,
+            &group2_layout,
+            &ground_views,
+            &white_view,
+            partially_bound,
+            &index_map,
+            &detail_view,
+            &jitter_map,
+            &ground_sampler,
+            &ground_clamp_sampler,
+        );
 
         let (grid_vbuf, grid_ibuf, grid_index_count) = build_grid(device);
 
@@ -182,6 +286,17 @@ impl Terrain
             label: Some("wgr_terrain_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
         });
+        // Override constants baked from the environment (see terrain.wgsl).
+        let blend_width = std::env::var("WGR_TERRAIN_BLEND_WIDTH")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(0.15);
+        let skirt_k = std::env::var("WGR_TERRAIN_SKIRT_K")
+            .ok()
+            .and_then(|v| v.parse::<f64>().ok())
+            .unwrap_or(4.0);
+        let vs_constants = [("skirt_k", skirt_k)];
+        let fs_constants = [("blend_width", blend_width)];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_terrain_pipeline_layout"),
             bind_group_layouts: &[Some(camera_layout), Some(&group1_layout), Some(&group2_layout)],
@@ -196,7 +311,10 @@ impl Terrain
             vertex: wgpu::VertexState {
                 module: &shader,
                 entry_point: Some("vs_terrain"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &vs_constants,
+                    ..Default::default()
+                },
                 buffers: &[
                     wgpu::VertexBufferLayout {
                         array_stride: 12,
@@ -227,7 +345,10 @@ impl Terrain
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_terrain"),
-                compilation_options: Default::default(),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &fs_constants,
+                    ..Default::default()
+                },
                 targets: &[Some(wgpu::ColorTargetState {
                     format: surface_format,
                     blend: None,
@@ -245,8 +366,14 @@ impl Terrain
             heightmap,
             group1_bind,
             have_heightmap: false,
-            ground,
+            ground_views,
+            pad_view: white_view,
+            partially_bound,
+            index_map,
+            detail_view,
+            jitter_map,
             ground_sampler,
+            ground_clamp_sampler,
             group2_bind,
             grid_vbuf,
             grid_ibuf,
@@ -255,7 +382,6 @@ impl Terrain
             instance_cap,
             instance_count: 0,
             pipeline,
-            bc_supported,
             max_dim: device.limits().max_texture_dimension_2d,
         }
     }
@@ -293,62 +419,100 @@ impl Terrain
         self.have_heightmap = true;
     }
 
-    pub fn set_ground_textures(
+    // Ground layers as views into the shared texture registry (missing handles
+    // already resolved to the white fallback by the caller). Truncated to the
+    // binding_array capacity; the index-map upload clamps cell indices to match.
+    pub fn set_ground_layers(&mut self, device: &wgpu::Device, mut views: Vec<wgpu::TextureView>)
+    {
+        views.truncate(TERRAIN_MAX_GROUND_LAYERS as usize);
+        if views.is_empty() {
+            views.push(self.pad_view.clone());
+        }
+        self.ground_views = views;
+        self.rebuild_group2(device);
+    }
+
+    pub fn set_index_map(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        layer_count: u32,
         width: u32,
         height: u32,
-        format: TextureFormat,
-        data: &[u8],
+        indices: &[u16],
     )
     {
-        if layer_count == 0 || width == 0 || height == 0 {
+        if width == 0 || height == 0 || width > self.max_dim || height > self.max_dim {
             return;
         }
-        if format.is_block_compressed() && !self.bc_supported {
+        if indices.len() < width as usize * height as usize {
             return;
         }
-        let per_layer = format.expected_len(width, height) as usize;
-        if data.len() < per_layer * layer_count as usize {
-            return;
-        }
+        let index_map = create_index_map(device, width, height);
+        queue.write_texture(
+            texel_copy(&index_map),
+            bytemuck::cast_slice(&indices[..width as usize * height as usize]),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 2),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.index_map = index_map;
+        self.rebuild_group2(device);
+    }
 
-        let ground = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("wgr_terrain_ground"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: layer_count },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: format.wgpu_format(),
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        for layer in 0..layer_count {
-            let start = layer as usize * per_layer;
-            queue.write_texture(
-                wgpu::TexelCopyTextureInfo {
-                    texture: &ground,
-                    mip_level: 0,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
-                    aspect: wgpu::TextureAspect::All,
-                },
-                &data[start..start + per_layer],
-                wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(format.bytes_per_row(width)),
-                    rows_per_image: Some(format.rows(height)),
-                },
-                wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            );
+    pub fn set_jitter_map(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        offsets: &[i8],
+    )
+    {
+        if width == 0 || height == 0 || width > self.max_dim || height > self.max_dim {
+            return;
         }
-        let view = ground.create_view(&wgpu::TextureViewDescriptor {
-            dimension: Some(wgpu::TextureViewDimension::D2Array),
-            ..Default::default()
-        });
-        self.group2_bind = make_group2(device, &self.group2_layout, &view, &self.ground_sampler);
-        self.ground = ground;
+        if offsets.len() < 2 * width as usize * height as usize {
+            return;
+        }
+        let jitter_map = create_jitter_map(device, width, height);
+        queue.write_texture(
+            texel_copy(&jitter_map),
+            bytemuck::cast_slice(&offsets[..2 * width as usize * height as usize]),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 2),
+                rows_per_image: Some(height),
+            },
+            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+        );
+        self.jitter_map = jitter_map;
+        self.rebuild_group2(device);
+    }
+
+    // Detail noise as a view into the shared texture registry.
+    pub fn set_detail_layer(&mut self, device: &wgpu::Device, view: wgpu::TextureView)
+    {
+        self.detail_view = view;
+        self.rebuild_group2(device);
+    }
+
+    fn rebuild_group2(&mut self, device: &wgpu::Device)
+    {
+        self.group2_bind = make_group2(
+            device,
+            &self.group2_layout,
+            &self.ground_views,
+            &self.pad_view,
+            self.partially_bound,
+            &self.index_map,
+            &self.detail_view,
+            &self.jitter_map,
+            &self.ground_sampler,
+            &self.ground_clamp_sampler,
+        );
     }
 
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, nodes: &[WgrTerrainNode])
@@ -448,24 +612,84 @@ fn make_group1(
     })
 }
 
+fn create_index_map(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture
+{
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wgr_terrain_index_map"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R16Uint,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+// Per-grid-point ground UV jitter (Landscape::_random), snorm UV offsets.
+fn create_jitter_map(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture
+{
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wgr_terrain_jitter_map"),
+        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rg8Snorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
 fn make_group2(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
-    ground_view: &wgpu::TextureView,
+    ground_views: &[wgpu::TextureView],
+    pad_view: &wgpu::TextureView,
+    partially_bound: bool,
+    index_map: &wgpu::Texture,
+    detail_view: &wgpu::TextureView,
+    jitter_map: &wgpu::Texture,
     sampler: &wgpu::Sampler,
+    clamp_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup
 {
+    // Without PARTIALLY_BOUND_BINDING_ARRAY every declared slot must be bound,
+    // so pad the tail; the shader never indexes past the real layer count.
+    let mut ground_refs: Vec<&wgpu::TextureView> = ground_views.iter().collect();
+    if !partially_bound {
+        ground_refs.resize(TERRAIN_MAX_GROUND_LAYERS as usize, pad_view);
+    }
+    let index_view = index_map.create_view(&wgpu::TextureViewDescriptor::default());
+    let jitter_view = jitter_map.create_view(&wgpu::TextureViewDescriptor::default());
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgr_terrain_group2_bind"),
         layout,
         entries: &[
             wgpu::BindGroupEntry {
                 binding: 0,
-                resource: wgpu::BindingResource::TextureView(ground_view),
+                resource: wgpu::BindingResource::TextureViewArray(&ground_refs),
             },
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::Sampler(sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(&index_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(detail_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(clamp_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(&jitter_view),
             },
         ],
     })

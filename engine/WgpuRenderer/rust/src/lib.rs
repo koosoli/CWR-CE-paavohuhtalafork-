@@ -70,8 +70,31 @@ impl Renderer {
             );
         }
 
+        // Terrain samples its ground textures through a bindless binding_array
+        // (per-layer native sizes and formats), so descriptor indexing is a hard
+        // requirement. Every DX12 resource-binding-tier-2+ / Vulkan 1.2 desktop
+        // GPU has it; adapters without it fall back to GL33 at the factory level.
+        let bindless = wgpu::Features::TEXTURE_BINDING_ARRAY
+            | wgpu::Features::SAMPLED_TEXTURE_AND_STORAGE_BUFFER_ARRAY_NON_UNIFORM_INDEXING;
+        if !adapter.features().contains(bindless) {
+            return Err(format!(
+                "adapter lacks binding-array features required for terrain (has {:?})",
+                adapter.features() & bindless
+            ));
+        }
+        // Optional: lets the terrain bind group carry fewer views than the
+        // declared array size; without it unused slots are padded with a dummy.
+        let partially_bound =
+            adapter.features() & wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
+
+        let required_limits = wgpu::Limits {
+            max_binding_array_elements_per_shader_stage: terrain::TERRAIN_MAX_GROUND_LAYERS,
+            ..Default::default()
+        };
+
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: bc_features,
+            required_features: bc_features | bindless | partially_bound,
+            required_limits,
             ..Default::default()
         }))
         .map_err(|e| format!("request_device failed: {e}"))?;
@@ -93,7 +116,14 @@ impl Renderer {
         let textures = SharedTextures::new(&device, &queue, bc_supported);
         let gfx2d = Gfx2d::new(&device, &textures, config.format);
         let gfx3d = Gfx3d::new(&device, &textures, config.format);
-        let terrain = Terrain::new(&device, &queue, gfx3d.camera_layout(), config.format, bc_supported);
+        let terrain = Terrain::new(
+            &device,
+            &queue,
+            gfx3d.camera_layout(),
+            config.format,
+            !partially_bound.is_empty(),
+            textures.white_view().clone(),
+        );
 
         Ok(Self {
             log,
@@ -305,6 +335,8 @@ impl Renderer {
         width: u32,
         height: u32,
         format: TextureFormat,
+        mip_count: u32,
+        gen_mips: bool,
         data: &[u8],
     ) -> u64 {
         self.textures.create(
@@ -314,6 +346,8 @@ impl Renderer {
                 width,
                 height,
                 format,
+                mip_count,
+                gen_mips,
                 bytes: data,
             },
         )
@@ -349,16 +383,30 @@ impl Renderer {
             .set_heightmap(&self.device, &self.queue, heights, params);
     }
 
-    fn terrain_set_ground_textures(
-        &mut self,
-        layer_count: u32,
-        width: u32,
-        height: u32,
-        format: TextureFormat,
-        data: &[u8],
-    ) {
+    fn terrain_set_ground_layers(&mut self, handles: &[u64]) {
+        let views: Vec<wgpu::TextureView> = handles
+            .iter()
+            .map(|&h| self.textures.texture_view(h).clone())
+            .collect();
+        self.terrain.set_ground_layers(&self.device, views);
+    }
+
+    fn terrain_set_index_map(&mut self, width: u32, height: u32, indices: &[u16]) {
         self.terrain
-            .set_ground_textures(&self.device, &self.queue, layer_count, width, height, format, data);
+            .set_index_map(&self.device, &self.queue, width, height, indices);
+    }
+
+    fn terrain_set_jitter_map(&mut self, width: u32, height: u32, offsets: &[i8]) {
+        self.terrain
+            .set_jitter_map(&self.device, &self.queue, width, height, offsets);
+    }
+
+    fn terrain_set_detail_layer(&mut self, handle: u64) {
+        if handle == 0 {
+            return;
+        }
+        let view = self.textures.texture_view(handle).clone();
+        self.terrain.set_detail_layer(&self.device, view);
     }
 
     fn shadow_map_read(&mut self, layer: u32, out: &mut [f32]) -> u32 {

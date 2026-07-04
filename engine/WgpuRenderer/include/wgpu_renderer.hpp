@@ -254,6 +254,17 @@ struct WgrCamera
     /* World-space camera position. `view` has no translation (geometry is
      * camera-relative); terrain uses this to sample the world-space heightmap. */
     WgrVec4 cam_pos;
+    /* Sun light for GPU-lit paths (terrain): rgb, pre-multiplied by the eye
+     * accommodation — DoLightingColorized's DiffusePrecalc/AmbientPrecalc for a
+     * white material. */
+    WgrVec4 sun_diffuse;
+    WgrVec4 sun_ambient;
+    /* xyz = normalized MainLight()->Direction(): the sun's light TRAVEL
+     * direction (downward by day, upward while the sun is below the horizon —
+     * which is what keeps night terrain ambient-only). Same convention as
+     * GL33's sunDir constant; shaders dot the normal with its negation. Valid
+     * every frame, unlike the shadow block's sun_dir. */
+    WgrVec4 sun_dir_world;
 };
 
 /* One shadow caster for the cascade depth passes: a section run
@@ -411,7 +422,7 @@ static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match th
 static_assert(sizeof(WgrDraw3D) == 120, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrCamera) == 528, "WgrCamera layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrShadowCaster) == 104, "WgrShadowCaster layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrShadowPass) == 272, "WgrShadowPass layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCmd) == 8, "WgrCmd layout must match the Rust #[repr(C)] struct");
@@ -434,12 +445,18 @@ extern "C"
     WGR_API void wgr_destroy(WgrRenderer* renderer);
     WGR_API void wgr_resize(WgrRenderer* renderer, uint32_t width, uint32_t height);
 
-    /* Upload a single-level texture in `format` (WgrTextureFormat); returns a
-     * non-zero id, or 0 on failure. `byte_length` must match the format: RGBA8 =
-     * width*height*4; BC* = the block-payload size (ceil(w/4)*ceil(h/4) * 8 for
-     * BC1, * 16 for BC2/BC3). */
+    /* Upload a texture in `format` (WgrTextureFormat); returns a non-zero id, or
+     * 0 on failure. `data` holds `mip_count` tightly packed mip levels, level i
+     * sized for (max(1, width>>i), max(1, height>>i)): RGBA8 = w*h*4 per level;
+     * BC* = the block-payload size (ceil(w/4)*ceil(h/4) * 8 for BC1, * 16 for
+     * BC2/BC3). `byte_length` is the total. Pass WGR_TEXTURE_GEN_MIPS in `flags`
+     * (RGBA8, mip_count 1 only) to generate the rest of the chain with a box
+     * filter. */
     WGR_API WgrTexture wgr_texture_create(WgrRenderer* renderer, uint32_t width, uint32_t height, int32_t format,
-                                          const uint8_t* data, uint32_t byte_length);
+                                          uint32_t mip_count, uint32_t flags, const uint8_t* data,
+                                          uint32_t byte_length);
+
+    constexpr uint32_t WGR_TEXTURE_GEN_MIPS = 1;
 
     /* Replace the pixels of an existing RGBA8 texture. */
     WGR_API void wgr_texture_update(WgrRenderer* renderer, WgrTexture id, const uint8_t* rgba, uint32_t byte_length);
@@ -470,12 +487,39 @@ extern "C"
     WGR_API void wgr_terrain_set_heightmap(WgrRenderer* renderer, const float* heights,
                                            const WgrTerrainParams* params);
 
-    /* Upload the terrain ground textures as a `layer_count`-layer 2D array (all
-     * layers `width` x `height`, `format` = WgrTextureFormat). `data` is the
-     * layers back-to-back, each sized per the format (see wgr_texture_create). */
-    WGR_API void wgr_terrain_set_ground_textures(WgrRenderer* renderer, uint32_t layer_count, uint32_t width,
-                                                 uint32_t height, int32_t format, const uint8_t* data,
-                                                 uint32_t byte_length);
+    /* Set the terrain ground layers: `handles[i]` is the wgr_texture_create
+     * handle for Landscape texture index i (0 = the built-in white fallback).
+     * Layers keep their native size/format/mips; the fragment shader samples
+     * them through a bindless binding_array, indexed per land cell by
+     * wgr_terrain_set_index_map. At most WGR_TERRAIN_MAX_GROUND_LAYERS are
+     * used; the index-map upload must clamp cell indices to the same bound. */
+    WGR_API void wgr_terrain_set_ground_layers(WgrRenderer* renderer, const uint64_t* handles, uint32_t count);
+
+    constexpr uint32_t WGR_TERRAIN_MAX_GROUND_LAYERS = 512;
+
+    /* Upload the per-land-cell texture index map: a `width` x `height` (= land
+     * range per axis) R16Uint texture where each texel's bits 0-14 are the
+     * ground-layer index for that land cell (row 0 = cell z=0; index 0 = sea).
+     * Bit 15 marks a clamped transition tile: its texture maps exactly once onto
+     * the cell with edges extended (GL33's ClampU|ClampV) instead of tiling.
+     * `indices` is width*height uint16s. */
+    WGR_API void wgr_terrain_set_index_map(WgrRenderer* renderer, uint32_t width, uint32_t height,
+                                           const uint16_t* indices);
+
+    /* Upload the per-grid-point ground UV jitter map: a `width` x `height`
+     * (= land range per axis) Rg8Snorm texture holding each land grid point's
+     * random texture UV offset (Landscape::_random, at most +-0.7). The fragment
+     * shader interpolates it bilinearly across each cell and adds it to the
+     * ground tiling UV, replicating GL33's per-vertex jitter. `offsets` is
+     * width*height (u, v) int8 pairs (snorm: value / 127). */
+    WGR_API void wgr_terrain_set_jitter_map(WgrRenderer* renderer, uint32_t width, uint32_t height,
+                                            const int8_t* offsets);
+
+    /* Set the high-frequency detail noise texture tiled over the terrain
+     * (OFP's `CfgDetailTextures.detail`) to a wgr_texture_create handle; its
+     * alpha channel modulates the blended ground colour (rgb *= 2*detail.a).
+     * Handle 0 is ignored (the neutral built-in stand-in stays). */
+    WGR_API void wgr_terrain_set_detail_layer(WgrRenderer* renderer, WgrTexture handle);
 
     /* Render + present one frame. Returns 0 on success (incl. transient skipped
      * frames), negative on error. */

@@ -546,6 +546,23 @@ void EngineWgpu::NextFrame()
             fogEnabled = 1.0f;
         }
 
+        // Sun light for GPU-lit terrain, matching GL33's material upload:
+        // light colour x eye accommodation, plus the raw travel direction
+        // (GL33's sunDir vertex constant). At night/dawn the sun sits at or
+        // below the horizon, which is what keeps terrain ambient-only dark
+        // there — a made-up overhead direction reads as moonlight noon.
+        Color sunDiffuse = HWhite;
+        Color sunAmbient = HWhite;
+        Vector3 sunDir(-0.4f, -0.85f, -0.3f);
+        if (GScene && GScene->MainLight())
+        {
+            const Color accom = GetAccomodateEye();
+            sunDiffuse = GScene->MainLight()->Diffuse() * accom;
+            sunAmbient = GScene->MainLight()->Ambient() * accom;
+            sunDir = GScene->MainLight()->Direction();
+        }
+        sunDir.Normalize();
+
         const float shadowStrength = GetShadowFactor() / 256.0f;
         const bool shadowActive = _smCascadesValid && !_shadowCasters.empty();
         // Sun-faded darkness (GL33 parity): full daylight uses tuning.darkness,
@@ -560,6 +577,9 @@ void EngineWgpu::NextFrame()
             cameras[i].fog_color = {fog.R(), fog.G(), fog.B(), 1.0f};
             cameras[i].params = {fogStart, fogInvRange, fogEnabled, shadowStrength};
             cameras[i].cam_pos = {_cameras[i].pos[0], _cameras[i].pos[1], _cameras[i].pos[2], 0.0f};
+            cameras[i].sun_diffuse = {sunDiffuse.R(), sunDiffuse.G(), sunDiffuse.B(), 0.0f};
+            cameras[i].sun_ambient = {sunAmbient.R(), sunAmbient.G(), sunAmbient.B(), 0.0f};
+            cameras[i].sun_dir_world = {sunDir.X(), sunDir.Y(), sunDir.Z(), 0.0f};
             if (shadowActive)
             {
                 WgrCameraShadow& sb = cameras[i].shadow;
@@ -1167,7 +1187,7 @@ uint64_t EngineWgpu::OverlayTextureCreate(int w, int h, const uint8_t* rgba)
     {
         return 0;
     }
-    return wgr_texture_create(_renderer, U32(w), U32(h), WGR_TEXTURE_RGBA8, rgba, U32(w) * U32(h) * 4);
+    return wgr_texture_create(_renderer, U32(w), U32(h), WGR_TEXTURE_RGBA8, 1, 0, rgba, U32(w) * U32(h) * 4);
 }
 
 void EngineWgpu::OverlayTextureUpdate(uint64_t texture, int w, int h, const uint8_t* rgba)

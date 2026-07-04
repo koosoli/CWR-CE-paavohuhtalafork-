@@ -191,6 +191,14 @@ pub struct WgrCamera {
     // World-space camera position (view drops its translation; geometry is
     // camera-relative). GPU terrain uses it for heightmap sampling.
     pub cam_pos: WgrVec4,
+    // Sun light for GPU-lit paths (terrain): rgb, pre-multiplied by the eye
+    // accommodation on the C++ side.
+    pub sun_diffuse: WgrVec4,
+    pub sun_ambient: WgrVec4,
+    // xyz = normalized sun light TRAVEL direction (GL33's sunDir convention:
+    // shaders dot the normal with its negation); valid every frame, unlike the
+    // shadow block's sun_dir.
+    pub sun_dir_world: WgrVec4,
 }
 
 // One shadow caster for the cascade depth passes: a section run of `mesh`,
@@ -327,7 +335,7 @@ const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 120);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
-const _: () = assert!(std::mem::size_of::<WgrCamera>() == 528);
+const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);
 const _: () = assert!(std::mem::size_of::<WgrShadowCaster>() == 104);
 const _: () = assert!(std::mem::size_of::<WgrShadowPass>() == 272);
 const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
@@ -406,15 +414,23 @@ pub unsafe extern "C" fn wgr_resize(renderer: *mut WgrRenderer, width: u32, heig
     }));
 }
 
+/// Flag for wgr_texture_create: generate the rest of the mip chain from level 0
+/// with a box filter (RGBA8 with mip_count 1 only). Must match
+/// WGR_TEXTURE_GEN_MIPS.
+pub const TEXTURE_GEN_MIPS: u32 = 1;
+
 /// # Safety
-/// `renderer` must be live; `data` must point to at least `byte_len` bytes, or be
-/// null (in which case 0 is returned).
+/// `renderer` must be live; `data` must point to at least `byte_len` bytes
+/// (holding `mip_count` tightly packed mip levels), or be null (in which case 0
+/// is returned).
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn wgr_texture_create(
     renderer: *mut WgrRenderer,
     width: u32,
     height: u32,
     format: i32,
+    mip_count: u32,
+    flags: u32,
     data: *const u8,
     byte_len: u32,
 ) -> u64 {
@@ -427,7 +443,7 @@ pub unsafe extern "C" fn wgr_texture_create(
         };
         let renderer = unsafe { &mut *renderer };
         let slice = unsafe { std::slice::from_raw_parts(data, byte_len as usize) };
-        renderer.texture_create(width, height, fmt, slice)
+        renderer.texture_create(width, height, fmt, mip_count, flags & TEXTURE_GEN_MIPS != 0, slice)
     }))
     .unwrap_or(0)
 }
@@ -565,31 +581,87 @@ pub unsafe extern "C" fn wgr_terrain_set_heightmap(
     }));
 }
 
-/// Upload the terrain ground textures as a 2D array. See wgpu_renderer.hpp.
+/// Set the terrain ground layers as a list of wgr_texture_create handles (one
+/// per Landscape texture index). See wgpu_renderer.hpp.
 ///
 /// # Safety
-/// `renderer` must be live; `data` must point to at least `byte_length` bytes, or
+/// `renderer` must be live; `handles` must point to at least `count` `u64`s, or
 /// be null (in which case the call is ignored).
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_terrain_set_ground_textures(
+pub unsafe extern "C" fn wgr_terrain_set_ground_layers(
     renderer: *mut WgrRenderer,
-    layer_count: u32,
-    width: u32,
-    height: u32,
-    format: i32,
-    data: *const u8,
-    byte_length: u32,
+    handles: *const u64,
+    count: u32,
 ) {
-    if renderer.is_null() || data.is_null() {
+    if renderer.is_null() || handles.is_null() {
         return;
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
-        let Some(fmt) = TextureFormat::from_i32(format) else {
-            return;
-        };
         let renderer = unsafe { &mut *renderer };
-        let slice = unsafe { std::slice::from_raw_parts(data, byte_length as usize) };
-        renderer.terrain_set_ground_textures(layer_count, width, height, fmt, slice);
+        let slice = unsafe { std::slice::from_raw_parts(handles, count as usize) };
+        renderer.terrain_set_ground_layers(slice);
+    }));
+}
+
+/// Upload the per-land-cell texture index map (R16Uint). See wgpu_renderer.hpp.
+///
+/// # Safety
+/// `renderer` must be live; `indices` must point to at least `width * height`
+/// `u16`s, or be null (in which case the call is ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_terrain_set_index_map(
+    renderer: *mut WgrRenderer,
+    width: u32,
+    height: u32,
+    indices: *const u16,
+) {
+    if renderer.is_null() || indices.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let count = width as usize * height as usize;
+        let slice = unsafe { std::slice::from_raw_parts(indices, count) };
+        renderer.terrain_set_index_map(width, height, slice);
+    }));
+}
+
+/// Upload the per-grid-point ground UV jitter map (Rg8Snorm). See
+/// wgpu_renderer.hpp.
+///
+/// # Safety
+/// `renderer` must be live; `offsets` must point to at least
+/// `2 * width * height` `i8`s, or be null (in which case the call is ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_terrain_set_jitter_map(
+    renderer: *mut WgrRenderer,
+    width: u32,
+    height: u32,
+    offsets: *const i8,
+) {
+    if renderer.is_null() || offsets.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let count = 2 * width as usize * height as usize;
+        let slice = unsafe { std::slice::from_raw_parts(offsets, count) };
+        renderer.terrain_set_jitter_map(width, height, slice);
+    }));
+}
+
+/// Set the terrain detail noise texture to a wgr_texture_create handle. See
+/// wgpu_renderer.hpp.
+///
+/// # Safety
+/// `renderer` must be a live pointer from `wgr_create`, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_terrain_set_detail_layer(renderer: *mut WgrRenderer, handle: u64) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &mut *renderer }.terrain_set_detail_layer(handle);
     }));
 }
 

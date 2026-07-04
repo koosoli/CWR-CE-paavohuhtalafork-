@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Poseidon/Graphics/Core/ITerrainRenderer.hpp>
+#include <Poseidon/Graphics/Textures/TextureBank.hpp>
 #include <Poseidon/World/Terrain/TerrainCdlod.hpp>
 
 #include <wgpu_renderer.hpp>
@@ -26,6 +27,11 @@ class TerrainWgpu : public ITerrainRenderer
     // (Re)uploads and rebuilds the quadtree when the map changes; returns true if it did.
     bool UploadIfNeeded(const Landscape& land);
     void BuildQuadtree(const Landscape& land);
+    void UploadGroundTextures(const Landscape& land);
+    void UploadIndexMap(const Landscape& land);
+    void UploadJitterMap(const Landscape& land);
+    // Loads the global high-frequency detail noise texture (config-driven, once).
+    void UploadDetailNoise();
 
     EngineWgpu& _engine;
     WgrRenderer* _renderer;
@@ -35,6 +41,10 @@ class TerrainWgpu : public ITerrainRenderer
     const Landscape* _uploaded = nullptr;
     int _uploadedRange = 0;
     std::string _uploadedName;
+    bool _detailNoiseTried = false;
+    // Keeps the detail texture's GPU handle registered for the renderer's
+    // lifetime (releasing the last Ref destroys the registry entry).
+    Ref<Texture> _detailNoise;
 
     std::vector<CdlodNode> _tree;
     int _rootIndex = -1;

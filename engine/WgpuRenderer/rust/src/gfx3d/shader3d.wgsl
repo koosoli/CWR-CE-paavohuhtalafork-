@@ -28,6 +28,9 @@ struct Frame {
     params: FrameParams,
     shadow: ShadowBlock,
     cam_pos: vec4<f32>, // world-space camera position (used by the terrain pipeline)
+    sun_diffuse: vec4<f32>, // sun light, accommodation folded in (terrain)
+    sun_ambient: vec4<f32>,
+    sun_dir_world: vec4<f32>, // main light's surface-to-light direction (terrain)
 };
 
 struct Object {

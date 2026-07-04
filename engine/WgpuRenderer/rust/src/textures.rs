@@ -63,12 +63,18 @@ pub struct TextureData<'a> {
     pub width: u32,
     pub height: u32,
     pub format: TextureFormat,
+    /// Mip levels present in `bytes`, tightly packed coarsest-last; level i is
+    /// (max(1, width>>i), max(1, height>>i)).
+    pub mip_count: u32,
+    /// Generate the rest of the chain from level 0 with a box filter (RGBA8,
+    /// mip_count 1 only).
+    pub gen_mips: bool,
     pub bytes: &'a [u8],
 }
 
 pub struct Texture2D {
-    #[allow(dead_code)] // kept alive: the bind group references its view
     texture: wgpu::Texture,
+    pub view: wgpu::TextureView,
     pub bind_group: wgpu::BindGroup,
 }
 
@@ -111,6 +117,8 @@ impl TextureRegistry {
             width,
             height,
             format,
+            mip_count,
+            gen_mips,
             bytes,
         } = *tex;
         if width == 0 || height == 0 {
@@ -119,9 +127,15 @@ impl TextureRegistry {
         if format.is_block_compressed() && !self.bc_supported {
             return 0;
         }
-        if (bytes.len() as u32) < format.expected_len(width, height) {
+        let mip_count = mip_count.clamp(1, mip_chain_len(width, height));
+        let total: u32 = (0..mip_count)
+            .map(|i| format.expected_len((width >> i).max(1), (height >> i).max(1)))
+            .sum();
+        if (bytes.len() as u32) < total {
             return 0;
         }
+        let gen_mips = gen_mips && format == TextureFormat::Rgba8 && mip_count == 1;
+        let mip_level_count = if gen_mips { mip_chain_len(width, height) } else { mip_count };
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_texture"),
@@ -130,7 +144,7 @@ impl TextureRegistry {
                 height,
                 depth_or_array_layers: 1,
             },
-            mip_level_count: 1,
+            mip_level_count,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: format.wgpu_format(),
@@ -138,7 +152,17 @@ impl TextureRegistry {
             view_formats: &[],
         });
 
-        write_pixels(queue, &texture, width, height, format, bytes);
+        if gen_mips {
+            write_rgba8_mip_chain(queue, &texture, 0, width, height, mip_level_count, bytes);
+        } else {
+            let mut off = 0usize;
+            for mip in 0..mip_count {
+                let (mw, mh) = ((width >> mip).max(1), (height >> mip).max(1));
+                let len = format.expected_len(mw, mh) as usize;
+                write_mip(queue, &texture, mip, mw, mh, format, &bytes[off..off + len]);
+                off += len;
+            }
+        }
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -152,6 +176,7 @@ impl TextureRegistry {
 
         let key = self.map.insert(Texture2D {
             texture,
+            view,
             bind_group,
         });
         key.data().as_ffi()
@@ -186,6 +211,7 @@ pub struct SharedTextures {
     sampler_binds: [wgpu::BindGroup; 8],
     #[allow(dead_code)] // kept alive: white_bind references its view
     white_tex: wgpu::Texture,
+    white_view: wgpu::TextureView,
     white_bind: wgpu::BindGroup,
 }
 
@@ -237,7 +263,14 @@ impl SharedTextures {
                 address_mode_w: wgpu::AddressMode::ClampToEdge,
                 mag_filter: filter,
                 min_filter: filter,
-                mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+                // Textures now carry mip chains; trilinear + 16x anisotropy
+                // matches GL33's non-point samplers (EngineGL33_State.cpp).
+                mipmap_filter: if point {
+                    wgpu::MipmapFilterMode::Nearest
+                } else {
+                    wgpu::MipmapFilterMode::Linear
+                },
+                anisotropy_clamp: if point { 1 } else { 16 },
                 ..Default::default()
             })
         });
@@ -291,6 +324,7 @@ impl SharedTextures {
             samplers,
             sampler_binds,
             white_tex,
+            white_view,
             white_bind,
         }
     }
@@ -300,6 +334,17 @@ impl SharedTextures {
         self.registry
             .get(handle)
             .map_or(&self.white_bind, |t| &t.bind_group)
+    }
+
+    // Texture view for `handle`, falling back to the 1x1 white texture.
+    pub fn texture_view(&self, handle: u64) -> &wgpu::TextureView {
+        self.registry
+            .get(handle)
+            .map_or(&self.white_view, |t| &t.view)
+    }
+
+    pub fn white_view(&self) -> &wgpu::TextureView {
+        &self.white_view
     }
 
     // Sampler bind group for a `point<<2 | clampV<<1 | clampU` index.
@@ -331,10 +376,22 @@ fn write_pixels(
     format: TextureFormat,
     data: &[u8],
 ) {
+    write_mip(queue, texture, 0, width, height, format, data);
+}
+
+fn write_mip(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    mip_level: u32,
+    width: u32,
+    height: u32,
+    format: TextureFormat,
+    data: &[u8],
+) {
     queue.write_texture(
         wgpu::TexelCopyTextureInfo {
             texture,
-            mip_level: 0,
+            mip_level,
             origin: wgpu::Origin3d::ZERO,
             aspect: wgpu::TextureAspect::All,
         },
@@ -350,4 +407,70 @@ fn write_pixels(
             depth_or_array_layers: 1,
         },
     );
+}
+
+// Number of mip levels for a w x h texture (down to 1x1).
+pub(crate) fn mip_chain_len(w: u32, h: u32) -> u32 {
+    32 - w.max(h).max(1).leading_zeros()
+}
+
+// Upload an RGBA8 image and its box-filtered mip chain into one array layer.
+pub(crate) fn write_rgba8_mip_chain(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    layer: u32,
+    width: u32,
+    height: u32,
+    mip_level_count: u32,
+    base: &[u8],
+) {
+    let mut level = base.to_vec();
+    let (mut lw, mut lh) = (width, height);
+    for mip in 0..mip_level_count {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: mip,
+                origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                aspect: wgpu::TextureAspect::All,
+            },
+            &level,
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(lw * 4),
+                rows_per_image: Some(lh),
+            },
+            wgpu::Extent3d {
+                width: lw,
+                height: lh,
+                depth_or_array_layers: 1,
+            },
+        );
+        if mip + 1 < mip_level_count {
+            let (nw, nh) = (lw.div_ceil(2).max(1), lh.div_ceil(2).max(1));
+            level = downsample_rgba8(&level, lw, lh, nw, nh);
+            lw = nw;
+            lh = nh;
+        }
+    }
+}
+
+// 2x2 box-filter downsample of an RGBA8 image to (nw, nh).
+fn downsample_rgba8(src: &[u8], sw: u32, sh: u32, nw: u32, nh: u32) -> Vec<u8> {
+    let mut out = vec![0u8; (nw * nh * 4) as usize];
+    for y in 0..nh {
+        let y0 = (y * 2).min(sh - 1);
+        let y1 = (y * 2 + 1).min(sh - 1);
+        for x in 0..nw {
+            let x0 = (x * 2).min(sw - 1);
+            let x1 = (x * 2 + 1).min(sw - 1);
+            let p = |px: u32, py: u32, c: usize| src[((py * sw + px) * 4) as usize + c] as u32;
+            let o = ((y * nw + x) * 4) as usize;
+            for c in 0..4 {
+                out[o + c] =
+                    ((p(x0, y0, c) + p(x1, y0, c) + p(x0, y1, c) + p(x1, y1, c) + 2) / 4) as u8;
+            }
+        }
+    }
+    out
 }
