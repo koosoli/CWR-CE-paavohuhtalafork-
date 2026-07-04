@@ -232,6 +232,11 @@ struct WgrDraw3D
      * accommodation already in, night NOT — that rides the light colour). rgb. */
     WgrVec4 mat_light_diffuse;
     WgrVec4 mat_light_ambient;
+    /* Sun-only Blinn-Phong specular highlight, folded like GL33's c18: rgb = raw
+     * sun diffuse x material specular (sun-enable folded in, so 0 when the sun is
+     * off), w = specular power. The lit shader adds rgb * pow(N.H, max(w,1))
+     * per-fragment when w > 0; w <= 0 means the material has no highlight. */
+    WgrVec4 mat_specular;
 };
 
 /* One frame-global point or spot light, shared by every 3D draw + terrain (bound
@@ -456,7 +461,7 @@ static_assert(sizeof(WgrBlend) == 4, "WgrBlend must be 4 bytes to match the Rust
 static_assert(sizeof(WgrVertex2D) == 32, "WgrVertex2D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrMeshVertex) == 32, "WgrMeshVertex must match the engine SVertex layout");
 static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrDraw3D) == 200, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrDraw3D) == 216, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrLight) == 64, "WgrLight layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");

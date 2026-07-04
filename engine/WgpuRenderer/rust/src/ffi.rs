@@ -156,6 +156,11 @@ pub struct WgrDraw3D {
     // accommodation already in, night NOT — that rides the light colour). rgb used.
     pub mat_light_diffuse: WgrVec4,
     pub mat_light_ambient: WgrVec4,
+    // Sun-only Blinn-Phong specular highlight, folded like GL33's c18: rgb = raw
+    // sun diffuse x material specular (sun-enable folded in, so 0 when the sun is
+    // off), w = specular power. The lit shader adds `rgb * pow(N.H, max(w,1))`
+    // per-fragment when w > 0; w <= 0 means the material has no highlight.
+    pub mat_specular: WgrVec4,
 }
 
 // One frame-global point or spot light, shared by every 3D draw + terrain (bound
@@ -364,7 +369,7 @@ pub struct WgrFrame {
 const _: () = assert!(std::mem::size_of::<WgrVertex2D>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 200);
+const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 216);
 const _: () = assert!(std::mem::size_of::<WgrLight>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);

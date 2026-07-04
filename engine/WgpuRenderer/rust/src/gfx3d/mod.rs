@@ -98,9 +98,10 @@ impl PipelineKey {
 // occupies this many matrices in the palette pool and in the shader UBO.
 const PALETTE_SIZE: usize = 128;
 
-// Per-draw material UBO size: five vec4 (emissive, sun_ambient, sun_diffuse,
-// light_diffuse, light_ambient), matching the `Material` struct in shader3d.wgsl.
-const MATERIAL_SIZE: u64 = 80;
+// Per-draw material UBO size: six vec4 (emissive, sun_ambient, sun_diffuse,
+// light_diffuse, light_ambient, specular), matching the `Material` struct in
+// shader3d.wgsl.
+const MATERIAL_SIZE: u64 = 96;
 
 // Fixed capacity of the frame-global light storage buffer (group 0). The
 // active count per frame rides in WgrCamera::cam_pos.w; slots beyond it aren't read.
@@ -117,6 +118,7 @@ struct MaterialUbo {
     sun_diffuse: [f32; 4],
     light_diffuse: [f32; 4],
     light_ambient: [f32; 4],
+    specular: [f32; 4],
 }
 
 // Blocking copy of one D32 texture layer into `out` (row 0 = top).
@@ -1508,6 +1510,7 @@ impl Gfx3d {
                     sun_diffuse: d.mat_sun_diffuse,
                     light_diffuse: d.mat_light_diffuse,
                     light_ambient: d.mat_light_ambient,
+                    specular: d.mat_specular,
                 };
                 queue.write_buffer(
                     mbuf,

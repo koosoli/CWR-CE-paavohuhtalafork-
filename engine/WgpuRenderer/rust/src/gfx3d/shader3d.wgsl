@@ -25,6 +25,9 @@ struct Material {
     // Modulation for the frame-global point/spot lights (GL33's matDif/matAmb).
     light_diffuse: vec4<f32>,
     light_ambient: vec4<f32>,
+    // Sun-only Blinn-Phong highlight (GL33's c18): rgb = sun diffuse x material
+    // specular (sun-enable folded in), w = power. Added per-fragment when w > 0.
+    specular: vec4<f32>,
 };
 
 @group(1) @binding(0) var<uniform> object: Object;   // plain pipeline
@@ -73,10 +76,13 @@ fn vs_main(
     @location(2) uv: vec2<f32>,
 ) -> VsOut {
     let world_pos = object.world * vec4<f32>(pos, 1.0);
-    // Vertex normals are uploaded negated (D3D convention); un-negate for the
-    // outward world normal.
+    // Vertex normals arrive already negated (MeshBuild::BuildVertices stores
+    // -Norm, the D3D convention). GL33 rotates that stored normal to world space
+    // and lights with it as-is (EngineGL33_Shaders VSNormal: `mat3(world)*normal`,
+    // no extra negation), so do the same here — negating again would flip N and
+    // invert the diffuse/specular/local-light terms relative to the sun.
     let rot = mat3x3<f32>(object.world[0].xyz, object.world[1].xyz, object.world[2].xyz);
-    return finish_vertex(world_pos, -(rot * norm), uv);
+    return finish_vertex(world_pos, rot * norm, uv);
 }
 
 // Linear-blend skinning (see the skin module). Vertices with no skin weight
@@ -91,8 +97,11 @@ fn vs_skinned(
     @location(4) weights: vec4<f32>, // Unorm8x4: normalised weights
 ) -> VsOut {
     let world_pos = skin_pos(pos, bones, weights);
+    // As in vs_main: `norm` is the already-negated stored normal (SetSkinData
+    // uploads -OrigNorm), skin_normal rotates it into world space, and we light
+    // with it as-is to match GL33 — no extra negation.
     let normal_ws = skin_normal(norm, bones, weights);
-    return finish_vertex(world_pos, -normal_ws, uv);
+    return finish_vertex(world_pos, normal_ws, uv);
 }
 
 @fragment
@@ -118,6 +127,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let local = lights_contrib(in.world_pos, nrm, material.light_diffuse.rgb, material.light_ambient.rgb);
     let lit = clamp(sun + local, vec3<f32>(0.0), vec3<f32>(1.0));
     var rgb = base.rgb * lit;
+    // Sun-only Blinn-Phong specular (GL33's PSSpecular, moved per-fragment):
+    // untextured, additive, added before the shadow multiply so a shadowed
+    // surface loses its highlight. world_pos is camera-relative (camera at the
+    // origin), so the view direction is normalize(-world_pos), NOT via cam_pos.
+    // sun_dir_world is the light travel direction — negated like the N.L term.
+    if (material.specular.w > 0.0) {
+        let view_dir = normalize(-in.world_pos);
+        let half_vec = normalize(-frame.sun_dir_world.xyz + view_dir);
+        let n_dot_h = max(dot(nrm, half_vec), 0.0);
+        let spec = material.specular.rgb * pow(n_dot_h, max(material.specular.w, 1.0));
+        rgb += clamp(spec, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
     let s = shadow_strength(in.world_pos, nrm, in.fog, dwx, dwy);
     rgb *= mix(1.0, frame.shadow.ctlb.y, s);
     // Blend toward the scene fog colour (matches GL33's mix(fogColor, r0, vFogTC)).

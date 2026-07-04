@@ -1113,6 +1113,13 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
     const Color& lightAmb = _curMaterial.ambient;
     d.mat_light_diffuse = {lightDif.R(), lightDif.G(), lightDif.B(), lightDif.A()};
     d.mat_light_ambient = {lightAmb.R(), lightAmb.G(), lightAmb.B(), lightAmb.A()};
+    // Sun-only Blinn-Phong specular, folded exactly like GL33's c18 (specCol =
+    // sun->Diffuse() * mat.specular, power in w). The shader adds it per-fragment,
+    // gated on w > 0, so fold the sun-enable into the colour and leave w = power.
+    const Color specCol = sunDif * _curMaterial.specular;
+    const float specPow = float(_curMaterial.specularPower);
+    const float specEn = (specPow > 0.0f) ? sunEn : 0.0f;
+    d.mat_specular = {specCol.R() * specEn, specCol.G() * specEn, specCol.B() * specEn, specPow};
 
     _draws3d.push_back(d);
     _cmds.push_back(WgrCmd{WGR_CMD_DRAW_3D, U32(_draws3d.size() - 1)});
