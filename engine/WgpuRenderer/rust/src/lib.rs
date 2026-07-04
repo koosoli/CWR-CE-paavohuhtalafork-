@@ -3,6 +3,7 @@ mod gfx2d;
 mod gfx3d;
 mod handles;
 mod log;
+mod shaders;
 mod terrain;
 mod textures;
 
@@ -84,8 +85,7 @@ impl Renderer {
         }
         // Optional: lets the terrain bind group carry fewer views than the
         // declared array size; without it unused slots are padded with a dummy.
-        let partially_bound =
-            adapter.features() & wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
+        let partially_bound = adapter.features() & wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
 
         let required_limits = wgpu::Limits {
             max_binding_array_elements_per_shader_stage: terrain::TERRAIN_MAX_GROUND_LAYERS,
@@ -114,8 +114,11 @@ impl Renderer {
         surface.configure(&device, &config);
 
         let textures = SharedTextures::new(&device, &queue, bc_supported);
+        // One composer, pre-loaded with the shared shader modules, shared by the
+        // 3D subsystems that #import them.
+        let mut composer = shaders::build_composer();
         let gfx2d = Gfx2d::new(&device, &textures, config.format);
-        let gfx3d = Gfx3d::new(&device, &textures, config.format);
+        let gfx3d = Gfx3d::new(&device, &textures, config.format, &mut composer);
         let terrain = Terrain::new(
             &device,
             &queue,
@@ -123,6 +126,7 @@ impl Renderer {
             config.format,
             !partially_bound.is_empty(),
             textures.white_view().clone(),
+            &mut composer,
         );
 
         Ok(Self {
@@ -193,7 +197,8 @@ impl Renderer {
             .prepare_shadows(&self.device, &self.queue, shadow, shadow_casters);
         self.gfx3d
             .prepare(&self.device, &self.queue, cameras, draws3d, palette);
-        self.terrain.prepare(&self.device, &self.queue, terrain_nodes);
+        self.terrain
+            .prepare(&self.device, &self.queue, terrain_nodes);
 
         let Some(frame) = self.acquire()? else {
             return Ok(());
@@ -282,11 +287,13 @@ impl Renderer {
                         self.gfx3d.draw_one(&mut pass, &self.textures, d, cmd.arg);
                     }
                 } else if cmd.kind == WgrCmdKind::DrawTerrain as u32 {
-                    if let (Some(b), Some(cam)) =
-                        (terrain_batches.get(cmd.arg as usize), self.gfx3d.camera_bind())
-                    {
+                    if let (Some(b), Some(cam)) = (
+                        terrain_batches.get(cmd.arg as usize),
+                        self.gfx3d.camera_bind(),
+                    ) {
                         let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
-                        self.terrain.draw(&mut pass, cam, off, b.first_node, b.node_count);
+                        self.terrain
+                            .draw(&mut pass, cam, off, b.first_node, b.node_count);
                     }
                 }
             }
@@ -421,7 +428,14 @@ impl Renderer {
         res: u32,
         out: &mut [f32],
     ) -> bool {
-        self.gfx3d
-            .shadow_depth_probe(&self.device, &self.queue, &self.textures, light_vp, verts_xyz, res, out)
+        self.gfx3d.shadow_depth_probe(
+            &self.device,
+            &self.queue,
+            &self.textures,
+            light_vp,
+            verts_xyz,
+            res,
+            out,
+        )
     }
 }

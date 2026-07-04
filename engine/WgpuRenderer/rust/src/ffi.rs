@@ -174,7 +174,7 @@ pub struct WgrCameraShadow {
     pub splits: WgrVec4,      // frustum tiers: far eye-depth per tier
     pub omni_radius: WgrVec4, // omni tiers: camera-distance radius (0 = frustum tier)
     pub ctl: WgrVec4,         // {count, omni_count, fade_range, bias_const}
-    pub ctl2: WgrVec4,        // {texel_size (1/res), darkness, normal_offset_scale, pcf}
+    pub ctlb: WgrVec4,        // {texel_size (1/res), darkness, normal_offset_scale, pcf}
     pub cam_fwd: WgrVec4,     // xyz = camera forward (eye-depth cascade select)
     pub sun_dir: WgrVec4,     // xyz = sun travel direction (normal-offset bias)
 }
@@ -443,7 +443,14 @@ pub unsafe extern "C" fn wgr_texture_create(
         };
         let renderer = unsafe { &mut *renderer };
         let slice = unsafe { std::slice::from_raw_parts(data, byte_len as usize) };
-        renderer.texture_create(width, height, fmt, mip_count, flags & TEXTURE_GEN_MIPS != 0, slice)
+        renderer.texture_create(
+            width,
+            height,
+            fmt,
+            mip_count,
+            flags & TEXTURE_GEN_MIPS != 0,
+            slice,
+        )
     }))
     .unwrap_or(0)
 }
@@ -761,7 +768,8 @@ pub unsafe extern "C" fn wgr_shadow_depth_probe(
     res: u32,
     out: *mut f32,
 ) -> i32 {
-    if renderer.is_null() || light_vp16.is_null() || tri_xyz.is_null() || out.is_null() || res == 0 {
+    if renderer.is_null() || light_vp16.is_null() || tri_xyz.is_null() || out.is_null() || res == 0
+    {
         return 0;
     }
     catch_unwind(AssertUnwindSafe(|| {

@@ -11,7 +11,15 @@ publish = false
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-wgpu = "29.0"
+# naga-ir: lets us hand wgpu a pre-composed naga::Module (ShaderSource::Naga),
+# which is how the naga_oil-composed shaders are fed in (see src/shaders/).
+wgpu = { version = "29.0", features = ["naga-ir"] }
+# Shader module system (#import / #define_import_path). 0.22 tracks naga 29, the
+# same naga wgpu 29 pins, so the naga crate unifies to one version.
+naga_oil = "0.22"
+# Direct handle on naga (the version above pulls it in) so we can hand the
+# composer the validation capabilities our shaders need (binding arrays).
+naga = "29"
 # must match the version wgpu re-exports
 raw-window-handle = "0.6"
 pollster = "0.4"

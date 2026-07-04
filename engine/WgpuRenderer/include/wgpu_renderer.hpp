@@ -237,7 +237,7 @@ struct WgrCameraShadow
     WgrVec4 splits;        // frustum tiers: far eye-depth per tier
     WgrVec4 omni_radius;   // omni tiers: camera-distance radius (0 = frustum tier)
     WgrVec4 ctl;           // {count, omni_count, fade_range, bias_const}
-    WgrVec4 ctl2;          // {texel_size (1/res), darkness, normal_offset_scale, pcf}
+    WgrVec4 ctlb;          // {texel_size (1/res), darkness, normal_offset_scale, pcf}
     WgrVec4 cam_fwd;       // xyz = camera forward (eye-depth cascade select)
     WgrVec4 sun_dir;       // xyz = sun travel direction (normal-offset bias)
 };

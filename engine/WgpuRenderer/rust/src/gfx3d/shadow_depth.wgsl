@@ -5,6 +5,8 @@
 // ShadowMath conventions: camera-relative positions, NDC z in [0, 1], linear
 // ortho depth — forward convention (clear 1.0, LessEqual), no reversed-Z.
 
+#import skin::{skin_pos}
+
 struct PassData {
     light_vp: mat4x4<f32>,
 };
@@ -14,13 +16,10 @@ struct CasterData {
     params: vec4<f32>,  // x = alpha_ref
 };
 
-struct Palette {
-    m: array<mat4x4<f32>, 128>,
-};
-
 @group(0) @binding(0) var<uniform> pass_data: PassData;
 @group(1) @binding(0) var<uniform> caster: CasterData;  // rigid pipelines
-@group(1) @binding(0) var<uniform> palette: Palette;    // skinned pipelines
+// Skinned pipelines bind the bone `palette` at this same group(1)/binding(0)
+// slot (declared by the skin module); each entry point uses only one.
 @group(2) @binding(0) var tex: texture_2d<f32>;
 @group(3) @binding(0) var samp: sampler;
 
@@ -54,14 +53,6 @@ fn fs_alpha(in: VsAlphaOut) {
     if (textureSample(tex, samp, in.uv).a < caster.params.x) {
         discard;
     }
-}
-
-fn skin_pos(pos: vec3<f32>, bones: vec4<u32>, weights: vec4<f32>) -> vec4<f32> {
-    let p = vec4<f32>(pos, 1.0);
-    return weights.x * (palette.m[bones.x] * p)
-         + weights.y * (palette.m[bones.y] * p)
-         + weights.z * (palette.m[bones.z] * p)
-         + weights.w * (palette.m[bones.w] * p);
 }
 
 @vertex

@@ -593,7 +593,7 @@ void EngineWgpu::NextFrame()
                                   _smCascades.omniRadius[3]};
                 sb.ctl = {static_cast<float>(_smCascades.count), static_cast<float>(_smCascades.omniCount),
                           _smTuning.fadeRange, _smTuning.biasBase};
-                sb.ctl2 = {1.0f / static_cast<float>(_smCascadeRes), darkness, _smTuning.normalOffset, _smTuning.pcf};
+                sb.ctlb = {1.0f / static_cast<float>(_smCascadeRes), darkness, _smTuning.normalOffset, _smTuning.pcf};
                 sb.cam_fwd = {_cameras[i].dir[0], _cameras[i].dir[1], _cameras[i].dir[2], 0.0f};
                 sb.sun_dir = {_smCascades.sunDir.x, _smCascades.sunDir.y, _smCascades.sunDir.z, 0.0f};
             }

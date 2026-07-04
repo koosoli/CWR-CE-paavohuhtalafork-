@@ -135,7 +135,11 @@ impl TextureRegistry {
             return 0;
         }
         let gen_mips = gen_mips && format == TextureFormat::Rgba8 && mip_count == 1;
-        let mip_level_count = if gen_mips { mip_chain_len(width, height) } else { mip_count };
+        let mip_level_count = if gen_mips {
+            mip_chain_len(width, height)
+        } else {
+            mip_count
+        };
 
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_texture"),
@@ -431,7 +435,11 @@ pub(crate) fn write_rgba8_mip_chain(
             wgpu::TexelCopyTextureInfo {
                 texture,
                 mip_level: mip,
-                origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                origin: wgpu::Origin3d {
+                    x: 0,
+                    y: 0,
+                    z: layer,
+                },
                 aspect: wgpu::TextureAspect::All,
             },
             &level,

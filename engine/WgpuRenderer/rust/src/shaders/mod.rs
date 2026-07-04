@@ -1,0 +1,118 @@
+//! Shader composition via naga_oil.
+//!
+//! The 3D pipelines share a lot of WGSL — the group(0) frame/shadow bindings,
+//! the cascaded-shadow kernel, GPU skinning, sun lighting. Rather than
+//! copy-paste, the shared pieces live in the sibling `*.wgsl` files here as
+//! naga_oil composable modules (`#define_import_path`), and the entry-point
+//! shaders `#import` them. This module builds the composer and turns a composed
+//! source into a `wgpu::ShaderModule`.
+//!
+//! Pipeline-overridable `override` constants stay in the entry shaders, never in
+//! a shared module: naga_oil's own `override` keyword means virtual-function
+//! override, so keeping them separate sidesteps the collision, and they survive
+//! composition as ordinary naga `Override` entries (wgpu still applies them via
+//! `PipelineCompilationOptions`).
+
+use std::borrow::Cow;
+
+use naga_oil::compose::{
+    ComposableModuleDescriptor, Composer, NagaModuleDescriptor, ShaderLanguage,
+};
+
+/// Build a composer with every shared module registered. Registration order
+/// matters: a module must be added before anything that `#import`s it — `shadow`
+/// and `lighting` import `frame`.
+pub fn build_composer() -> Composer {
+    // naga_oil validates the composed module itself, defaulting to zero
+    // capabilities — so it rejects our shaders' use of texture binding arrays
+    // (terrain's bindless ground layers, indexed non-uniformly). Grant the
+    // capabilities matching the device features the backend requests
+    // (TEXTURE_BINDING_ARRAY + SAMPLED_TEXTURE_..._NON_UNIFORM_INDEXING). wgpu
+    // still re-validates against the real device caps at pipeline creation.
+    let capabilities = naga::valid::Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY
+        | naga::valid::Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY_NON_UNIFORM_INDEXING;
+    let mut composer = Composer::default().with_capabilities(capabilities);
+    for (source, file_path) in [
+        (include_str!("frame.wgsl"), "frame.wgsl"),
+        (include_str!("skin.wgsl"), "skin.wgsl"),
+        (include_str!("lighting.wgsl"), "lighting.wgsl"),
+        (include_str!("shadow.wgsl"), "shadow.wgsl"),
+    ] {
+        if let Err(e) = composer.add_composable_module(ComposableModuleDescriptor {
+            source,
+            file_path,
+            language: ShaderLanguage::Wgsl,
+            ..Default::default()
+        }) {
+            // Static shaders: a compose failure is a build-time bug, not a
+            // runtime condition. emit_to_string points at the offending line.
+            panic!(
+                "shared shader module {file_path}: {}",
+                e.emit_to_string(&composer)
+            );
+        }
+    }
+    composer
+}
+
+/// Compose an entry-point shader source (which may `#import` the shared modules)
+/// into a wgpu shader module.
+pub fn make_module(
+    device: &wgpu::Device,
+    composer: &mut Composer,
+    label: &str,
+    source: &str,
+    file_path: &str,
+) -> wgpu::ShaderModule {
+    let module = match composer.make_naga_module(NagaModuleDescriptor {
+        source,
+        file_path,
+        ..Default::default()
+    }) {
+        Ok(module) => module,
+        Err(e) => panic!(
+            "compose {label} ({file_path}): {}",
+            e.emit_to_string(composer)
+        ),
+    };
+    device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: wgpu::ShaderSource::Naga(Cow::Owned(module)),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Compose every entry-point shader through the shared modules. This runs
+    // naga_oil's full import resolution + naga validation without needing a GPU
+    // device, so it catches broken imports, duplicate-binding rejections, and
+    // capability gaps that would otherwise only surface at device init.
+    fn compose(source: &str, file_path: &str) {
+        let mut composer = build_composer();
+        if let Err(e) = composer.make_naga_module(NagaModuleDescriptor {
+            source,
+            file_path,
+            ..Default::default()
+        }) {
+            panic!("{file_path}: {}", e.emit_to_string(&composer));
+        }
+    }
+
+    #[test]
+    fn entry_shaders_compose() {
+        compose(
+            include_str!("../gfx3d/shader3d.wgsl"),
+            "gfx3d/shader3d.wgsl",
+        );
+        compose(
+            include_str!("../gfx3d/shadow_depth.wgsl"),
+            "gfx3d/shadow_depth.wgsl",
+        );
+        compose(
+            include_str!("../terrain/terrain.wgsl"),
+            "terrain/terrain.wgsl",
+        );
+    }
+}

@@ -161,8 +161,7 @@ impl Gfx2d {
             label: Some("wgr_overlay_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("overlay.wgsl").into()),
         });
-        let overlay_attrs =
-            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4];
+        let overlay_attrs = wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4];
         let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgr_overlay_pipeline"),
             layout: Some(&pipeline_layout),

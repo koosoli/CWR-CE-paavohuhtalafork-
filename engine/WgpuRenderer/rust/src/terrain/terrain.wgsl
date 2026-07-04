@@ -4,34 +4,12 @@
 // blends the four surrounding land cells' detail-array layers (indexed by a
 // per-cell index map) and modulates by a tiled high-frequency noise texture.
 
-struct FrameParams {
-    fog_start: f32,
-    fog_inv_range: f32,
-    fog_enabled: f32,
-    shadow_strength: f32,
-};
-
-struct ShadowBlock {
-    cascade_vp: array<mat4x4<f32>, 4>,
-    splits: vec4<f32>,
-    omni_radius: vec4<f32>,
-    ctl: vec4<f32>,  // {count, omni_count, fade_range, bias_const}
-    ctl2: vec4<f32>, // {texel_size, darkness, normal_offset, pcf}
-    cam_fwd: vec4<f32>,
-    sun_dir: vec4<f32>,
-};
-
-struct Frame {
-    proj: mat4x4<f32>,
-    view: mat4x4<f32>,
-    fog_color: vec4<f32>,
-    params: FrameParams,
-    shadow: ShadowBlock,
-    cam_pos: vec4<f32>,
-    sun_diffuse: vec4<f32>,
-    sun_ambient: vec4<f32>,
-    sun_dir_world: vec4<f32>,
-};
+// Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
+// pipeline via the frame module, so terrain receives the same CSM shadows and
+// sun lighting.
+#import frame::{frame, reverse_z, fog_factor}
+#import shadow::shadow_strength
+#import lighting::sun_light
 
 struct TerrainParams {
     world_origin: vec2<f32>,
@@ -46,9 +24,6 @@ struct TerrainParams {
 // Must match GRID_N in terrain/mod.rs.
 const GRID_N: f32 = 32.0;
 
-@group(0) @binding(0) var<uniform> frame: Frame;
-@group(0) @binding(1) var shadow_map: texture_depth_2d_array;
-@group(0) @binding(2) var shadow_samp: sampler_comparison;
 @group(1) @binding(0) var<uniform> tp: TerrainParams;
 @group(1) @binding(1) var heightmap: texture_2d<f32>;
 // Bindless ground textures: one texture_2d per Landscape texture index, native
@@ -171,9 +146,7 @@ fn vs_terrain(
     let world_rel = vec3<f32>(world_xz.x, height, world_xz.y) - frame.cam_pos.xyz;
 
     var out: VsOut;
-    out.clip = frame.proj * frame.view * vec4<f32>(world_rel, 1.0);
-    // Reversed-Z: forward projection (near->0, far->1) remapped to near->1, far->0.
-    out.clip.z = out.clip.w - out.clip.z;
+    out.clip = reverse_z(frame.proj * frame.view * vec4<f32>(world_rel, 1.0));
     // Texture + normal use the same morphed world position the geometry is drawn
     // at, so the UV stays locked to the mesh and morphs smoothly with it. (Using
     // the un-morphed position instead decouples the UV from the screen-space
@@ -182,128 +155,8 @@ fn vs_terrain(
     out.world_xz = world_xz;
     out.world_pos = world_rel;
 
-    let fog_dist = length(world_rel);
-    let fog_factor = clamp(1.0 - (fog_dist - frame.params.fog_start) * frame.params.fog_inv_range, 0.0, 1.0);
-    out.fog = select(1.0, fog_factor, frame.params.fog_enabled > 0.5);
+    out.fog = fog_factor(length(world_rel));
     return out;
-}
-
-// Cascaded shadow strength in [0,1] for a camera-relative position (0 = lit).
-// Verbatim port of the lit mesh kernel (gfx3d/shader3d.wgsl fs_main) so terrain
-// self-shadows consistently with objects.
-fn shadow_strength(world_pos: vec3<f32>, normal_ws: vec3<f32>, fog: f32,
-                   dwx: vec3<f32>, dwy: vec3<f32>) -> f32 {
-    let n_cascades = i32(frame.shadow.ctl.x);
-    if (n_cascades <= 0) {
-        return 0.0;
-    }
-    let omni_n = i32(frame.shadow.ctl.y);
-    let eye_depth = dot(world_pos, frame.shadow.cam_fwd.xyz);
-    let dist3d = length(world_pos);
-
-    var ci = n_cascades;
-    for (var i = 0; i < 4; i++) {
-        if (i >= n_cascades) {
-            break;
-        }
-        let metric = select(eye_depth, dist3d, i < omni_n);
-        if (metric <= frame.shadow.splits[i]) {
-            ci = i;
-            break;
-        }
-    }
-    if (ci >= n_cascades) {
-        return 0.0;
-    }
-
-    let cos_t = dot(normal_ws, -frame.shadow.sun_dir.xyz);
-    let sin_t = sqrt(max(0.0, 1.0 - cos_t * cos_t));
-
-    var prev_edge = 0.0;
-    if (ci > 0) {
-        prev_edge = frame.shadow.splits[ci - 1];
-    }
-    let ci_metric = select(eye_depth, dist3d, ci < omni_n);
-    let band = (frame.shadow.splits[ci] - prev_edge) * 0.15;
-    var bw = 0.0;
-    if (ci + 1 < n_cascades) {
-        bw = clamp((ci_metric - (frame.shadow.splits[ci] - band)) / max(band, 0.001), 0.0, 1.0);
-    }
-
-    let ts = frame.shadow.ctl2.x;
-    var lit_sum = 0.0;
-    var w_sum = 0.0;
-    for (var p = 0; p < 4; p++) {
-        let c = ci + p;
-        if (c >= n_cascades) {
-            break;
-        }
-        var w: f32;
-        if (p == 0) {
-            w = 1.0 - bw;
-        } else if (w_sum <= 0.0) {
-            w = 1.0;
-        } else if (p == 1) {
-            w = bw;
-        } else {
-            w = 0.0;
-        }
-        if (w <= 0.0) {
-            continue;
-        }
-
-        let vp = frame.shadow.cascade_vp[c];
-        let sx = max(length(vec3<f32>(vp[0][0], vp[1][0], vp[2][0])), 1e-6);
-        let texel_world = 2.0 * ts / sx;
-        let offset = frame.shadow.ctl2.z * 2.0 * texel_world * sin_t;
-
-        let cp = vp * vec4<f32>(world_pos + normal_ws * offset, 1.0);
-        let sc = cp.xyz / cp.w;
-        let suv = vec2<f32>(sc.x * 0.5 + 0.5, 0.5 - sc.y * 0.5);
-        if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 && sc.z > 0.0 && sc.z < 1.0) {
-            let dsx = vp * vec4<f32>(dwx, 0.0);
-            let dsy = vp * vec4<f32>(dwy, 0.0);
-            let duv_dx = vec2<f32>(0.5 * dsx.x, -0.5 * dsx.y);
-            let duv_dy = vec2<f32>(0.5 * dsy.x, -0.5 * dsy.y);
-            let det = duv_dx.x * duv_dy.y - duv_dx.y * duv_dy.x;
-            var dz_duv = vec2<f32>(0.0, 0.0);
-            if (abs(det) > 1e-12) {
-                dz_duv = vec2<f32>(dsx.z * duv_dy.y - dsy.z * duv_dx.y,
-                                   dsy.z * duv_dx.x - dsx.z * duv_dy.x) / det;
-            }
-            let lim = 0.02 / max(ts, 1e-6);
-            dz_duv = clamp(dz_duv, vec2<f32>(-lim, -lim), vec2<f32>(lim, lim));
-            let plane_bias = min(2.0 * ts * (abs(dz_duv.x) + abs(dz_duv.y)), 0.01);
-            let bias = frame.shadow.ctl.w * f32(c + 1) * f32(c + 1);
-            let ref_z = sc.z - bias - plane_bias;
-            var lit: f32;
-            let pcf = frame.shadow.ctl2.w;
-            if (pcf >= 0.5) {
-                let o = ts * pcf;
-                var sum = 0.0;
-                for (var dy = -1; dy <= 1; dy++) {
-                    for (var dx = -1; dx <= 1; dx++) {
-                        let off = vec2<f32>(f32(dx), f32(dy)) * o;
-                        let wt = (2.0 - abs(f32(dx))) * (2.0 - abs(f32(dy)));
-                        let adj = clamp(dot(off, dz_duv), -0.02, 0.02);
-                        sum += wt * textureSampleCompareLevel(shadow_map, shadow_samp, suv + off, c, ref_z + adj);
-                    }
-                }
-                lit = sum / 16.0;
-            } else {
-                lit = textureSampleCompareLevel(shadow_map, shadow_samp, suv, c, ref_z);
-            }
-            lit_sum += w * lit;
-            w_sum += w;
-        }
-    }
-    if (w_sum <= 0.0) {
-        return 0.0;
-    }
-    let lit = lit_sum / w_sum;
-    let last_split = frame.shadow.splits[n_cascades - 1];
-    let fade = clamp((last_split - eye_depth) / max(frame.shadow.ctl.z, 0.001), 0.0, 1.0);
-    return (1.0 - lit) * fade * clamp(fog, 0.0, 1.0);
 }
 
 // Half-width (in land-cell fractions) of the texture cross-fade band centred on
@@ -368,19 +221,11 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
 
     // Per-pixel normal at a fixed heightmap step (independent of patch LOD/morph).
     let n = sample_normal(in.world_xz, tp.terrain_grid);
-    // Sun light matching GL33's lit path: diffuse * N.L + ambient (eye
-    // accommodation folded in on the CPU), saturated like the vertex-colour
-    // pack it replaces. sun_dir_world is the light's travel direction (GL33's
-    // sunDir constant, negated against the true up normal exactly as GL33's
-    // vertex shader does); at night/dawn it points at or up through the
-    // horizon, so level ground falls back to ambient. Not the shadow block's
-    // sun_dir, which is only valid while the cascade pass runs.
-    let cos_fi = max(dot(n, -frame.sun_dir_world.xyz), 0.0);
-    let light = min(frame.sun_diffuse.rgb * cos_fi + frame.sun_ambient.rgb, vec3<f32>(1.0));
-    rgb *= light;
+    // Sun diffuse * N.L + ambient (the lighting module; shared with objects).
+    rgb *= sun_light(n);
 
     let s = shadow_strength(in.world_pos, n, in.fog, dwx, dwy);
-    rgb *= mix(1.0, frame.shadow.ctl2.y, s);
+    rgb *= mix(1.0, frame.shadow.ctlb.y, s);
 
     rgb = mix(frame.fog_color.rgb, rgb, in.fog);
     return vec4<f32>(rgb, 1.0);

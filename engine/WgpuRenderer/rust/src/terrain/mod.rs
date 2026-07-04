@@ -10,8 +10,7 @@ const GRID_N: u32 = 32;
 // request). Must match WGR_TERRAIN_MAX_GROUND_LAYERS in wgpu_renderer.hpp.
 pub const TERRAIN_MAX_GROUND_LAYERS: u32 = 512;
 
-pub struct Terrain
-{
+pub struct Terrain {
     group1_layout: wgpu::BindGroupLayout,
     group2_layout: wgpu::BindGroupLayout,
 
@@ -46,8 +45,7 @@ pub struct Terrain
     max_dim: u32,
 }
 
-impl Terrain
-{
+impl Terrain {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
@@ -55,8 +53,8 @@ impl Terrain
         surface_format: wgpu::TextureFormat,
         partially_bound: bool,
         white_view: wgpu::TextureView,
-    ) -> Self
-    {
+        composer: &mut naga_oil::compose::Composer,
+    ) -> Self {
         // group 1 (vertex): terrain params UBO + heightmap (R32Float, textureLoad).
         let group1_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_terrain_group1_layout"),
@@ -180,7 +178,11 @@ impl Terrain
                 bytes_per_row: Some(4),
                 rows_per_image: Some(1),
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let group1_bind = make_group1(device, &group1_layout, &params_ubo, &heightmap_view);
 
@@ -197,11 +199,19 @@ impl Terrain
                 bytes_per_row: Some(2),
                 rows_per_image: Some(1),
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         let detail = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_terrain_detail_neutral"),
-            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -217,7 +227,11 @@ impl Terrain
                 bytes_per_row: Some(4),
                 rows_per_image: Some(1),
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         // The view keeps the neutral stand-in texture alive.
         let detail_view = detail.create_view(&wgpu::TextureViewDescriptor::default());
@@ -231,7 +245,11 @@ impl Terrain
                 bytes_per_row: Some(2),
                 rows_per_image: Some(1),
             },
-            wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
         );
         // 16x anisotropy: terrain is the worst case for isotropic mip selection
         // (large planes at grazing angles), and GL33's samplers already use it.
@@ -282,10 +300,13 @@ impl Terrain
             mapped_at_creation: false,
         });
 
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("wgr_terrain_shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("terrain.wgsl").into()),
-        });
+        let shader = crate::shaders::make_module(
+            device,
+            composer,
+            "wgr_terrain_shader",
+            include_str!("terrain.wgsl"),
+            "terrain/terrain.wgsl",
+        );
         // Override constants baked from the environment (see terrain.wgsl).
         let blend_width = std::env::var("WGR_TERRAIN_BLEND_WIDTH")
             .ok()
@@ -299,7 +320,11 @@ impl Terrain
         let fs_constants = [("blend_width", blend_width)];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_terrain_pipeline_layout"),
-            bind_group_layouts: &[Some(camera_layout), Some(&group1_layout), Some(&group2_layout)],
+            bind_group_layouts: &[
+                Some(camera_layout),
+                Some(&group1_layout),
+                Some(&group2_layout),
+            ],
             immediate_size: 0,
         });
         let grid_attrs = wgpu::vertex_attr_array![0 => Float32x3];
@@ -392,8 +417,7 @@ impl Terrain
         queue: &wgpu::Queue,
         heights: &[f32],
         params: WgrTerrainParams,
-    )
-    {
+    ) {
         let (w, h) = (params.hm_width, params.hm_height);
         if w == 0 || h == 0 || w > self.max_dim || h > self.max_dim {
             return;
@@ -411,7 +435,11 @@ impl Terrain
                 bytes_per_row: Some(w * 4),
                 rows_per_image: Some(h),
             },
-            wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
         );
         queue.write_buffer(&self.params_ubo, 0, bytemuck::bytes_of(&params));
         self.group1_bind = make_group1(device, &self.group1_layout, &self.params_ubo, &view);
@@ -422,8 +450,7 @@ impl Terrain
     // Ground layers as views into the shared texture registry (missing handles
     // already resolved to the white fallback by the caller). Truncated to the
     // binding_array capacity; the index-map upload clamps cell indices to match.
-    pub fn set_ground_layers(&mut self, device: &wgpu::Device, mut views: Vec<wgpu::TextureView>)
-    {
+    pub fn set_ground_layers(&mut self, device: &wgpu::Device, mut views: Vec<wgpu::TextureView>) {
         views.truncate(TERRAIN_MAX_GROUND_LAYERS as usize);
         if views.is_empty() {
             views.push(self.pad_view.clone());
@@ -439,8 +466,7 @@ impl Terrain
         width: u32,
         height: u32,
         indices: &[u16],
-    )
-    {
+    ) {
         if width == 0 || height == 0 || width > self.max_dim || height > self.max_dim {
             return;
         }
@@ -456,7 +482,11 @@ impl Terrain
                 bytes_per_row: Some(width * 2),
                 rows_per_image: Some(height),
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         self.index_map = index_map;
         self.rebuild_group2(device);
@@ -469,8 +499,7 @@ impl Terrain
         width: u32,
         height: u32,
         offsets: &[i8],
-    )
-    {
+    ) {
         if width == 0 || height == 0 || width > self.max_dim || height > self.max_dim {
             return;
         }
@@ -486,21 +515,23 @@ impl Terrain
                 bytes_per_row: Some(width * 2),
                 rows_per_image: Some(height),
             },
-            wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
         );
         self.jitter_map = jitter_map;
         self.rebuild_group2(device);
     }
 
     // Detail noise as a view into the shared texture registry.
-    pub fn set_detail_layer(&mut self, device: &wgpu::Device, view: wgpu::TextureView)
-    {
+    pub fn set_detail_layer(&mut self, device: &wgpu::Device, view: wgpu::TextureView) {
         self.detail_view = view;
         self.rebuild_group2(device);
     }
 
-    fn rebuild_group2(&mut self, device: &wgpu::Device)
-    {
+    fn rebuild_group2(&mut self, device: &wgpu::Device) {
         self.group2_bind = make_group2(
             device,
             &self.group2_layout,
@@ -515,8 +546,12 @@ impl Terrain
         );
     }
 
-    pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, nodes: &[WgrTerrainNode])
-    {
+    pub fn prepare(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        nodes: &[WgrTerrainNode],
+    ) {
         self.instance_count = nodes.len() as u32;
         if nodes.is_empty() {
             return;
@@ -544,8 +579,7 @@ impl Terrain
         camera_offset: u32,
         first_node: u32,
         node_count: u32,
-    )
-    {
+    ) {
         if !self.have_heightmap || node_count == 0 {
             return;
         }
@@ -559,12 +593,15 @@ impl Terrain
         pass.set_vertex_buffer(0, self.grid_vbuf.slice(..));
         pass.set_vertex_buffer(1, self.instance_buf.slice(..));
         pass.set_index_buffer(self.grid_ibuf.slice(..), wgpu::IndexFormat::Uint16);
-        pass.draw_indexed(0..self.grid_index_count, 0, first_node..first_node + node_count);
+        pass.draw_indexed(
+            0..self.grid_index_count,
+            0,
+            first_node..first_node + node_count,
+        );
     }
 }
 
-fn texel_copy(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_>
-{
+fn texel_copy(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_> {
     wgpu::TexelCopyTextureInfo {
         texture,
         mip_level: 0,
@@ -573,11 +610,14 @@ fn texel_copy(texture: &wgpu::Texture) -> wgpu::TexelCopyTextureInfo<'_>
     }
 }
 
-fn create_heightmap(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView)
-{
+fn create_heightmap(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wgpu::TextureView) {
     let tex = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("wgr_terrain_heightmap"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -594,8 +634,7 @@ fn make_group1(
     layout: &wgpu::BindGroupLayout,
     params: &wgpu::Buffer,
     heightmap_view: &wgpu::TextureView,
-) -> wgpu::BindGroup
-{
+) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgr_terrain_group1_bind"),
         layout,
@@ -612,11 +651,14 @@ fn make_group1(
     })
 }
 
-fn create_index_map(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture
-{
+fn create_index_map(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("wgr_terrain_index_map"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -627,11 +669,14 @@ fn create_index_map(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture
 }
 
 // Per-grid-point ground UV jitter (Landscape::_random), snorm UV offsets.
-fn create_jitter_map(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture
-{
+fn create_jitter_map(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("wgr_terrain_jitter_map"),
-        size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
@@ -653,8 +698,7 @@ fn make_group2(
     jitter_map: &wgpu::Texture,
     sampler: &wgpu::Sampler,
     clamp_sampler: &wgpu::Sampler,
-) -> wgpu::BindGroup
-{
+) -> wgpu::BindGroup {
     // Without PARTIALLY_BOUND_BINDING_ARRAY every declared slot must be bound,
     // so pad the tail; the shader never indexes past the real layer count.
     let mut ground_refs: Vec<&wgpu::TextureView> = ground_views.iter().collect();
@@ -698,8 +742,7 @@ fn make_group2(
 // The reusable unit grid: (GRID_N+1)^2 vertices over [0,1]^2, two triangles per
 // quad, plus a border skirt. Vertex is (u, v, skirt); the shader drops skirt
 // vertices below the surface to wall off LOD-transition cracks.
-fn build_grid(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32)
-{
+fn build_grid(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32) {
     let side = GRID_N + 1;
     let unit = 1.0 / GRID_N as f32;
     let mut verts: Vec<[f32; 3]> = Vec::with_capacity((side * side) as usize);
@@ -736,8 +779,16 @@ fn build_grid(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32)
         wall([i as u16, (i + 1) as u16], [f, 0.0], [g, 0.0]);
         wall([(b + i) as u16, (b + i + 1) as u16], [f, 1.0], [g, 1.0]);
         // left (x=0) / right (x=GRID_N)
-        wall([(i * side) as u16, ((i + 1) * side) as u16], [0.0, f], [0.0, g]);
-        wall([(i * side + GRID_N) as u16, ((i + 1) * side + GRID_N) as u16], [1.0, f], [1.0, g]);
+        wall(
+            [(i * side) as u16, ((i + 1) * side) as u16],
+            [0.0, f],
+            [0.0, g],
+        );
+        wall(
+            [(i * side + GRID_N) as u16, ((i + 1) * side + GRID_N) as u16],
+            [1.0, f],
+            [1.0, g],
+        );
     }
 
     let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {

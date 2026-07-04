@@ -4,8 +4,8 @@ use slotmap::{Key, KeyData, SlotMap};
 use wgpu::util::DeviceExt;
 
 use crate::ffi::{
-    WgrBlend, WgrCamera, WgrDraw3D, WgrMat4, WgrMeshVertex, WgrShadowCaster, WgrShadowPass,
-    DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE,
+    DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE, WgrBlend, WgrCamera,
+    WgrDraw3D, WgrMat4, WgrMeshVertex, WgrShadowCaster, WgrShadowPass,
 };
 use crate::textures::SharedTextures;
 
@@ -59,7 +59,10 @@ fn env_f32(name: &'static str, default: f32) -> f32 {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<HashMap<&'static str, f32>>> = OnceLock::new();
-    let mut map = CACHE.get_or_init(|| Mutex::new(HashMap::new())).lock().unwrap();
+    let mut map = CACHE
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap();
     *map.entry(name).or_insert_with(|| {
         std::env::var(name)
             .ok()
@@ -68,7 +71,6 @@ fn env_f32(name: &'static str, default: f32) -> f32 {
             .unwrap_or(default)
     })
 }
-
 
 impl PipelineKey {
     fn from_draw(d: &WgrDraw3D, skinned: bool) -> Self {
@@ -107,7 +109,8 @@ fn read_depth_layer(
 ) -> bool {
     let res = res as usize;
     let unpadded = (res * 4) as u32;
-    let padded = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded =
+        unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
     let buf = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("wgr_depth_readback"),
         size: padded as u64 * res as u64,
@@ -121,7 +124,11 @@ fn read_depth_layer(
         wgpu::TexelCopyTextureInfo {
             texture: tex,
             mip_level: 0,
-            origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: 0,
+                z: layer,
+            },
             aspect: wgpu::TextureAspect::DepthOnly,
         },
         wgpu::TexelCopyBufferInfo {
@@ -145,7 +152,8 @@ fn read_depth_layer(
     slice.map_async(wgpu::MapMode::Read, move |r| {
         let _ = tx.send(r);
     });
-    if device.poll(wgpu::PollType::wait_indefinitely()).is_err() || !matches!(rx.recv(), Ok(Ok(()))) {
+    if device.poll(wgpu::PollType::wait_indefinitely()).is_err() || !matches!(rx.recv(), Ok(Ok(())))
+    {
         return false;
     }
     let data = slice.get_mapped_range();
@@ -278,7 +286,13 @@ impl CameraGroup {
         }
     }
 
-    fn ensure(&mut self, device: &wgpu::Device, count: usize, shadow_view: &wgpu::TextureView, shadow_gen: u64) {
+    fn ensure(
+        &mut self,
+        device: &wgpu::Device,
+        count: usize,
+        shadow_view: &wgpu::TextureView,
+        shadow_gen: u64,
+    ) {
         let needed = count as u64 * self.stride;
         let grow = self.cap < needed || self.buf.is_none();
         if grow {
@@ -330,7 +344,12 @@ struct DynUbo {
 }
 
 impl DynUbo {
-    fn new(device: &wgpu::Device, label: &str, bind_size: u64, visibility: wgpu::ShaderStages) -> Self {
+    fn new(
+        device: &wgpu::Device,
+        label: &str,
+        bind_size: u64,
+        visibility: wgpu::ShaderStages,
+    ) -> Self {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some(label),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -428,17 +447,26 @@ impl Gfx3d {
         device: &wgpu::Device,
         textures: &SharedTextures,
         surface_format: wgpu::TextureFormat,
+        composer: &mut naga_oil::compose::Composer,
     ) -> Self {
-        let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("wgr_3d_shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader3d.wgsl").into()),
-        });
+        let shader = crate::shaders::make_module(
+            device,
+            composer,
+            "wgr_3d_shader",
+            include_str!("shader3d.wgsl"),
+            "gfx3d/shader3d.wgsl",
+        );
 
         // Group 0 = camera UBO + shadow map + comparison sampler; world holds one
         // 64-byte entry per draw, palette one PALETTE_SIZE-matrix block per
         // skinned draw (both vertex-only, dynamic offset).
         let cameras = CameraGroup::new(device);
-        let world = DynUbo::new(device, "wgr_3d_world_layout", 64, wgpu::ShaderStages::VERTEX);
+        let world = DynUbo::new(
+            device,
+            "wgr_3d_world_layout",
+            64,
+            wgpu::ShaderStages::VERTEX,
+        );
         let palette = DynUbo::new(
             device,
             "wgr_3d_palette_layout",
@@ -475,11 +503,19 @@ impl Gfx3d {
         // Skin buffer: 8 bytes/vertex — Uint8x4 bone indices + Unorm8x4 weights.
         let skin_attrs = wgpu::vertex_attr_array![3 => Uint8x4, 4 => Unorm8x4];
 
-        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("wgr_shadow_depth_shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shadow_depth.wgsl").into()),
-        });
-        let shadow_pass_ubo = DynUbo::new(device, "wgr_shadow_pass_layout", 64, wgpu::ShaderStages::VERTEX);
+        let shadow_shader = crate::shaders::make_module(
+            device,
+            composer,
+            "wgr_shadow_depth_shader",
+            include_str!("shadow_depth.wgsl"),
+            "gfx3d/shadow_depth.wgsl",
+        );
+        let shadow_pass_ubo = DynUbo::new(
+            device,
+            "wgr_shadow_pass_layout",
+            64,
+            wgpu::ShaderStages::VERTEX,
+        );
         let shadow_caster_ubo = DynUbo::new(
             device,
             "wgr_shadow_caster_layout",
@@ -497,16 +533,17 @@ impl Gfx3d {
             immediate_size: 0,
         });
         // Skinned depth pipelines swap the caster UBO (group 1) for the bone palette.
-        let shadow_skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("wgr_shadow_skinned_pipeline_layout"),
-            bind_group_layouts: &[
-                Some(&shadow_pass_ubo.layout),
-                Some(&palette.layout),
-                Some(&textures.texture_layout),
-                Some(&textures.sampler_layout),
-            ],
-            immediate_size: 0,
-        });
+        let shadow_skinned_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgr_shadow_skinned_pipeline_layout"),
+                bind_group_layouts: &[
+                    Some(&shadow_pass_ubo.layout),
+                    Some(&palette.layout),
+                    Some(&textures.texture_layout),
+                    Some(&textures.sampler_layout),
+                ],
+                immediate_size: 0,
+            });
 
         let dummy_shadow = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_shadow_dummy"),
@@ -659,7 +696,11 @@ impl Gfx3d {
         } as f64;
 
         let alpha_ref = f32::from_bits(key.alpha_ref_bits) as f64;
-        let is_shadow = if key.blend == WgrBlend::Shadow as u8 { 1.0 } else { 0.0 };
+        let is_shadow = if key.blend == WgrBlend::Shadow as u8 {
+            1.0
+        } else {
+            0.0
+        };
         let constants = [
             ("alpha_ref", alpha_ref),
             ("is_shadow", is_shadow),
@@ -769,7 +810,13 @@ impl Gfx3d {
     }
 
     // Attach interleaved per-vertex skin data (4 bone indices + 4 weights).
-    pub fn mesh_set_skin(&mut self, device: &wgpu::Device, handle: u64, bones: &[u8], weights: &[u8]) {
+    pub fn mesh_set_skin(
+        &mut self,
+        device: &wgpu::Device,
+        handle: u64,
+        bones: &[u8],
+        weights: &[u8],
+    ) {
         let Some(mesh) = self.meshes.get_mut(KeyData::from_ffi(handle).into()) else {
             return;
         };
@@ -783,11 +830,13 @@ impl Gfx3d {
             data.extend_from_slice(&bones[v * 4..v * 4 + 4]);
             data.extend_from_slice(&weights[v * 4..v * 4 + 4]);
         }
-        mesh.skin = Some(device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wgr_3d_skin"),
-            contents: &data,
-            usage: wgpu::BufferUsages::VERTEX,
-        }));
+        mesh.skin = Some(
+            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("wgr_3d_skin"),
+                contents: &data,
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+        );
     }
 
     // Re-upload vertex data for an existing (dynamic) mesh, e.g. a skeletally
@@ -921,12 +970,20 @@ impl Gfx3d {
         let build = |vs: &str, fs: Option<&str>, skinned: bool| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("wgr_shadow_depth_pipeline"),
-                layout: Some(if skinned { &self.shadow_skinned_layout } else { &self.shadow_layout }),
+                layout: Some(if skinned {
+                    &self.shadow_skinned_layout
+                } else {
+                    &self.shadow_layout
+                }),
                 vertex: wgpu::VertexState {
                     module: &self.shadow_shader,
                     entry_point: Some(vs),
                     compilation_options: Default::default(),
-                    buffers: if skinned { &skinned_buffers } else { &plain_buffers },
+                    buffers: if skinned {
+                        &skinned_buffers
+                    } else {
+                        &plain_buffers
+                    },
                 },
                 primitive: wgpu::PrimitiveState {
                     topology: wgpu::PrimitiveTopology::TriangleList,
@@ -1058,7 +1115,11 @@ impl Gfx3d {
                     None
                 };
                 rp.set_pipeline(pipes.get(skin.is_some(), alpha));
-                rp.set_bind_group(0, pass_bind, &[(c as u64 * self.shadow_pass_ubo.stride) as u32]);
+                rp.set_bind_group(
+                    0,
+                    pass_bind,
+                    &[(c as u64 * self.shadow_pass_ubo.stride) as u32],
+                );
                 if let Some(skin) = skin {
                     let Some(palette_bind) = self.palette.bind.as_ref() else {
                         continue;
@@ -1076,7 +1137,11 @@ impl Gfx3d {
                         &[(i as u64 * self.shadow_caster_ubo.stride) as u32],
                     );
                 }
-                rp.set_bind_group(2, textures.texture_bind(if alpha { caster.texture_id } else { 0 }), &[]);
+                rp.set_bind_group(
+                    2,
+                    textures.texture_bind(if alpha { caster.texture_id } else { 0 }),
+                    &[],
+                );
                 rp.set_bind_group(3, textures.sampler_bind(caster.sampler.index()), &[]);
                 rp.set_vertex_buffer(0, mesh.vbuf.slice(..));
                 rp.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint16);
@@ -1156,7 +1221,11 @@ impl Gfx3d {
         });
 
         self.shadow_pass_ubo.ensure(device, 1);
-        queue.write_buffer(self.shadow_pass_ubo.buf.as_ref().unwrap(), 0, bytemuck::cast_slice(light_vp));
+        queue.write_buffer(
+            self.shadow_pass_ubo.buf.as_ref().unwrap(),
+            0,
+            bytemuck::cast_slice(light_vp),
+        );
         self.shadow_caster_ubo.ensure(device, 1);
         let identity = ShadowCasterUbo {
             world: {
@@ -1244,7 +1313,8 @@ impl Gfx3d {
                 .as_ref()
                 .map(|t| &t.sample_view)
                 .unwrap_or(&self.dummy_shadow_view);
-            self.cameras.ensure(device, cameras.len(), shadow_view, self.shadow_gen);
+            self.cameras
+                .ensure(device, cameras.len(), shadow_view, self.shadow_gen);
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {
                 queue.write_buffer(buf, i as u64 * self.cameras.stride, bytemuck::bytes_of(c));
