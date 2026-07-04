@@ -313,12 +313,15 @@ struct WgrTerrainParams
 };
 
 /* One terrain node instance: the shared grid mesh placed at world-xz `origin`,
- * covering `size` x `size` world units, at level `lod`. */
+ * covering `size` x `size` world units, at level `lod`. `morph_start`/`morph_end`
+ * are the camera-distance band over which the grid morphs toward its coarser parent. */
 struct WgrTerrainNode
 {
     WgrVec2 origin;
     float size;
     uint32_t lod;
+    float morph_start;
+    float morph_end;
 };
 
 /* A run [first_node, first_node+node_count) of WgrFrame.terrain_nodes drawn with
@@ -415,7 +418,7 @@ static_assert(sizeof(WgrCmd) == 8, "WgrCmd layout must match the Rust #[repr(C)]
 static_assert(sizeof(WgrOverlayVertex) == 20, "WgrOverlayVertex layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainParams) == 32, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrTerrainNode) == 16, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrame) == 496, "WgrFrame layout must match the Rust #[repr(C)] struct");
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Poseidon/Graphics/Core/ITerrainRenderer.hpp>
+#include <Poseidon/World/Terrain/TerrainCdlod.hpp>
 
 #include <wgpu_renderer.hpp>
 
@@ -12,9 +13,8 @@ namespace Poseidon
 class EngineWgpu;
 class Landscape;
 
-// The wgpu terrain renderer. Uploads the heightmap (+ a placeholder ground
-// texture) once per map and, each frame, emits grid nodes tiling the visible
-// ground. Flat single-LOD for now; LOD, culling, and texture blending come later.
+// Draws the terrain via wgpu: uploads the heightmap once per map, builds a CDLOD
+// quadtree, and each frame emits the selected grid nodes as GPU instances.
 class TerrainWgpu : public ITerrainRenderer
 {
   public:
@@ -23,9 +23,9 @@ class TerrainWgpu : public ITerrainRenderer
     void DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd) override;
 
   private:
-    // Upload the heightmap + ground textures for `land`, skipping if unchanged.
-    // Returns true if it (re)uploaded, meaning cached nodes are now stale.
+    // (Re)uploads and rebuilds the quadtree when the map changes; returns true if it did.
     bool UploadIfNeeded(const Landscape& land);
+    void BuildQuadtree(const Landscape& land);
 
     EngineWgpu& _engine;
     WgrRenderer* _renderer;
@@ -36,11 +36,18 @@ class TerrainWgpu : public ITerrainRenderer
     int _uploadedRange = 0;
     std::string _uploadedName;
 
-    // Cached node tiling; rebuilt only when the map or the visible rectangle
-    // changes (the mesh itself is static from frame to frame).
-    std::vector<WgrTerrainNode> _nodes;
-    int _rectXBeg = 0, _rectZBeg = 0, _rectXEnd = 0, _rectZEnd = 0;
-    bool _nodesValid = false;
+    std::vector<CdlodNode> _tree;
+    int _rootIndex = -1;
+    int _numLevels = 0;
+    float _leafSize = 0.0f;
+    std::vector<float> _ranges;
+
+    // LOD tuning, read from the environment once at construction.
+    float _baseMult;
+    float _lodRatio;
+    float _morphRegion;
+
+    std::vector<WgrTerrainNode> _selected;
 };
 
 } // namespace Poseidon

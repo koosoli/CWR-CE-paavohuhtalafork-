@@ -1,8 +1,5 @@
-// GPU terrain: a unit grid mesh, instanced once per node, displaced in the vertex
-// shader by sampling the heightmap. Shares group 0 (the camera UBO) with the lit
-// 3D pipeline so terrain renders under the same view and fog. Shading is a
-// placeholder for now; LOD morphing, texture blending, and shadow receiving come
-// later.
+// GPU terrain: a shared grid mesh instanced per node, heightmap-displaced in the
+// vertex shader. Shares group 0 (the camera UBO) with the lit 3D pipeline.
 
 struct FrameParams {
     fog_start: f32,
@@ -40,6 +37,9 @@ struct TerrainParams {
     data_scale: f32,
 };
 
+// Must match GRID_N in terrain/mod.rs.
+const GRID_N: f32 = 32.0;
+
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(1) @binding(0) var<uniform> tp: TerrainParams;
 @group(1) @binding(1) var heightmap: texture_2d<f32>;
@@ -71,14 +71,14 @@ fn sample_height(world_xz: vec2<f32>) -> f32 {
     return y10 + (y01 - y11) - (y10 - y11) * f.x - (y01 - y11) * f.y;
 }
 
-// Upward world-space normal from central heightmap differences.
-fn sample_normal(world_xz: vec2<f32>) -> vec3<f32> {
-    let s = tp.terrain_grid;
-    let hx0 = sample_height(world_xz - vec2<f32>(s, 0.0));
-    let hx1 = sample_height(world_xz + vec2<f32>(s, 0.0));
-    let hz0 = sample_height(world_xz - vec2<f32>(0.0, s));
-    let hz1 = sample_height(world_xz + vec2<f32>(0.0, s));
-    return normalize(vec3<f32>(-(hx1 - hx0), 2.0 * s, -(hz1 - hz0)));
+// Central-difference normal. `step` scales with the patch's LOD (matching GL33's
+// terrainGrid*lodStride) so lit detail tracks the tessellated detail.
+fn sample_normal(world_xz: vec2<f32>, step: f32) -> vec3<f32> {
+    let hx0 = sample_height(world_xz - vec2<f32>(step, 0.0));
+    let hx1 = sample_height(world_xz + vec2<f32>(step, 0.0));
+    let hz0 = sample_height(world_xz - vec2<f32>(0.0, step));
+    let hz1 = sample_height(world_xz + vec2<f32>(0.0, step));
+    return normalize(vec3<f32>(-(hx1 - hx0), 2.0 * step, -(hz1 - hz0)));
 }
 
 struct VsOut {
@@ -89,15 +89,34 @@ struct VsOut {
     @location(3) normal: vec3<f32>,    // world space, outward
 };
 
+// Skirt drop, as a multiple of the patch's vertex spacing.
+const SKIRT_K: f32 = 4.0;
+
 @vertex
 fn vs_terrain(
-    @location(0) grid: vec2<f32>,   // unit grid position in [0,1]^2
-    @location(1) origin: vec2<f32>, // node world-xz origin
-    @location(2) size: f32,         // node world size
+    @location(0) grid_in: vec3<f32>, // xy = unit grid position in [0,1]^2, z = skirt flag
+    @location(1) origin: vec2<f32>,  // node world-xz origin
+    @location(2) size: f32,          // node world size
     @location(3) lod: u32,
+    @location(4) morph: vec2<f32>,   // (morph_start, morph_end) camera-distance band
 ) -> VsOut {
-    let world_xz = origin + grid * size;
-    let height = sample_height(world_xz);
+    let grid = grid_in.xy;
+    let world_xz_fine = origin + grid * size;
+    let height_fine = sample_height(world_xz_fine);
+    let dist = length(vec3<f32>(world_xz_fine.x, height_fine, world_xz_fine.y) - frame.cam_pos.xyz);
+
+    // Snap toward the coarser even lattice as the vertex nears morph_end, so the
+    // edge meets the parent grid at the LOD switch without a crack.
+    var morph_k = 0.0;
+    if (morph.y > morph.x)
+    {
+        morph_k = clamp((dist - morph.x) / (morph.y - morph.x), 0.0, 1.0);
+    }
+    let gidx = grid * GRID_N;
+    let grid_coarse = (round(gidx * 0.5) * 2.0) / GRID_N;
+    let world_xz = origin + mix(grid, grid_coarse, morph_k) * size;
+
+    let height = sample_height(world_xz) - grid_in.z * (size / GRID_N) * SKIRT_K;
     let world_rel = vec3<f32>(world_xz.x, height, world_xz.y) - frame.cam_pos.xyz;
 
     var out: VsOut;
@@ -106,10 +125,12 @@ fn vs_terrain(
     out.clip.z = out.clip.w - out.clip.z;
     out.world_xz = world_xz;
     out.world_pos = world_rel;
-    out.normal = sample_normal(world_xz);
+    // Doubled as the patch morphs to coarse, so the normal step follows the mesh.
+    let normal_step = (size / GRID_N) * (1.0 + morph_k);
+    out.normal = sample_normal(world_xz, normal_step);
 
-    let dist = length(world_rel);
-    let fog_factor = clamp(1.0 - (dist - frame.params.fog_start) * frame.params.fog_inv_range, 0.0, 1.0);
+    let fog_dist = length(world_rel);
+    let fog_factor = clamp(1.0 - (fog_dist - frame.params.fog_start) * frame.params.fog_inv_range, 0.0, 1.0);
     out.fog = select(1.0, fog_factor, frame.params.fog_enabled > 0.5);
     return out;
 }

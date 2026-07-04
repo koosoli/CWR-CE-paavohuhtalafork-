@@ -187,8 +187,9 @@ impl Terrain
             bind_group_layouts: &[Some(camera_layout), Some(&group1_layout), Some(&group2_layout)],
             immediate_size: 0,
         });
-        let grid_attrs = wgpu::vertex_attr_array![0 => Float32x2];
-        let inst_attrs = wgpu::vertex_attr_array![1 => Float32x2, 2 => Float32, 3 => Uint32];
+        let grid_attrs = wgpu::vertex_attr_array![0 => Float32x3];
+        let inst_attrs =
+            wgpu::vertex_attr_array![1 => Float32x2, 2 => Float32, 3 => Uint32, 4 => Float32x2];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgr_terrain_pipeline"),
             layout: Some(&pipeline_layout),
@@ -198,7 +199,7 @@ impl Terrain
                 compilation_options: Default::default(),
                 buffers: &[
                     wgpu::VertexBufferLayout {
-                        array_stride: 8,
+                        array_stride: 12,
                         step_mode: wgpu::VertexStepMode::Vertex,
                         attributes: &grid_attrs,
                     },
@@ -470,16 +471,17 @@ fn make_group2(
     })
 }
 
-// The reusable unit grid: (GRID_N+1)^2 vertices spanning [0,1]^2, two triangles
-// per quad. Positions are the only per-vertex attribute; height comes from the
-// vertex-shader heightmap sample.
+// The reusable unit grid: (GRID_N+1)^2 vertices over [0,1]^2, two triangles per
+// quad, plus a border skirt. Vertex is (u, v, skirt); the shader drops skirt
+// vertices below the surface to wall off LOD-transition cracks.
 fn build_grid(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32)
 {
     let side = GRID_N + 1;
-    let mut verts: Vec<[f32; 2]> = Vec::with_capacity((side * side) as usize);
+    let unit = 1.0 / GRID_N as f32;
+    let mut verts: Vec<[f32; 3]> = Vec::with_capacity((side * side) as usize);
     for z in 0..side {
         for x in 0..side {
-            verts.push([x as f32 / GRID_N as f32, z as f32 / GRID_N as f32]);
+            verts.push([x as f32 * unit, z as f32 * unit, 0.0]);
         }
     }
     let mut indices: Vec<u16> = Vec::with_capacity((GRID_N * GRID_N * 6) as usize);
@@ -492,6 +494,28 @@ fn build_grid(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32)
             indices.extend_from_slice(&[i0, i2, i1, i1, i2, i3]);
         }
     }
+
+    // One skirt wall per border edge segment: two triangles joining the edge pair
+    // to a dropped duplicate. Winding is irrelevant (the pipeline culls nothing).
+    let mut wall = |tops: [u16; 2], a: [f32; 2], b: [f32; 2]| {
+        let s0 = verts.len() as u16;
+        verts.push([a[0], a[1], 1.0]);
+        let s1 = verts.len() as u16;
+        verts.push([b[0], b[1], 1.0]);
+        indices.extend_from_slice(&[tops[0], s0, tops[1], tops[1], s0, s1]);
+    };
+    for i in 0..GRID_N {
+        let f = i as f32 * unit;
+        let g = (i + 1) as f32 * unit;
+        let b = GRID_N * side;
+        // top (z=0) / bottom (z=GRID_N)
+        wall([i as u16, (i + 1) as u16], [f, 0.0], [g, 0.0]);
+        wall([(b + i) as u16, (b + i + 1) as u16], [f, 1.0], [g, 1.0]);
+        // left (x=0) / right (x=GRID_N)
+        wall([(i * side) as u16, ((i + 1) * side) as u16], [0.0, f], [0.0, g]);
+        wall([(i * side + GRID_N) as u16, ((i + 1) * side + GRID_N) as u16], [1.0, f], [1.0, g]);
+    }
+
     let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
         label: Some("wgr_terrain_grid_vbuf"),
         contents: bytemuck::cast_slice(&verts),

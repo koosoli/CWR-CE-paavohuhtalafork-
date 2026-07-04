@@ -259,6 +259,8 @@ pub struct WgrTerrainNode {
     pub origin: WgrVec2,
     pub size: f32,
     pub lod: u32,
+    pub morph_start: f32,
+    pub morph_end: f32,
 }
 
 #[repr(C)]
@@ -332,7 +334,7 @@ const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
 const _: () = assert!(std::mem::size_of::<WgrOverlayVertex>() == 20);
 const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrFrame>() == 496);
