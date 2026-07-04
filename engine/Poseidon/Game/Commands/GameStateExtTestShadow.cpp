@@ -208,6 +208,16 @@ GameValue TriAssertVisibility(const GameState* /*state*/, GameValuePar arg)
     return GameValue(buf);
 }
 
+/// triDevPanelShow <0|1> — show / hide the ImGui dev panel. Visibility stays
+/// gated on --dev (SetVisible refuses otherwise), so the result reports the
+/// state actually reached: "OK:1" / "OK:0".
+GameValue TriDevPanelShow(const GameState* /*state*/, GameValuePar arg)
+{
+    const bool want = static_cast<GameScalarType>(arg) != 0.0f;
+    DebugOverlay::SetVisible(want);
+    return GameValue(DebugOverlay::IsVisible() ? "OK:1" : "OK:0");
+}
+
 /// triDevPanelSelectShadows — force the dev panel's "Shadows" tab to be the
 /// selected one on the next drawn frame, so a screenshot captures its contents
 /// deterministically. Returns "OK".

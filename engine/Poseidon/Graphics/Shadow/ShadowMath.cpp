@@ -601,6 +601,16 @@ Mat4 ToCameraRelative(const Mat4& worldLightVP, const Vec3& camPos)
     return Mul(worldLightVP, Translate(camPos));
 }
 
+float QuantizeShadowRadius(float radius, float minRadius, float stepRatio)
+{
+    if (!(radius > minRadius))
+    {
+        return minRadius;
+    }
+    const double n = std::ceil(std::log(static_cast<double>(radius) / minRadius) / std::log(static_cast<double>(stepRatio)) - 1e-9);
+    return static_cast<float>(minRadius * std::pow(static_cast<double>(stepRatio), n));
+}
+
 Mat4 CascadeLightVPStable(const std::array<Vec3, 8>& corners, float t0, float t1, const Vec3& sunDir, const Vec3& up,
                           int resolution, float zPad, const Vec3& camPos)
 {
@@ -608,7 +618,9 @@ Mat4 CascadeLightVPStable(const std::array<Vec3, 8>& corners, float t0, float t1
     BoundingSphere bs = FrustumBoundingSphere(slice); // camera-relative centre (small)
     Mat4 lv = LightView(sunDir, up);
     Vec3 lc = TransformPoint(lv, bs.center); // camera-relative light-space centre
-    float radius = bs.radius < 1e-4f ? 1e-4f : bs.radius;
+    // Quantized radius: the raw sphere scales with the camera FOV (aim zoom);
+    // a fixed rung keeps the texel grid from rescaling every zoom frame.
+    float radius = QuantizeShadowRadius(bs.radius < 1e-4f ? 1e-4f : bs.radius);
     int res = resolution > 0 ? resolution : 1;
     double texel = (2.0 * static_cast<double>(radius)) / static_cast<double>(res);
 
@@ -691,6 +703,7 @@ CascadeSet BuildShadowCascades(const CascadeBuildParams& p)
     Vec3 sd = Normalize(p.sunDir);
     float ay = sd.y < 0.0f ? -sd.y : sd.y;
     Vec3 up = (ay > 0.99f) ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{0.0f, 1.0f, 0.0f};
+    cs.sunDir = sd;
 
     float span = shadowFar - p.nearD;
     for (int i = 0; i < n; i++)
@@ -752,6 +765,7 @@ CascadeSet BuildShadowCascadesTiered(const CascadeBuildParams& p)
     Vec3 sd = Normalize(p.sunDir);
     float ay = sd.y < 0.0f ? -sd.y : sd.y;
     Vec3 up = (ay > 0.99f) ? Vec3{0.0f, 0.0f, 1.0f} : Vec3{0.0f, 1.0f, 0.0f};
+    cs.sunDir = sd;
 
     // Omni tiers: camera-centred spheres. Radius is a fraction of the shadow range,
     // BUT capped so the near tiers stay crisp even when the shadow distance is set

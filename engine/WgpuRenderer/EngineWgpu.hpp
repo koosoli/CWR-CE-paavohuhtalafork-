@@ -3,6 +3,7 @@
 #include <Poseidon/Graphics/Core/MatrixConversion.hpp>
 #include <Poseidon/Graphics/Dummy/EngineDummy.hpp>
 #include <Poseidon/Graphics/GraphicsEngineFactory.hpp> // GraphicsEngineParams
+#include <Poseidon/Graphics/Shadow/ShadowMath.hpp>
 #include <Poseidon/Graphics/Shared/SDLEventWindow.hpp>
 
 #include <wgpu_renderer.hpp>
@@ -94,16 +95,38 @@ class EngineWgpu : public EngineDummy
     int GetBias() override { return _bias; }
     void GetZCoefs(float& zAdd, float& zMult) override;
 
+    // Cascaded shadow maps, GPU-driven caster submission (SceneShadowPass).
+    void SetShadowMapsEnabled(bool enabled) override { _smTuning.enabled = enabled; }
+    bool ShadowMapsEnabled() const override { return _smTuning.enabled && _renderer != nullptr; }
+    ShadowMapTuning GetShadowMapTuning() const override { return _smTuning; }
+    void SetShadowMapTuning(const ShadowMapTuning& tuning) override { _smTuning = tuning; }
+    void SetShadowMapSunFactor(float factor01) override { _smSunFactor = factor01; }
+    bool UsesGpuShadowCasters() const override { return true; }
+    void SetShadowCascades(const shadow::CascadeSet& cascades, int resolution) override;
+    void AddShadowCaster(const Shape& mesh, const Matrix4& modelToWorld) override;
+    bool DumpShadowMap(const char* path) override;
+    bool ShadowDepthProbe(const float* lightVP16, const float* triXYZ, int vertCount, int res,
+                          float* outDepth) override;
+
+    bool SupportsOverlayRenderer() const override { return _renderer != nullptr; }
+    uint64_t OverlayTextureCreate(int w, int h, const uint8_t* rgba) override;
+    void OverlayTextureUpdate(uint64_t texture, int w, int h, const uint8_t* rgba) override;
+    void OverlayTextureDestroy(uint64_t texture) override;
+    void SubmitOverlay(const OverlayVertex* verts, int vertCount, const uint16_t* indices, int indexCount,
+                       const OverlayDrawCmd* cmds, int cmdCount) override;
+
     void OnWindowResized(int w, int h) override;
 
   private:
     // A camera-relative view/projection plus the world-space camera position the
-    // per-object world matrices are offset by.
+    // per-object world matrices are offset by, and the forward direction (shadow
+    // cascade eye-depth select).
     struct CameraEntry
     {
         GfxMatrix proj;
         GfxMatrix view;
         float pos[3];
+        float dir[3];
     };
 
     void ResizeSurface(int w, int h);
@@ -153,6 +176,20 @@ class EngineWgpu : public EngineDummy
     WgrBlend _swBlend = WGR_BLEND_OPAQUE;
     Sampler2DFlags _swSampler = Sampler2DFlags::None;
     WgrDepthMode _swDepth = WGR_DEPTH_TEST_WRITE;
+
+    // Cascaded-shadow state
+    ShadowMapTuning _smTuning;
+    float _smSunFactor = 1.0f;
+    bool _smEnabledFrame = false;
+    shadow::CascadeSet _smCascades;
+    int _smCascadeRes = 0;
+    bool _smCascadesValid = false;
+    std::vector<WgrShadowCaster> _shadowCasters;
+
+    // Dev-panel overlay for the current frame
+    std::vector<WgrOverlayVertex> _overlayVerts;
+    std::vector<uint16_t> _overlayIndices;
+    std::vector<WgrOverlayDraw> _overlayDraws;
 };
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params);

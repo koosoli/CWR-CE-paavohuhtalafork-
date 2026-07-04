@@ -1,0 +1,6 @@
+tags = ["headful", "shadows"]
+binary = "PoseidonGame"
+render = "wgpu"
+mission = "tests/integration/missions/cargo_leader_getout.Demo"
+timeout = 90
+assert_timeout = 30

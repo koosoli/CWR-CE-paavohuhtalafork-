@@ -68,6 +68,45 @@ std::unordered_map<Object*, StaticCasterCache> s_staticCasterCache;
 constexpr size_t kStaticCasterCacheCap = 1024;
 } // namespace
 
+namespace
+{
+// Cascade fit shared by the CPU-soup and GPU-submission depth passes: fit in
+// camera-relative space, snapped to a world grid (BuildShadowCascadesTiered,
+// proven by [ShadowMath] unit tests), so the shadow stays world-anchored while
+// the casters stay camera-relative.
+shadow::CascadeSet BuildCascadeSet(const Camera* cam, Vector3Val sunDir, const Engine::ShadowMapTuning& tune)
+{
+    namespace sm = Poseidon::shadow;
+    Vector3Val camPos = cam->Position();
+    Vector3Val cF = cam->Direction();
+    Vector3Val cR = cam->DirectionAside();
+    Vector3Val cU = cam->DirectionUp();
+
+    sm::CascadeBuildParams bp;
+    bp.camPos = {camPos.X(), camPos.Y(), camPos.Z()};
+    bp.forward = {cF.X(), cF.Y(), cF.Z()};
+    bp.right = {cR.X(), cR.Y(), cR.Z()};
+    bp.up = {cU.X(), cU.Y(), cU.Z()};
+    bp.tanHalfX = cam->Left(); // tan(hfov/2)
+    bp.tanHalfY = cam->Top();  // tan(vfov/2)
+    bp.nearD = cam->ClipNear();
+    // Pair the cascade reach with the shadow visibility distance (Game-menu Shadows
+    // slider, clamped to the object distance), not the camera far-clip: the frustum
+    // tiers cover exactly as far as shadows are meant to render.
+    bp.farD = ENGINE_CONFIG.shadowsZ;
+    bp.sunDir = {sunDir.X(), sunDir.Y(), sunDir.Z()};
+    bp.count = tune.cascadeCount;
+    bp.distanceCoef = tune.distanceCoef;
+    bp.splitCoef = tune.splitCoef;
+    bp.resolution = tune.resolution;
+    bp.zPad = 50.0f;
+    bp.omniCount = tune.omniCount;
+    bp.omniCoef[0] = tune.omniCoef0;
+    bp.omniCoef[1] = tune.omniCoef1;
+    return sm::BuildShadowCascadesTiered(bp);
+}
+} // namespace
+
 // Shadow-map depth pass — extracted from Scene::DrawObjectsAndShadowsPass2 so
 // Scene.cpp stays under the file-size limit.  Collects the visible casters
 // (solid + alpha-cutout per texture, camera-relative) plus their proxies, builds
@@ -75,6 +114,11 @@ constexpr size_t kStaticCasterCacheCap = 1024;
 void Scene::RenderShadowMapDepthPass(int nDraw)
 {
     namespace sm = Poseidon::shadow;
+    if (GEngine->UsesGpuShadowCasters())
+    {
+        RenderShadowMapDepthPassGpu(nDraw);
+        return;
+    }
     extern bool gPerfDumpShadowsOnce;
     extern int gSmDepthCachedCasters;
     const auto depthT0 = std::chrono::steady_clock::now();
@@ -382,40 +426,11 @@ void Scene::RenderShadowMapDepthPass(int nDraw)
         smAlphaVerts.insert(smAlphaVerts.end(), kv.second.begin(), kv.second.end());
         smAlphaBatches.push_back(batch);
     }
-    // Cascaded shadow maps fit in camera-relative space, snapped to a world grid
-    // (ShadowMath::BuildShadowCascadesTiered, proven by [ShadowMath] unit tests), so
-    // the shadow stays world-anchored (no crawl/jump) while the casters stay
-    // camera-relative.
     const Engine::ShadowMapTuning tune = GEngine->GetShadowMapTuning();
     const int smRes = tune.resolution;
     const Camera* cam = GetCamera();
     Vector3Val cF = cam->Direction();
-    Vector3Val cR = cam->DirectionAside();
-    Vector3Val cU = cam->DirectionUp();
-    Vector3Val sd = _mainLight->ShadowDirection();
-
-    sm::CascadeBuildParams bp;
-    bp.camPos = {camPos.X(), camPos.Y(), camPos.Z()};
-    bp.forward = {cF.X(), cF.Y(), cF.Z()};
-    bp.right = {cR.X(), cR.Y(), cR.Z()};
-    bp.up = {cU.X(), cU.Y(), cU.Z()};
-    bp.tanHalfX = cam->Left(); // tan(hfov/2)
-    bp.tanHalfY = cam->Top();  // tan(vfov/2)
-    bp.nearD = cam->ClipNear();
-    // Pair the cascade reach with the shadow visibility distance (Game-menu Shadows
-    // slider, clamped to the object distance), not the camera far-clip: the frustum
-    // tiers cover exactly as far as shadows are meant to render.
-    bp.farD = ENGINE_CONFIG.shadowsZ;
-    bp.sunDir = {sd.X(), sd.Y(), sd.Z()};
-    bp.count = tune.cascadeCount;
-    bp.distanceCoef = tune.distanceCoef;
-    bp.splitCoef = tune.splitCoef;
-    bp.resolution = smRes;
-    bp.zPad = 50.0f;
-    bp.omniCount = tune.omniCount;
-    bp.omniCoef[0] = tune.omniCoef0;
-    bp.omniCoef[1] = tune.omniCoef1;
-    const sm::CascadeSet cs = sm::BuildShadowCascadesTiered(bp);
+    const sm::CascadeSet cs = BuildCascadeSet(cam, _mainLight->ShadowDirection(), tune);
     if (gPerfDumpShadowsOnce)
     {
         const double collectMs =
@@ -442,6 +457,121 @@ void Scene::RenderShadowMapDepthPass(int nDraw)
     casterSet.alphaBatches = smAlphaBatches.data();
     casterSet.alphaBatchCount = static_cast<int>(smAlphaBatches.size());
     GEngine->RenderShadowDepthScene(vps, cs.splitViewDist, camFwd, cs.count, cs.omniCount, smRes, casterSet);
+}
+
+// GPU-driven depth pass: same caster policy as the soup collection above, but
+// casters are submitted as mesh + transform.
+// RT-animated casters hand their bone palette to the backend and are
+// posed in the depth shader.
+void Scene::RenderShadowMapDepthPassGpu(int nDraw)
+{
+    const Engine::ShadowMapTuning tune = GEngine->GetShadowMapTuning();
+    const Camera* cam = GetCamera();
+    GEngine->SetShadowCascades(BuildCascadeSet(cam, _mainLight->ShadowDirection(), tune), tune.resolution);
+
+    const Vector3 camPos = cam->Position();
+    const float camNear = cam->ClipNear();
+    const float shadowFar = camNear + tune.distanceCoef * (ENGINE_CONFIG.shadowsZ - camNear);
+    const float casterMaxDist2 = Square(shadowFar);
+
+    for (int i = 0; i < nDraw; i++)
+    {
+        SortObject* oi = _drawMergers[i];
+        if (!oi->object || !oi->shape)
+        {
+            continue;
+        }
+        if (oi->distance2 > casterMaxDist2)
+        {
+            continue;
+        }
+        if ((oi->shape->Special() & NoShadow) || !oi->object->CastShadow())
+        {
+            continue;
+        }
+        int geomLOD = (oi->drawLOD != LOD_INVISIBLE) ? oi->drawLOD : oi->shadowLOD;
+        if (geomLOD == LOD_INVISIBLE)
+        {
+            continue;
+        }
+        if (tune.casterLodBias > 1.0f)
+        {
+            const float biased2 = oi->distance2 * Square(tune.casterLodBias);
+            int coarse = LevelFromDistance2(oi->shape, biased2, oi->object->Scale(), oi->object->Direction(),
+                                            cam->Direction());
+            if (coarse != LOD_INVISIBLE && coarse > geomLOD)
+            {
+                geomLOD = coarse;
+            }
+        }
+        Shape* s = oi->shape->LevelOpaque(geomLOD);
+        if (!s || s->NPos() <= 0)
+        {
+            continue;
+        }
+        if (!s->GetVertexBuffer())
+        {
+            s->ConvertToVBuffer(s->NVertex() > 1024 ? VBBigDiscardable : VBSmallDiscardable);
+            if (!s->GetVertexBuffer())
+            {
+                continue;
+            }
+        }
+        // Animate routes the pose to the backend: RT-animated casters get their
+        // bone palette set on the vertex buffer (AnimationRT::ApplyMatrices GPU
+        // path), morphing/surface-conforming casters refresh CPU verts. Statics
+        // skip it (Animate is a no-op for them).
+        Object* obj = oi->object;
+        const bool animate = !obj->Static();
+        if (animate)
+        {
+            obj->Animate(geomLOD);
+        }
+        GEngine->AddShadowCaster(*s, obj->Transform());
+        if (animate)
+        {
+            obj->Deanimate(geomLOD);
+        }
+
+        // Proxies (the soldier's weapon, vehicle crew, ...) cast from their
+        // substituted model — the parent holds only an IsHiddenProxy placeholder.
+        const int proxyCount = obj->GetProxyCount(geomLOD);
+        for (int pi = 0; pi < proxyCount; pi++)
+        {
+            if (!obj->CastProxyShadow(geomLOD, pi))
+            {
+                continue;
+            }
+            Matrix4 ptrans = obj->Transform(), pinv = obj->GetInvTransform();
+            LODShapeWithShadow* pshape = nullptr;
+            Object* proxy = obj->GetProxy(pshape, geomLOD, ptrans, pinv, *obj, pi);
+            if (!proxy || !pshape)
+            {
+                continue;
+            }
+            const float pdist2 = ptrans.Position().Distance2(camPos);
+            int plevel =
+                LevelFromDistance2(pshape, pdist2, ptrans.Scale(), ptrans.Direction(), cam->Direction());
+            if (plevel == LOD_INVISIBLE)
+            {
+                continue;
+            }
+            Shape* ps = pshape->LevelOpaque(plevel);
+            if (!ps || ps->NPos() <= 0)
+            {
+                continue;
+            }
+            if (!ps->GetVertexBuffer())
+            {
+                ps->ConvertToVBuffer(ps->NVertex() > 1024 ? VBBigDiscardable : VBSmallDiscardable);
+                if (!ps->GetVertexBuffer())
+                {
+                    continue;
+                }
+            }
+            GEngine->AddShadowCaster(*ps, ptrans);
+        }
+    }
 }
 
 } // namespace Poseidon

@@ -164,6 +164,21 @@ pub struct WgrFrameParams {
     pub shadow_strength: f32,
 }
 
+// Per-camera cascaded-shadow sampling block (lit-pass side). All zeros
+// (ctl.x = cascade count = 0 -> disabled) when shadow maps are off or for
+// UI/screen cameras.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrCameraShadow {
+    pub cascade_vp: [WgrMat4; 4],
+    pub splits: WgrVec4,      // frustum tiers: far eye-depth per tier
+    pub omni_radius: WgrVec4, // omni tiers: camera-distance radius (0 = frustum tier)
+    pub ctl: WgrVec4,         // {count, omni_count, fade_range, bias_const}
+    pub ctl2: WgrVec4,        // {texel_size (1/res), darkness, normal_offset_scale, pcf}
+    pub cam_fwd: WgrVec4,     // xyz = camera forward (eye-depth cascade select)
+    pub sun_dir: WgrVec4,     // xyz = sun travel direction (normal-offset bias)
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WgrCamera {
@@ -172,6 +187,35 @@ pub struct WgrCamera {
     // fog_color = rgb + pad
     pub fog_color: WgrVec4,
     pub params: WgrFrameParams,
+    pub shadow: WgrCameraShadow,
+}
+
+// One shadow caster for the cascade depth passes: a section run of `mesh`,
+// transformed by the camera-relative `world` (or skinned via `palette_slot`).
+// alpha_ref > 0 alpha-tests the caster texture (cutout foliage silhouettes).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrShadowCaster {
+    pub mesh: u64,
+    pub index_begin: u32,
+    pub index_count: u32,
+    pub world: WgrMat4,
+    pub texture_id: u64,   // sampled only when alpha_ref > 0; 0 = built-in white
+    pub palette_slot: u32, // NO_PALETTE = rigid
+    pub alpha_ref: f32,    // 0 = solid caster; > 0 = discard below (cutout)
+    pub sampler: WgrSampler2D,
+    pub cascade_mask: u32, // bit c set = render into cascade c
+}
+
+// Cascade depth-pass parameters for one frame; count = 0 disables the pass.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrShadowPass {
+    pub count: u32, // cascade count (1..4); 0 = no shadow pass this frame
+    pub omni_count: u32,
+    pub resolution: u32, // depth-map side length per cascade
+    pub _pad: u32,
+    pub light_vp: [WgrMat4; 4], // camera-relative light view-projections (0..1 NDC z)
 }
 
 #[repr(u32)]
@@ -189,6 +233,28 @@ pub struct WgrCmd {
     pub arg: u32,
 }
 
+// Overlay (dev panel / ImGui) vertex: framebuffer pixels, top-left origin.
+// `color` is RGBA with R in the low byte (ImGui packing, NOT the engine order).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrOverlayVertex {
+    pub pos: WgrVec2,
+    pub uv: WgrVec2,
+    pub color: u32,
+}
+
+// One scissored overlay draw over the frame's overlay index/vertex slices.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrOverlayDraw {
+    pub clip: WgrVec4, // {x0, y0, x1, y1} pixels
+    pub texture_id: u64,
+    pub first_index: u32,
+    pub index_count: u32,
+    pub base_vertex: u32,
+    pub _pad: u32,
+}
+
 #[repr(C)]
 pub struct WgrFrame {
     pub clear: WgrVec4,
@@ -202,6 +268,14 @@ pub struct WgrFrame {
     // world already pre-multiplied in (palette[i] = world * boneMatrix[i]). Length is a
     // multiple of 128.
     pub palette: WgrSlice<WgrMat4>,
+    // Cascaded-shadow depth pass: rendered before the command stream when
+    // shadow.count > 0 and shadow_casters is non-empty.
+    pub shadow: WgrShadowPass,
+    pub shadow_casters: WgrSlice<WgrShadowCaster>,
+    // Overlay (dev panel): alpha-blended over the finished frame, no depth.
+    pub overlay_verts: WgrSlice<WgrOverlayVertex>,
+    pub overlay_indices: WgrSlice<u16>,
+    pub overlay_draws: WgrSlice<WgrOverlayDraw>,
 }
 
 // Layouts must match wgpu_renderer.hpp exactly (the C++ side static_asserts the same).
@@ -210,10 +284,15 @@ const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 120);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrCamera>() == 160);
+const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
+const _: () = assert!(std::mem::size_of::<WgrCamera>() == 512);
+const _: () = assert!(std::mem::size_of::<WgrShadowCaster>() == 104);
+const _: () = assert!(std::mem::size_of::<WgrShadowPass>() == 272);
 const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
+const _: () = assert!(std::mem::size_of::<WgrOverlayVertex>() == 20);
+const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrFrame>() == 128);
+const _: () = assert!(std::mem::size_of::<WgrFrame>() == 464);
 
 pub type WgrRenderer = Renderer;
 
@@ -439,6 +518,10 @@ pub unsafe extern "C" fn wgr_render_frame(
         let batches = unsafe { frame.batches.as_slice() };
         let cmds = unsafe { frame.cmds.as_slice() };
         let palette = unsafe { frame.palette.as_slice() };
+        let shadow_casters = unsafe { frame.shadow_casters.as_slice() };
+        let overlay_verts = unsafe { frame.overlay_verts.as_slice() };
+        let overlay_indices = unsafe { frame.overlay_indices.as_slice() };
+        let overlay_draws = unsafe { frame.overlay_draws.as_slice() };
         match renderer.render_frame(
             frame.clear,
             frame.fog_color.to_array(),
@@ -448,6 +531,11 @@ pub unsafe extern "C" fn wgr_render_frame(
             batches,
             cmds,
             palette,
+            &frame.shadow,
+            shadow_casters,
+            overlay_verts,
+            overlay_indices,
+            overlay_draws,
         ) {
             Ok(()) => 0,
             Err(e) => {
@@ -459,4 +547,57 @@ pub unsafe extern "C" fn wgr_render_frame(
         }
     }))
     .unwrap_or(-3)
+}
+
+/// Read one cascade layer of the shadow depth map back as row-major floats
+/// (row 0 = top). Returns the map resolution (side length), or 0 when no map
+/// exists / `layer` is out of range / `out_len` is too small.
+///
+/// # Safety
+/// `renderer` must be live; `out` must point to at least `out_len` floats, or
+/// be null (in which case 0 is returned).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_shadow_map_read(
+    renderer: *mut WgrRenderer,
+    layer: u32,
+    out: *mut f32,
+    out_len: u32,
+) -> u32 {
+    if renderer.is_null() || out.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let out = unsafe { std::slice::from_raw_parts_mut(out, out_len as usize) };
+        renderer.shadow_map_read(layer, out)
+    }))
+    .unwrap_or(0)
+}
+
+/// Render a triangle soup through the shadow depth pipeline into a scratch
+/// res*res map and read it back (row 0 = top). Returns 1 on success.
+///
+/// # Safety
+/// `renderer` must be live; `light_vp16` must point to 16 floats, `tri_xyz` to
+/// `3 * vert_count` floats, and `out` to `res * res` floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_shadow_depth_probe(
+    renderer: *mut WgrRenderer,
+    light_vp16: *const f32,
+    tri_xyz: *const f32,
+    vert_count: u32,
+    res: u32,
+    out: *mut f32,
+) -> i32 {
+    if renderer.is_null() || light_vp16.is_null() || tri_xyz.is_null() || out.is_null() || res == 0 {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let vp: &[f32; 16] = unsafe { &*(light_vp16 as *const [f32; 16]) };
+        let verts = unsafe { std::slice::from_raw_parts(tri_xyz, vert_count as usize * 3) };
+        let out = unsafe { std::slice::from_raw_parts_mut(out, (res * res) as usize) };
+        renderer.shadow_depth_probe(vp, verts, res, out) as i32
+    }))
+    .unwrap_or(0)
 }

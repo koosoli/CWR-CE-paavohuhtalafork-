@@ -6,7 +6,8 @@ mod log;
 mod textures;
 
 use crate::ffi::{
-    WgrCamera, WgrCmd, WgrCmdKind, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex, WgrVertex2D,
+    WgrCamera, WgrCmd, WgrCmdKind, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex,
+    WgrOverlayDraw, WgrOverlayVertex, WgrShadowCaster, WgrShadowPass, WgrVertex2D,
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::Gfx3d;
@@ -135,12 +136,23 @@ impl Renderer {
         batches: &[WgrDraw2DBatch],
         cmds: &[WgrCmd],
         palette: &[WgrMat4],
+        shadow: &WgrShadowPass,
+        shadow_casters: &[WgrShadowCaster],
+        overlay_verts: &[WgrOverlayVertex],
+        overlay_indices: &[u16],
+        overlay_draws: &[WgrOverlayDraw],
     ) -> Result<(), String> {
         let screen = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
         self.gfx2d
             .prepare(&self.device, &self.queue, screen, fog, verts);
+        self.gfx2d
+            .prepare_overlay(&self.device, &self.queue, overlay_verts, overlay_indices);
         self.gfx3d
             .ensure_depth(&self.device, self.config.width, self.config.height);
+        // Shadows first: prepare() binds the frame's final shadow target into
+        // the camera group.
+        self.gfx3d
+            .prepare_shadows(&self.device, &self.queue, shadow, shadow_casters);
         self.gfx3d
             .prepare(&self.device, &self.queue, cameras, draws3d, palette);
 
@@ -161,6 +173,11 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("wgr_frame"),
             });
+
+        // Cascade shadow depth passes run first so every segment's draws can
+        // sample the completed map, regardless of submission order.
+        self.gfx3d
+            .render_shadow_passes(&mut encoder, &self.textures, shadow, shadow_casters);
 
         // Replay the command stream as one or more segments split at CLEAR_DEPTH.
         // The first segment clears colour; every segment clears depth. Within a
@@ -235,6 +252,33 @@ impl Renderer {
             start = end + 1;
         }
 
+        // Dev-panel overlay composites over the finished frame, no depth.
+        if !overlay_draws.is_empty() {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wgr_overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &color,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.gfx2d.render_overlay(
+                &mut pass,
+                &self.textures,
+                overlay_draws,
+                self.config.width,
+                self.config.height,
+            );
+        }
+
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         Ok(())
@@ -282,5 +326,21 @@ impl Renderer {
 
     fn mesh_destroy(&mut self, handle: u64) {
         self.gfx3d.mesh_destroy(handle);
+    }
+
+    fn shadow_map_read(&mut self, layer: u32, out: &mut [f32]) -> u32 {
+        self.gfx3d
+            .shadow_map_read(&self.device, &self.queue, layer, out)
+    }
+
+    fn shadow_depth_probe(
+        &mut self,
+        light_vp: &[f32; 16],
+        verts_xyz: &[f32],
+        res: u32,
+        out: &mut [f32],
+    ) -> bool {
+        self.gfx3d
+            .shadow_depth_probe(&self.device, &self.queue, &self.textures, light_vp, verts_xyz, res, out)
     }
 }

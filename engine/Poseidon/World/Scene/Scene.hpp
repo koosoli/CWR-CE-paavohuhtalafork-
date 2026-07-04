@@ -344,6 +344,9 @@ class Scene
     // the cascade depth maps from the sun.  Lives in SceneShadowPass.cpp to keep
     // Scene.cpp under the file-size limit.  Called from Pass2 when shadow maps are on.
     void RenderShadowMapDepthPass(int nDraw);
+    // GPU-driven variant (Engine::UsesGpuShadowCasters): submits caster meshes +
+    // transforms via AddShadowCaster instead of collecting a CPU triangle soup.
+    void RenderShadowMapDepthPassGpu(int nDraw);
     void DrawObjectsAndShadowsPass3(); // last draw cockpits
     void ObjectsDrawn();               // release all temporary information
 

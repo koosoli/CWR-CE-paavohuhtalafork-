@@ -11,9 +11,9 @@
 
 // Phase A of the shadow-map plan: pure,
 // engine-free shadow math proven in isolation before any GL. A4 (texel snap =
-// anti-swim) and A7 (the SampleShadow occlusion oracle the GPU shader mirrors)
-// are the load-bearing cases — they pin "stable while moving" and "correct
-// occlusion" objectively.
+// anti-swim) and A7 (the SampleShadow occlusion reference the GPU shader
+// mirrors) are the load-bearing cases — they pin "stable while moving" and
+// "correct occlusion" objectively.
 
 using namespace Poseidon::shadow;
 
@@ -254,7 +254,7 @@ TEST_CASE("ShadowMath A6: a point outside the light frustum is flagged out-of-ma
     REQUIRE_FALSE(uv.inMap);
 }
 
-// ── A7 + A8 — the occlusion oracle on rasterised geometry ────────────────────
+// ── A7 + A8 — the occlusion reference on rasterised geometry ─────────────────
 // A roof patch at y=5 floats over a floor at y=0. With the sun straight down,
 // the floor directly beneath the roof must be shadowed and the floor away from
 // it lit. This is the contract the GPU shadow test must reproduce.
@@ -820,4 +820,49 @@ TEST_CASE("ShadowMath tiered: SelectShadowTier priority (omni by dist, frustum b
     // Just outside the omni spheres but small eye-depth (off to the side) → the near
     // frustum tier still catches it (the shader then bounds-fallthrough-refines).
     REQUIRE(SelectShadowTier(200.0f, 30.0f, omniRadius, omniCount, splitViewDist, count) == 2);
+}
+
+TEST_CASE("ShadowMath: quantized radius always covers and stays within one rung", "[Graphics][ShadowMath]")
+{
+    for (float r : {0.5f, 2.0f, 7.3f, 42.0f, 137.5f, 900.0f})
+    {
+        const float q = QuantizeShadowRadius(r);
+        REQUIRE(q >= r - 1e-3f);
+        REQUIRE(q <= std::max(2.0f, r * 1.051f));
+    }
+}
+
+TEST_CASE("ShadowMath: an aim-zoom radius sweep lands on few discrete rungs", "[Graphics][ShadowMath]")
+{
+    // A continuous FOV zoom scales the slice bounding sphere continuously; the
+    // quantizer must collapse the sweep to the fixed geometric ladder so the
+    // texel grid only rescales at discrete steps (the zoom-shimmer fix).
+    std::vector<float> rungs;
+    for (int i = 0; i <= 1000; i++)
+    {
+        const float r = 60.0f + 0.06f * static_cast<float>(i); // 60 m -> 120 m sweep
+        const float q = QuantizeShadowRadius(r);
+        if (rungs.empty() || q != rungs.back())
+        {
+            rungs.push_back(q);
+        }
+    }
+    REQUIRE(rungs.size() >= 2);
+    REQUIRE(rungs.size() <= 20); // ~15 rungs at 5% ratio over one octave
+    for (size_t i = 1; i < rungs.size(); i++)
+    {
+        REQUIRE(rungs[i] > rungs[i - 1]);
+    }
+}
+
+TEST_CASE("ShadowMath tiered: cascade set records the normalized sun direction", "[Graphics][ShadowMath]")
+{
+    CascadeBuildParams p;
+    p.forward = {0.0f, 0.0f, -1.0f};
+    p.right = {1.0f, 0.0f, 0.0f};
+    p.up = {0.0f, 1.0f, 0.0f};
+    p.sunDir = {2.0f, -4.0f, 0.0f};
+    const CascadeSet cs = BuildShadowCascadesTiered(p);
+    REQUIRE(Length(cs.sunDir) == Catch::Approx(1.0f).margin(1e-5f));
+    REQUIRE(cs.sunDir.y < 0.0f);
 }

@@ -1702,8 +1702,8 @@ void Scene::DrawObjectsAndShadowsPass2()
 
         // Shadow-map depth pass (durable shadow fix; off by default).  Render the
         // visible casters' geometry from the sun into the cascade depth maps.
-        // Invisible on its own — the lit shaders sample it once enabled; the
-        // projected accumulator still runs.  Body in SceneShadowPass.cpp (keeps
+        // The lit shaders sample it; exclusive with the projected accumulator
+        // below — never both.  Body in SceneShadowPass.cpp (keeps
         // Scene.cpp under the file-size limit).
         if (GEngine->ShadowMapsEnabled())
         {

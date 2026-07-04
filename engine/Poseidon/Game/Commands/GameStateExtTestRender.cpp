@@ -260,7 +260,7 @@ GameValue TriScreenshot(const GameState* state, GameValuePar arg)
 }
 
 /// triShadowDepthProbe <res> — render a known cube caster from the sun into a GL
-/// depth FBO and cross-check it against the CPU shadow-map oracle (ShadowMath).
+/// depth FBO and cross-check it against the CPU shadow-map reference (ShadowMath).
 /// Dumps the GL depth map to the tri output dir. Returns "OK iou=.. diff=.." or
 /// "FAIL ..". Exercises the GL shadow-depth FBO in isolation, off the live path.
 GameValue TriShadowDepthProbe(const GameState* /*state*/, GameValuePar arg)
@@ -287,7 +287,7 @@ GameValue TriShadowDepthProbe(const GameState* /*state*/, GameValuePar arg)
         tris.push_back({c[f[0]], c[f[2]], c[f[3]]});
     }
 
-    // Light fit over the box corners (same matrix feeds both GL and the oracle).
+    // Light fit over the box corners (same matrix feeds both GL and the reference).
     sm::Vec3 sun = sm::Normalize({0.4f, -1.0f, 0.3f});
     sm::Vec3 up{0.0f, 1.0f, 0.0f};
     sm::Mat4 lightView = sm::LightView(sun, up);

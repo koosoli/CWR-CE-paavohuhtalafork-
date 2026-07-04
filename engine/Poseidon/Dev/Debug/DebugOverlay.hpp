@@ -22,6 +22,12 @@ namespace Poseidon::Dev {
 namespace DebugOverlay
 {
     void Init(SDL_Window* window, void* glContext);
+
+    // Alternative to Init for engines without a native ImGui backend: ImGui
+    // renders through the Engine overlay virtuals (SubmitOverlay /
+    // OverlayTexture*) instead of imgui_impl_opengl3. Used by EngineWgpu.
+    void InitForEngine(SDL_Window* window);
+
     void ProcessEvent(const SDL_Event& event);
 
     // Fire an in-process content re-mount through the exact deferred path the MODS-tab

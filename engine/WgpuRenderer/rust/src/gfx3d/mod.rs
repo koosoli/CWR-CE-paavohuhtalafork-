@@ -4,8 +4,8 @@ use slotmap::{Key, KeyData, SlotMap};
 use wgpu::util::DeviceExt;
 
 use crate::ffi::{
-    WgrBlend, WgrCamera, WgrDraw3D, WgrMat4, WgrMeshVertex, DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK,
-    DRAW3D_ZBIAS_SHIFT, NO_PALETTE,
+    WgrBlend, WgrCamera, WgrDraw3D, WgrMat4, WgrMeshVertex, WgrShadowCaster, WgrShadowPass,
+    DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE,
 };
 use crate::textures::SharedTextures;
 
@@ -13,6 +13,10 @@ use crate::textures::SharedTextures;
 // darkened by at most one shadow polygon, so overlapping shadow casters don't
 // compound — mirrors GL33's stencil EQUAL 0 / INCR shadow path).
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
+
+// Cascade shadow depth maps: one D32 array layer per cascade.
+const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+const MAX_CASCADES: u32 = 4;
 
 // Polygon-offset variants (mirror GL33's SetPolygonOffsetForDecals / ..ForShadows):
 // decals nudge coplanar overlays toward the camera; ZBias overlay faces (signs) get
@@ -92,6 +96,68 @@ impl PipelineKey {
 // occupies this many matrices in the palette pool and in the shader UBO.
 const PALETTE_SIZE: usize = 128;
 
+// Blocking copy of one D32 texture layer into `out` (row 0 = top).
+fn read_depth_layer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    tex: &wgpu::Texture,
+    res: u32,
+    layer: u32,
+    out: &mut [f32],
+) -> bool {
+    let res = res as usize;
+    let unpadded = (res * 4) as u32;
+    let padded = unpadded.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let buf = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgr_depth_readback"),
+        size: padded as u64 * res as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("wgr_depth_readback"),
+    });
+    encoder.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: tex,
+            mip_level: 0,
+            origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+            aspect: wgpu::TextureAspect::DepthOnly,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &buf,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(padded),
+                rows_per_image: Some(res as u32),
+            },
+        },
+        wgpu::Extent3d {
+            width: res as u32,
+            height: res as u32,
+            depth_or_array_layers: 1,
+        },
+    );
+    queue.submit(std::iter::once(encoder.finish()));
+
+    let slice = buf.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    if device.poll(wgpu::PollType::wait_indefinitely()).is_err() || !matches!(rx.recv(), Ok(Ok(()))) {
+        return false;
+    }
+    let data = slice.get_mapped_range();
+    for y in 0..res {
+        let row = &data[y * padded as usize..y * padded as usize + unpadded as usize];
+        out[y * res..(y + 1) * res].copy_from_slice(bytemuck::cast_slice(row));
+    }
+    drop(data);
+    buf.unmap();
+    true
+}
+
 slotmap::new_key_type! {
     struct MeshKey;
 }
@@ -104,6 +170,153 @@ struct Mesh {
     // Per-vertex skin data (4 bone indices + 4 weights, 8 bytes/vertex); present
     // only for skinned meshes.
     skin: Option<wgpu::Buffer>,
+}
+
+struct ShadowTarget {
+    tex: wgpu::Texture,
+    layer_views: Vec<wgpu::TextureView>,
+    sample_view: wgpu::TextureView,
+    res: u32,
+    layers: u32,
+}
+
+struct ShadowPipelines {
+    solid: wgpu::RenderPipeline,
+    alpha: wgpu::RenderPipeline,
+    skin_solid: wgpu::RenderPipeline,
+    skin_alpha: wgpu::RenderPipeline,
+}
+
+impl ShadowPipelines {
+    fn get(&self, skinned: bool, alpha: bool) -> &wgpu::RenderPipeline {
+        match (skinned, alpha) {
+            (false, false) => &self.solid,
+            (false, true) => &self.alpha,
+            (true, false) => &self.skin_solid,
+            (true, true) => &self.skin_alpha,
+        }
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ShadowCasterUbo {
+    world: WgrMat4,
+    params: [f32; 4], // x = alpha_ref
+}
+
+// Group 0 of the lit 3D pipelines: the per-camera UBO (dynamic offset) plus the
+// cascade shadow map + comparison sampler. The bind group is recreated when the
+// UBO regrows or the shadow target changes (tracked by `shadow_gen`).
+struct CameraGroup {
+    layout: wgpu::BindGroupLayout,
+    sampler: wgpu::Sampler,
+    stride: u64,
+    bind_size: u64,
+    buf: Option<wgpu::Buffer>,
+    cap: u64,
+    bind: Option<wgpu::BindGroup>,
+    bound_shadow_gen: u64,
+}
+
+impl CameraGroup {
+    fn new(device: &wgpu::Device) -> Self {
+        let bind_size = std::mem::size_of::<WgrCamera>() as u64;
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_3d_camera_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: wgpu::BufferSize::new(bind_size),
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                    count: None,
+                },
+            ],
+        });
+        // Bilinear 2x2 hardware PCF per compare tap; LessEqual = lit when the
+        // receiver is at or in front of the stored occluder depth.
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_shadow_compare_sampler"),
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            compare: Some(wgpu::CompareFunction::LessEqual),
+            ..Default::default()
+        });
+        let align = device
+            .limits()
+            .min_uniform_buffer_offset_alignment
+            .max(bind_size as u32) as u64;
+        CameraGroup {
+            layout,
+            sampler,
+            stride: bind_size.div_ceil(align) * align,
+            bind_size,
+            buf: None,
+            cap: 0,
+            bind: None,
+            bound_shadow_gen: u64::MAX,
+        }
+    }
+
+    fn ensure(&mut self, device: &wgpu::Device, count: usize, shadow_view: &wgpu::TextureView, shadow_gen: u64) {
+        let needed = count as u64 * self.stride;
+        let grow = self.cap < needed || self.buf.is_none();
+        if grow {
+            let cap = needed.next_power_of_two().max(self.stride * 8);
+            self.buf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wgr_3d_camera_ubo"),
+                size: cap,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.cap = cap;
+        }
+        if grow || self.bound_shadow_gen != shadow_gen || self.bind.is_none() {
+            self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wgr_3d_camera_bind"),
+                layout: &self.layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                            buffer: self.buf.as_ref().unwrap(),
+                            offset: 0,
+                            size: wgpu::BufferSize::new(self.bind_size),
+                        }),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(shadow_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            }));
+            self.bound_shadow_gen = shadow_gen;
+        }
+    }
 }
 
 // Holds a dynamic uniform buffer + its bind group, regrown as the frame needs.
@@ -177,7 +390,7 @@ impl DynUbo {
 }
 
 pub struct Gfx3d {
-    cameras: DynUbo,
+    cameras: CameraGroup,
     world: DynUbo,
     // Skinned draws: one PALETTE_SIZE-matrix block per slot, dynamic-offset UBO.
     palette: DynUbo,
@@ -185,7 +398,6 @@ pub struct Gfx3d {
     // Pipeline build inputs, kept so variants can be created lazily as draws
     // demand new (blend, depth, polygon-offset, cutout-threshold) combinations.
     shader: wgpu::ShaderModule,
-    skinned_shader: wgpu::ShaderModule,
     plain_layout: wgpu::PipelineLayout,
     skinned_layout: wgpu::PipelineLayout,
     surface_format: wgpu::TextureFormat,
@@ -195,6 +407,18 @@ pub struct Gfx3d {
 
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_size: (u32, u32),
+
+    shadow_pass_ubo: DynUbo,   // one light_vp per cascade
+    shadow_caster_ubo: DynUbo, // one ShadowCasterUbo per caster
+    shadow_shader: wgpu::ShaderModule,
+    shadow_layout: wgpu::PipelineLayout,
+    shadow_skinned_layout: wgpu::PipelineLayout,
+    shadow_pipelines: Option<ShadowPipelines>,
+    shadow_target: Option<ShadowTarget>,
+    // Bumped on shadow-target recreation so the camera bind group refreshes.
+    shadow_gen: u64,
+    // 1x1 stand-in bound while no shadow map exists (the layout always binds).
+    dummy_shadow_view: wgpu::TextureView,
 
     meshes: SlotMap<MeshKey, Mesh>,
 }
@@ -209,21 +433,11 @@ impl Gfx3d {
             label: Some("wgr_3d_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("shader3d.wgsl").into()),
         });
-        let skinned_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
-            label: Some("wgr_3d_skinned_shader"),
-            source: wgpu::ShaderSource::Wgsl(include_str!("shader3d_skinned.wgsl").into()),
-        });
 
-        // Dynamic-offset UBOs: camera holds one entry per distinct view/proj this
-        // frame, world one per draw, palette one PALETTE_SIZE-matrix block per
-        // skinned draw. Camera is read by both stages (vertex: proj/view + fog
-        // factor; fragment: fog_color); world/palette are vertex-only.
-        let cameras = DynUbo::new(
-            device,
-            "wgr_3d_camera_layout",
-            std::mem::size_of::<WgrCamera>() as u64,
-            wgpu::ShaderStages::VERTEX_FRAGMENT,
-        );
+        // Group 0 = camera UBO + shadow map + comparison sampler; world holds one
+        // 64-byte entry per draw, palette one PALETTE_SIZE-matrix block per
+        // skinned draw (both vertex-only, dynamic offset).
+        let cameras = CameraGroup::new(device);
         let world = DynUbo::new(device, "wgr_3d_world_layout", 64, wgpu::ShaderStages::VERTEX);
         let palette = DynUbo::new(
             device,
@@ -261,12 +475,63 @@ impl Gfx3d {
         // Skin buffer: 8 bytes/vertex — Uint8x4 bone indices + Unorm8x4 weights.
         let skin_attrs = wgpu::vertex_attr_array![3 => Uint8x4, 4 => Unorm8x4];
 
+        let shadow_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgr_shadow_depth_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("shadow_depth.wgsl").into()),
+        });
+        let shadow_pass_ubo = DynUbo::new(device, "wgr_shadow_pass_layout", 64, wgpu::ShaderStages::VERTEX);
+        let shadow_caster_ubo = DynUbo::new(
+            device,
+            "wgr_shadow_caster_layout",
+            std::mem::size_of::<ShadowCasterUbo>() as u64,
+            wgpu::ShaderStages::VERTEX_FRAGMENT,
+        );
+        let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgr_shadow_pipeline_layout"),
+            bind_group_layouts: &[
+                Some(&shadow_pass_ubo.layout),
+                Some(&shadow_caster_ubo.layout),
+                Some(&textures.texture_layout),
+                Some(&textures.sampler_layout),
+            ],
+            immediate_size: 0,
+        });
+        // Skinned depth pipelines swap the caster UBO (group 1) for the bone palette.
+        let shadow_skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgr_shadow_skinned_pipeline_layout"),
+            bind_group_layouts: &[
+                Some(&shadow_pass_ubo.layout),
+                Some(&palette.layout),
+                Some(&textures.texture_layout),
+                Some(&textures.sampler_layout),
+            ],
+            immediate_size: 0,
+        });
+
+        let dummy_shadow = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_shadow_dummy"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SHADOW_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dummy_shadow_view = dummy_shadow.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+
         Gfx3d {
             cameras,
             world,
             palette,
             shader,
-            skinned_shader,
             plain_layout: pipeline_layout,
             skinned_layout,
             surface_format,
@@ -275,6 +540,15 @@ impl Gfx3d {
             pipelines: HashMap::new(),
             depth: None,
             depth_size: (0, 0),
+            shadow_pass_ubo,
+            shadow_caster_ubo,
+            shadow_shader,
+            shadow_layout,
+            shadow_skinned_layout,
+            shadow_pipelines: None,
+            shadow_target: None,
+            shadow_gen: 0,
+            dummy_shadow_view,
             meshes: SlotMap::with_key(),
         }
     }
@@ -326,10 +600,11 @@ impl Gfx3d {
             return;
         }
 
-        let (module, layout) = if key.skinned {
-            (&self.skinned_shader, &self.skinned_layout)
+        let module = &self.shader;
+        let (vs_entry, layout) = if key.skinned {
+            ("vs_skinned", &self.skinned_layout)
         } else {
-            (&self.shader, &self.plain_layout)
+            ("vs_main", &self.plain_layout)
         };
 
         let vbuf_layout = wgpu::VertexBufferLayout {
@@ -418,7 +693,7 @@ impl Gfx3d {
             layout: Some(layout),
             vertex: wgpu::VertexState {
                 module,
-                entry_point: Some("vs_main"),
+                entry_point: Some(vs_entry),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &constants,
                     ..Default::default()
@@ -563,6 +838,376 @@ impl Gfx3d {
         self.depth.as_ref().map(|(_, v)| v)
     }
 
+    fn ensure_shadow_target(&mut self, device: &wgpu::Device, res: u32, layers: u32) {
+        if let Some(t) = &self.shadow_target {
+            if t.res == res && t.layers == layers {
+                return;
+            }
+        }
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_shadow_map"),
+            size: wgpu::Extent3d {
+                width: res,
+                height: res,
+                depth_or_array_layers: layers,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SHADOW_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let layer_views = (0..layers)
+            .map(|l| {
+                tex.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("wgr_shadow_layer"),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    base_array_layer: l,
+                    array_layer_count: Some(1),
+                    ..Default::default()
+                })
+            })
+            .collect();
+        let sample_view = tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("wgr_shadow_sample"),
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        self.shadow_target = Some(ShadowTarget {
+            tex,
+            layer_views,
+            sample_view,
+            res,
+            layers,
+        });
+        self.shadow_gen += 1;
+    }
+
+    fn ensure_shadow_pipelines(&mut self, device: &wgpu::Device) {
+        if self.shadow_pipelines.is_some() {
+            return;
+        }
+        let vbuf_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<WgrMeshVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &self.vbuf_attrs,
+        };
+        let skin_layout = wgpu::VertexBufferLayout {
+            array_stride: 8,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &self.skin_attrs,
+        };
+        let plain_buffers = [vbuf_layout.clone()];
+        let skinned_buffers = [vbuf_layout, skin_layout];
+        let build = |vs: &str, fs: Option<&str>, skinned: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("wgr_shadow_depth_pipeline"),
+                layout: Some(if skinned { &self.shadow_skinned_layout } else { &self.shadow_layout }),
+                vertex: wgpu::VertexState {
+                    module: &self.shadow_shader,
+                    entry_point: Some(vs),
+                    compilation_options: Default::default(),
+                    buffers: if skinned { &skinned_buffers } else { &plain_buffers },
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    front_face: wgpu::FrontFace::Cw,
+                    // No culling: single-sided walls/roofs must still cast.
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: SHADOW_FORMAT,
+                    depth_write_enabled: Some(true),
+                    depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState {
+                        constant: 4,
+                        slope_scale: 2.5,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: fs.map(|entry| wgpu::FragmentState {
+                    module: &self.shadow_shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        self.shadow_pipelines = Some(ShadowPipelines {
+            solid: build("vs_solid", None, false),
+            alpha: build("vs_alpha", Some("fs_alpha"), false),
+            skin_solid: build("vs_skin_solid", None, true),
+            skin_alpha: build("vs_skin_alpha", Some("fs_skin_alpha"), true),
+        });
+    }
+
+    pub fn prepare_shadows(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        pass: &WgrShadowPass,
+        casters: &[WgrShadowCaster],
+    ) {
+        let count = pass.count.min(MAX_CASCADES);
+        if count == 0 || casters.is_empty() || pass.resolution == 0 {
+            return;
+        }
+        self.ensure_shadow_target(device, pass.resolution, count);
+        self.ensure_shadow_pipelines(device);
+
+        self.shadow_pass_ubo.ensure(device, count as usize);
+        let buf = self.shadow_pass_ubo.buf.as_ref().unwrap();
+        for c in 0..count as usize {
+            queue.write_buffer(
+                buf,
+                c as u64 * self.shadow_pass_ubo.stride,
+                bytemuck::bytes_of(&pass.light_vp[c]),
+            );
+        }
+
+        self.shadow_caster_ubo.ensure(device, casters.len());
+        let buf = self.shadow_caster_ubo.buf.as_ref().unwrap();
+        for (i, caster) in casters.iter().enumerate() {
+            let entry = ShadowCasterUbo {
+                world: caster.world,
+                params: [caster.alpha_ref, 0.0, 0.0, 0.0],
+            };
+            queue.write_buffer(
+                buf,
+                i as u64 * self.shadow_caster_ubo.stride,
+                bytemuck::bytes_of(&entry),
+            );
+        }
+    }
+
+    pub fn render_shadow_passes(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        textures: &SharedTextures,
+        pass: &WgrShadowPass,
+        casters: &[WgrShadowCaster],
+    ) {
+        let count = pass.count.min(MAX_CASCADES);
+        if count == 0 || casters.is_empty() {
+            return;
+        }
+        let (Some(target), Some(pipes), Some(pass_bind), Some(caster_bind)) = (
+            self.shadow_target.as_ref(),
+            self.shadow_pipelines.as_ref(),
+            self.shadow_pass_ubo.bind.as_ref(),
+            self.shadow_caster_ubo.bind.as_ref(),
+        ) else {
+            return;
+        };
+
+        for c in 0..count.min(target.layers) as usize {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wgr_shadow_cascade"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &target.layer_views[c],
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+
+            for (i, caster) in casters.iter().enumerate() {
+                if caster.cascade_mask & (1 << c) == 0 || caster.index_count == 0 {
+                    continue;
+                }
+                let Some(mesh) = self.meshes.get(KeyData::from_ffi(caster.mesh).into()) else {
+                    continue;
+                };
+                if caster.index_begin + caster.index_count > mesh.index_count {
+                    continue;
+                }
+                let alpha = caster.alpha_ref > 0.0;
+                let skin = if caster.palette_slot != NO_PALETTE {
+                    mesh.skin.as_ref()
+                } else {
+                    None
+                };
+                rp.set_pipeline(pipes.get(skin.is_some(), alpha));
+                rp.set_bind_group(0, pass_bind, &[(c as u64 * self.shadow_pass_ubo.stride) as u32]);
+                if let Some(skin) = skin {
+                    let Some(palette_bind) = self.palette.bind.as_ref() else {
+                        continue;
+                    };
+                    rp.set_bind_group(
+                        1,
+                        palette_bind,
+                        &[(caster.palette_slot as u64 * self.palette.stride) as u32],
+                    );
+                    rp.set_vertex_buffer(1, skin.slice(..));
+                } else {
+                    rp.set_bind_group(
+                        1,
+                        caster_bind,
+                        &[(i as u64 * self.shadow_caster_ubo.stride) as u32],
+                    );
+                }
+                rp.set_bind_group(2, textures.texture_bind(if alpha { caster.texture_id } else { 0 }), &[]);
+                rp.set_bind_group(3, textures.sampler_bind(caster.sampler.index()), &[]);
+                rp.set_vertex_buffer(0, mesh.vbuf.slice(..));
+                rp.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint16);
+                rp.draw_indexed(
+                    caster.index_begin..(caster.index_begin + caster.index_count),
+                    0,
+                    0..1,
+                );
+            }
+        }
+    }
+
+    // Synchronous readback of one cascade layer, row 0 = top; returns the
+    // resolution, or 0 when unavailable.
+    pub fn shadow_map_read(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layer: u32,
+        out: &mut [f32],
+    ) -> u32 {
+        let Some(target) = self.shadow_target.as_ref() else {
+            return 0;
+        };
+        if layer >= target.layers || out.len() < (target.res * target.res) as usize {
+            return 0;
+        }
+        if read_depth_layer(device, queue, &target.tex, target.res, layer, out) {
+            target.res
+        } else {
+            0
+        }
+    }
+
+    // Render a caller-supplied triangle soup with the solid shadow depth
+    // pipeline into a scratch map and read it back (row 0 = top). Validates the
+    // GPU depth path against the ShadowMath::CpuRasterDepth CPU reference.
+    #[allow(clippy::too_many_arguments)]
+    pub fn shadow_depth_probe(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        textures: &SharedTextures,
+        light_vp: &[f32; 16],
+        verts_xyz: &[f32],
+        res: u32,
+        out: &mut [f32],
+    ) -> bool {
+        let vert_count = verts_xyz.len() / 3;
+        if vert_count == 0 || !vert_count.is_multiple_of(3) || vert_count > u16::MAX as usize {
+            return false;
+        }
+        if out.len() < (res * res) as usize {
+            return false;
+        }
+        self.ensure_shadow_pipelines(device);
+        let pipes = self.shadow_pipelines.as_ref().unwrap();
+
+        let verts: Vec<WgrMeshVertex> = verts_xyz
+            .chunks_exact(3)
+            .map(|p| WgrMeshVertex {
+                pos: glam::Vec3::new(p[0], p[1], p[2]),
+                norm: glam::Vec3::ZERO,
+                uv: glam::Vec2::ZERO,
+            })
+            .collect();
+        let indices: Vec<u16> = (0..vert_count as u16).collect();
+        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wgr_probe_vbuf"),
+            contents: bytemuck::cast_slice(&verts),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wgr_probe_ibuf"),
+            contents: bytemuck::cast_slice(&indices),
+            usage: wgpu::BufferUsages::INDEX,
+        });
+
+        self.shadow_pass_ubo.ensure(device, 1);
+        queue.write_buffer(self.shadow_pass_ubo.buf.as_ref().unwrap(), 0, bytemuck::cast_slice(light_vp));
+        self.shadow_caster_ubo.ensure(device, 1);
+        let identity = ShadowCasterUbo {
+            world: {
+                let mut m = [0.0f32; 16];
+                m[0] = 1.0;
+                m[5] = 1.0;
+                m[10] = 1.0;
+                m[15] = 1.0;
+                m
+            },
+            params: [0.0; 4],
+        };
+        queue.write_buffer(
+            self.shadow_caster_ubo.buf.as_ref().unwrap(),
+            0,
+            bytemuck::bytes_of(&identity),
+        );
+
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_probe_depth"),
+            size: wgpu::Extent3d {
+                width: res,
+                height: res,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SHADOW_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("wgr_probe"),
+        });
+        {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wgr_probe_pass"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: &view,
+                    depth_ops: Some(wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
+                }),
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            rp.set_pipeline(&pipes.solid);
+            rp.set_bind_group(0, self.shadow_pass_ubo.bind.as_ref().unwrap(), &[0]);
+            rp.set_bind_group(1, self.shadow_caster_ubo.bind.as_ref().unwrap(), &[0]);
+            rp.set_bind_group(2, textures.texture_bind(0), &[]);
+            rp.set_bind_group(3, textures.sampler_bind(0), &[]);
+            rp.set_vertex_buffer(0, vbuf.slice(..));
+            rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint16);
+            rp.draw_indexed(0..vert_count as u32, 0, 0..1);
+        }
+        queue.submit(std::iter::once(encoder.finish()));
+
+        read_depth_layer(device, queue, &tex, res, 0, out)
+    }
+
     // Upload cameras, per-draw world matrices, and the skinned-draw bone palette;
     // regrow the dynamic UBOs. `palette` is a flat pool of PALETTE_SIZE-matrix
     // blocks, one per palette slot (world already pre-multiplied in on the C++ side).
@@ -575,7 +1220,15 @@ impl Gfx3d {
         palette: &[WgrMat4],
     ) {
         if !cameras.is_empty() {
-            self.cameras.ensure(device, cameras.len());
+            // Bind the current shadow map (or the dummy while none exists); the
+            // depth passes for this frame were prepared before this call, so the
+            // target is final.
+            let shadow_view = self
+                .shadow_target
+                .as_ref()
+                .map(|t| &t.sample_view)
+                .unwrap_or(&self.dummy_shadow_view);
+            self.cameras.ensure(device, cameras.len(), shadow_view, self.shadow_gen);
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {
                 queue.write_buffer(buf, i as u64 * self.cameras.stride, bytemuck::bytes_of(c));

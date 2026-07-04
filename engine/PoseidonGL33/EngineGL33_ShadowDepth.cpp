@@ -13,7 +13,7 @@
 #include <vector>
 
 // Self-contained offscreen depth render used to validate the GL shadow-depth
-// path against the CPU oracle. Renders
+// path against the CPU reference. Renders
 // triangle geometry from the light into a depth FBO and reads the depth back.
 // Off the live render path entirely — only invoked by the triShadowDepthProbe
 // test verb, so it cannot affect normal rendering.
@@ -29,7 +29,7 @@ GLuint s_vao = 0;
 GLuint s_vbo = 0;
 
 // Cascade depth-map array (the live lit path; the single-layer s_fbo/s_tex above
-// stays for the ShadowDepthProbe CPU-oracle cross-check test).
+// stays for the ShadowDepthProbe CPU-reference cross-check test).
 GLuint s_arrFbo = 0;
 GLuint s_arrTex = 0;
 int s_arrRes = 0;
@@ -295,7 +295,7 @@ bool RenderDepthFBO(void* glContext, const float* lightVP16, const float* triXYZ
     glDrawArrays(GL_TRIANGLES, 0, vertCount);
 
     // GL_DEPTH_COMPONENT float == window-space depth in [0,1]; with ZERO_TO_ONE
-    // clip control window z == NDC z, matching the CPU oracle. Origin bottom-left.
+    // clip control window z == NDC z, matching the CPU reference. Origin bottom-left.
     if (outDepthOrNull)
         glReadPixels(0, 0, res, res, GL_DEPTH_COMPONENT, GL_FLOAT, outDepthOrNull);
 

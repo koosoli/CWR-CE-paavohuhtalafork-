@@ -75,6 +75,15 @@ namespace DebugOverlay
 
 namespace
 {
+// Which renderer backend composites ImGui: imgui_impl_opengl3 (GL33) or the
+// Engine overlay virtuals (wgpu). The SDL3 platform backend is shared.
+enum class RenderBackend
+{
+    OpenGL3,
+    Engine
+};
+RenderBackend s_backend = RenderBackend::OpenGL3;
+
 bool s_initialized = false;
 bool s_visible = false;
 bool s_selectShadowsTab = false; // one-shot: force-select the Shadows tab next draw
@@ -1333,6 +1342,15 @@ void DrawShadowsTab()
     changed |= ImGui::SliderFloat("Bias base", &t.biasBase, 0.0f, 0.0005f, "%.6f");
     ImGui::TextDisabled("  per-cascade depth bias base*(i+1)^2; raise to kill acne");
 
+    changed |= ImGui::SliderFloat("Normal offset", &t.normalOffset, 0.0f, 4.0f, "%.2f");
+    ImGui::TextDisabled("  receiver push toward the light in world texels; raise to kill acne (wgpu)");
+
+    changed |= ImGui::SliderFloat("PCF spread", &t.pcf, 0.0f, 3.0f, "%.2f");
+    ImGui::TextDisabled("  < 0.5 = single tap (crisp); >= 0.5 = 4 taps this many texels apart (wgpu)");
+
+    changed |= ImGui::SliderFloat("Caster LOD bias", &t.casterLodBias, 1.0f, 8.0f, "%.1f");
+    ImGui::TextDisabled("  casters pick their LOD as if this many times farther away");
+
     changed |= ImGui::SliderFloat("Far fade (m)", &t.fadeRange, 1.0f, 120.0f, "%.1f");
     ImGui::TextDisabled("  distant shadows dissolve over this band instead of a hard cut-off");
 
@@ -1368,12 +1386,13 @@ void DrawShadowsTab()
     // values they tuned by eye can be baked into the engine defaults.
     ImGui::Separator();
     ImGui::TextDisabled("Current tuning (copy back to share):");
-    char summary[320];
+    char summary[384];
     snprintf(summary, sizeof(summary),
              "shadows: enabled=%s darkness=%.3f cascades=%d omni=%d/%.3f/%.3f dist=%.3f split=%.2f bias=%.6f "
-             "fade=%.1f res=%d",
+             "normOfs=%.2f pcf=%.2f lodBias=%.1f fade=%.1f res=%d",
              t.enabled ? "true" : "false", t.darkness, t.cascadeCount, t.omniCount, t.omniCoef0, t.omniCoef1,
-             t.distanceCoef, t.splitCoef, t.biasBase, t.fadeRange, t.resolution);
+             t.distanceCoef, t.splitCoef, t.biasBase, t.normalOffset, t.pcf, t.casterLodBias, t.fadeRange,
+             t.resolution);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##shadowSummary", summary, sizeof(summary), ImGuiInputTextFlags_ReadOnly);
     if (ImGui::Button("Copy summary to clipboard"))
@@ -1684,18 +1703,119 @@ void DrawMainWindow()
 }
 } // namespace
 
-void Init(SDL_Window* window, void* glContext)
+namespace
 {
-    if (s_initialized)
-        return;
+void CreateSharedContext(SDL_Window* window)
+{
     s_window = window;
-
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
     ImGuiIO& io = ImGui::GetIO();
     io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;
     io.IniFilename = nullptr; // no imgui.ini side-effects
     ImGui::StyleColorsDark();
+}
+
+void UpdateEngineTextures(ImVector<ImTextureData*>* textures)
+{
+    if (!textures || !GEngine || !GEngine->SupportsOverlayRenderer())
+        return;
+    for (ImTextureData* tex : *textures)
+    {
+        if (tex->Status == ImTextureStatus_WantCreate)
+        {
+            IM_ASSERT(tex->Format == ImTextureFormat_RGBA32);
+            const uint64_t id =
+                GEngine->OverlayTextureCreate(tex->Width, tex->Height, static_cast<const uint8_t*>(tex->GetPixels()));
+            if (id == 0)
+                continue;
+            tex->SetTexID(static_cast<ImTextureID>(id));
+            tex->SetStatus(ImTextureStatus_OK);
+        }
+        else if (tex->Status == ImTextureStatus_WantUpdates)
+        {
+            // Full re-upload; the FFI has no sub-rect update and atlas textures are small.
+            GEngine->OverlayTextureUpdate(static_cast<uint64_t>(tex->TexID), tex->Width, tex->Height,
+                                          static_cast<const uint8_t*>(tex->GetPixels()));
+            tex->SetStatus(ImTextureStatus_OK);
+        }
+        else if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames > 0)
+        {
+            GEngine->OverlayTextureDestroy(static_cast<uint64_t>(tex->TexID));
+            tex->SetTexID(ImTextureID_Invalid);
+            tex->SetStatus(ImTextureStatus_Destroyed);
+        }
+    }
+}
+
+// Flatten ImGui's draw lists into one vertex/index pool + scissored draw
+// records and hand them to the engine for composition over the frame.
+void RenderDrawDataEngine(ImDrawData* dd)
+{
+    static_assert(sizeof(ImDrawIdx) == 2, "engine overlay indices are 16-bit");
+    static_assert(sizeof(Engine::OverlayVertex) == sizeof(ImDrawVert), "OverlayVertex must mirror ImDrawVert");
+
+    UpdateEngineTextures(dd->Textures);
+    if (!GEngine || !GEngine->SupportsOverlayRenderer())
+        return;
+
+    const ImVec2 off = dd->DisplayPos;
+    const ImVec2 scale = dd->FramebufferScale;
+
+    static std::vector<Engine::OverlayVertex> verts;
+    static std::vector<uint16_t> indices;
+    static std::vector<Engine::OverlayDrawCmd> cmds;
+    verts.clear();
+    indices.clear();
+    cmds.clear();
+    verts.reserve(dd->TotalVtxCount);
+    indices.reserve(dd->TotalIdxCount);
+
+    for (int li = 0; li < dd->CmdListsCount; li++)
+    {
+        const ImDrawList* dl = dd->CmdLists[li];
+        const uint32_t vtxBase = static_cast<uint32_t>(verts.size());
+        const uint32_t idxBase = static_cast<uint32_t>(indices.size());
+        for (const ImDrawVert& v : dl->VtxBuffer)
+        {
+            verts.push_back({(v.pos.x - off.x) * scale.x, (v.pos.y - off.y) * scale.y, v.uv.x, v.uv.y, v.col});
+        }
+        indices.insert(indices.end(), dl->IdxBuffer.begin(), dl->IdxBuffer.end());
+        for (const ImDrawCmd& c : dl->CmdBuffer)
+        {
+            if (c.UserCallback)
+            {
+                if (c.UserCallback != ImDrawCallback_ResetRenderState)
+                    c.UserCallback(dl, &c);
+                continue;
+            }
+            if (c.ElemCount == 0)
+                continue;
+            Engine::OverlayDrawCmd oc;
+            oc.clip[0] = (c.ClipRect.x - off.x) * scale.x;
+            oc.clip[1] = (c.ClipRect.y - off.y) * scale.y;
+            oc.clip[2] = (c.ClipRect.z - off.x) * scale.x;
+            oc.clip[3] = (c.ClipRect.w - off.y) * scale.y;
+            if (oc.clip[2] <= oc.clip[0] || oc.clip[3] <= oc.clip[1])
+                continue;
+            oc.texture = static_cast<uint64_t>(c.GetTexID());
+            oc.firstIndex = idxBase + c.IdxOffset;
+            oc.indexCount = c.ElemCount;
+            oc.baseVertex = vtxBase + c.VtxOffset;
+            cmds.push_back(oc);
+        }
+    }
+
+    GEngine->SubmitOverlay(verts.data(), static_cast<int>(verts.size()), indices.data(),
+                           static_cast<int>(indices.size()), cmds.data(), static_cast<int>(cmds.size()));
+}
+} // namespace
+
+void Init(SDL_Window* window, void* glContext)
+{
+    if (s_initialized)
+        return;
+    CreateSharedContext(window);
 
     if (!ImGui_ImplSDL3_InitForOpenGL(window, glContext))
     {
@@ -1708,15 +1828,55 @@ void Init(SDL_Window* window, void* glContext)
         return;
     }
 
+    s_backend = RenderBackend::OpenGL3;
     s_initialized = true;
     LOG_INFO(Graphics, "DebugOverlay: ImGui initialized (press Ctrl+` / Ctrl+; to toggle)");
+}
+
+void InitForEngine(SDL_Window* window)
+{
+    if (s_initialized)
+        return;
+    CreateSharedContext(window);
+
+    if (!ImGui_ImplSDL3_InitForOther(window))
+    {
+        LOG_ERROR(Graphics, "DebugOverlay: ImGui_ImplSDL3_InitForOther failed");
+        return;
+    }
+    ImGuiIO& io = ImGui::GetIO();
+    io.BackendRendererName = "imgui_impl_poseidon_overlay";
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+
+    s_backend = RenderBackend::Engine;
+    s_initialized = true;
+    LOG_INFO(Graphics, "DebugOverlay: ImGui initialized on the engine overlay backend "
+                       "(press Ctrl+` / Ctrl+; to toggle)");
 }
 
 void Shutdown()
 {
     if (!s_initialized)
         return;
-    ImGui_ImplOpenGL3_Shutdown();
+    if (s_backend == RenderBackend::OpenGL3)
+    {
+        ImGui_ImplOpenGL3_Shutdown();
+    }
+    else
+    {
+        // Release engine textures while the engine is still alive; if it is
+        // already gone the renderer teardown frees them anyway.
+        for (ImTextureData* tex : ImGui::GetPlatformIO().Textures)
+        {
+            if (tex->RefCount != 1)
+                continue;
+            if (GEngine && GEngine->SupportsOverlayRenderer() && tex->TexID != ImTextureID_Invalid)
+                GEngine->OverlayTextureDestroy(static_cast<uint64_t>(tex->TexID));
+            tex->SetTexID(ImTextureID_Invalid);
+            tex->SetStatus(ImTextureStatus_Destroyed);
+        }
+    }
     ImGui_ImplSDL3_Shutdown();
     ImGui::DestroyContext();
     s_initialized = false;
@@ -1758,7 +1918,10 @@ void NewFrame()
     // after the game render), so we draw our own cursor as part of ImGui's
     // drawlist to stay on top.  When hidden, fall back to the engine cursor.
     ImGui::GetIO().MouseDrawCursor = s_visible;
-    ImGui_ImplOpenGL3_NewFrame();
+    if (s_backend == RenderBackend::OpenGL3)
+    {
+        ImGui_ImplOpenGL3_NewFrame();
+    }
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
     if (s_visible)
@@ -1770,11 +1933,18 @@ void Render()
     if (!s_initialized)
         return;
     ImGui::Render();
-    // Make sure we draw to the default framebuffer in case the engine left
-    // an FBO bound — happens with post-FX in GL33.  Other state (blend,
-    // scissor, vao, depth) is saved/restored inside RenderDrawData.
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    if (s_backend == RenderBackend::OpenGL3)
+    {
+        // Make sure we draw to the default framebuffer in case the engine left
+        // an FBO bound — happens with post-FX in GL33.  Other state (blend,
+        // scissor, vao, depth) is saved/restored inside RenderDrawData.
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        ImGui_ImplOpenGL3_RenderDrawData(ImGui::GetDrawData());
+    }
+    else
+    {
+        RenderDrawDataEngine(ImGui::GetDrawData());
+    }
 
     // Drain deferred actions queued by UI click handlers.  See the
     // s_pendingActions comment for the why — running cheats here

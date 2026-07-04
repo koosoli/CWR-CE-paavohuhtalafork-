@@ -39,6 +39,10 @@ namespace frame
 struct Draw;
 }
 } // namespace render
+namespace shadow
+{
+struct CascadeSet;
+}
 
 class Counter
 {
@@ -744,7 +748,7 @@ class Engine : public IGraphicsEngine
     /// light into an offscreen depth FBO at `res`x`res`, given a column-major light
     /// view-projection (16 floats), and read the depth back into `outDepth`
     /// (`res*res` floats, [0,1], row 0 = bottom). Returns false if unsupported.
-    /// Validates the GL shadow-depth path against the CPU oracle (shadow-maps Phase C).
+    /// Validates the GL shadow-depth path against the CPU reference (shadow-maps Phase C).
     virtual bool ShadowDepthProbe(const float* /*lightVP16*/, const float* /*triXYZ*/, int /*vertCount*/, int /*res*/,
                                   float* /*outDepth*/)
     {
@@ -777,17 +781,26 @@ class Engine : public IGraphicsEngine
         float biasBase = 0.00002f; // small — front-face culling does the acne work
         float fadeRange = 40.0f;
         int resolution = 2048;
-        // Leading tiers are camera-centred spheres (all-direction near coverage so
-        // casters behind/beside the camera still cast into view); the rest are
-        // frustum slices reaching distanceCoef·VD. omniCoef* are sphere radii as a
-        // fraction of the shadow range.
-        int omniCount = 2;
+        // Leading tiers as camera-centred spheres (omniCoef* radii as a fraction
+        // of the shadow range). Default 0 = pure frustum slices: a sphere spends
+        // most of its area on directions the camera can't see (only in-frustum
+        // receivers matter; upsun casters are covered by the fit's depth pad),
+        // so slices put several times more texels on visible shadows.
+        int omniCount = 0;
         float omniCoef0 = 0.08f;
         float omniCoef1 = 0.20f;
         // Casters re-select their LOD as if this many times farther than they
-        // are: a depth-map texel covers decimetres, so the screen draw LOD is
-        // wasted on shadows. 1.0 = cast the draw LOD.
-        float casterLodBias = 3.0f;
+        // are. 1.0 = cast exactly the drawn LOD — the default, because a
+        // coarser caster's simplified surfaces sit slightly off the visible
+        // ones and paint false self-shadows at grazing sun angles. Raise to
+        // trade that accuracy for depth-pass throughput.
+        float casterLodBias = 1.0f;
+        // Receiver normal-offset scale (multiplies the ~2-world-texel
+        // ShadowBias push toward the light). wgpu path only.
+        float normalOffset = 1.0f;
+        // PCF spread in texels: < 0.5 = single hardware bilinear tap (crisp),
+        // >= 0.5 = 4 taps spread by this many texels (soft). wgpu path only.
+        float pcf = 1.0f;
     };
 
     /// Shadow-map (depth-buffer) shadows — durable replacement for the projected
@@ -836,6 +849,15 @@ class Engine : public IGraphicsEngine
     {
     }
 
+    /// GPU-driven caster submission, the alternative to the CPU triangle soup
+    /// above: the scene hands the backend the cascade set plus per-caster mesh +
+    /// transform (SetShadowCascades / AddShadowCaster) and the backend renders
+    /// the depth passes itself — skinned casters pose on the GPU instead of
+    /// being collected at bind pose. Backends opt in via UsesGpuShadowCasters.
+    virtual bool UsesGpuShadowCasters() const { return false; }
+    virtual void SetShadowCascades(const shadow::CascadeSet& /*cascades*/, int /*resolution*/) {}
+    virtual void AddShadowCaster(const Shape& /*mesh*/, const Matrix4& /*modelToWorld*/) {}
+
     /// Read the current shadow depth map back and write it as a grayscale PNG
     /// (top-down) for eyeballing. Returns false if unsupported / nothing rendered.
     virtual bool DumpShadowMap(const char* /*path*/) { return false; }
@@ -869,6 +891,36 @@ class Engine : public IGraphicsEngine
     // animation system additionally hands the bone palette + per-vertex weights
     // to the renderer (VertexBuffer::SetSkinData/SetPalette) for graphical LODs.
     virtual bool UsesGpuSkinning() const { return false; }
+
+    /// Screen-space overlay renderer: indexed, textured, scissored triangles
+    /// composited over the finished frame. This is the dev panel's (ImGui)
+    /// render backend on engines without a native one — GL33 renders ImGui
+    /// through imgui_impl_opengl3 instead and leaves these unimplemented.
+    /// Coordinates are framebuffer pixels, top-left origin.
+    struct OverlayVertex // layout matches ImDrawVert
+    {
+        float x, y;
+        float u, v;
+        uint32_t rgba; // R in the low byte (ImGui packing)
+    };
+    struct OverlayDrawCmd
+    {
+        float clip[4]; // x0, y0, x1, y1
+        uint64_t texture;
+        uint32_t firstIndex;
+        uint32_t indexCount;
+        uint32_t baseVertex;
+    };
+    virtual bool SupportsOverlayRenderer() const { return false; }
+    /// Create / replace / free an RGBA8 overlay texture. `rgba` is w*h*4 bytes.
+    virtual uint64_t OverlayTextureCreate(int /*w*/, int /*h*/, const uint8_t* /*rgba*/) { return 0; }
+    virtual void OverlayTextureUpdate(uint64_t /*texture*/, int /*w*/, int /*h*/, const uint8_t* /*rgba*/) {}
+    virtual void OverlayTextureDestroy(uint64_t /*texture*/) {}
+    /// Replace this frame's overlay draw data (drawn last, over everything).
+    virtual void SubmitOverlay(const OverlayVertex* /*verts*/, int /*vertCount*/, const uint16_t* /*indices*/,
+                               int /*indexCount*/, const OverlayDrawCmd* /*cmds*/, int /*cmdCount*/)
+    {
+    }
 
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy

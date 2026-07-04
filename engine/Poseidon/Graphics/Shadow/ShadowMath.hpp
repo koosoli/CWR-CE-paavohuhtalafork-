@@ -119,7 +119,7 @@ struct ShadowUV
 ShadowUV WorldToShadowUV(const Mat4& lightVP, const Vec3& p);
 Vec3 ShadowUVToWorld(const Mat4& invLightVP, float u, float v, float depth);
 
-// The occlusion oracle (the GPU shader mirrors this).
+// The occlusion reference (the GPU shader mirrors this).
 struct DepthMap
 {
     int w = 0;
@@ -202,6 +202,9 @@ Mat4 ToCameraRelative(const Mat4& worldLightVP, const Vec3& camPos);
 Mat4 CascadeLightVPStable(const std::array<Vec3, 8>& corners, float t0, float t1, const Vec3& sunDir, const Vec3& up,
                           int resolution, float zPad, const Vec3& camPos);
 
+// Round a cascade sphere radius UP onto a fixed geometric ladder (minRadius * stepRatio^n).
+float QuantizeShadowRadius(float radius, float minRadius = 2.0f, float stepRatio = 1.05f);
+
 // Cascade index for an eye-space view depth given the per-cascade far view
 // distances (ascending, `count` of them). Returns `count` (out of range) when the
 // fragment is beyond the last cascade.
@@ -223,6 +226,7 @@ struct CascadeSet
     Mat4 camRelVP[4];       // camera-relative light view-projections (upload + draw)
     float splitViewDist[4]; // frustum tiers: FAR view-space distance (eye-depth select)
     float omniRadius[4];    // omni tiers: camera-relative 3D radius (distance select); 0 for frustum tiers
+    Vec3 sunDir;            // normalized sun travel direction the set was built with
 };
 
 struct CascadeBuildParams

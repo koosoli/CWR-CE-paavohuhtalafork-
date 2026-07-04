@@ -227,6 +227,20 @@ struct WgrFrameParams
     float shadow_strength;
 };
 
+/* Per-camera cascaded-shadow sampling block, read by the lit 3D shaders. All
+ * zeros (ctl.x = cascade count = 0 -> disabled) when shadow maps are off or for
+ * UI/screen cameras; the depth pass itself is driven by WgrShadowPass, not this. */
+struct WgrCameraShadow
+{
+    WgrMat4 cascade_vp[4]; // camera-relative light view-projections (0..1 NDC z)
+    WgrVec4 splits;        // frustum tiers: far eye-depth per tier
+    WgrVec4 omni_radius;   // omni tiers: camera-distance radius (0 = frustum tier)
+    WgrVec4 ctl;           // {count, omni_count, fade_range, bias_const}
+    WgrVec4 ctl2;          // {texel_size (1/res), darkness, normal_offset_scale, pcf}
+    WgrVec4 cam_fwd;       // xyz = camera forward (eye-depth cascade select)
+    WgrVec4 sun_dir;       // xyz = sun travel direction (normal-offset bias)
+};
+
 /* A view + projection pair, plus the frame-global params (see WgrFrameParams).
  * fog_color = rgb (+pad). */
 struct WgrCamera
@@ -235,6 +249,38 @@ struct WgrCamera
     WgrMat4 view;
     WgrVec4 fog_color;
     WgrFrameParams params;
+    WgrCameraShadow shadow;
+};
+
+/* One shadow caster for the cascade depth passes: a section run
+ * [index_begin, index_begin+index_count) of `mesh`, transformed by the
+ * camera-relative `world` (or, when `palette_slot` is valid, GPU-skinned by that
+ * palette block exactly like a WgrDraw3D). `alpha_ref` > 0 alpha-tests the
+ * caster texture so cutout foliage casts a leaf silhouette instead of a blob. */
+struct WgrShadowCaster
+{
+    WgrMesh mesh;
+    uint32_t index_begin;
+    uint32_t index_count;
+    WgrMat4 world;
+    WgrTexture texture_id; // sampled only when alpha_ref > 0; 0 = built-in white
+    uint32_t palette_slot; // WGR_NO_PALETTE = rigid
+    float alpha_ref;       // 0 = solid caster; > 0 = discard below (cutout)
+    uint32_t sampler;
+    uint32_t cascade_mask; // bit c set = render into cascade c
+};
+
+/* Cascade depth-pass parameters for one frame. The renderer draws
+ * WgrFrame.shadow_casters into a `count`-layer depth array from these
+ * camera-relative light view-projections before replaying the frame's command
+ * stream. count = 0 disables the pass (and keeps last frame's map unused). */
+struct WgrShadowPass
+{
+    uint32_t count; // cascade count (1..4); 0 = no shadow pass this frame
+    uint32_t omni_count;
+    uint32_t resolution; // depth-map side length per cascade
+    uint32_t _pad;
+    WgrMat4 light_vp[4]; // camera-relative light view-projections (0..1 NDC z)
 };
 
 /* One entry in the frame's submission-ordered command stream. */
@@ -242,6 +288,28 @@ struct WgrCmd
 {
     WgrCmdKind kind;
     uint32_t arg;
+};
+
+/* Overlay (dev panel / ImGui) vertex: framebuffer pixels, top-left origin.
+ * `color` is RGBA with R in the low byte (ImGui packing, NOT WgrRgba8). */
+struct WgrOverlayVertex
+{
+    WgrVec2 pos;
+    WgrVec2 uv;
+    uint32_t color;
+};
+
+/* One scissored overlay draw: `index_count` indices from
+ * WgrFrame.overlay_indices starting at `first_index`, offset by `base_vertex`
+ * into WgrFrame.overlay_verts, clipped to `clip` = {x0, y0, x1, y1} pixels. */
+struct WgrOverlayDraw
+{
+    WgrVec4 clip;
+    WgrTexture texture_id; // 0 = built-in white
+    uint32_t first_index;
+    uint32_t index_count;
+    uint32_t base_vertex;
+    uint32_t _pad;
 };
 
 // --- Frame -------------------------------------------------------------------
@@ -267,6 +335,16 @@ struct WgrFrame
      * world already pre-multiplied in (palette[i] = world * boneMatrix[i]). Length is a
      * multiple of 128. Empty if no skinned draws. */
     WgrSlice<WgrMat4> palette;
+
+    /* Cascaded-shadow depth pass: rendered before the command stream when
+     * shadow.count > 0 and shadow_casters is non-empty. */
+    WgrShadowPass shadow;
+    WgrSlice<WgrShadowCaster> shadow_casters;
+
+    /* Overlay (dev panel): alpha-blended over the finished frame, no depth. */
+    WgrSlice<WgrOverlayVertex> overlay_verts;
+    WgrSlice<uint16_t> overlay_indices;
+    WgrSlice<WgrOverlayDraw> overlay_draws;
 };
 
 // --- Layout guards (mirror rust/src/ffi.rs) ----------------------------------
@@ -283,9 +361,14 @@ static_assert(sizeof(WgrMeshVertex) == 32, "WgrMeshVertex must match the engine 
 static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrDraw3D) == 120, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrCamera) == 160, "WgrCamera layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrCamera) == 512, "WgrCamera layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrShadowCaster) == 104, "WgrShadowCaster layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrShadowPass) == 272, "WgrShadowPass layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCmd) == 8, "WgrCmd layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrFrame) == 128, "WgrFrame layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrOverlayVertex) == 20, "WgrOverlayVertex layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFrame) == 464, "WgrFrame layout must match the Rust #[repr(C)] struct");
 
 // --- Functions ---------------------------------------------------------------
 
@@ -331,6 +414,20 @@ extern "C"
     /* Render + present one frame. Returns 0 on success (incl. transient skipped
      * frames), negative on error. */
     WGR_API int32_t wgr_render_frame(WgrRenderer* renderer, const WgrFrame* frame);
+
+    /* Read one cascade layer of the shadow depth map back as row-major floats
+     * (row 0 = the top texture row). Returns the map resolution (side length),
+     * or 0 when no map has been rendered / `layer` is out of range / `out_len`
+     * is smaller than resolution². Debug/test hook (DumpShadowMap). */
+    WGR_API uint32_t wgr_shadow_map_read(WgrRenderer* renderer, uint32_t layer, float* out, uint32_t out_len);
+
+    /* Render `vert_count` triangle-list vertices (xyz, 3 floats each) through
+     * the shadow depth pipeline with the given column-major light
+     * view-projection into a scratch res*res depth map, and read it back into
+     * `out` (res*res floats, row 0 = top). Returns 1 on success. Debug/test
+     * hook (ShadowDepthProbe: CPU-reference parity for the depth path). */
+    WGR_API int32_t wgr_shadow_depth_probe(WgrRenderer* renderer, const float* light_vp16, const float* tri_xyz,
+                                           uint32_t vert_count, uint32_t res, float* out);
 
 } // extern "C"
 

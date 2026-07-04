@@ -2,6 +2,7 @@
 #include "TextureBankWgpu.hpp"
 
 #include <Poseidon/Core/Application.hpp>
+#include <Poseidon/Dev/Debug/DebugOverlay.hpp>
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
 #include <Poseidon/Graphics/Core/MeshVertex.hpp>
@@ -15,6 +16,7 @@
 #include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
+#include <Poseidon/Graphics/Shared/PNGWriter.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/World/Simulation/Animation/RtAnimation.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
@@ -237,11 +239,22 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
 
     _wbank = new TextureBankWgpu(_renderer);
 
+    // WGR_SHADOW_MAPS=1 enables cascaded shadow maps at startup (dev panel /
+    // tri verbs can still toggle at runtime).
+    if (const char* sm = std::getenv("WGR_SHADOW_MAPS"))
+    {
+        _smTuning.enabled = std::strtol(sm, nullptr, 10) != 0;
+    }
+
+    Dev::DebugOverlay::InitForEngine(_window);
     _eventWindow.Attach(_window, _w, _h);
 }
 
 EngineWgpu::~EngineWgpu()
 {
+    // While the engine (and its renderer) is still alive so the overlay's
+    // textures release cleanly; a later fallback engine can then re-init.
+    Dev::DebugOverlay::Shutdown();
     _eventWindow.Detach();
     if (_wbank)
     {
@@ -448,6 +461,9 @@ void EngineWgpu::InitDraw(bool clear, PackedColor color)
     _currentCamera = 0;
     _haveCamera = false;
     _swMesh = nullptr;
+    _shadowCasters.clear();
+    _smCascadesValid = false;
+    _smEnabledFrame = ShadowMapsEnabled();
     if (clear)
     {
         _clear[0] = color.R8() / 255.0f;
@@ -487,12 +503,21 @@ void EngineWgpu::FinishDraw()
     {
         _wbank->FinishFrame();
     }
+    // Engine::FinishDraw drives the frame counter (+timing) the test harness
+    // readiness checks poll.
+    Engine::FinishDraw();
 }
 
 void EngineWgpu::NextFrame()
 {
     if (_renderer)
     {
+        // Build + flatten the ImGui frame; SubmitOverlay fills the _overlay*
+        // vectors the WgrFrame below points at. Composites over everything,
+        // same placement as GL33's BackToFront (pre-present).
+        Dev::DebugOverlay::NewFrame();
+        Dev::DebugOverlay::Render();
+
         static_assert(sizeof(CameraEntry::proj) == 64 && sizeof(CameraEntry::view) == 64,
                       "CameraEntry matrices must be 16 floats to match WgrCamera");
         static_assert(sizeof(WgrCamera::proj) == 64 && sizeof(WgrCamera::view) == 64,
@@ -512,6 +537,10 @@ void EngineWgpu::NextFrame()
         }
 
         const float shadowStrength = GetShadowFactor() / 256.0f;
+        const bool shadowActive = _smCascadesValid && !_shadowCasters.empty();
+        // Sun-faded darkness (GL33 parity): full daylight uses tuning.darkness,
+        // dusk ramps toward 1 (no darkening) as the sun sets.
+        const float darkness = 1.0f - _smSunFactor * (1.0f - _smTuning.darkness);
 
         std::vector<WgrCamera> cameras(_cameras.size());
         for (size_t i = 0; i < _cameras.size(); i++)
@@ -520,6 +549,23 @@ void EngineWgpu::NextFrame()
             std::memcpy(cameras[i].view.m, &_cameras[i].view, sizeof(cameras[i].view.m));
             cameras[i].fog_color = {fog.R(), fog.G(), fog.B(), 1.0f};
             cameras[i].params = {fogStart, fogInvRange, fogEnabled, shadowStrength};
+            if (shadowActive)
+            {
+                WgrCameraShadow& sb = cameras[i].shadow;
+                for (int c = 0; c < _smCascades.count && c < 4; c++)
+                {
+                    std::memcpy(sb.cascade_vp[c].m, _smCascades.camRelVP[c].m.data(), sizeof(sb.cascade_vp[c].m));
+                }
+                sb.splits = {_smCascades.splitViewDist[0], _smCascades.splitViewDist[1], _smCascades.splitViewDist[2],
+                             _smCascades.splitViewDist[3]};
+                sb.omni_radius = {_smCascades.omniRadius[0], _smCascades.omniRadius[1], _smCascades.omniRadius[2],
+                                  _smCascades.omniRadius[3]};
+                sb.ctl = {static_cast<float>(_smCascades.count), static_cast<float>(_smCascades.omniCount),
+                          _smTuning.fadeRange, _smTuning.biasBase};
+                sb.ctl2 = {1.0f / static_cast<float>(_smCascadeRes), darkness, _smTuning.normalOffset, _smTuning.pcf};
+                sb.cam_fwd = {_cameras[i].dir[0], _cameras[i].dir[1], _cameras[i].dir[2], 0.0f};
+                sb.sun_dir = {_smCascades.sunDir.x, _smCascades.sunDir.y, _smCascades.sunDir.z, 0.0f};
+            }
         }
 
         WgrFrame frame{};
@@ -531,6 +577,21 @@ void EngineWgpu::NextFrame()
         frame.batches = _batches;
         frame.cmds = _cmds;
         frame.palette = _palette;
+        if (shadowActive)
+        {
+            frame.shadow.count = U32(_smCascades.count);
+            frame.shadow.omni_count = U32(_smCascades.omniCount);
+            frame.shadow.resolution = U32(_smCascadeRes);
+            for (int c = 0; c < _smCascades.count && c < 4; c++)
+            {
+                std::memcpy(frame.shadow.light_vp[c].m, _smCascades.camRelVP[c].m.data(),
+                            sizeof(frame.shadow.light_vp[c].m));
+            }
+            frame.shadow_casters = _shadowCasters;
+        }
+        frame.overlay_verts = _overlayVerts;
+        frame.overlay_indices = _overlayIndices;
+        frame.overlay_draws = _overlayDraws;
         wgr_render_frame(_renderer, &frame);
     }
     _verts.clear();
@@ -539,6 +600,11 @@ void EngineWgpu::NextFrame()
     _cmds.clear();
     _palette.clear();
     _cameras.clear();
+    _shadowCasters.clear();
+    _overlayVerts.clear();
+    _overlayIndices.clear();
+    _overlayDraws.clear();
+    _smCascadesValid = false;
     _haveCamera = false;
     _currentCamera = 0;
     EngineDummy::NextFrame();
@@ -743,6 +809,10 @@ void EngineWgpu::PushSceneCamera()
         entry.pos[0] = pos.X();
         entry.pos[1] = pos.Y();
         entry.pos[2] = pos.Z();
+        const Vector3 dir = camera->Direction();
+        entry.dir[0] = dir.X();
+        entry.dir[1] = dir.Y();
+        entry.dir[2] = dir.Z();
     }
 
     _cameras.push_back(entry);
@@ -854,6 +924,12 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
     const render::RenderPassDescriptor desc =
         render::BuildRenderPassDescriptor(render::SplitLegacy(effectiveSpec), ctx);
 
+    if (_smEnabledFrame && desc.blend == render::BlendMode::Shadow)
+    {
+        // Skip legacy shadows when CSM is enabled
+        return;
+    }
+
     WgrDraw3D d{};
     d.mesh = buf->mesh;
     d.index_begin = U32(siBeg.beg);
@@ -887,6 +963,215 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
     d.palette_slot = _currentPaletteSlot;
     _draws3d.push_back(d);
     _cmds.push_back(WgrCmd{WGR_CMD_DRAW_3D, U32(_draws3d.size() - 1)});
+}
+
+void EngineWgpu::SetShadowCascades(const shadow::CascadeSet& cascades, int resolution)
+{
+    _smCascades = cascades;
+    _smCascadeRes = resolution;
+    _smCascadesValid = _renderer != nullptr && cascades.count > 0 && resolution > 0;
+}
+
+void EngineWgpu::AddShadowCaster(const Shape& sMesh, const Matrix4& modelToWorld)
+{
+    if (!_renderer || !_smCascadesValid)
+    {
+        return;
+    }
+    auto* buf = static_cast<VertexBufferWgpu*>(sMesh.GetVertexBuffer());
+    if (!buf || buf->sections.Size() == 0)
+    {
+        return;
+    }
+    buf->Update(sMesh, false);
+
+    EnsureCamera();
+    const CameraEntry& cam = _cameras[_currentCamera];
+    GfxMatrix world;
+    ConvertMatrix(world, modelToWorld);
+    world._41 -= cam.pos[0];
+    world._42 -= cam.pos[1];
+    world._43 -= cam.pos[2];
+
+    // Skinned caster: append a palette block (mirrors BeginMeshTL) so the depth
+    // pass poses it on the GPU; the scene's Animate() set buf->palette just
+    // before this call.
+    uint32_t paletteSlot = WGR_NO_PALETTE;
+    if (buf->skinned && buf->paletteCount > 0)
+    {
+        buf->drawnSkinned = true;
+        Matrix4 worldRel = modelToWorld;
+        worldRel.SetPosition(modelToWorld.Position() - Vector3(cam.pos[0], cam.pos[1], cam.pos[2]));
+        paletteSlot = U32(_palette.size() / WGR_PALETTE_SIZE);
+        const size_t base = _palette.size();
+        _palette.resize(base + WGR_PALETTE_SIZE);
+        for (int i = 0; i < buf->paletteCount; i++)
+        {
+            GfxMatrix g;
+            ConvertMatrix(g, worldRel * buf->palette[i]);
+            std::memcpy(_palette[base + i].m, &g, sizeof(_palette[base + i].m));
+        }
+        GfxMatrix gw;
+        ConvertMatrix(gw, worldRel);
+        std::memcpy(_palette[base + kReservedBone].m, &gw, sizeof(_palette[base + kReservedBone].m));
+    }
+
+    constexpr int skipMask = NoShadow | ShadowDisabled | IsHidden | IsHiddenProxy;
+    constexpr int alphaMask = IsAlpha | IsTransparent;
+
+    WgrShadowCaster run{};
+    bool haveRun = false;
+    auto flush = [&]
+    {
+        if (haveRun)
+        {
+            _shadowCasters.push_back(run);
+            haveRun = false;
+        }
+    };
+
+    for (int i = 0; i < buf->sections.Size(); i++)
+    {
+        const auto& props = sMesh.GetSection(i).properties;
+        const shadow::CasterMode mode = shadow::ClassifyShadowCaster(props.Special(), skipMask, alphaMask);
+        if (mode == shadow::CasterMode::Skip)
+        {
+            flush();
+            continue;
+        }
+        uint64_t tex = 0;
+        if (mode == shadow::CasterMode::AlphaTest)
+        {
+            if (auto* t = static_cast<TextureWgpu*>(props.GetTexture()))
+            {
+                tex = t->EnsureUploaded();
+            }
+        }
+        // Cutout caster without a texture casts solid (GL33 parity).
+        const float alphaRef = tex ? 0.5f : 0.0f;
+        const render::mesh::MeshSection& si = buf->sections[i];
+        if (haveRun && run.alpha_ref == alphaRef && run.texture_id == tex &&
+            run.index_begin + run.index_count == U32(si.beg))
+        {
+            run.index_count += U32(si.end - si.beg);
+            continue;
+        }
+        flush();
+        run = WgrShadowCaster{};
+        run.mesh = buf->mesh;
+        run.index_begin = U32(si.beg);
+        run.index_count = U32(si.end - si.beg);
+        std::memcpy(run.world.m, &world, sizeof(run.world.m));
+        run.texture_id = tex;
+        run.palette_slot = paletteSlot;
+        run.alpha_ref = alphaRef;
+        run.sampler = 0;
+        run.cascade_mask = 0xF;
+        haveRun = true;
+    }
+    flush();
+}
+
+bool EngineWgpu::DumpShadowMap(const char* path)
+{
+    if (!_renderer || !path)
+    {
+        return false;
+    }
+    const int res = _smTuning.resolution;
+    if (res <= 0)
+    {
+        return false;
+    }
+    std::vector<float> depth(static_cast<size_t>(res) * res, 1.0f);
+    const uint32_t got = wgr_shadow_map_read(_renderer, 0, depth.data(), U32(depth.size()));
+    if (!got)
+    {
+        return false;
+    }
+    // Same grayscale mapping as GL33's dump; wgpu rows are already top-down.
+    std::vector<uint8_t> gray(static_cast<size_t>(got) * got);
+    for (size_t i = 0; i < gray.size(); i++)
+    {
+        const float d = depth[i];
+        gray[i] = (d >= 0.999f) ? static_cast<uint8_t>(35)
+                                : static_cast<uint8_t>((0.15f + (1.0f - d) * 0.85f) * 255.0f);
+    }
+    return PNGWriter::WritePNG(path, static_cast<int>(got), static_cast<int>(got), 1, gray.data());
+}
+
+bool EngineWgpu::ShadowDepthProbe(const float* lightVP16, const float* triXYZ, int vertCount, int res, float* outDepth)
+{
+    if (!_renderer || !lightVP16 || !triXYZ || !outDepth || vertCount <= 0 || res <= 0)
+    {
+        return false;
+    }
+    std::vector<float> top(static_cast<size_t>(res) * res);
+    if (!wgr_shadow_depth_probe(_renderer, lightVP16, triXYZ, U32(vertCount), U32(res), top.data()))
+    {
+        return false;
+    }
+    // The convention is row 0 = bottom; the wgpu readback is top-down.
+    for (int y = 0; y < res; y++)
+    {
+        std::memcpy(outDepth + static_cast<size_t>(y) * res, top.data() + static_cast<size_t>(res - 1 - y) * res,
+                    static_cast<size_t>(res) * sizeof(float));
+    }
+    return true;
+}
+
+uint64_t EngineWgpu::OverlayTextureCreate(int w, int h, const uint8_t* rgba)
+{
+    if (!_renderer || w <= 0 || h <= 0 || !rgba)
+    {
+        return 0;
+    }
+    return wgr_texture_create(_renderer, U32(w), U32(h), WGR_TEXTURE_RGBA8, rgba, U32(w) * U32(h) * 4);
+}
+
+void EngineWgpu::OverlayTextureUpdate(uint64_t texture, int w, int h, const uint8_t* rgba)
+{
+    if (!_renderer || w <= 0 || h <= 0 || !rgba)
+    {
+        return;
+    }
+    wgr_texture_update(_renderer, texture, rgba, U32(w) * U32(h) * 4);
+}
+
+void EngineWgpu::OverlayTextureDestroy(uint64_t texture)
+{
+    if (_renderer)
+    {
+        wgr_texture_destroy(_renderer, texture);
+    }
+}
+
+void EngineWgpu::SubmitOverlay(const OverlayVertex* verts, int vertCount, const uint16_t* indices, int indexCount,
+                               const OverlayDrawCmd* cmds, int cmdCount)
+{
+    static_assert(sizeof(OverlayVertex) == sizeof(WgrOverlayVertex), "overlay vertex layouts must match");
+    _overlayVerts.clear();
+    _overlayIndices.clear();
+    _overlayDraws.clear();
+    if (!verts || !indices || !cmds || vertCount <= 0 || indexCount <= 0 || cmdCount <= 0)
+    {
+        return;
+    }
+    const auto* wv = reinterpret_cast<const WgrOverlayVertex*>(verts);
+    _overlayVerts.assign(wv, wv + vertCount);
+    _overlayIndices.assign(indices, indices + indexCount);
+    _overlayDraws.resize(cmdCount);
+    for (size_t i = 0; i < _overlayDraws.size(); i++)
+    {
+        const OverlayDrawCmd& c = cmds[i];
+        WgrOverlayDraw& d = _overlayDraws[i];
+        d.clip = {c.clip[0], c.clip[1], c.clip[2], c.clip[3]};
+        d.texture_id = c.texture;
+        d.first_index = c.firstIndex;
+        d.index_count = c.indexCount;
+        d.base_vertex = c.baseVertex;
+        d._pad = 0;
+    }
 }
 
 void EngineWgpu::GetZCoefs(float& zAdd, float& zMult)

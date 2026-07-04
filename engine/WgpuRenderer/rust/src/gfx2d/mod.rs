@@ -1,8 +1,11 @@
 use glam::Vec2;
 
-use crate::ffi::{WgrBlend, WgrDraw2DBatch, WgrVertex2D};
+use crate::ffi::{WgrBlend, WgrDraw2DBatch, WgrOverlayDraw, WgrOverlayVertex, WgrVertex2D};
 use crate::gfx3d::DEPTH_FORMAT;
 use crate::textures::SharedTextures;
+
+// Linear filter + clamp both axes (point<<2 | clampV<<1 | clampU).
+const OVERLAY_SAMPLER: usize = 3;
 
 pub struct Gfx2d {
     globals_buffer: wgpu::Buffer,
@@ -12,6 +15,13 @@ pub struct Gfx2d {
 
     vbuf: Option<wgpu::Buffer>,
     vbuf_cap: u64,
+
+    // Dev-panel overlay: own pipeline (no depth attachment) + buffers.
+    overlay_pipeline: wgpu::RenderPipeline,
+    overlay_vbuf: Option<wgpu::Buffer>,
+    overlay_vbuf_cap: u64,
+    overlay_ibuf: Option<wgpu::Buffer>,
+    overlay_ibuf_cap: u64,
 }
 
 impl Gfx2d {
@@ -147,12 +157,68 @@ impl Gfx2d {
             std::array::from_fn(|b| make_pipeline(blends[b], true, true)),
         ];
 
+        let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgr_overlay_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("overlay.wgsl").into()),
+        });
+        let overlay_attrs =
+            wgpu::vertex_attr_array![0 => Float32x2, 1 => Float32x2, 2 => Unorm8x4];
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wgr_overlay_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &overlay_shader,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[wgpu::VertexBufferLayout {
+                    array_stride: std::mem::size_of::<WgrOverlayVertex>() as wgpu::BufferAddress,
+                    step_mode: wgpu::VertexStepMode::Vertex,
+                    attributes: &overlay_attrs,
+                }],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &overlay_shader,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState {
+                        color: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::SrcAlpha,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                        alpha: wgpu::BlendComponent {
+                            src_factor: wgpu::BlendFactor::One,
+                            dst_factor: wgpu::BlendFactor::OneMinusSrcAlpha,
+                            operation: wgpu::BlendOperation::Add,
+                        },
+                    }),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Gfx2d {
             globals_buffer,
             globals_bind,
             pipelines,
             vbuf: None,
             vbuf_cap: 0,
+            overlay_pipeline,
+            overlay_vbuf: None,
+            overlay_vbuf_cap: 0,
+            overlay_ibuf: None,
+            overlay_ibuf_cap: 0,
         }
     }
 
@@ -215,5 +281,88 @@ impl Gfx2d {
         pass.set_bind_group(1, textures.texture_bind(b.texture_id), &[]);
         pass.set_bind_group(2, textures.sampler_bind(b.sampler.index()), &[]);
         pass.draw(b.first_vertex..(b.first_vertex + b.vertex_count), 0..1);
+    }
+
+    pub fn prepare_overlay(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        verts: &[WgrOverlayVertex],
+        indices: &[u16],
+    ) {
+        if verts.is_empty() || indices.is_empty() {
+            return;
+        }
+
+        let vbytes: &[u8] = bytemuck::cast_slice(verts);
+        if self.overlay_vbuf_cap < vbytes.len() as u64 {
+            let cap = (vbytes.len() as u64).next_power_of_two().max(16 * 1024);
+            self.overlay_vbuf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wgr_overlay_vertices"),
+                size: cap,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.overlay_vbuf_cap = cap;
+        }
+        queue.write_buffer(self.overlay_vbuf.as_ref().unwrap(), 0, vbytes);
+
+        // write_buffer needs 4-byte-aligned sizes; pad an odd u16 count.
+        let ibytes: &[u8] = bytemuck::cast_slice(indices);
+        let padded = (ibytes.len() as u64 + 3) & !3;
+        if self.overlay_ibuf_cap < padded {
+            let cap = padded.next_power_of_two().max(16 * 1024);
+            self.overlay_ibuf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wgr_overlay_indices"),
+                size: cap,
+                usage: wgpu::BufferUsages::INDEX | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }));
+            self.overlay_ibuf_cap = cap;
+        }
+        let ibuf = self.overlay_ibuf.as_ref().unwrap();
+        if padded == ibytes.len() as u64 {
+            queue.write_buffer(ibuf, 0, ibytes);
+        } else {
+            let mut scratch = ibytes.to_vec();
+            scratch.resize(padded as usize, 0);
+            queue.write_buffer(ibuf, 0, &scratch);
+        }
+    }
+
+    pub fn render_overlay(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        textures: &SharedTextures,
+        draws: &[WgrOverlayDraw],
+        width: u32,
+        height: u32,
+    ) {
+        let (Some(vbuf), Some(ibuf)) = (self.overlay_vbuf.as_ref(), self.overlay_ibuf.as_ref())
+        else {
+            return;
+        };
+        pass.set_pipeline(&self.overlay_pipeline);
+        pass.set_vertex_buffer(0, vbuf.slice(..));
+        pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint16);
+        pass.set_bind_group(0, &self.globals_bind, &[]);
+        pass.set_bind_group(2, textures.sampler_bind(OVERLAY_SAMPLER), &[]);
+        for d in draws {
+            let x0 = (d.clip[0].max(0.0) as u32).min(width);
+            let y0 = (d.clip[1].max(0.0) as u32).min(height);
+            let x1 = (d.clip[2].max(0.0).ceil() as u32).min(width);
+            let y1 = (d.clip[3].max(0.0).ceil() as u32).min(height);
+            if x1 <= x0 || y1 <= y0 || d.index_count == 0 {
+                continue;
+            }
+            pass.set_scissor_rect(x0, y0, x1 - x0, y1 - y0);
+            pass.set_bind_group(1, textures.texture_bind(d.texture_id), &[]);
+            pass.draw_indexed(
+                d.first_index..(d.first_index + d.index_count),
+                d.base_vertex as i32,
+                0..1,
+            );
+        }
+        pass.set_scissor_rect(0, 0, width, height);
     }
 }

@@ -415,6 +415,9 @@ struct TestMeta {
     assert_timeout: Option<u64>,
     /// Binary-name override. When unset, the runner uses the default game binary.
     binary: Option<String>,
+    /// Renderer-backend override (`--render <value>`) for tests that verify one
+    /// specific backend. Wins over the suite-wide `--render` CLI flag.
+    render: Option<String>,
     /// Data-directory override for tests that need a package different from the default.
     /// When unset, the runner uses the `--data-dir` CLI / `OFPR_DATA_DIR` value.
     /// Resolved relative to the repo root, not to the test path.
@@ -1294,8 +1297,9 @@ async fn run_sqf_test(
         extra_args.push("--test-type".into());
         extra_args.push(tt.clone());
     }
-    // Inject --render if specified globally
-    if let Some(r) = render {
+    // Inject --render: the per-test toml pin (a backend-specific test needs its
+    // backend regardless of the suite default) wins over the CLI flag.
+    if let Some(r) = meta.render.as_deref().or(render) {
         extra_args.push("--render".into());
         extra_args.push(r.into());
     }
