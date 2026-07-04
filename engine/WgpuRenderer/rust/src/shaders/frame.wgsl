@@ -36,9 +36,24 @@ struct Frame {
     sun_dir_world: vec4<f32>, // main light's surface-to-light direction (terrain)
 };
 
+// One frame-global point or spot light. Positions are ABSOLUTE world space so a
+// single upload serves every camera; the shader reconstructs the camera-relative
+// offset via frame.cam_pos. Colours are pre-scaled by NightEffect on the CPU
+// (fade out by day). Matches the C ABI WgrLight.
+struct Light {
+    pos: vec4<f32>,     // xyz = world-absolute position, w = start-attenuation distance
+    diffuse: vec4<f32>, // rgb = diffuse * nightEffect
+    ambient: vec4<f32>, // rgb = ambient * nightEffect
+    dir: vec4<f32>,     // xyz = beam direction (spot), w = isSpot (1) else 0
+};
+
 @group(0) @binding(0) var<uniform> frame: Frame;
 @group(0) @binding(1) var shadow_map: texture_depth_2d_array;
 @group(0) @binding(2) var shadow_samp: sampler_comparison;
+// Frame-global light store, shared by the lit-mesh + terrain pipelines. The
+// active light count for this camera rides in frame.cam_pos.w (the buffer itself
+// is a fixed capacity, so its length is not the count).
+@group(0) @binding(3) var<storage, read> lights: array<Light>;
 
 // Reversed-Z: the shared projection is forward (near->0, far->1). Remap to
 // near->1, far->0 so the float depth buffer spends its exponent bits where

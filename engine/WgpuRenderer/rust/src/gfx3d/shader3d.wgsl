@@ -7,12 +7,28 @@
 #import frame::{frame, reverse_z, fog_factor}
 #import shadow::shadow_strength
 #import skin::{skin_pos, skin_normal}
+#import lighting::lights_contrib
 
 struct Object {
     world: mat4x4<f32>,
 };
 
+// Per-draw material lighting, folded on the CPU exactly like GL33's
+// UploadVSMaterialConstants (raw sun colour x material, sun-enable already in the
+// sun terms). Bound at group(1)/binding(1) for BOTH the plain and skinned
+// pipelines — binding(0) is `object` (plain) or the skin module's `palette`
+// (skinned), so the material coexists with either. Only rgb is read.
+struct Material {
+    emissive: vec4<f32>,
+    sun_ambient: vec4<f32>,
+    sun_diffuse: vec4<f32>,
+    // Modulation for the frame-global point/spot lights (GL33's matDif/matAmb).
+    light_diffuse: vec4<f32>,
+    light_ambient: vec4<f32>,
+};
+
 @group(1) @binding(0) var<uniform> object: Object;   // plain pipeline
+@group(1) @binding(1) var<uniform> material: Material;
 @group(2) @binding(0) var tex: texture_2d<f32>;
 @group(3) @binding(0) var samp: sampler;
 
@@ -91,8 +107,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (is_shadow > 0.5) {
         return vec4<f32>(0.0, 0.0, 0.0, frame.params.shadow_strength * base.a);
     }
-    var rgb = base.rgb;
-    let s = shadow_strength(in.world_pos, normalize(in.normal), in.fog, dwx, dwy);
+    // Per-material sun lighting plus frame-global point/spot lights, matching
+    // GL33's VSNormal but per-fragment: clamp(emissive + sun_ambient +
+    // sun_diffuse * N.L + SUM(local lights), 0, 1), then x texture (the
+    // `vColor * tex0` of PSNormal). sun_dir_world is the light travel direction,
+    // dotted against its negation like the sun term there.
+    let nrm = normalize(in.normal);
+    let ndotl = max(dot(nrm, -frame.sun_dir_world.xyz), 0.0);
+    let sun = material.emissive.rgb + material.sun_ambient.rgb + material.sun_diffuse.rgb * ndotl;
+    let local = lights_contrib(in.world_pos, nrm, material.light_diffuse.rgb, material.light_ambient.rgb);
+    let lit = clamp(sun + local, vec3<f32>(0.0), vec3<f32>(1.0));
+    var rgb = base.rgb * lit;
+    let s = shadow_strength(in.world_pos, nrm, in.fog, dwx, dwy);
     rgb *= mix(1.0, frame.shadow.ctlb.y, s);
     // Blend toward the scene fog colour (matches GL33's mix(fogColor, r0, vFogTC)).
     rgb = mix(frame.fog_color.rgb, rgb, in.fog);

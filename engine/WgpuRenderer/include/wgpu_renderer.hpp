@@ -172,6 +172,10 @@ struct WgrDraw2DBatch
 /* Sentinel for WgrDraw3D::palette_slot: this draw is not skinned. */
 #define WGR_NO_PALETTE 0xFFFFFFFFu
 
+/* Capacity of the frame-global light store (WgrFrame::lights). Must match
+ * MAX_LIGHTS in rust/src/gfx3d/mod.rs. The renderer clamps to this. */
+#define WGR_MAX_LIGHTS 256
+
 /* Bits for WgrDraw3D::flags. */
 enum WgrDraw3DFlags : uint32_t
 {
@@ -214,6 +218,34 @@ struct WgrDraw3D
     float alpha_ref;
     uint32_t flags; // WgrDraw3DFlags
     uint32_t _pad;
+    /* Per-draw material lighting, folded exactly like GL33's
+     * UploadVSMaterialConstants: raw MainLight diffuse/ambient x material, with
+     * the sun-enable already multiplied into the sun terms (emissive shows
+     * regardless). The lit shader computes emissive + sun_ambient +
+     * sun_diffuse * N.L, clamps to [0,1], then multiplies the texture. Only rgb
+     * is read; the w lanes ride along for 16-byte std140 alignment. */
+    WgrVec4 mat_emissive;
+    WgrVec4 mat_sun_ambient;
+    WgrVec4 mat_sun_diffuse;
+    /* Material modulation for the frame-global point/spot lights (GL33's matDif /
+     * matAmb before the per-light colour): raw material diffuse/ambient (eye
+     * accommodation already in, night NOT — that rides the light colour). rgb. */
+    WgrVec4 mat_light_diffuse;
+    WgrVec4 mat_light_ambient;
+};
+
+/* One frame-global point or spot light, shared by every 3D draw + terrain (bound
+ * as a group-0 storage buffer). Position is ABSOLUTE world space (not
+ * camera-relative like the geometry) so one upload serves every camera; the
+ * shader reconstructs the camera-relative offset via the frame's cam_pos.
+ * Colours are pre-scaled by the sun's NightEffect on the CPU (fade out by day,
+ * matching GL33's night-only local lights). Mirrors GL33's per-draw VS lights. */
+struct WgrLight
+{
+    WgrVec4 pos;     /* xyz = world-absolute position, w = start-attenuation distance */
+    WgrVec4 diffuse; /* rgb = diffuse * nightEffect */
+    WgrVec4 ambient; /* rgb = ambient * nightEffect */
+    WgrVec4 dir;     /* xyz = beam direction (spot), w = isSpot (1) else 0 */
 };
 
 /* Frame-global scalars carried in the camera UBO so the 3D shader can read them
@@ -405,6 +437,11 @@ struct WgrFrame
      * textures are uploaded separately via wgr_terrain_*. */
     WgrSlice<WgrTerrainNode> terrain_nodes;
     WgrSlice<WgrTerrainBatch> terrain_batches;
+
+    /* Frame-global point/spot lights (<= 256), uploaded once into the group-0
+     * storage buffer shared by 3D draws + terrain. The per-camera light count
+     * rides in WgrCamera::cam_pos.w. */
+    WgrSlice<WgrLight> lights;
 };
 
 // --- Layout guards (mirror rust/src/ffi.rs) ----------------------------------
@@ -419,7 +456,8 @@ static_assert(sizeof(WgrBlend) == 4, "WgrBlend must be 4 bytes to match the Rust
 static_assert(sizeof(WgrVertex2D) == 32, "WgrVertex2D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrMeshVertex) == 32, "WgrMeshVertex must match the engine SVertex layout");
 static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrDraw3D) == 120, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrDraw3D) == 200, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrLight) == 64, "WgrLight layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");
@@ -431,7 +469,7 @@ static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match th
 static_assert(sizeof(WgrTerrainParams) == 32, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrFrame) == 496, "WgrFrame layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFrame) == 512, "WgrFrame layout must match the Rust #[repr(C)] struct");
 
 // --- Functions ---------------------------------------------------------------
 

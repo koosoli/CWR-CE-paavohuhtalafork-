@@ -9,7 +9,7 @@
 // sun lighting.
 #import frame::{frame, reverse_z, fog_factor}
 #import shadow::shadow_strength
-#import lighting::sun_light
+#import lighting::{sun_light, lights_contrib}
 
 struct TerrainParams {
     world_origin: vec2<f32>,
@@ -221,8 +221,12 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
 
     // Per-pixel normal at a fixed heightmap step (independent of patch LOD/morph).
     let n = sample_normal(in.world_xz, tp.terrain_grid);
-    // Sun diffuse * N.L + ambient (the lighting module; shared with objects).
-    rgb *= sun_light(n);
+    // Sun diffuse * N.L + ambient plus the frame-global point/spot lights (both
+    // from the shared lighting module). Terrain has no material, so the local
+    // lights use a white modulation. sun_light is already clamped to 1; adding the
+    // local term and re-clamping brightens night lamps without over-darkening day.
+    let local = lights_contrib(in.world_pos, n, vec3<f32>(1.0), vec3<f32>(1.0));
+    rgb *= clamp(sun_light(n) + local, vec3<f32>(0.0), vec3<f32>(1.0));
 
     let s = shadow_strength(in.world_pos, n, in.fog, dwx, dwy);
     rgb *= mix(1.0, frame.shadow.ctlb.y, s);

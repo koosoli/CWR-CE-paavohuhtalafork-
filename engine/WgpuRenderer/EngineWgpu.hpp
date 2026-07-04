@@ -1,6 +1,7 @@
 #pragma once
 
 #include <Poseidon/Graphics/Core/MatrixConversion.hpp>
+#include <Poseidon/Graphics/Core/TLVertex.hpp> // TLMaterial (per-draw lighting capture)
 #include <Poseidon/Graphics/Dummy/EngineDummy.hpp>
 #include <Poseidon/Graphics/GraphicsEngineFactory.hpp> // GraphicsEngineParams
 #include <Poseidon/Graphics/Shadow/ShadowMath.hpp>
@@ -85,6 +86,10 @@ class EngineWgpu : public EngineDummy
     void BeginMeshTL(const Shape& sMesh, int spec, bool dynamic) override;
     void EndMeshTL(const Shape& sMesh) override;
     void DrawSectionTL(const Shape& sMesh, int beg, int end) override;
+    // Captures the per-section material so DrawSectionTL can fold it with the sun
+    // (GL33 parity: emissive + sun_ambient + sun_diffuse * N.L). Called by
+    // ShapeSection::PrepareTL immediately before each DrawSectionTL.
+    void SetMaterial(const TLMaterial& mat, const LightList& lights, const render::LegacySpec& spec) override;
 
     // Software-T&L path: 3D-in-UI objects (e.g. the menu laptop) arrive here with
     // CPU-projected screen-space vertices, drawn depth-tested like 2D-with-depth.
@@ -164,6 +169,8 @@ class EngineWgpu : public EngineDummy
     std::vector<WgrCmd> _cmds;
     // Bone-matrix pool for skinned draws (128-matrix blocks; world pre-multiplied in).
     std::vector<WgrMat4> _palette;
+    // Frame-global point/spot lights (rebuilt each frame in NextFrame, <= WGR_MAX_LIGHTS).
+    std::vector<WgrLight> _lights;
 
     std::vector<CameraEntry> _cameras;
     uint32_t _currentCamera = 0;
@@ -173,6 +180,11 @@ class EngineWgpu : public EngineDummy
     // Object-level spec from BeginMeshTL (IsShadow / OnSurface / z-bias / fog);
     // combined with each section's material spec in DrawSectionTL.
     int _meshSpec = 0;
+    // Material captured by SetMaterial for the section about to be drawn. The
+    // default (diffuse/ambient white, emissive/forcedDiffuse black) leaves an
+    // unlit-by-material fallback if a draw ever reaches DrawSectionTL without a
+    // preceding SetMaterial. Folded with the sun per section in DrawSectionTL.
+    TLMaterial _curMaterial;
     // Current z-bias level (engine sets it via SetBias before each draw): decals
     // 0x10, ZBias overlay faces level*5, shadows 0x10/0x20. 0 = no bias.
     int _bias = 0;

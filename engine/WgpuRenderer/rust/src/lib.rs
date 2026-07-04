@@ -9,8 +9,8 @@ mod textures;
 
 use crate::ffi::{
     WgrCamera, WgrCmd, WgrCmdKind, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex,
-    WgrOverlayDraw, WgrOverlayVertex, WgrShadowCaster, WgrShadowPass, WgrTerrainBatch,
-    WgrTerrainNode, WgrTerrainParams, WgrVertex2D,
+    WgrOverlayDraw, WgrOverlayVertex, WgrLight, WgrShadowCaster, WgrShadowPass,
+    WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams, WgrVertex2D,
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::Gfx3d;
@@ -183,6 +183,7 @@ impl Renderer {
         overlay_draws: &[WgrOverlayDraw],
         terrain_nodes: &[WgrTerrainNode],
         terrain_batches: &[WgrTerrainBatch],
+        lights: &[WgrLight],
     ) -> Result<(), String> {
         let screen = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
         self.gfx2d
@@ -196,7 +197,7 @@ impl Renderer {
         self.gfx3d
             .prepare_shadows(&self.device, &self.queue, shadow, shadow_casters);
         self.gfx3d
-            .prepare(&self.device, &self.queue, cameras, draws3d, palette);
+            .prepare(&self.device, &self.queue, cameras, draws3d, palette, lights);
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
 

@@ -5,7 +5,7 @@ use wgpu::util::DeviceExt;
 
 use crate::ffi::{
     DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE, WgrBlend, WgrCamera,
-    WgrDraw3D, WgrMat4, WgrMeshVertex, WgrShadowCaster, WgrShadowPass,
+    WgrDraw3D, WgrMat4, WgrMeshVertex, WgrLight, WgrShadowCaster, WgrShadowPass,
 };
 use crate::textures::SharedTextures;
 
@@ -97,6 +97,27 @@ impl PipelineKey {
 // The engine's bone-palette cap (MATRIX_4_ARRAY(matrix, 128)); one skinned draw
 // occupies this many matrices in the palette pool and in the shader UBO.
 const PALETTE_SIZE: usize = 128;
+
+// Per-draw material UBO size: five vec4 (emissive, sun_ambient, sun_diffuse,
+// light_diffuse, light_ambient), matching the `Material` struct in shader3d.wgsl.
+const MATERIAL_SIZE: u64 = 80;
+
+// Fixed capacity of the frame-global light storage buffer (group 0). The
+// active count per frame rides in WgrCamera::cam_pos.w; slots beyond it aren't read.
+const MAX_LIGHTS: u64 = 256;
+
+// Per-draw material lighting, uploaded into the group(1)/binding(1) UBO. Fields
+// are already folded on the C++ side (WgrDraw3D::mat_*); this is just the GPU
+// layout. Only rgb is read by the shader.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct MaterialUbo {
+    emissive: [f32; 4],
+    sun_ambient: [f32; 4],
+    sun_diffuse: [f32; 4],
+    light_diffuse: [f32; 4],
+    light_ambient: [f32; 4],
+}
 
 // Blocking copy of one D32 texture layer into `out` (row 0 = top).
 fn read_depth_layer(
@@ -225,6 +246,9 @@ struct CameraGroup {
     cap: u64,
     bind: Option<wgpu::BindGroup>,
     bound_shadow_gen: u64,
+    // Frame-global light storage buffer (binding 3). Fixed capacity, created
+    // once, so it stays valid across camera-UBO regrowth / shadow-target swaps.
+    lights_buf: wgpu::Buffer,
 }
 
 impl CameraGroup {
@@ -259,7 +283,27 @@ impl CameraGroup {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                     count: None,
                 },
+                // Frame-global point/spot lights, read-only storage. Shared by the
+                // lit-mesh + terrain pipelines (terrain reuses this exact layout).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: true },
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<crate::ffi::WgrLight>() as u64,
+                        ),
+                    },
+                    count: None,
+                },
             ],
+        });
+        let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_lights"),
+            size: MAX_LIGHTS * std::mem::size_of::<crate::ffi::WgrLight>() as u64,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
         });
         // Bilinear 2x2 hardware PCF per compare tap; LessEqual = lit when the
         // receiver is at or in front of the stored occluder depth.
@@ -283,6 +327,16 @@ impl CameraGroup {
             cap: 0,
             bind: None,
             bound_shadow_gen: u64::MAX,
+            lights_buf,
+        }
+    }
+
+    // Upload the frame's active lights (clamped to the buffer capacity).
+    // The per-camera count travels separately in WgrCamera::cam_pos.w.
+    fn upload_lights(&self, queue: &wgpu::Queue, lights: &[crate::ffi::WgrLight]) {
+        let n = lights.len().min(MAX_LIGHTS as usize);
+        if n > 0 {
+            queue.write_buffer(&self.lights_buf, 0, bytemuck::cast_slice(&lights[..n]));
         }
     }
 
@@ -325,6 +379,10 @@ impl CameraGroup {
                     wgpu::BindGroupEntry {
                         binding: 2,
                         resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: self.lights_buf.as_entire_binding(),
                     },
                 ],
             }));
@@ -378,11 +436,13 @@ impl DynUbo {
         }
     }
 
-    // Ensure capacity for `count` entries; (re)create buffer + bind group on growth.
-    fn ensure(&mut self, device: &wgpu::Device, count: usize) {
+    // Ensure capacity for `count` entries; (re)create buffer + bind group on
+    // growth. Returns true when the buffer was (re)created, so callers that build
+    // their own combined bind groups over `buf` know to rebuild them.
+    fn ensure(&mut self, device: &wgpu::Device, count: usize) -> bool {
         let needed = count as u64 * self.stride;
         if self.cap >= needed && self.buf.is_some() {
-            return;
+            return false;
         }
         let cap = needed.next_power_of_two().max(self.stride * 64);
         let buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -405,7 +465,45 @@ impl DynUbo {
         }));
         self.buf = Some(buf);
         self.cap = cap;
+        true
     }
+}
+
+// Build a combined group-1 bind group: binding 0 = the per-draw world matrix or
+// bone palette, binding 1 = the per-draw material. Both are dynamic-offset, so
+// `size` is one element (the dynamic offset selects the slot at draw time).
+#[allow(clippy::too_many_arguments)]
+fn build_group1_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    slot0: &wgpu::Buffer,
+    slot0_size: u64,
+    material: &wgpu::Buffer,
+    material_size: u64,
+    label: &str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: slot0,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(slot0_size),
+                }),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                    buffer: material,
+                    offset: 0,
+                    size: wgpu::BufferSize::new(material_size),
+                }),
+            },
+        ],
+    })
 }
 
 pub struct Gfx3d {
@@ -413,6 +511,17 @@ pub struct Gfx3d {
     world: DynUbo,
     // Skinned draws: one PALETTE_SIZE-matrix block per slot, dynamic-offset UBO.
     palette: DynUbo,
+    // Per-draw material lighting (one entry per draw, indexed by draw slot),
+    // bound at group(1)/binding(1). The buffer is managed by this DynUbo; the
+    // actual group-1 bind groups below combine it with world/palette (its own
+    // single-binding bind group is unused).
+    material: DynUbo,
+    // Combined group-1 bind groups: {world|palette @0, material @1}. Rebuilt when
+    // any of their backing buffers regrows (tracked via DynUbo::ensure's return).
+    group1_plain_layout: wgpu::BindGroupLayout,
+    group1_skinned_layout: wgpu::BindGroupLayout,
+    group1_plain_bind: Option<wgpu::BindGroup>,
+    group1_skinned_bind: Option<wgpu::BindGroup>,
 
     // Pipeline build inputs, kept so variants can be created lazily as draws
     // demand new (blend, depth, polygon-offset, cutout-threshold) combinations.
@@ -473,24 +582,68 @@ impl Gfx3d {
             (PALETTE_SIZE * std::mem::size_of::<WgrMat4>()) as u64,
             wgpu::ShaderStages::VERTEX,
         );
+        let material = DynUbo::new(
+            device,
+            "wgr_3d_material_layout",
+            MATERIAL_SIZE,
+            wgpu::ShaderStages::FRAGMENT,
+        );
+
+        // Group 1 for the lit pipelines carries two dynamic-offset UBOs: binding 0
+        // is the per-draw world matrix (plain) or bone palette (skinned), binding 1
+        // is the per-draw material. Two layouts (different binding-0 size), both
+        // ending in the same material binding. The shadow-depth pipelines keep
+        // their own single-binding palette layout, so they are unaffected.
+        let group1_layout = |label: &str, slot0_size: u64| {
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some(label),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: wgpu::BufferSize::new(slot0_size),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: true,
+                            min_binding_size: wgpu::BufferSize::new(MATERIAL_SIZE),
+                        },
+                        count: None,
+                    },
+                ],
+            })
+        };
+        let group1_plain_layout = group1_layout("wgr_3d_group1_plain_layout", 64);
+        let group1_skinned_layout = group1_layout(
+            "wgr_3d_group1_skinned_layout",
+            (PALETTE_SIZE * std::mem::size_of::<WgrMat4>()) as u64,
+        );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_3d_pipeline_layout"),
             bind_group_layouts: &[
                 Some(&cameras.layout),
-                Some(&world.layout),
+                Some(&group1_plain_layout),
                 Some(&textures.texture_layout),
                 Some(&textures.sampler_layout),
             ],
             immediate_size: 0,
         });
-        // Skinned layout swaps the per-draw world matrix (group 1) for the bone
-        // palette; groups 0/2/3 (camera/texture/sampler) are identical.
+        // Skinned layout swaps the per-draw world matrix (group 1 binding 0) for the
+        // bone palette; groups 0/2/3 (camera/texture/sampler) are identical.
         let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_3d_skinned_pipeline_layout"),
             bind_group_layouts: &[
                 Some(&cameras.layout),
-                Some(&palette.layout),
+                Some(&group1_skinned_layout),
                 Some(&textures.texture_layout),
                 Some(&textures.sampler_layout),
             ],
@@ -568,6 +721,11 @@ impl Gfx3d {
             cameras,
             world,
             palette,
+            material,
+            group1_plain_layout,
+            group1_skinned_layout,
+            group1_plain_bind: None,
+            group1_skinned_bind: None,
             shader,
             plain_layout: pipeline_layout,
             skinned_layout,
@@ -1303,7 +1461,11 @@ impl Gfx3d {
         cameras: &[WgrCamera],
         draws: &[WgrDraw3D],
         palette: &[WgrMat4],
+        lights: &[WgrLight],
     ) {
+        // Frame-global lights into the group-0 storage buffer (shared with
+        // terrain via the camera bind group). The per-camera count is in cam_pos.w.
+        self.cameras.upload_lights(queue, lights);
         if !cameras.is_empty() {
             // Bind the current shadow map (or the dummy while none exists); the
             // depth passes for this frame were prepared before this call, so the
@@ -1320,8 +1482,13 @@ impl Gfx3d {
                 queue.write_buffer(buf, i as u64 * self.cameras.stride, bytemuck::bytes_of(c));
             }
         }
+        // Track buffer regrowth so the combined group-1 bind groups (which borrow
+        // these buffers) are rebuilt only when one actually moved.
+        let mut world_grew = false;
+        let mut palette_grew = false;
+        let mut material_grew = false;
         if !draws.is_empty() {
-            self.world.ensure(device, draws.len());
+            world_grew = self.world.ensure(device, draws.len());
             let buf = self.world.buf.as_ref().unwrap();
             for (i, d) in draws.iter().enumerate() {
                 queue.write_buffer(
@@ -1330,12 +1497,30 @@ impl Gfx3d {
                     bytemuck::bytes_of(&d.world),
                 );
             }
+            // One material entry per draw (indexed by draw slot, like `world`),
+            // bound at group(1)/binding(1) for both plain and skinned pipelines.
+            material_grew = self.material.ensure(device, draws.len());
+            let mbuf = self.material.buf.as_ref().unwrap();
+            for (i, d) in draws.iter().enumerate() {
+                let m = MaterialUbo {
+                    emissive: d.mat_emissive,
+                    sun_ambient: d.mat_sun_ambient,
+                    sun_diffuse: d.mat_sun_diffuse,
+                    light_diffuse: d.mat_light_diffuse,
+                    light_ambient: d.mat_light_ambient,
+                };
+                queue.write_buffer(
+                    mbuf,
+                    i as u64 * self.material.stride,
+                    bytemuck::bytes_of(&m),
+                );
+            }
         }
         // One dynamic-UBO slot per PALETTE_SIZE-matrix block. A block is exactly
         // the UBO bind size, so slot s lives at s * stride.
         let slots = palette.len() / PALETTE_SIZE;
         if slots > 0 {
-            self.palette.ensure(device, slots);
+            palette_grew = self.palette.ensure(device, slots);
             let buf = self.palette.buf.as_ref().unwrap();
             for s in 0..slots {
                 let block = &palette[s * PALETTE_SIZE..(s + 1) * PALETTE_SIZE];
@@ -1344,6 +1529,40 @@ impl Gfx3d {
                     s as u64 * self.palette.stride,
                     bytemuck::cast_slice(block),
                 );
+            }
+        }
+
+        // (Re)build the combined group-1 bind groups when a backing buffer moved
+        // (or on first use). The plain bind needs the world + material buffers;
+        // the skinned bind the palette + material buffers.
+        if let (Some(world_buf), Some(mat_buf)) =
+            (self.world.buf.as_ref(), self.material.buf.as_ref())
+        {
+            if world_grew || material_grew || self.group1_plain_bind.is_none() {
+                self.group1_plain_bind = Some(build_group1_bind(
+                    device,
+                    &self.group1_plain_layout,
+                    world_buf,
+                    self.world.bind_size,
+                    mat_buf,
+                    self.material.bind_size,
+                    "wgr_3d_group1_plain_bind",
+                ));
+            }
+        }
+        if let (Some(pal_buf), Some(mat_buf)) =
+            (self.palette.buf.as_ref(), self.material.buf.as_ref())
+        {
+            if palette_grew || material_grew || self.group1_skinned_bind.is_none() {
+                self.group1_skinned_bind = Some(build_group1_bind(
+                    device,
+                    &self.group1_skinned_layout,
+                    pal_buf,
+                    self.palette.bind_size,
+                    mat_buf,
+                    self.material.bind_size,
+                    "wgr_3d_group1_skinned_bind",
+                ));
             }
         }
 
@@ -1371,9 +1590,7 @@ impl Gfx3d {
         if d.index_count == 0 {
             return;
         }
-        let (Some(camera_bind), Some(world_bind)) =
-            (self.cameras.bind.as_ref(), self.world.bind.as_ref())
-        else {
+        let Some(camera_bind) = self.cameras.bind.as_ref() else {
             return;
         };
         let Some(mesh) = self.meshes.get(KeyData::from_ffi(d.mesh).into()) else {
@@ -1384,13 +1601,17 @@ impl Gfx3d {
         }
 
         let camera_off = &[(d.camera as u64 * self.cameras.stride) as u32];
+        // group(1) binding 1 (material) dynamic offset: same per-draw slot for
+        // both paths. Binding 0's offset (world or palette) differs per path.
+        let material_off = (index as u64 * self.material.stride) as u32;
         let index_range = d.index_begin..(d.index_begin + d.index_count);
 
         // Skinned path: needs a palette slot AND the mesh to carry skin data.
-        // Group 1 becomes the bone palette; groups 0/2/3 are shared.
+        // Group 1 binding 0 becomes the bone palette; binding 1 stays the
+        // material; groups 0/2/3 are shared.
         let skinned = d.palette_slot != NO_PALETTE;
-        if let (true, Some(skin), Some(palette_bind)) =
-            (skinned, mesh.skin.as_ref(), self.palette.bind.as_ref())
+        if let (true, Some(skin), Some(group1_bind)) =
+            (skinned, mesh.skin.as_ref(), self.group1_skinned_bind.as_ref())
         {
             let Some(pipeline) = self.pipelines.get(&PipelineKey::from_draw(d, true)) else {
                 return;
@@ -1399,8 +1620,11 @@ impl Gfx3d {
             pass.set_bind_group(0, camera_bind, camera_off);
             pass.set_bind_group(
                 1,
-                palette_bind,
-                &[(d.palette_slot as u64 * self.palette.stride) as u32],
+                group1_bind,
+                &[
+                    (d.palette_slot as u64 * self.palette.stride) as u32,
+                    material_off,
+                ],
             );
             pass.set_bind_group(2, textures.texture_bind(d.texture_id), &[]);
             pass.set_bind_group(3, textures.sampler_bind(d.sampler.index()), &[]);
@@ -1411,12 +1635,19 @@ impl Gfx3d {
             return;
         }
 
+        let Some(group1_bind) = self.group1_plain_bind.as_ref() else {
+            return;
+        };
         let Some(pipeline) = self.pipelines.get(&PipelineKey::from_draw(d, false)) else {
             return;
         };
         pass.set_pipeline(pipeline);
         pass.set_bind_group(0, camera_bind, camera_off);
-        pass.set_bind_group(1, world_bind, &[(index as u64 * self.world.stride) as u32]);
+        pass.set_bind_group(
+            1,
+            group1_bind,
+            &[(index as u64 * self.world.stride) as u32, material_off],
+        );
         pass.set_bind_group(2, textures.texture_bind(d.texture_id), &[]);
         pass.set_bind_group(3, textures.sampler_bind(d.sampler.index()), &[]);
         pass.set_vertex_buffer(0, mesh.vbuf.slice(..));

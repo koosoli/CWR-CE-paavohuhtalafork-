@@ -143,6 +143,34 @@ pub struct WgrDraw3D {
     pub alpha_ref: f32,
     pub flags: u32,
     pub _pad: u32,
+    // Per-draw material lighting, folded exactly like GL33's
+    // UploadVSMaterialConstants (raw sun colour x material, sun-enable already
+    // multiplied into the sun terms; emissive shows regardless). The lit shader
+    // computes `emissive + sun_ambient + sun_diffuse * N.L`, clamps, x texture.
+    // rgb used; the w lanes ride along for 16-byte std140 alignment.
+    pub mat_emissive: WgrVec4,
+    pub mat_sun_ambient: WgrVec4,
+    pub mat_sun_diffuse: WgrVec4,
+    // Material modulation for the frame-global point/spot lights (GL33's matDif /
+    // matAmb before the per-light colour): raw material diffuse/ambient (eye
+    // accommodation already in, night NOT — that rides the light colour). rgb used.
+    pub mat_light_diffuse: WgrVec4,
+    pub mat_light_ambient: WgrVec4,
+}
+
+// One frame-global point or spot light, shared by every 3D draw + terrain (bound
+// as a group-0 storage buffer). Positions are ABSOLUTE world space (not
+// camera-relative like the geometry) so a single upload serves every camera; the
+// shader reconstructs the camera-relative offset via the frame's cam_pos. Colours
+// are pre-scaled by the sun's NightEffect on the CPU, so they fade out by day
+// (GL33's night-only local lights). Mirrors GL33's per-draw VS light constants.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrLight {
+    pub pos: WgrVec4,     // xyz = world-absolute position, w = start-attenuation distance
+    pub diffuse: WgrVec4, // rgb = diffuse * nightEffect
+    pub ambient: WgrVec4, // rgb = ambient * nightEffect
+    pub dir: WgrVec4,     // xyz = beam direction (spot), w = isSpot (1) else 0
 }
 
 pub const NO_PALETTE: u32 = 0xFFFF_FFFF;
@@ -326,13 +354,18 @@ pub struct WgrFrame {
     // GPU terrain nodes, drawn on WGR_CMD_DRAW_TERRAIN.
     pub terrain_nodes: WgrSlice<WgrTerrainNode>,
     pub terrain_batches: WgrSlice<WgrTerrainBatch>,
+    // Frame-global point/spot lights (<= 256), uploaded once into the group-0
+    // storage buffer shared by 3D draws + terrain. The per-camera light count
+    // rides in WgrCamera::cam_pos.w.
+    pub lights: WgrSlice<WgrLight>,
 }
 
 // Layouts must match wgpu_renderer.hpp exactly (the C++ side static_asserts the same).
 const _: () = assert!(std::mem::size_of::<WgrVertex2D>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 120);
+const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 200);
+const _: () = assert!(std::mem::size_of::<WgrLight>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);
@@ -345,7 +378,7 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrFrame>() == 496);
+const _: () = assert!(std::mem::size_of::<WgrFrame>() == 512);
 
 pub type WgrRenderer = Renderer;
 
@@ -699,6 +732,7 @@ pub unsafe extern "C" fn wgr_render_frame(
         let overlay_draws = unsafe { frame.overlay_draws.as_slice() };
         let terrain_nodes = unsafe { frame.terrain_nodes.as_slice() };
         let terrain_batches = unsafe { frame.terrain_batches.as_slice() };
+        let lights = unsafe { frame.lights.as_slice() };
         match renderer.render_frame(
             frame.clear,
             frame.fog_color.to_array(),
@@ -715,6 +749,7 @@ pub unsafe extern "C" fn wgr_render_frame(
             overlay_draws,
             terrain_nodes,
             terrain_batches,
+            lights,
         ) {
             Ok(()) => 0,
             Err(e) => {

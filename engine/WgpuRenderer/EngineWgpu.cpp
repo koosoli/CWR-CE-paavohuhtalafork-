@@ -14,6 +14,7 @@
 #include <Poseidon/Graphics/Rendering/Primitives/MeshBuild.hpp>
 #include <Poseidon/Graphics/Rendering/BuildRenderPassDescriptor.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/Poly.hpp>
+#include <Poseidon/Graphics/Rendering/Lighting/Lights.hpp>
 #include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
@@ -204,6 +205,13 @@ class VertexBufferWgpu : public VertexBuffer
 
 EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.useWindow)
 {
+    // Neutral default material (TLMaterial's ctor only initialises specular), so a
+    // draw reaching DrawSectionTL without a preceding SetMaterial lights sanely.
+    _curMaterial.emmisive = HBlack;
+    _curMaterial.ambient = HWhite;
+    _curMaterial.diffuse = HWhite;
+    _curMaterial.forcedDiffuse = HBlack;
+
     SdlGameWindowDesc wd;
     wd.title = "Poseidon [WGPU]";
     wd.width = params.width;
@@ -563,6 +571,51 @@ void EngineWgpu::NextFrame()
         }
         sunDir.Normalize();
 
+        // Frame-global point/spot lights for the GPU-lit paths (objects + terrain).
+        // Mirrors GL33's UploadVSLights, but ONE scene-wide list instead of a
+        // per-draw selection: gather the scene's point/spot lights, colours
+        // pre-scaled by NightEffect (so they vanish by day, like GL33's local
+        // lights), positions in ABSOLUTE world space (the shader rebases per
+        // camera). Clamped to the GPU buffer capacity. Per-fragment attenuation
+        // discards out-of-range lights, so no distance culling is needed here yet
+        // (that arrives with Forward+).
+        _lights.clear();
+        if (GScene && GScene->MainLight())
+        {
+            const float night = GScene->MainLight()->NightEffect();
+            if (night > 0.0f)
+            {
+                const int n = GScene->NLights();
+                for (int i = 0; i < n && _lights.size() < WGR_MAX_LIGHTS; i++)
+                {
+                    Light* light = GScene->GetLight(i);
+                    if (!light || !light->IsOn())
+                    {
+                        continue;
+                    }
+                    LightDescription desc;
+                    light->GetDescription(desc);
+                    const bool isSpot = desc.type == LTSpotLight;
+                    if (desc.type != LTPoint && !isSpot)
+                    {
+                        // point + spot only; the sun is the directional main light
+                        continue;
+                    }
+                    const Color dif = desc.diffuse * night;
+                    const Color amb = desc.ambient * night;
+                    Vector3 beam = desc.dir;
+                    beam.Normalize();
+                    WgrLight pl{};
+                    pl.pos = {desc.pos.X(), desc.pos.Y(), desc.pos.Z(), desc.startAtten};
+                    pl.diffuse = {dif.R(), dif.G(), dif.B(), 0.0f};
+                    pl.ambient = {amb.R(), amb.G(), amb.B(), 0.0f};
+                    pl.dir = {beam.X(), beam.Y(), beam.Z(), isSpot ? 1.0f : 0.0f};
+                    _lights.push_back(pl);
+                }
+            }
+        }
+        const float lightCount = static_cast<float>(_lights.size());
+
         const float shadowStrength = GetShadowFactor() / 256.0f;
         const bool shadowActive = _smCascadesValid && !_shadowCasters.empty();
         // Sun-faded darkness (GL33 parity): full daylight uses tuning.darkness,
@@ -576,7 +629,9 @@ void EngineWgpu::NextFrame()
             std::memcpy(cameras[i].view.m, &_cameras[i].view, sizeof(cameras[i].view.m));
             cameras[i].fog_color = {fog.R(), fog.G(), fog.B(), 1.0f};
             cameras[i].params = {fogStart, fogInvRange, fogEnabled, shadowStrength};
-            cameras[i].cam_pos = {_cameras[i].pos[0], _cameras[i].pos[1], _cameras[i].pos[2], 0.0f};
+            // cam_pos.w carries the active point-light count (the storage buffer
+            // is fixed-capacity, so its length is not the count).
+            cameras[i].cam_pos = {_cameras[i].pos[0], _cameras[i].pos[1], _cameras[i].pos[2], lightCount};
             cameras[i].sun_diffuse = {sunDiffuse.R(), sunDiffuse.G(), sunDiffuse.B(), 0.0f};
             cameras[i].sun_ambient = {sunAmbient.R(), sunAmbient.G(), sunAmbient.B(), 0.0f};
             cameras[i].sun_dir_world = {sunDir.X(), sunDir.Y(), sunDir.Z(), 0.0f};
@@ -625,6 +680,7 @@ void EngineWgpu::NextFrame()
         frame.overlay_draws = _overlayDraws;
         frame.terrain_nodes = _terrainNodes;
         frame.terrain_batches = _terrainBatches;
+        frame.lights = _lights;
         wgr_render_frame(_renderer, &frame);
     }
     _verts.clear();
@@ -949,6 +1005,15 @@ void EngineWgpu::EndMeshTL(const Shape& /*sMesh*/)
     _currentPaletteSlot = WGR_NO_PALETTE;
 }
 
+void EngineWgpu::SetMaterial(const TLMaterial& mat, const LightList& /*lights*/, const render::LegacySpec& /*spec*/)
+{
+    // Capture only; DrawSectionTL folds it with the sun once it has the combined
+    // mesh+section spec (for the DisableSun / sun-enable decision). Per-draw local
+    // lights are ignored here — the wgpu path drives lights from a single
+    // frame-global light store, not GL33's per-draw list.
+    _curMaterial = mat;
+}
+
 void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
 {
     if (!_renderer)
@@ -978,12 +1043,12 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
 
     const int sectionSpec = sMesh.GetSection(beg).properties.Special();
     const int effectiveSpec = _meshSpec | sectionSpec;
+    const render::LegacySpec splitSpec = render::SplitLegacy(effectiveSpec);
 
     render::BuildContext ctx;
     ctx.isIn3DPass = true;
     ctx.shadowAlphaRef = static_cast<std::uint8_t>(std::min(255, (GetShadowFactor() * 7) >> 4));
-    const render::RenderPassDescriptor desc =
-        render::BuildRenderPassDescriptor(render::SplitLegacy(effectiveSpec), ctx);
+    const render::RenderPassDescriptor desc = render::BuildRenderPassDescriptor(splitSpec, ctx);
 
     if (_smEnabledFrame && desc.blend == render::BlendMode::Shadow)
     {
@@ -1022,6 +1087,33 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
     }
     d.camera = _currentCamera;
     d.palette_slot = _currentPaletteSlot;
+
+    // Per-material sun lighting, folded exactly like GL33's
+    // UploadVSMaterialConstants: raw MainLight colour x captured material, with
+    // the sun-enable (!DisableSun) multiplied into the sun terms (emissive shows
+    // regardless). The lit shader does emissive + sun_ambient + sun_diffuse * N.L,
+    // clamped, x texture — the per-fragment analogue of GL33's VSNormal + PSNormal.
+    Color sunDif = HWhite;
+    Color sunAmb = HWhite;
+    if (GScene && GScene->MainLight())
+    {
+        sunDif = GScene->MainLight()->Diffuse();
+        sunAmb = GScene->MainLight()->Ambient();
+    }
+    const float sunEn = render::Has(splitSpec.material, render::Material::DisableSun) ? 0.0f : 1.0f;
+    const Color diffuse = sunDif * _curMaterial.diffuse;
+    const Color ambient = sunAmb * _curMaterial.ambient + sunDif * _curMaterial.forcedDiffuse;
+    const Color emissive = _curMaterial.emmisive;
+    d.mat_emissive = {emissive.R(), emissive.G(), emissive.B(), emissive.A()};
+    d.mat_sun_ambient = {ambient.R() * sunEn, ambient.G() * sunEn, ambient.B() * sunEn, ambient.A() * sunEn};
+    d.mat_sun_diffuse = {diffuse.R() * sunEn, diffuse.G() * sunEn, diffuse.B() * sunEn, diffuse.A() * sunEn};
+    // Point/spot-light material modulation (GL33's matDif/matAmb): the raw material
+    // diffuse/ambient (accommodation in, night rides the per-light colour).
+    const Color& lightDif = _curMaterial.diffuse;
+    const Color& lightAmb = _curMaterial.ambient;
+    d.mat_light_diffuse = {lightDif.R(), lightDif.G(), lightDif.B(), lightDif.A()};
+    d.mat_light_ambient = {lightAmb.R(), lightAmb.G(), lightAmb.B(), lightAmb.A()};
+
     _draws3d.push_back(d);
     _cmds.push_back(WgrCmd{WGR_CMD_DRAW_3D, U32(_draws3d.size() - 1)});
 }
