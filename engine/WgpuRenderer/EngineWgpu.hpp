@@ -8,6 +8,7 @@
 
 #include <wgpu_renderer.hpp>
 
+#include <memory>
 #include <span>
 #include <vector>
 
@@ -16,6 +17,8 @@ struct SDL_Window;
 namespace Poseidon
 {
 class TextureBankWgpu;
+class TerrainWgpu;
+class ITerrainRenderer;
 
 enum class Sampler2DFlags : uint32_t
 {
@@ -117,6 +120,12 @@ class EngineWgpu : public EngineDummy
 
     void OnWindowResized(int w, int h) override;
 
+    // GPU terrain renderer; null unless POSEIDON_WGPU_TERRAIN is set.
+    ITerrainRenderer* GetTerrainRenderer() override;
+    // Called by the terrain renderer: append a batch of `nodes` for the current
+    // camera and enqueue its draw in submission order.
+    void SubmitTerrain(std::span<const WgrTerrainNode> nodes);
+
   private:
     // A camera-relative view/projection plus the world-space camera position the
     // per-object world matrices are offset by, and the forward direction (shadow
@@ -190,6 +199,12 @@ class EngineWgpu : public EngineDummy
     std::vector<WgrOverlayVertex> _overlayVerts;
     std::vector<uint16_t> _overlayIndices;
     std::vector<WgrOverlayDraw> _overlayDraws;
+
+    // GPU terrain renderer + its per-frame node/batch buffers.
+    std::unique_ptr<TerrainWgpu> _terrain;
+    bool _terrainEnabled = false;
+    std::vector<WgrTerrainNode> _terrainNodes;
+    std::vector<WgrTerrainBatch> _terrainBatches;
 };
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params);

@@ -27,6 +27,7 @@ struct Frame {
     fog_color: vec4<f32>,
     params: FrameParams,
     shadow: ShadowBlock,
+    cam_pos: vec4<f32>, // world-space camera position (used by the terrain pipeline)
 };
 
 struct Object {

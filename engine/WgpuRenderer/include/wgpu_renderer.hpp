@@ -108,9 +108,10 @@ enum WgrDepthMode : uint32_t
 /* Selects what a WgrCmd does when the frame's command stream is replayed. */
 enum WgrCmdKind : uint32_t
 {
-    WGR_CMD_DRAW_2D = 0,     // arg = index into WgrFrame.batches (its WgrDepthMode picks depth state)
-    WGR_CMD_DRAW_3D = 1,     // arg = index into WgrFrame.draws3d
-    WGR_CMD_CLEAR_DEPTH = 2  // arg unused; starts a new depth-cleared segment
+    WGR_CMD_DRAW_2D = 0,       // arg = index into WgrFrame.batches (its WgrDepthMode picks depth state)
+    WGR_CMD_DRAW_3D = 1,       // arg = index into WgrFrame.draws3d
+    WGR_CMD_CLEAR_DEPTH = 2,   // arg unused; starts a new depth-cleared segment
+    WGR_CMD_DRAW_TERRAIN = 3   // arg = index into WgrFrame.terrain_batches
 };
 
 // --- Surface / logging -------------------------------------------------------
@@ -250,6 +251,9 @@ struct WgrCamera
     WgrVec4 fog_color;
     WgrFrameParams params;
     WgrCameraShadow shadow;
+    /* World-space camera position. `view` has no translation (geometry is
+     * camera-relative); terrain uses this to sample the world-space heightmap. */
+    WgrVec4 cam_pos;
 };
 
 /* One shadow caster for the cascade depth passes: a section run
@@ -288,6 +292,43 @@ struct WgrCmd
 {
     WgrCmdKind kind;
     uint32_t arg;
+};
+
+// --- Terrain (GPU heightmap) -------------------------------------------------
+
+/* Per-map terrain parameters, uploaded once with the heightmap. The heightmap is
+ * an hm_width x hm_height R32Float texture of world heights sampled in the vertex
+ * shader; `terrain_grid` is the world spacing between adjacent heightmap texels,
+ * `land_grid` the coarser texture-cell spacing, `world_origin` the world-space xz
+ * of texel (0,0). `data_scale` is currently unused (heights arrive in metres). */
+struct WgrTerrainParams
+{
+    WgrVec2 world_origin;
+    float land_grid;
+    float terrain_grid;
+    uint32_t hm_width;
+    uint32_t hm_height;
+    uint32_t land_range; // land-cell count per axis
+    float data_scale;
+};
+
+/* One terrain node instance: the shared grid mesh placed at world-xz `origin`,
+ * covering `size` x `size` world units, at level `lod`. */
+struct WgrTerrainNode
+{
+    WgrVec2 origin;
+    float size;
+    uint32_t lod;
+};
+
+/* A run [first_node, first_node+node_count) of WgrFrame.terrain_nodes drawn with
+ * the shared grid mesh, transformed by camera `camera` (indexes WgrFrame.cameras). */
+struct WgrTerrainBatch
+{
+    uint32_t first_node;
+    uint32_t node_count;
+    uint32_t camera;
+    uint32_t _pad;
 };
 
 /* Overlay (dev panel / ImGui) vertex: framebuffer pixels, top-left origin.
@@ -345,6 +386,11 @@ struct WgrFrame
     WgrSlice<WgrOverlayVertex> overlay_verts;
     WgrSlice<uint16_t> overlay_indices;
     WgrSlice<WgrOverlayDraw> overlay_draws;
+
+    /* GPU terrain nodes, drawn on WGR_CMD_DRAW_TERRAIN. The heightmap + ground
+     * textures are uploaded separately via wgr_terrain_*. */
+    WgrSlice<WgrTerrainNode> terrain_nodes;
+    WgrSlice<WgrTerrainBatch> terrain_batches;
 };
 
 // --- Layout guards (mirror rust/src/ffi.rs) ----------------------------------
@@ -362,13 +408,16 @@ static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match th
 static_assert(sizeof(WgrDraw3D) == 120, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrCamera) == 512, "WgrCamera layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrCamera) == 528, "WgrCamera layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrShadowCaster) == 104, "WgrShadowCaster layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrShadowPass) == 272, "WgrShadowPass layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCmd) == 8, "WgrCmd layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrOverlayVertex) == 20, "WgrOverlayVertex layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrFrame) == 464, "WgrFrame layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrTerrainParams) == 32, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrTerrainNode) == 16, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFrame) == 496, "WgrFrame layout must match the Rust #[repr(C)] struct");
 
 // --- Functions ---------------------------------------------------------------
 
@@ -410,6 +459,20 @@ extern "C"
                                    WgrSlice<uint8_t> weights);
 
     WGR_API void wgr_mesh_destroy(WgrRenderer* renderer, WgrMesh id);
+
+    /* Upload (or replace) the terrain heightmap: `heights` is
+     * params->hm_width * params->hm_height row-major world-height floats (row 0 =
+     * texel z=0). Creates the R32Float heightmap texture + params UBO, once per
+     * map load. */
+    WGR_API void wgr_terrain_set_heightmap(WgrRenderer* renderer, const float* heights,
+                                           const WgrTerrainParams* params);
+
+    /* Upload the terrain ground textures as a `layer_count`-layer 2D array (all
+     * layers `width` x `height`, `format` = WgrTextureFormat). `data` is the
+     * layers back-to-back, each sized per the format (see wgr_texture_create). */
+    WGR_API void wgr_terrain_set_ground_textures(WgrRenderer* renderer, uint32_t layer_count, uint32_t width,
+                                                 uint32_t height, int32_t format, const uint8_t* data,
+                                                 uint32_t byte_length);
 
     /* Render + present one frame. Returns 0 on success (incl. transient skipped
      * frames), negative on error. */

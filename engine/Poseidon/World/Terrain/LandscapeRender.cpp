@@ -7,6 +7,7 @@
 #include <Poseidon/Graphics/Core/TLVertex.hpp>
 #include <Poseidon/World/World.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
+#include <Poseidon/Graphics/Core/ITerrainRenderer.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
 #include <Poseidon/IO/ParamFileExt.hpp>
 #include <Poseidon/Game/OperMap.hpp>
@@ -1267,6 +1268,17 @@ const int NGrassModes = sizeof(GrassModes) / sizeof(*GrassModes);
 
 void Landscape::DrawGround(const LandBegEnd& bigRect, Scene& scene, const GroundLayerInfo& layer)
 {
+    // GPU terrain path: hand the opaque ground to the backend's terrain renderer
+    // and skip the Shape generation below. Grass overlays (isAlpha) still use Shape.
+    if (!layer.isAlpha)
+    {
+        if (ITerrainRenderer* terrain = GEngine->GetTerrainRenderer())
+        {
+            terrain->DrawTerrain(scene, bigRect.xBeg, bigRect.zBeg, bigRect.xEnd, bigRect.zEnd);
+            return;
+        }
+    }
+
     auto t0 = TerrainProfile::Now();
     for (int x = bigRect.xBeg; x < bigRect.xEnd; x += LandSegmentSize)
     {

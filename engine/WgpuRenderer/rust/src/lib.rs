@@ -3,15 +3,18 @@ mod gfx2d;
 mod gfx3d;
 mod handles;
 mod log;
+mod terrain;
 mod textures;
 
 use crate::ffi::{
     WgrCamera, WgrCmd, WgrCmdKind, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex,
-    WgrOverlayDraw, WgrOverlayVertex, WgrShadowCaster, WgrShadowPass, WgrVertex2D,
+    WgrOverlayDraw, WgrOverlayVertex, WgrShadowCaster, WgrShadowPass, WgrTerrainBatch,
+    WgrTerrainNode, WgrTerrainParams, WgrVertex2D,
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::Gfx3d;
 use crate::log::{LogSink, log_level};
+use crate::terrain::Terrain;
 use crate::textures::{SharedTextures, TextureData, TextureFormat};
 
 pub struct Renderer {
@@ -24,6 +27,7 @@ pub struct Renderer {
     textures: SharedTextures,
     gfx2d: Gfx2d,
     gfx3d: Gfx3d,
+    terrain: Terrain,
 }
 
 impl Renderer {
@@ -89,6 +93,7 @@ impl Renderer {
         let textures = SharedTextures::new(&device, &queue, bc_supported);
         let gfx2d = Gfx2d::new(&device, &textures, config.format);
         let gfx3d = Gfx3d::new(&device, &textures, config.format);
+        let terrain = Terrain::new(&device, &queue, gfx3d.camera_layout(), config.format, bc_supported);
 
         Ok(Self {
             log,
@@ -99,6 +104,7 @@ impl Renderer {
             textures,
             gfx2d,
             gfx3d,
+            terrain,
         })
     }
 
@@ -141,6 +147,8 @@ impl Renderer {
         overlay_verts: &[WgrOverlayVertex],
         overlay_indices: &[u16],
         overlay_draws: &[WgrOverlayDraw],
+        terrain_nodes: &[WgrTerrainNode],
+        terrain_batches: &[WgrTerrainBatch],
     ) -> Result<(), String> {
         let screen = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
         self.gfx2d
@@ -155,6 +163,7 @@ impl Renderer {
             .prepare_shadows(&self.device, &self.queue, shadow, shadow_casters);
         self.gfx3d
             .prepare(&self.device, &self.queue, cameras, draws3d, palette);
+        self.terrain.prepare(&self.device, &self.queue, terrain_nodes);
 
         let Some(frame) = self.acquire()? else {
             return Ok(());
@@ -242,6 +251,13 @@ impl Renderer {
                     if let Some(d) = draws3d.get(cmd.arg as usize) {
                         self.gfx3d.draw_one(&mut pass, &self.textures, d, cmd.arg);
                     }
+                } else if cmd.kind == WgrCmdKind::DrawTerrain as u32 {
+                    if let (Some(b), Some(cam)) =
+                        (terrain_batches.get(cmd.arg as usize), self.gfx3d.camera_bind())
+                    {
+                        let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                        self.terrain.draw(&mut pass, cam, off, b.first_node, b.node_count);
+                    }
                 }
             }
             drop(pass);
@@ -326,6 +342,23 @@ impl Renderer {
 
     fn mesh_destroy(&mut self, handle: u64) {
         self.gfx3d.mesh_destroy(handle);
+    }
+
+    fn terrain_set_heightmap(&mut self, heights: &[f32], params: WgrTerrainParams) {
+        self.terrain
+            .set_heightmap(&self.device, &self.queue, heights, params);
+    }
+
+    fn terrain_set_ground_textures(
+        &mut self,
+        layer_count: u32,
+        width: u32,
+        height: u32,
+        format: TextureFormat,
+        data: &[u8],
+    ) {
+        self.terrain
+            .set_ground_textures(&self.device, &self.queue, layer_count, width, height, format, data);
     }
 
     fn shadow_map_read(&mut self, layer: u32, out: &mut [f32]) -> u32 {

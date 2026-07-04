@@ -838,6 +838,22 @@ impl Gfx3d {
         self.depth.as_ref().map(|(_, v)| v)
     }
 
+    // Group-0 (camera UBO + shadow map) layout, shared with the terrain pipeline so
+    // terrain reuses the world camera and shadow resources.
+    pub fn camera_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.cameras.layout
+    }
+
+    // Camera bind group for the current frame (valid after `prepare`); index a
+    // camera by `slot * camera_stride()` as the dynamic offset.
+    pub fn camera_bind(&self) -> Option<&wgpu::BindGroup> {
+        self.cameras.bind.as_ref()
+    }
+
+    pub fn camera_stride(&self) -> u64 {
+        self.cameras.stride
+    }
+
     fn ensure_shadow_target(&mut self, device: &wgpu::Device, res: u32, layers: u32) {
         if let Some(t) = &self.shadow_target {
             if t.res == res && t.layers == layers {

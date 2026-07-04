@@ -282,6 +282,8 @@ struct Line2DFloat
 
 //@}
 
+class ITerrainRenderer;
+
 class Engine : public IGraphicsEngine
 {
   protected:
@@ -921,6 +923,8 @@ class Engine : public IGraphicsEngine
                                int /*indexCount*/, const OverlayDrawCmd* /*cmds*/, int /*cmdCount*/)
     {
     }
+
+    virtual ITerrainRenderer* GetTerrainRenderer() { return nullptr; }
 
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy

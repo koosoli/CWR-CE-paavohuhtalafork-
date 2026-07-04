@@ -188,6 +188,9 @@ pub struct WgrCamera {
     pub fog_color: WgrVec4,
     pub params: WgrFrameParams,
     pub shadow: WgrCameraShadow,
+    // World-space camera position (view drops its translation; geometry is
+    // camera-relative). GPU terrain uses it for heightmap sampling.
+    pub cam_pos: WgrVec4,
 }
 
 // One shadow caster for the cascade depth passes: a section run of `mesh`,
@@ -224,6 +227,7 @@ pub enum WgrCmdKind {
     Draw2D = 0,
     Draw3D = 1,
     ClearDepth = 2,
+    DrawTerrain = 3,
 }
 
 #[repr(C)]
@@ -231,6 +235,39 @@ pub enum WgrCmdKind {
 pub struct WgrCmd {
     pub kind: u32,
     pub arg: u32,
+}
+
+// Static per-map terrain parameters, uploaded with the heightmap. See
+// wgpu_renderer.hpp for field semantics.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrTerrainParams {
+    pub world_origin: WgrVec2,
+    pub land_grid: f32,
+    pub terrain_grid: f32,
+    pub hm_width: u32,
+    pub hm_height: u32,
+    pub land_range: u32,
+    pub data_scale: f32,
+}
+
+// One terrain node (shared grid mesh at world-xz `origin`, `size` wide, level
+// `lod`). Uploaded as instance-step vertex data.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrTerrainNode {
+    pub origin: WgrVec2,
+    pub size: f32,
+    pub lod: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrTerrainBatch {
+    pub first_node: u32,
+    pub node_count: u32,
+    pub camera: u32,
+    pub _pad: u32,
 }
 
 // Overlay (dev panel / ImGui) vertex: framebuffer pixels, top-left origin.
@@ -276,6 +313,9 @@ pub struct WgrFrame {
     pub overlay_verts: WgrSlice<WgrOverlayVertex>,
     pub overlay_indices: WgrSlice<u16>,
     pub overlay_draws: WgrSlice<WgrOverlayDraw>,
+    // GPU terrain nodes, drawn on WGR_CMD_DRAW_TERRAIN.
+    pub terrain_nodes: WgrSlice<WgrTerrainNode>,
+    pub terrain_batches: WgrSlice<WgrTerrainBatch>,
 }
 
 // Layouts must match wgpu_renderer.hpp exactly (the C++ side static_asserts the same).
@@ -285,14 +325,17 @@ const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 120);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
-const _: () = assert!(std::mem::size_of::<WgrCamera>() == 512);
+const _: () = assert!(std::mem::size_of::<WgrCamera>() == 528);
 const _: () = assert!(std::mem::size_of::<WgrShadowCaster>() == 104);
 const _: () = assert!(std::mem::size_of::<WgrShadowPass>() == 272);
 const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
 const _: () = assert!(std::mem::size_of::<WgrOverlayVertex>() == 20);
 const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
+const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 32);
+const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrFrame>() == 464);
+const _: () = assert!(std::mem::size_of::<WgrFrame>() == 496);
 
 pub type WgrRenderer = Renderer;
 
@@ -497,6 +540,57 @@ pub unsafe extern "C" fn wgr_mesh_destroy(renderer: *mut WgrRenderer, id: u64) {
     }));
 }
 
+/// Upload (or replace) the terrain heightmap + params. See wgpu_renderer.hpp.
+///
+/// # Safety
+/// `renderer` must be live; `params` must point to a valid `WgrTerrainParams`;
+/// `heights` must point to at least `hm_width * hm_height` floats.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_terrain_set_heightmap(
+    renderer: *mut WgrRenderer,
+    heights: *const f32,
+    params: *const WgrTerrainParams,
+) {
+    if renderer.is_null() || heights.is_null() || params.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let params = unsafe { *params };
+        let count = params.hm_width as usize * params.hm_height as usize;
+        let heights = unsafe { std::slice::from_raw_parts(heights, count) };
+        renderer.terrain_set_heightmap(heights, params);
+    }));
+}
+
+/// Upload the terrain ground textures as a 2D array. See wgpu_renderer.hpp.
+///
+/// # Safety
+/// `renderer` must be live; `data` must point to at least `byte_length` bytes, or
+/// be null (in which case the call is ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_terrain_set_ground_textures(
+    renderer: *mut WgrRenderer,
+    layer_count: u32,
+    width: u32,
+    height: u32,
+    format: i32,
+    data: *const u8,
+    byte_length: u32,
+) {
+    if renderer.is_null() || data.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let Some(fmt) = TextureFormat::from_i32(format) else {
+            return;
+        };
+        let renderer = unsafe { &mut *renderer };
+        let slice = unsafe { std::slice::from_raw_parts(data, byte_length as usize) };
+        renderer.terrain_set_ground_textures(layer_count, width, height, fmt, slice);
+    }));
+}
+
 /// # Safety
 /// `renderer` and `frame` must be live pointers. Each slice in `*frame` must be
 /// valid for its `len` (or null with len 0). Indices carried by `frame.cmds` /
@@ -522,6 +616,8 @@ pub unsafe extern "C" fn wgr_render_frame(
         let overlay_verts = unsafe { frame.overlay_verts.as_slice() };
         let overlay_indices = unsafe { frame.overlay_indices.as_slice() };
         let overlay_draws = unsafe { frame.overlay_draws.as_slice() };
+        let terrain_nodes = unsafe { frame.terrain_nodes.as_slice() };
+        let terrain_batches = unsafe { frame.terrain_batches.as_slice() };
         match renderer.render_frame(
             frame.clear,
             frame.fog_color.to_array(),
@@ -536,6 +632,8 @@ pub unsafe extern "C" fn wgr_render_frame(
             overlay_verts,
             overlay_indices,
             overlay_draws,
+            terrain_nodes,
+            terrain_batches,
         ) {
             Ok(()) => 0,
             Err(e) => {

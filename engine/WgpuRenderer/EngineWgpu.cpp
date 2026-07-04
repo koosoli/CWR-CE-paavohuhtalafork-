@@ -1,4 +1,5 @@
 #include "EngineWgpu.hpp"
+#include "TerrainWgpu.hpp"
 #include "TextureBankWgpu.hpp"
 
 #include <Poseidon/Core/Application.hpp>
@@ -29,6 +30,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <memory>
 #include <span>
 
 namespace Poseidon
@@ -238,6 +240,14 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     }
 
     _wbank = new TextureBankWgpu(_renderer);
+
+    // POSEIDON_WGPU_TERRAIN=1 draws terrain via the GPU heightmap path instead of
+    // the legacy per-segment Shape path.
+    _terrain = std::make_unique<TerrainWgpu>(*this, _renderer);
+    if (const char* t = std::getenv("POSEIDON_WGPU_TERRAIN"))
+    {
+        _terrainEnabled = std::strtol(t, nullptr, 10) != 0;
+    }
 
     // WGR_SHADOW_MAPS=1 enables cascaded shadow maps at startup (dev panel /
     // tri verbs can still toggle at runtime).
@@ -549,6 +559,7 @@ void EngineWgpu::NextFrame()
             std::memcpy(cameras[i].view.m, &_cameras[i].view, sizeof(cameras[i].view.m));
             cameras[i].fog_color = {fog.R(), fog.G(), fog.B(), 1.0f};
             cameras[i].params = {fogStart, fogInvRange, fogEnabled, shadowStrength};
+            cameras[i].cam_pos = {_cameras[i].pos[0], _cameras[i].pos[1], _cameras[i].pos[2], 0.0f};
             if (shadowActive)
             {
                 WgrCameraShadow& sb = cameras[i].shadow;
@@ -592,6 +603,8 @@ void EngineWgpu::NextFrame()
         frame.overlay_verts = _overlayVerts;
         frame.overlay_indices = _overlayIndices;
         frame.overlay_draws = _overlayDraws;
+        frame.terrain_nodes = _terrainNodes;
+        frame.terrain_batches = _terrainBatches;
         wgr_render_frame(_renderer, &frame);
     }
     _verts.clear();
@@ -604,6 +617,8 @@ void EngineWgpu::NextFrame()
     _overlayVerts.clear();
     _overlayIndices.clear();
     _overlayDraws.clear();
+    _terrainNodes.clear();
+    _terrainBatches.clear();
     _smCascadesValid = false;
     _haveCamera = false;
     _currentCamera = 0;
@@ -826,6 +841,32 @@ void EngineWgpu::EnsureCamera()
     {
         PushSceneCamera();
     }
+}
+
+ITerrainRenderer* EngineWgpu::GetTerrainRenderer()
+{
+    return (_terrainEnabled && _terrain) ? _terrain.get() : nullptr;
+}
+
+void EngineWgpu::SubmitTerrain(std::span<const WgrTerrainNode> nodes)
+{
+    if (!_renderer || nodes.empty())
+    {
+        return;
+    }
+    EnsureCamera();
+
+    WgrTerrainBatch batch{};
+    batch.first_node = U32(_terrainNodes.size());
+    batch.node_count = U32(nodes.size());
+    batch.camera = _currentCamera;
+    _terrainNodes.insert(_terrainNodes.end(), nodes.begin(), nodes.end());
+    _terrainBatches.push_back(batch);
+
+    WgrCmd cmd{};
+    cmd.kind = WGR_CMD_DRAW_TERRAIN;
+    cmd.arg = U32(_terrainBatches.size() - 1);
+    _cmds.push_back(cmd);
 }
 
 void EngineWgpu::UpdateFrameCamera()

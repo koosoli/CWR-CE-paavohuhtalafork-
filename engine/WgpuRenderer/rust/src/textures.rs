@@ -25,7 +25,7 @@ impl TextureFormat {
         }
     }
 
-    fn wgpu_format(self) -> wgpu::TextureFormat {
+    pub(crate) fn wgpu_format(self) -> wgpu::TextureFormat {
         match self {
             TextureFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
             TextureFormat::Bc1 => wgpu::TextureFormat::Bc1RgbaUnorm,
@@ -34,11 +34,11 @@ impl TextureFormat {
         }
     }
 
-    fn is_block_compressed(self) -> bool {
+    pub(crate) fn is_block_compressed(self) -> bool {
         !matches!(self, TextureFormat::Rgba8)
     }
 
-    fn bytes_per_row(self, width: u32) -> u32 {
+    pub(crate) fn bytes_per_row(self, width: u32) -> u32 {
         match self {
             TextureFormat::Rgba8 => width * 4,
             TextureFormat::Bc1 => width.div_ceil(4) * 8,
@@ -46,7 +46,7 @@ impl TextureFormat {
         }
     }
 
-    fn rows(self, height: u32) -> u32 {
+    pub(crate) fn rows(self, height: u32) -> u32 {
         if self.is_block_compressed() {
             height.div_ceil(4)
         } else {
@@ -54,7 +54,7 @@ impl TextureFormat {
         }
     }
 
-    fn expected_len(self, width: u32, height: u32) -> u32 {
+    pub(crate) fn expected_len(self, width: u32, height: u32) -> u32 {
         self.bytes_per_row(width) * self.rows(height)
     }
 }
