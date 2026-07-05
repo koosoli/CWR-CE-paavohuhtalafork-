@@ -2014,9 +2014,8 @@ bool WantsKeyboard()
 
 bool WantsMouse()
 {
-    if (!s_initialized || !s_visible)
-        return false;
-    return ImGui::GetIO().WantCaptureMouse;
+    // Claim every mouse event while the panel is open to prevent the camera from moving
+    return s_initialized && s_visible;
 }
 
 } // namespace DebugOverlay
