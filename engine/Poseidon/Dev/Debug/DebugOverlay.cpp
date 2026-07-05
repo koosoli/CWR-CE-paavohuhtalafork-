@@ -1371,6 +1371,18 @@ void DrawShadowsTab()
     ImGui::TextDisabled("  per-cascade depth-map size; higher = sharper, more VRAM");
 
     ImGui::Separator();
+    ImGui::TextDisabled("Terrain sun-shadows (wgpu)");
+    changed |= ImGui::Checkbox("Enabled (terrain sun-shadow)", &t.terrainShadowEnabled);
+    changed |= ImGui::SliderFloat("Strength", &t.terrainShadowStrength, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  occlusion scale; 1 = physical");
+    changed |= ImGui::SliderInt("Mask supersample", &t.terrainShadowScale, 1, 8);
+    ImGui::TextDisabled("  mask resolution vs heightmap");
+    changed |= ImGui::SliderInt("March steps", &t.terrainShadowSteps, 16, 2048);
+    ImGui::TextDisabled("  hard range cap");
+    changed |= ImGui::SliderFloat("Penumbra (deg)", &t.terrainShadowPenumbra, 0.0f, 8.0f, "%.2f");
+    ImGui::TextDisabled("  soft-edge half-width; 0 = hard, larger = softer");
+
+    ImGui::Separator();
     if (ImGui::Button("Reset knobs to defaults"))
     {
         const bool keepEnabled = t.enabled;
@@ -1386,13 +1398,14 @@ void DrawShadowsTab()
     // values they tuned by eye can be baked into the engine defaults.
     ImGui::Separator();
     ImGui::TextDisabled("Current tuning (copy back to share):");
-    char summary[384];
+    char summary[512];
     snprintf(summary, sizeof(summary),
              "shadows: enabled=%s darkness=%.3f cascades=%d omni=%d/%.3f/%.3f dist=%.3f split=%.2f bias=%.6f "
-             "normOfs=%.2f pcf=%.2f lodBias=%.1f fade=%.1f res=%d",
+             "normOfs=%.2f pcf=%.2f lodBias=%.1f fade=%.1f res=%d | terrain: on=%s str=%.2f scale=%d steps=%d pen=%.2f",
              t.enabled ? "true" : "false", t.darkness, t.cascadeCount, t.omniCount, t.omniCoef0, t.omniCoef1,
              t.distanceCoef, t.splitCoef, t.biasBase, t.normalOffset, t.pcf, t.casterLodBias, t.fadeRange,
-             t.resolution);
+             t.resolution, t.terrainShadowEnabled ? "true" : "false", t.terrainShadowStrength,
+             t.terrainShadowScale, t.terrainShadowSteps, t.terrainShadowPenumbra);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##shadowSummary", summary, sizeof(summary), ImGuiInputTextFlags_ReadOnly);
     if (ImGui::Button("Copy summary to clipboard"))

@@ -803,6 +803,20 @@ class Engine : public IGraphicsEngine
         // PCF spread in texels: < 0.5 = single hardware bilinear tap (crisp),
         // >= 0.5 = 4 taps spread by this many texels (soft). wgpu path only.
         float pcf = 1.0f;
+        // Long-distance terrain sun-shadow (heightfield self-shadow) — a compute
+        // sweep ray-marches the heightmap toward the sun into a world-aligned mask
+        // the terrain samples, giving terrain-on-terrain occlusion at any range
+        // (the cascade maps never cast terrain). Complements CSM by max(). wgpu
+        // path only. `terrainShadowStrength` scales the occlusion (0 = off, 1 =
+        // physical, >1 = exaggerated); `terrainShadowScale` supersamples the mask
+        // over the heightmap grid (sharper edges); `terrainShadowSteps` caps the
+        // march range (steps * terrain_grid); `terrainShadowPenumbra` is the
+        // soft-edge half-width in degrees.
+        bool terrainShadowEnabled = true;
+        float terrainShadowStrength = 1.0f;
+        int terrainShadowScale = 2;
+        int terrainShadowSteps = 512;
+        float terrainShadowPenumbra = 1.0f;
     };
 
     /// Shadow-map (depth-buffer) shadows — durable replacement for the projected

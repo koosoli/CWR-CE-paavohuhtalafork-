@@ -10,6 +10,47 @@ const GRID_N: u32 = 32;
 // request). Must match WGR_TERRAIN_MAX_GROUND_LAYERS in wgpu_renderer.hpp.
 pub const TERRAIN_MAX_GROUND_LAYERS: u32 = 512;
 
+// Recompute the terrain sun-shadow mask only once the sun has moved past this
+// angular threshold (cos of ~0.25°), so the amortized sweep skips most frames.
+const SUN_MOVE_COS: f32 = 0.99999;
+
+// Mask resolution multiplier over the heightmap grid: the occluder heightfield is
+// coarse (~50 m texels) but the shadow boundary it casts is sharp, so a finer mask
+// keeps that boundary crisp instead of smearing it over a heightmap texel. 2x is
+// the sweet spot (higher shows no further improvement — the heightfield is the real
+// limit). Capped so even large heightmaps stay within a sane VRAM budget.
+const SHADOW_MASK_SCALE: u32 = 2;
+const SHADOW_MASK_DIM_CAP: u32 = 4096;
+
+// Uniform for the terrain sun-shadow compute sweep (terrain_shadow.wgsl). sun_dir
+// is surface-to-light (the negated frame.sun_dir_world travel direction), so the
+// sun above the horizon means sun_dir.y > 0. inv_scale maps a mask texel back to
+// (fractional) heightfield-texel space. Layout matches the WGSL struct.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct ShadowSweep {
+    world_origin: glam::Vec2,
+    terrain_grid: f32,
+    penumbra: f32,
+    inv_scale: glam::Vec2,
+    hm_width: u32,
+    hm_height: u32,
+    mask_width: u32,
+    mask_height: u32,
+    max_steps: u32,
+    strength: f32,
+    sun_dir: glam::Vec4,
+}
+
+// Mask dimensions for a heightmap of the given size: `scale`x finer, but never
+// smaller than the heightmap and never past the dimension cap or the device limit.
+fn shadow_mask_dims(w: u32, h: u32, scale: u32, max_dim: u32) -> (u32, u32) {
+    let cap = SHADOW_MASK_DIM_CAP.min(max_dim);
+    let mw = (w.saturating_mul(scale)).clamp(w, cap);
+    let mh = (h.saturating_mul(scale)).clamp(h, cap);
+    (mw, mh)
+}
+
 pub struct Terrain {
     group1_layout: wgpu::BindGroupLayout,
     group2_layout: wgpu::BindGroupLayout,
@@ -19,6 +60,31 @@ pub struct Terrain {
     heightmap: wgpu::Texture,
     group1_bind: wgpu::BindGroup,
     have_heightmap: bool,
+
+    // Long-distance terrain sun-shadow mask + its amortized compute sweep. The
+    // mask (Rgba8Unorm, same grid as the heightmap) is storage-written by the
+    // sweep and sampled in fs_terrain; recompute is gated on the sun moving or the
+    // heightmap changing. world_origin/terrain_grid/hm_* feed the sweep uniform.
+    #[allow(dead_code)] // kept alive: group1_bind + sweep_bind reference its view
+    shadow_mask: wgpu::Texture,
+    shadow_sweep_ubo: wgpu::Buffer,
+    shadow_sweep_layout: wgpu::BindGroupLayout,
+    shadow_sweep_bind: wgpu::BindGroup,
+    shadow_pipeline: wgpu::ComputePipeline,
+    mask_sampler: wgpu::Sampler,
+    world_origin: glam::Vec2,
+    terrain_grid: f32,
+    max_height: f32,
+    hm_width: u32,
+    hm_height: u32,
+    mask_width: u32,
+    mask_height: u32,
+    shadow_scale: u32,
+    shadow_max_steps: u32,
+    shadow_penumbra: f32,
+    shadow_strength_mul: f32,
+    shadow_dirty: bool,
+    last_sun_dir: glam::Vec3,
 
     // group2 resources; group2_bind holds views into all of them. Kept so any
     // one can be replaced and the bind group rebuilt.
@@ -84,8 +150,67 @@ impl Terrain {
                     },
                     count: None,
                 },
+                // Long-distance sun-shadow mask (filterable; one bilinear tap) +
+                // its clamping sampler. Written by the compute sweep, sampled here.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
+
+        // Compute-side layout for the sun-shadow sweep: sweep uniform + heightmap
+        // (textureLoad) + the mask as a storage texture the sweep writes.
+        let shadow_sweep_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgr_terrain_shadow_sweep_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(
+                                std::mem::size_of::<ShadowSweep>() as u64,
+                            ),
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+            });
 
         // group 2 (fragment): bindless ground texture binding_array + filtering
         // sampler + per-cell index map (uint, textureLoad) + high-frequency
@@ -184,7 +309,81 @@ impl Terrain {
                 depth_or_array_layers: 1,
             },
         );
-        let group1_bind = make_group1(device, &group1_layout, &params_ubo, &heightmap_view);
+        // 1x1 stand-in mask + its clamping sampler; replaced (with the heightmap)
+        // on the first real upload. Terrain never draws until then.
+        let shadow_mask = create_shadow_mask(device, 1, 1);
+        let shadow_mask_view = shadow_mask.create_view(&wgpu::TextureViewDescriptor::default());
+        let mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_terrain_shadow_mask_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let group1_bind = make_group1(
+            device,
+            &group1_layout,
+            &params_ubo,
+            &heightmap_view,
+            &shadow_mask_view,
+            &mask_sampler,
+        );
+
+        // Sun-shadow sweep: uniform + compute pipeline + bind group. Range cap =
+        // max_steps * terrain_grid; both the step count and the penumbra (degrees)
+        // are env-tunable, matching the other terrain knobs.
+        let shadow_sweep_ubo = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_terrain_shadow_sweep"),
+            size: std::mem::size_of::<ShadowSweep>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadow_sweep_bind = make_sweep_bind(
+            device,
+            &shadow_sweep_layout,
+            &shadow_sweep_ubo,
+            &heightmap_view,
+            &shadow_mask_view,
+        );
+        let shadow_shader = crate::shaders::make_module(
+            device,
+            composer,
+            "wgr_terrain_shadow_shader",
+            include_str!("terrain_shadow.wgsl"),
+            "terrain/terrain_shadow.wgsl",
+        );
+        let shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgr_terrain_shadow_pipeline_layout"),
+                bind_group_layouts: &[Some(&shadow_sweep_layout)],
+                immediate_size: 0,
+            });
+        let shadow_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("wgr_terrain_shadow_pipeline"),
+            layout: Some(&shadow_pipeline_layout),
+            module: &shadow_shader,
+            entry_point: Some("sweep"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+        let shadow_max_steps = std::env::var("WGR_TERRAIN_SHADOW_STEPS")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(512)
+            .max(1);
+        let shadow_penumbra = std::env::var("WGR_TERRAIN_SHADOW_PENUMBRA")
+            .ok()
+            .and_then(|v| v.parse::<f32>().ok())
+            .unwrap_or(1.0)
+            .to_radians();
+        let shadow_scale = std::env::var("WGR_TERRAIN_SHADOW_SCALE")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(SHADOW_MASK_SCALE)
+            .max(1);
 
         // Stand-ins so the bind group is valid before any upload. Ground = the
         // shared 1x1 white; detail alpha = 0.5 (so the shader's 2*alpha
@@ -391,6 +590,26 @@ impl Terrain {
             heightmap,
             group1_bind,
             have_heightmap: false,
+            shadow_mask,
+            shadow_sweep_ubo,
+            shadow_sweep_layout,
+            shadow_sweep_bind,
+            shadow_pipeline,
+            mask_sampler,
+            world_origin: glam::Vec2::ZERO,
+            terrain_grid: 1.0,
+            max_height: 0.0,
+            hm_width: 1,
+            hm_height: 1,
+            mask_width: 1,
+            mask_height: 1,
+            shadow_scale,
+            shadow_max_steps,
+            shadow_penumbra,
+            shadow_strength_mul: 1.0,
+            // Force a recompute on the first frame after a heightmap arrives.
+            shadow_dirty: true,
+            last_sun_dir: glam::Vec3::ZERO,
             ground_views,
             pad_view: white_view,
             partially_bound,
@@ -442,9 +661,141 @@ impl Terrain {
             },
         );
         queue.write_buffer(&self.params_ubo, 0, bytemuck::bytes_of(&params));
-        self.group1_bind = make_group1(device, &self.group1_layout, &self.params_ubo, &view);
+
+        // Reallocate the sun-shadow mask (a `scale`x-finer grid than the heightmap),
+        // rebuild both binds that reference the (new) heightmap/mask views, and
+        // stage the sweep inputs.
+        let (mask_w, mask_h) = shadow_mask_dims(w, h, self.shadow_scale, self.max_dim);
+        let shadow_mask = create_shadow_mask(device, mask_w, mask_h);
+        let mask_view = shadow_mask.create_view(&wgpu::TextureViewDescriptor::default());
+        self.group1_bind = make_group1(
+            device,
+            &self.group1_layout,
+            &self.params_ubo,
+            &view,
+            &mask_view,
+            &self.mask_sampler,
+        );
+        self.shadow_sweep_bind = make_sweep_bind(
+            device,
+            &self.shadow_sweep_layout,
+            &self.shadow_sweep_ubo,
+            &view,
+            &mask_view,
+        );
+        self.shadow_mask = shadow_mask;
+        self.world_origin = params.world_origin;
+        self.terrain_grid = params.terrain_grid;
+        // Tallest terrain point: lets the march stop once the ray climbs above all
+        // possible occluders (the auto-adapting range in terrain_shadow.wgsl).
+        self.max_height = heights[..(w as usize * h as usize)]
+            .iter()
+            .copied()
+            .fold(f32::MIN, f32::max);
+        self.hm_width = w;
+        self.hm_height = h;
+        self.mask_width = mask_w;
+        self.mask_height = mask_h;
+        self.shadow_dirty = true;
         self.heightmap = heightmap;
         self.have_heightmap = true;
+    }
+
+    // Amortized sun-shadow sweep: ray-march the heightfield toward the sun once
+    // per texel into the mask, recomputing only when the heightmap changed or the
+    // sun moved past SUN_MOVE_COS. `sun_to_light` is the (unit) surface-to-light
+    // direction — the negation of frame.sun_dir_world. Records a compute pass into
+    // the frame encoder before the render segments sample the mask.
+    pub fn render_shadow_mask(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        sun_to_light: glam::Vec3,
+    ) {
+        if !self.have_heightmap {
+            return;
+        }
+        let moved = self.last_sun_dir.dot(sun_to_light) < SUN_MOVE_COS;
+        if !self.shadow_dirty && !moved {
+            return;
+        }
+
+        let sweep = ShadowSweep {
+            world_origin: self.world_origin,
+            terrain_grid: self.terrain_grid,
+            penumbra: self.shadow_penumbra,
+            inv_scale: glam::Vec2::new(
+                self.hm_width as f32 / self.mask_width as f32,
+                self.hm_height as f32 / self.mask_height as f32,
+            ),
+            hm_width: self.hm_width,
+            hm_height: self.hm_height,
+            mask_width: self.mask_width,
+            mask_height: self.mask_height,
+            max_steps: self.shadow_max_steps,
+            strength: self.shadow_strength_mul,
+            sun_dir: sun_to_light.extend(self.max_height),
+        };
+        queue.write_buffer(&self.shadow_sweep_ubo, 0, bytemuck::bytes_of(&sweep));
+
+        let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("wgr_terrain_shadow_sweep"),
+            timestamp_writes: None,
+        });
+        cp.set_pipeline(&self.shadow_pipeline);
+        cp.set_bind_group(0, &self.shadow_sweep_bind, &[]);
+        cp.dispatch_workgroups(self.mask_width.div_ceil(8), self.mask_height.div_ceil(8), 1);
+        drop(cp);
+
+        self.shadow_dirty = false;
+        self.last_sun_dir = sun_to_light;
+    }
+
+    // Live-tune the sun-shadow sweep (debug overlay). Strength/steps/penumbra feed
+    // the sweep uniform; changing the mask scale reallocates the mask (and the binds
+    // that view it). Any change marks the sweep dirty so it recomputes next frame.
+    pub fn set_sun_shadow_params(
+        &mut self,
+        device: &wgpu::Device,
+        strength: f32,
+        scale: u32,
+        max_steps: u32,
+        penumbra_deg: f32,
+    ) {
+        self.shadow_strength_mul = strength.max(0.0);
+        self.shadow_max_steps = max_steps.max(1);
+        self.shadow_penumbra = penumbra_deg.max(0.0).to_radians();
+
+        let scale = scale.max(1);
+        if scale != self.shadow_scale {
+            self.shadow_scale = scale;
+            if self.have_heightmap {
+                let (mw, mh) =
+                    shadow_mask_dims(self.hm_width, self.hm_height, scale, self.max_dim);
+                let hview = self.heightmap.create_view(&wgpu::TextureViewDescriptor::default());
+                let mask = create_shadow_mask(device, mw, mh);
+                let mview = mask.create_view(&wgpu::TextureViewDescriptor::default());
+                self.group1_bind = make_group1(
+                    device,
+                    &self.group1_layout,
+                    &self.params_ubo,
+                    &hview,
+                    &mview,
+                    &self.mask_sampler,
+                );
+                self.shadow_sweep_bind = make_sweep_bind(
+                    device,
+                    &self.shadow_sweep_layout,
+                    &self.shadow_sweep_ubo,
+                    &hview,
+                    &mview,
+                );
+                self.shadow_mask = mask;
+                self.mask_width = mw;
+                self.mask_height = mh;
+            }
+        }
+        self.shadow_dirty = true;
     }
 
     // Ground layers as views into the shared texture registry (missing handles
@@ -629,11 +980,33 @@ fn create_heightmap(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wg
     (tex, view)
 }
 
+// Rgba8Unorm mask on the heightmap grid: storage-written by the sweep (.r = lit
+// factor), sampled with hardware bilinear in fs_terrain. Rgba8Unorm is the sweet
+// spot — core-guaranteed storage-writable *and* filterable (no FLOAT32_FILTERABLE).
+fn create_shadow_mask(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wgr_terrain_shadow_mask"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    })
+}
+
 fn make_group1(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     params: &wgpu::Buffer,
     heightmap_view: &wgpu::TextureView,
+    mask_view: &wgpu::TextureView,
+    mask_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgr_terrain_group1_bind"),
@@ -646,6 +1019,41 @@ fn make_group1(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::TextureView(heightmap_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(mask_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(mask_sampler),
+            },
+        ],
+    })
+}
+
+fn make_sweep_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    sweep_ubo: &wgpu::Buffer,
+    heightmap_view: &wgpu::TextureView,
+    mask_view: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("wgr_terrain_shadow_sweep_bind"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: sweep_ubo.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(heightmap_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(mask_view),
             },
         ],
     })

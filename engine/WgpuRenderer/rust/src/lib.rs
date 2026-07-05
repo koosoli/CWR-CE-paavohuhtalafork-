@@ -224,6 +224,17 @@ impl Renderer {
         self.gfx3d
             .render_shadow_passes(&mut encoder, &self.textures, shadow, shadow_casters);
 
+        // Amortized terrain sun-shadow sweep (long-range heightfield self-shadow),
+        // recorded before the render segments sample its mask. The sun direction is
+        // uniform across cameras; sun_dir_world is the light travel direction, so
+        // negate it for the surface-to-light march.
+        if let Some(cam) = cameras.first() {
+            let s = cam.sun_dir_world;
+            let sun_to_light = glam::Vec3::new(-s[0], -s[1], -s[2]);
+            self.terrain
+                .render_shadow_mask(&self.queue, &mut encoder, sun_to_light);
+        }
+
         // Replay the command stream as one or more segments split at CLEAR_DEPTH.
         // The first segment clears colour; every segment clears depth. Within a
         // segment, 2D and 3D draws render interleaved in submission order.
@@ -407,6 +418,11 @@ impl Renderer {
     fn terrain_set_jitter_map(&mut self, width: u32, height: u32, offsets: &[i8]) {
         self.terrain
             .set_jitter_map(&self.device, &self.queue, width, height, offsets);
+    }
+
+    fn terrain_set_sun_shadow(&mut self, strength: f32, scale: u32, max_steps: u32, penumbra_deg: f32) {
+        self.terrain
+            .set_sun_shadow_params(&self.device, strength, scale, max_steps, penumbra_deg);
     }
 
     fn terrain_set_detail_layer(&mut self, handle: u64) {

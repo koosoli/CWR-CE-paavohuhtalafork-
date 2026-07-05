@@ -107,7 +107,19 @@ class EngineWgpu : public EngineDummy
     void SetShadowMapsEnabled(bool enabled) override { _smTuning.enabled = enabled; }
     bool ShadowMapsEnabled() const override { return _smTuning.enabled && _renderer != nullptr; }
     ShadowMapTuning GetShadowMapTuning() const override { return _smTuning; }
-    void SetShadowMapTuning(const ShadowMapTuning& tuning) override { _smTuning = tuning; }
+    void SetShadowMapTuning(const ShadowMapTuning& tuning) override
+    {
+        _smTuning = tuning;
+        // Push the terrain sun-shadow knobs to the renderer (wgpu-only feature);
+        // strength 0 = disabled. The sweep realloc/recompute happens renderer-side.
+        if (_renderer)
+        {
+            const float strength = tuning.terrainShadowEnabled ? tuning.terrainShadowStrength : 0.0f;
+            const uint32_t scale = tuning.terrainShadowScale < 1 ? 1u : uint32_t(tuning.terrainShadowScale);
+            const uint32_t steps = tuning.terrainShadowSteps < 1 ? 1u : uint32_t(tuning.terrainShadowSteps);
+            wgr_terrain_set_sun_shadow(_renderer, strength, scale, steps, tuning.terrainShadowPenumbra);
+        }
+    }
     void SetShadowMapSunFactor(float factor01) override { _smSunFactor = factor01; }
     bool UsesGpuShadowCasters() const override { return true; }
     void SetShadowCascades(const shadow::CascadeSet& cascades, int resolution) override;

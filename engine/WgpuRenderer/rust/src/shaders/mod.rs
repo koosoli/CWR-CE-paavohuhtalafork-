@@ -114,5 +114,9 @@ mod tests {
             include_str!("../terrain/terrain.wgsl"),
             "terrain/terrain.wgsl",
         );
+        compose(
+            include_str!("../terrain/terrain_shadow.wgsl"),
+            "terrain/terrain_shadow.wgsl",
+        );
     }
 }

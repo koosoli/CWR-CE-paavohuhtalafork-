@@ -564,6 +564,16 @@ extern "C"
      * Handle 0 is ignored (the neutral built-in stand-in stays). */
     WGR_API void wgr_terrain_set_detail_layer(WgrRenderer* renderer, WgrTexture handle);
 
+    /* Live-tune the long-distance terrain sun-shadow sweep (heightfield self-
+     * shadow, a complement to the cascade maps). `strength` scales the occlusion
+     * (0 = off, 1 = physical, >1 = exaggerated for debugging); `scale` is the mask
+     * supersample factor over the heightmap grid (>=1, higher = sharper edges,
+     * more VRAM); `max_steps` caps the march range (steps * terrain_grid metres);
+     * `penumbra_deg` is the soft-edge half-width in degrees. Changing `scale`
+     * reallocates the mask; any change re-runs the amortized sweep next frame. */
+    WGR_API void wgr_terrain_set_sun_shadow(WgrRenderer* renderer, float strength, uint32_t scale,
+                                            uint32_t max_steps, float penumbra_deg);
+
     /* Render + present one frame. Returns 0 on success (incl. transient skipped
      * frames), negative on error. */
     WGR_API int32_t wgr_render_frame(WgrRenderer* renderer, const WgrFrame* frame);

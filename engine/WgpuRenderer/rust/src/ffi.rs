@@ -695,6 +695,31 @@ pub unsafe extern "C" fn wgr_terrain_set_jitter_map(
     }));
 }
 
+/// Live-tune the long-distance terrain sun-shadow sweep (heightfield self-shadow).
+/// `strength` scales the occlusion (0 = off, 1 = physical, >1 = exaggerated for
+/// debugging); `scale` is the mask supersample factor over the heightmap;
+/// `max_steps` caps the march range (steps * terrain_grid); `penumbra_deg` is the
+/// soft-edge half-width in degrees. Changing `scale` reallocates the mask; any
+/// change re-runs the (amortized) sweep on the next frame. See wgpu_renderer.hpp.
+///
+/// # Safety
+/// `renderer` must be a live pointer from `wgr_create`, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_terrain_set_sun_shadow(
+    renderer: *mut WgrRenderer,
+    strength: f32,
+    scale: u32,
+    max_steps: u32,
+    penumbra_deg: f32,
+) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &mut *renderer }.terrain_set_sun_shadow(strength, scale, max_steps, penumbra_deg);
+    }));
+}
+
 /// Set the terrain detail noise texture to a wgr_texture_create handle. See
 /// wgpu_renderer.hpp.
 ///

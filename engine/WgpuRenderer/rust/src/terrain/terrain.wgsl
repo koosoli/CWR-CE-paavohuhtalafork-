@@ -9,7 +9,7 @@
 // sun lighting.
 #import frame::{frame, reverse_z, fog_factor}
 #import shadow::shadow_strength
-#import lighting::{sun_light, lights_contrib}
+#import lighting::lights_contrib
 
 struct TerrainParams {
     world_origin: vec2<f32>,
@@ -26,6 +26,13 @@ const GRID_N: f32 = 32.0;
 
 @group(1) @binding(0) var<uniform> tp: TerrainParams;
 @group(1) @binding(1) var heightmap: texture_2d<f32>;
+// Long-distance terrain sun-shadow mask (terrain_shadow.wgsl sweep): world-aligned
+// on the heightmap grid, .r = lit factor (1 = lit, 0 = fully shadowed). One
+// bilinear tap gives terrain-on-terrain self-shadowing at any range; it composes
+// with CSM by max() (most-occluded wins), and terrain is never a CSM caster so the
+// two never double-shadow the same ground.
+@group(1) @binding(2) var shadow_mask: texture_2d<f32>;
+@group(1) @binding(3) var shadow_mask_samp: sampler;
 // Bindless ground textures: one texture_2d per Landscape texture index, native
 // size/format/mips. Indexed non-uniformly per fragment (needs the device's
 // SAMPLED_TEXTURE_..._NON_UNIFORM_INDEXING feature).
@@ -221,15 +228,31 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
 
     // Per-pixel normal at a fixed heightmap step (independent of patch LOD/morph).
     let n = sample_normal(in.world_xz, tp.terrain_grid);
-    // Sun diffuse * N.L + ambient plus the frame-global point/spot lights (both
-    // from the shared lighting module). Terrain has no material, so the local
-    // lights use a white modulation. sun_light is already clamped to 1; adding the
-    // local term and re-clamping brightens night lamps without over-darkening day.
-    let local = lights_contrib(in.world_pos, n, vec3<f32>(1.0), vec3<f32>(1.0));
-    rgb *= clamp(sun_light(n) + local, vec3<f32>(0.0), vec3<f32>(1.0));
 
-    let s = shadow_strength(in.world_pos, n, in.fog, dwx, dwy);
-    rgb *= mix(1.0, frame.shadow.ctlb.y, s);
+    // Combined sun shadow: CSM (objects + near contact) and the long-range
+    // heightfield mask (terrain-on-terrain) compose by max() — whichever occludes
+    // the sun more wins. Both fade out with fog. The mask stores a lit factor in
+    // .r, so its occlusion is 1 - r. Its grid is `scale`x the heightmap (sharper
+    // edges), so sample in mask-texel space: world -> heightfield texel -> * scale,
+    // landing on texel centres at (coord + 0.5)/dims.
+    let csm_s = shadow_strength(in.world_pos, n, in.fog, dwx, dwy);
+    let mask_dims = vec2<f32>(textureDimensions(shadow_mask));
+    let mask_scale = mask_dims / vec2<f32>(f32(tp.hm_width), f32(tp.hm_height));
+    let mask_coord = (in.world_xz - tp.world_origin) / tp.terrain_grid * mask_scale;
+    let mask_uv = (mask_coord + vec2<f32>(0.5)) / mask_dims;
+    let terrain_s = (1.0 - textureSampleLevel(shadow_mask, shadow_mask_samp, mask_uv, 0.0).r) * in.fog;
+    let shadow = max(csm_s, terrain_s);
+
+    // A shadow removes the direct sun (the N.L diffuse term); sky ambient and the
+    // local point/spot lamps survive, so shadowed terrain settles to the ambient
+    // tone rather than going black. This is why the darkening reads as a soft cast
+    // shadow and never collapses to pure black when CSM's darkness constant is 0
+    // (shadow maps disabled). Terrain has no material, so local lights modulate white.
+    let cos_fi = max(dot(n, -frame.sun_dir_world.xyz), 0.0);
+    let sun = min(frame.sun_diffuse.rgb * cos_fi * (1.0 - shadow) + frame.sun_ambient.rgb,
+                  vec3<f32>(1.0));
+    let local = lights_contrib(in.world_pos, n, vec3<f32>(1.0), vec3<f32>(1.0));
+    rgb *= clamp(sun + local, vec3<f32>(0.0), vec3<f32>(1.0));
 
     rgb = mix(frame.fog_color.rgb, rgb, in.fog);
     return vec4<f32>(rgb, 1.0);
