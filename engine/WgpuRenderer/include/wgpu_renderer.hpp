@@ -147,12 +147,16 @@ struct WgrVertex2D
     WgrRgba8 color;
 };
 
-/* One object-space mesh vertex; matches the engine's SVertex (pos, normal, uv). */
+/* One object-space mesh vertex; matches the engine's SVertex (pos, normal, uv, conform). */
 struct WgrMeshVertex
 {
     WgrVec3 pos;
     WgrVec3 normal;
     WgrVec2 uv;
+    /* Per-vertex terrain-conform selector (0 = rigid, 1 = ClipLandKeep, 2 = ClipLandOn),
+     * read by vs_main at @location(5). Meaningful only when the draw's conform mode
+     * selects the per-vertex heightmap path (individual ClipLand vegetation). */
+    uint32_t conform;
 };
 
 // --- Draw records ------------------------------------------------------------
@@ -237,6 +241,14 @@ struct WgrDraw3D
      * off), w = specular power. The lit shader adds rgb * pow(N.H, max(w,1))
      * per-fragment when w > 0; w <= 0 means the material has no highlight. */
     WgrVec4 mat_specular;
+    /* Terrain-conform plane for GPU vegetation (ForestPlain).
+     * When conform2.z (mode) > 0 the vertex shader displaces this draw's vertices onto
+     * the ground exactly like ForestPlain::Animate's two-triangle bilinear fit, so the
+     * shared forest mesh is uploaded once undeformed instead of rewritten per instance.
+     * All-zero (mode 0) for every non-conformed draw. */
+    WgrVec4 conform0; /* inv_land_grid, -xf, -zf, bias(=BoundingCenter().y) */
+    WgrVec4 conform1; /* y00, y10, d1000, d0100 */
+    WgrVec4 conform2; /* d1011, d0111, mode(0=none,1=forest), _pad */
 };
 
 /* One frame-global point or spot light, shared by every 3D draw + terrain (bound
@@ -320,6 +332,11 @@ struct WgrShadowCaster
     float alpha_ref;       // 0 = solid caster; > 0 = discard below (cutout)
     uint32_t sampler;
     uint32_t cascade_mask; // bit c set = render into cascade c
+    // Terrain-conform plane for this caster (mirrors WgrDraw3D::conform*). Mode 2
+    // (conform2.z) conforms ClipLand vegetation to SurfaceY per vertex in the depth
+    // shader, so the shared shadow mesh is uploaded ONCE undeformed. 0 = rigid.
+    WgrVec4 conform0; // x = bcSurfaceY
+    WgrVec4 conform2; // z = mode
 };
 
 /* Cascade depth-pass parameters for one frame. The renderer draws
@@ -333,6 +350,9 @@ struct WgrShadowPass
     uint32_t resolution; // depth-map side length per cascade
     uint32_t _pad;
     WgrMat4 light_vp[4]; // camera-relative light view-projections (0..1 NDC z)
+    // Camera world position: casters are camera-relative, so the depth shader adds
+    // this back to reconstruct absolute world xz for surface_y (terrain conform).
+    WgrVec4 cam_pos;
 };
 
 /* One entry in the frame's submission-ordered command stream. */
@@ -459,22 +479,22 @@ static_assert(sizeof(WgrSlice<WgrCamera>) == 16 && alignof(WgrSlice<WgrCamera>) 
               "WgrSlice must be a { pointer, u32 } with 8-byte alignment");
 static_assert(sizeof(WgrBlend) == 4, "WgrBlend must be 4 bytes to match the Rust #[repr(u32)] enum");
 static_assert(sizeof(WgrVertex2D) == 32, "WgrVertex2D layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrMeshVertex) == 32, "WgrMeshVertex must match the engine SVertex layout");
+static_assert(sizeof(WgrMeshVertex) == 36, "WgrMeshVertex must match the engine SVertex layout");
 static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrDraw3D) == 216, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrDraw3D) == 264, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrLight) == 64, "WgrLight layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrShadowCaster) == 104, "WgrShadowCaster layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrShadowPass) == 272, "WgrShadowPass layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrShadowCaster) == 136, "WgrShadowCaster layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrShadowPass) == 288, "WgrShadowPass layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCmd) == 8, "WgrCmd layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrOverlayVertex) == 20, "WgrOverlayVertex layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainParams) == 32, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrFrame) == 512, "WgrFrame layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFrame) == 528, "WgrFrame layout must match the Rust #[repr(C)] struct");
 
 // --- Functions ---------------------------------------------------------------
 

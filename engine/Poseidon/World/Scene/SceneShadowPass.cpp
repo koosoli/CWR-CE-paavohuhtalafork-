@@ -523,6 +523,12 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
         // skip it (Animate is a no-op for them).
         Object* obj = oi->object;
         const bool animate = !obj->Static();
+        // Publish a mode-2 conform plane so the depth shader conforms ClipLand vegetation
+        // per vertex (mirroring the color pass): Animate then skips the CPU deform and
+        // AddShadowCaster uploads OrigPos once, collapsing the per-instance shadow-mesh
+        // upload storm. No-op on GL33 / non-ClipLand casters (they keep deforming).
+        ConformPlane savedConform;
+        const bool publishedConform = obj->PublishConformPlane(s, savedConform);
         if (animate)
         {
             obj->Animate(geomLOD);
@@ -531,6 +537,10 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
         if (animate)
         {
             obj->Deanimate(geomLOD);
+        }
+        if (publishedConform)
+        {
+            GCurrentConformPlane = savedConform;
         }
 
         // Proxies (the soldier's weapon, vehicle crew, ...) cast from their

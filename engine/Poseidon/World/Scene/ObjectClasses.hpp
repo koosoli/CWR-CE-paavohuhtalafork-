@@ -175,6 +175,13 @@ class ForestPlain: public Object
 
 	float _skewX,_skewZ,_offsetY;
 
+	// Cached terrain-conform plane (static per level: forest and terrain don't move),
+	// published around Draw so the wgpu backend conforms this forest on the GPU instead
+	// of the CPU rewriting the shared vertex buffer per instance. GL33 ignores it.
+	ConformPlane _conformPlane;
+	bool _conformValid = false;
+	void ComputeConformPlane();
+
 	public:
 	ForestPlain( LODShapeWithShadow *type, int id );
 

@@ -376,55 +376,87 @@ void Object::Animate(int level)
     }
     else if ((shape->GetOrHints() & (ClipLandKeep | ClipLandOn)) && GLOB_LAND)
     {
-        // save original position
+        // save original position (kept: the wgpu conform path uploads OrigPos and the
+        // vertex shader re-derives the deform, so OrigPos/OrigClip must be valid)
         shape->SaveOriginalPos();
-        Matrix4Val toWorld = Transform();
-        Matrix4Val fromWorld = GetInvTransform();
-        // change object shape to reflect surface
 
-        float yOffset = 0;
-        Vector3 bCenter = VZero;
-        if (shape->GetOrHints() & ClipLandKeep)
+        // In the wgpu color AND shadow passes an active conform plane means the vertex
+        // shader conforms this shared, undeformed mesh per vertex to SurfaceY (matching
+        // the math below) — so recomputing the deform on the CPU here is static per-frame
+        // waste. Skip it. GL33 (which never publishes a plane) still deforms on the CPU.
+        if (!GCurrentConformPlane.active)
         {
-            // world space bounding center position
-            bCenter.SetFastTransform(toWorld, -_shape->BoundingCenter());
+            Matrix4Val toWorld = Transform();
+            Matrix4Val fromWorld = GetInvTransform();
+            // change object shape to reflect surface
 
-            float bcSurfaceY = GLandscape->SurfaceY(bCenter[0], bCenter[2]);
-            yOffset = bCenter.Y() - bcSurfaceY;
-        }
-        for (int i = 0; i < shape->NPos(); i++)
-        {
-            ClipFlags clip = shape->OrigClip(i);
-            if (clip & ClipLandKeep)
+            float yOffset = 0;
+            Vector3 bCenter = VZero;
+            if (shape->GetOrHints() & ClipLandKeep)
             {
-                Vector3Val pos = shape->Pos(i);
-                // shape y is relative to surface; calculate world coordinates
-                Vector3 tPos(VFastTransform, toWorld, pos);
-                // calculate transformed pos above world space bCenter
-                float yAbove = tPos.Y() - bCenter.Y() + yOffset;
+                // world space bounding center position
+                bCenter.SetFastTransform(toWorld, -_shape->BoundingCenter());
 
-                V3& dPos = shape->SetPos(i);
-
-                tPos[1] = GLandscape->SurfaceY(tPos[0], tPos[2]) + yAbove;
-
-                dPos.SetFastTransform(fromWorld, tPos);
-                clip &= ~ClipLandKeep;
-                shape->SetClip(i, clip);
+                float bcSurfaceY = GLandscape->SurfaceY(bCenter[0], bCenter[2]);
+                yOffset = bCenter.Y() - bcSurfaceY;
             }
-            else if (clip & ClipLandOn)
+            for (int i = 0; i < shape->NPos(); i++)
             {
-                Vector3Val pos = shape->OrigPos(i);
-                // shape y is relative to surface; calculate world coordinates
-                Vector3 tPos(VFastTransform, toWorld, pos);
-                tPos[1] = GLOB_LAND->SurfaceY(tPos[0], tPos[2]);
-                V3& dPos = shape->SetPos(i);
-                dPos.SetFastTransform(fromWorld, tPos);
-                shape->SetClip(i, clip);
+                ClipFlags clip = shape->OrigClip(i);
+                if (clip & ClipLandKeep)
+                {
+                    Vector3Val pos = shape->Pos(i);
+                    // shape y is relative to surface; calculate world coordinates
+                    Vector3 tPos(VFastTransform, toWorld, pos);
+                    // calculate transformed pos above world space bCenter
+                    float yAbove = tPos.Y() - bCenter.Y() + yOffset;
+
+                    V3& dPos = shape->SetPos(i);
+
+                    tPos[1] = GLandscape->SurfaceY(tPos[0], tPos[2]) + yAbove;
+
+                    dPos.SetFastTransform(fromWorld, tPos);
+                    clip &= ~ClipLandKeep;
+                    shape->SetClip(i, clip);
+                }
+                else if (clip & ClipLandOn)
+                {
+                    Vector3Val pos = shape->OrigPos(i);
+                    // shape y is relative to surface; calculate world coordinates
+                    Vector3 tPos(VFastTransform, toWorld, pos);
+                    tPos[1] = GLOB_LAND->SurfaceY(tPos[0], tPos[2]);
+                    V3& dPos = shape->SetPos(i);
+                    dPos.SetFastTransform(fromWorld, tPos);
+                    shape->SetClip(i, clip);
+                }
             }
+            shape->InvalidateNormals();
+            shape->InvalidateBuffer();
         }
-        shape->InvalidateNormals();
-        shape->InvalidateBuffer();
     }
+}
+
+bool Object::PublishConformPlane(const Shape* sShape, ConformPlane& saved)
+{
+    saved = GCurrentConformPlane;
+    // GGpuTerrainConform: wgpu only. !active: don't override an outer plane (ForestPlain
+    // publishes its own mode-1 plane). ClipLand hints: only conforming shapes need it.
+    if (!GGpuTerrainConform || GCurrentConformPlane.active ||
+        !(sShape->GetOrHints() & (ClipLandKeep | ClipLandOn)))
+    {
+        return false;
+    }
+    ConformPlane cp;
+    cp.active = true;
+    cp.mode = 2;
+    if (GLandscape)
+    {
+        Matrix4Val toWorld = Transform();
+        Vector3 bc(VFastTransform, toWorld, -_shape->BoundingCenter());
+        cp.bcSurfaceY = GLandscape->SurfaceY(bc[0], bc[2]);
+    }
+    GCurrentConformPlane = cp;
+    return true;
 }
 
 void Object::AnimatedMinMax(int level, Vector3* minMax)
@@ -852,6 +884,15 @@ void Object::Draw(int forceLOD, ClipFlags clipFlags, const FrameBase& pos)
         return;
     }
 
+    // Individual ClipLand vegetation: publish a mode-2 conform so the wgpu vertex
+    // shader conforms this shared, undeformed mesh per vertex (SurfaceY) instead of the
+    // CPU rewriting the shared buffer every frame (which Animate below now skips while a
+    // plane is active). Non-ClipLand meshes are unaffected: their per-vertex conform
+    // selector is 0 (rigid), so mode 2 leaves them untouched. The shadow pass publishes
+    // the same plane around AddShadowCaster (SceneShadowPass).
+    ConformPlane savedConform;
+    bool publishedConform = PublishConformPlane(sShape, savedConform);
+
     // test if reference points to valid object
     // get object position in clipping coordinates
     Animate(forceLOD);
@@ -943,6 +984,10 @@ void Object::Draw(int forceLOD, ClipFlags clipFlags, const FrameBase& pos)
         GScene->SetConstantFog(-1);
     }
     Deanimate(forceLOD);
+    if (publishedConform)
+    {
+        GCurrentConformPlane = savedConform;
+    }
 }
 
 int Object::GetProxyComplexity(int level, const FrameBase& pos, float dist2) const

@@ -288,6 +288,14 @@ class Object: public NetworkObject, public FrameBase, public IAnimator
 	virtual void Animate( int level );
 	virtual void Deanimate( int level );
 
+	// wgpu terrain conform: publish a mode-2 ConformPlane for this object's shape when it
+	// has ClipLand hints and the backend conforms on the GPU (GGpuTerrainConform), so the
+	// shared undeformed mesh is conformed per vertex in the shader (color + shadow passes)
+	// instead of on the CPU. Returns true and saves the previous global plane in `saved`
+	// when it published; the caller must restore GCurrentConformPlane = saved afterwards.
+	// No-op (returns false) on GL33 or for non-ClipLand shapes, which keep deforming.
+	bool PublishConformPlane( const Shape *sShape, ConformPlane &saved );
+
 	// Get min-max of object after animate. Default (generic) implementation may be slow when shape is complex.
 	virtual void AnimatedMinMax( int level, Vector3 *minMax );
 	// Get bounding sphere of object after animate. Default (generic) implementation may be slow when shape is complex.

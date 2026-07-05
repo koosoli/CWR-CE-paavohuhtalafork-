@@ -35,8 +35,23 @@ impl Renderer {
     fn new(desc: &ffi::WgrSurfaceDesc, log: LogSink) -> Result<Self, String> {
         let (raw_display_handle, raw_window_handle) = handles::build_handles(desc)?;
 
-        let instance =
-            wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
+        // wgpu only enables VK_EXT_debug_utils — and thus emits our
+        // push_debug_group markers + buffer/texture labels into a RenderDoc capture
+        // — when the DEBUG instance flag is set. InstanceFlags::from_build_config()
+        // (which the _from_env constructor seeds from) clears DEBUG in optimized
+        // rwdi/release builds, so a profiling build shows an unlabelled, ungrouped
+        // command stream. Force DEBUG on so captures stay legible; opt into the
+        // validation layers separately via WGR_GPU_VALIDATION (they are expensive).
+        let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle_from_env();
+        instance_desc.flags |= wgpu::InstanceFlags::DEBUG;
+        if std::env::var("WGR_GPU_VALIDATION").is_ok() {
+            instance_desc.flags |= wgpu::InstanceFlags::VALIDATION;
+        }
+        log.log(
+            log_level::INFO,
+            &format!("wgpu instance flags: {:?}", instance_desc.flags),
+        );
+        let instance = wgpu::Instance::new(instance_desc);
 
         let surface: wgpu::Surface<'static> = unsafe {
             instance.create_surface_unsafe(wgpu::SurfaceTargetUnsafe::RawHandle {
@@ -89,6 +104,9 @@ impl Renderer {
 
         let required_limits = wgpu::Limits {
             max_binding_array_elements_per_shader_stage: terrain::TERRAIN_MAX_GROUND_LAYERS,
+            // The lit mesh pipelines take a 5th bind group (group 4) for the terrain
+            // heightmap used to conform vegetation on the GPU. Ample on desktop.
+            max_bind_groups: 5,
             ..Default::default()
         };
 
@@ -201,6 +219,11 @@ impl Renderer {
         let shadow_mask_view = self.terrain.shadow_mask_view();
         let shadow_mask_gen = self.terrain.shadow_gen();
         let shadow_mapping = self.terrain.shadow_mapping();
+        // Lend the terrain heightmap to the mesh conform group (group 4) so object
+        // vertex shaders conform ClipLand vegetation to SurfaceY without CPU rewrites.
+        let heightmap_view = self.terrain.heightmap_view();
+        let heightmap_gen = self.terrain.heightmap_gen();
+        let conform_params = self.terrain.conform_params();
         self.gfx3d.prepare(
             &self.device,
             &self.queue,
@@ -211,6 +234,9 @@ impl Renderer {
             &shadow_mask_view,
             shadow_mask_gen,
             &shadow_mapping,
+            &heightmap_view,
+            heightmap_gen,
+            &conform_params,
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
@@ -234,9 +260,12 @@ impl Renderer {
             });
 
         // Cascade shadow depth passes run first so every segment's draws can
-        // sample the completed map, regardless of submission order.
+        // sample the completed map, regardless of submission order. Debug groups
+        // (here and below) name each phase in a RenderDoc capture.
+        encoder.push_debug_group("wgr_shadow_cascades");
         self.gfx3d
             .render_shadow_passes(&mut encoder, &self.textures, shadow, shadow_casters);
+        encoder.pop_debug_group();
 
         // Amortized terrain sun-shadow sweep (long-range heightfield self-shadow),
         // recorded before the render segments sample its mask. The sun direction is
@@ -245,6 +274,9 @@ impl Renderer {
         if let Some(cam) = cameras.first() {
             let s = cam.sun_dir_world;
             let sun_to_light = glam::Vec3::new(-s[0], -s[1], -s[2]);
+            // The mask sweep is amortized (recorded only when the heightmap changes
+            // or the sun moves), so its debug group is pushed inside — wrapping it
+            // here would leave an empty group on the frames it skips.
             self.terrain
                 .render_shadow_mask(&self.queue, &mut encoder, sun_to_light);
         }
@@ -254,6 +286,7 @@ impl Renderer {
         // segment, 2D and 3D draws render interleaved in submission order.
         let mut first = true;
         let mut start = 0usize;
+        let mut seg_idx = 0usize;
         loop {
             let end = cmds[start..]
                 .iter()
@@ -273,8 +306,10 @@ impl Renderer {
             };
             first = false;
 
+            let seg_label = format!("wgr_segment_{seg_idx}");
+            seg_idx += 1;
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("wgr_segment"),
+                label: Some(&seg_label),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
                     view: &color,
                     depth_slice: None,
@@ -333,6 +368,7 @@ impl Renderer {
 
         // Dev-panel overlay composites over the finished frame, no depth.
         if !overlay_draws.is_empty() {
+            encoder.push_debug_group("wgr_overlay");
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("wgr_overlay"),
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -356,6 +392,8 @@ impl Renderer {
                 self.config.width,
                 self.config.height,
             );
+            drop(pass);
+            encoder.pop_debug_group();
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));

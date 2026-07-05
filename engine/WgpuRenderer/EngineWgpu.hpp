@@ -218,6 +218,11 @@ class EngineWgpu : public EngineDummy
     int _smCascadeRes = 0;
     bool _smCascadesValid = false;
     std::vector<WgrShadowCaster> _shadowCasters;
+    // Camera position the shadow casters were made camera-relative to (captured in
+    // AddShadowCaster). Used for the depth pass's terrain conform — must match the
+    // caster world matrices, so it is NOT re-read from _currentCamera at frame end
+    // (which may have advanced to a HUD/optics camera during live gameplay).
+    float _smCamPos[3] = {0.0f, 0.0f, 0.0f};
 
     // Dev-panel overlay for the current frame
     std::vector<WgrOverlayVertex> _overlayVerts;

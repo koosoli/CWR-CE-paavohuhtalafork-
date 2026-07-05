@@ -12,6 +12,10 @@ struct SVertex
     // Normals are negated (matches the D3D convention).
     Vector3P norm;
     UVPair t0;
+    // Per-vertex terrain-conform selector for GPU vegetation conforming, from the
+    // shape's ClipLand hints: 0 = rigid, 1 = ClipLandKeep, 2 = ClipLandOn. Read by the
+    // mesh vertex shader (with a per-instance conform mode) to conform to SurfaceY.
+    uint32_t conform;
 };
 
 } // namespace Poseidon

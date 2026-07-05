@@ -56,6 +56,21 @@ pub struct TerrainShadowMap {
     pub _pad: f32,
 }
 
+// Terrain height-sampling params for the mesh conform pass (vegetation): the world->
+// heightmap-texel mapping matching Landscape::SurfaceY / the terrain shader's
+// `sample_height`. Bound (with the heightmap view) as the mesh conform group so an
+// object vertex shader can conform ClipLand vegetation to the ground per vertex.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TerrainConformParams {
+    pub origin: glam::Vec2,  // world xz of heightmap texel (0,0)
+    pub terrain_grid: f32,   // world metres per heightmap texel
+    pub enabled: f32,        // 1 when a heightmap is loaded, else 0
+    pub hm_width: u32,
+    pub hm_height: u32,
+    pub _pad: [u32; 2],
+}
+
 // Mask dimensions for a heightmap of the given size: `scale`x finer, but never
 // smaller than the heightmap and never past the dimension cap or the device limit.
 fn shadow_mask_dims(w: u32, h: u32, scale: u32, max_dim: u32) -> (u32, u32) {
@@ -74,6 +89,10 @@ pub struct Terrain {
     heightmap: wgpu::Texture,
     group1_bind: wgpu::BindGroup,
     have_heightmap: bool,
+    // Persistent view of the current heightmap, lent to the mesh conform bind group so
+    // object vertex shaders sample SurfaceY for terrain-conformed vegetation. mask_gen
+    // bumps on realloc (heightmap + mask recreate together), gating the rebuild.
+    heightmap_view: wgpu::TextureView,
 
     // Long-distance terrain sun-shadow mask + its amortized compute sweep. The
     // mask (Rgba8Unorm, same grid as the heightmap) is storage-written by the
@@ -606,6 +625,7 @@ impl Terrain {
             group2_layout,
             params_ubo,
             heightmap,
+            heightmap_view,
             group1_bind,
             have_heightmap: false,
             shadow_mask,
@@ -705,6 +725,7 @@ impl Terrain {
         );
         self.shadow_mask = shadow_mask;
         self.shadow_mask_view = mask_view;
+        self.heightmap_view = view;
         self.mask_gen += 1;
         self.world_origin = params.world_origin;
         self.terrain_grid = params.terrain_grid;
@@ -760,6 +781,9 @@ impl Terrain {
         };
         queue.write_buffer(&self.shadow_sweep_ubo, 0, bytemuck::bytes_of(&sweep));
 
+        // Marker pushed here (not around the call site) so it only appears on frames
+        // the amortized sweep actually records — see the caller in lib.rs.
+        encoder.push_debug_group("wgr_terrain_shadow_mask");
         let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("wgr_terrain_shadow_sweep"),
             timestamp_writes: None,
@@ -768,6 +792,7 @@ impl Terrain {
         cp.set_bind_group(0, &self.shadow_sweep_bind, &[]);
         cp.dispatch_workgroups(self.mask_width.div_ceil(8), self.mask_height.div_ceil(8), 1);
         drop(cp);
+        encoder.pop_debug_group();
 
         self.shadow_dirty = false;
         self.last_sun_dir = sun_to_light;
@@ -846,6 +871,28 @@ impl Terrain {
             ),
             enabled: if self.have_heightmap { 1.0 } else { 0.0 },
             _pad: 0.0,
+        }
+    }
+
+    // Mesh-conform (vegetation) accessors: the heightmap view + its sampling params,
+    // lent to the mesh conform bind group so object vertex shaders sample SurfaceY.
+    // Reuses mask_gen (heightmap + mask realloc together) as the rebuild gate.
+    pub fn heightmap_view(&self) -> wgpu::TextureView {
+        self.heightmap_view.clone()
+    }
+
+    pub fn heightmap_gen(&self) -> u64 {
+        self.mask_gen
+    }
+
+    pub fn conform_params(&self) -> TerrainConformParams {
+        TerrainConformParams {
+            origin: self.world_origin,
+            terrain_grid: self.terrain_grid,
+            enabled: if self.have_heightmap { 1.0 } else { 0.0 },
+            hm_width: self.hm_width,
+            hm_height: self.hm_height,
+            _pad: [0, 0],
         }
     }
 

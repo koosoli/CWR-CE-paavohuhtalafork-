@@ -227,6 +227,35 @@ enum class SectionClassFilter
 // changing the virtual Object::Draw signature (which has many overrides). Default All.
 extern SectionClassFilter GSectionFilter;
 
+// Terrain-conform plane published around a conformed object's draw (ForestPlain),
+// so the wgpu backend can upload the shared base mesh ONCE undeformed and conform it
+// per instance in the vertex shader instead of the CPU rewriting the shared vertex
+// buffer for every instance every frame. Threads through Shape::Draw the same way as
+// GSectionFilter (no Object::Draw signature change). GL33 ignores it and keeps its CPU
+// deform; only EngineWgpu reads it. `active` is false except inside a conformed draw.
+// See engine/WgpuRenderer/docs/terrain-conform-vegetation-roads-plan.md.
+struct ConformPlane
+{
+	bool active = false;
+	// 1 = ForestPlain land-grid bilinear plane (the fields below); 2 = individual
+	// ClipLand vegetation conformed per vertex to SurfaceY on the GPU (uses bcSurfaceY
+	// + the mesh's per-vertex conform selector instead of the plane fields).
+	int mode = 1;
+	float bcSurfaceY = 0;                             // mode 2: SurfaceY at the object bounding-center xz
+	float invLandGrid = 0;
+	float xf = 0, zf = 0;                             // land-grid cell origin (grid units)
+	float y00 = 0, y10 = 0;                           // cell corner heights
+	float d1000 = 0, d0100 = 0, d1011 = 0, d0111 = 0; // two-triangle plane deltas
+	float bias = 0;                                   // BoundingCenter().Y()
+};
+extern ConformPlane GCurrentConformPlane;
+
+// True only when the active graphics backend conforms terrain-clipped geometry on the
+// GPU (the wgpu backend sets it at init). Objects use it to decide whether to publish a
+// conform plane and skip their per-frame CPU vertex deform; GL33 leaves it false and
+// keeps deforming on the CPU. See engine/WgpuRenderer/docs/terrain-conform-*-plan.md.
+extern bool GGpuTerrainConform;
+
 // Pass routing for whole-shape (non-T&L) draws, which cannot section-split and so
 // must paint exactly once across the two filtered passes. A surface overlay — an
 // OnSurface shape whose visible face is a blend section (live tyre tracks, marks) —

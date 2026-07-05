@@ -98,6 +98,21 @@ void DescribeSurface(SDL_Window* window, WgrSurfaceDesc& desc)
 // Reserved palette index for unweighted vertices
 constexpr int kReservedBone = WGR_PALETTE_SIZE - 1;
 
+// FNV-1a 64 over raw bytes; used to detect unchanged vertex data so a redundant
+// GPU re-upload can be skipped. Cheap relative to the staging copy + barrier it
+// avoids, and only paid on meshes whose Update trigger already fires.
+inline uint64_t HashVertices(const void* data, size_t bytes)
+{
+    const auto* p = static_cast<const uint8_t*>(data);
+    uint64_t h = 0xcbf29ce484222325ULL;
+    for (size_t i = 0; i < bytes; i++)
+    {
+        h ^= p[i];
+        h *= 0x100000001b3ULL;
+    }
+    return h;
+}
+
 class VertexBufferWgpu : public VertexBuffer
 {
   public:
@@ -106,6 +121,15 @@ class VertexBufferWgpu : public VertexBuffer
     int vertexCount = 0;
     bool isDynamic = false;
     AutoArray<render::mesh::MeshSection> sections;
+
+    // Content hash of the last vertex data actually uploaded, so Update can skip a
+    // redundant GPU copy when the rebuilt vertices are byte-identical. VBDynamic
+    // shapes (GetAllowAnimation) re-upload every frame they draw, and conformed
+    // on-surface objects (roads/paths) dirty their buffer every frame in
+    // Object::Animate even though their terrain-conformed geometry is static — both
+    // produced a per-frame `wgr_3d_vbuf` staging copy + barrier for unchanged data.
+    uint64_t lastUploadHash = 0;
+    bool haveUploadHash = false;
 
     // GPU skinning state
     // `skinned` flips on once SetSkinData has uploaded the bind pose + weights
@@ -130,6 +154,14 @@ class VertexBufferWgpu : public VertexBuffer
     // VertexBufferGL33::Update: refresh when the buffer is dynamic by type, the
     // caller flags this draw as dynamic, or animation dirtied the buffer. Skinned
     // meshes stay at bind pose (the GPU transforms them), so Update is a no-op.
+    //
+    // The classic trigger re-uploads far more than actually changes: VBDynamic
+    // shapes upload every frame they draw, and conformed on-surface objects re-dirty
+    // every frame with terrain-static geometry. GL33 absorbs this (glBufferSubData
+    // is cheap and driver-batched); on wgpu each upload is a discrete staging copy +
+    // barrier, so thousands of unchanged meshes dominated the frame. Keep the same
+    // trigger (never show stale geometry) but hash the rebuilt vertices and skip the
+    // GPU copy when they are byte-identical to the last upload.
     void Update(const Shape& src, bool dynamic) override
     {
         if (skinned || !renderer || !mesh || (!isDynamic && !dynamic && !bufferDirty))
@@ -141,9 +173,28 @@ class VertexBufferWgpu : public VertexBuffer
             return;
         }
         std::vector<SVertex> verts(static_cast<size_t>(vertexCount));
-        render::mesh::BuildVertices(src, verts.data());
-        wgr_mesh_update(renderer, mesh, AsMeshVerts(verts));
+        // A terrain-conform plane is active only inside a conformed object's draw
+        // (ForestPlain). Then upload the UNDEFORMED mesh (OrigPos/OrigNorm) and let the
+        // vertex shader conform each instance: the base bytes are identical across all
+        // instances of the shape, so the content-hash below collapses what used to be a
+        // per-instance upload storm to a single copy. Non-conformed draws are unchanged.
+        if (GCurrentConformPlane.active && src.OriginalPosValid())
+        {
+            render::mesh::BuildOrigVertices(src, verts.data());
+        }
+        else
+        {
+            render::mesh::BuildVertices(src, verts.data());
+        }
         bufferDirty = false;
+        const uint64_t hash = HashVertices(verts.data(), verts.size() * sizeof(SVertex));
+        if (haveUploadHash && hash == lastUploadHash)
+        {
+            return;
+        }
+        lastUploadHash = hash;
+        haveUploadHash = true;
+        wgr_mesh_update(renderer, mesh, AsMeshVerts(verts));
     }
 
     // One-time: upload the bind pose (OrigPos/OrigNorm) + per-vertex bone indices
@@ -248,6 +299,11 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     }
 
     _wbank = new TextureBankWgpu(_renderer);
+
+    // This backend conforms terrain-clipped geometry (vegetation, roads' visuals) on
+    // the GPU, so ClipLand objects publish a conform plane and skip their per-frame CPU
+    // vertex deform. GL33 never sets this and keeps deforming on the CPU.
+    GGpuTerrainConform = true;
 
     // POSEIDON_WGPU_TERRAIN=1 draws terrain via the GPU heightmap path instead of
     // the legacy per-segment Shape path.
@@ -673,6 +729,10 @@ void EngineWgpu::NextFrame()
                 std::memcpy(frame.shadow.light_vp[c].m, _smCascades.camRelVP[c].m.data(),
                             sizeof(frame.shadow.light_vp[c].m));
             }
+            // Casters are camera-relative to the camera captured in AddShadowCaster (NOT
+            // _currentCamera, which may have advanced to a HUD/weapon camera by now); the
+            // depth shader adds cam_pos back to sample the terrain conform at the right xz.
+            frame.shadow.cam_pos = {_smCamPos[0], _smCamPos[1], _smCamPos[2], 0.0f};
             frame.shadow_casters = _shadowCasters;
         }
         frame.overlay_verts = _overlayVerts;
@@ -1062,6 +1122,28 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
     d.index_count = U32(indexCount);
     d.texture_id = tex;
     std::memcpy(d.world.m, &_world, sizeof(d.world.m));
+    // Terrain conform: publish this instance's bilinear plane so the vertex
+    // shader conforms the (undeformed) shared mesh, matching ForestPlain::Animate. d is
+    // zero-initialised, so conform2.z (mode) stays 0 for every non-conformed draw.
+    if (GCurrentConformPlane.active)
+    {
+        const ConformPlane& cf = GCurrentConformPlane;
+        if (cf.mode == 2)
+        {
+            // Individual ClipLand vegetation: the vertex shader samples SurfaceY per
+            // vertex (mesh conform group) using bcSurfaceY; the plane fields are unused.
+            d.conform0 = {cf.bcSurfaceY, 0.0f, 0.0f, 0.0f};
+            d.conform1 = {0.0f, 0.0f, 0.0f, 0.0f};
+            d.conform2 = {0.0f, 0.0f, 2.0f, 0.0f};
+        }
+        else
+        {
+            // ForestPlain bilinear plane (mode 1).
+            d.conform0 = {cf.invLandGrid, -cf.xf, -cf.zf, cf.bias};
+            d.conform1 = {cf.y00, cf.y10, cf.d1000, cf.d0100};
+            d.conform2 = {cf.d1011, cf.d0111, 1.0f, 0.0f};
+        }
+    }
     d.blend = BlendFromDesc(desc.blend);
     d.sampler = U32(SamplerForSpec(effectiveSpec));
     d.depth = DepthFromDesc(desc.depth);
@@ -1147,6 +1229,11 @@ void EngineWgpu::AddShadowCaster(const Shape& sMesh, const Matrix4& modelToWorld
 
     EnsureCamera();
     const CameraEntry& cam = _cameras[_currentCamera];
+    // Remember the camera these casters are made relative to, so the depth pass's terrain
+    // conform reconstructs absolute world xz with the RIGHT origin (see _smCamPos).
+    _smCamPos[0] = cam.pos[0];
+    _smCamPos[1] = cam.pos[1];
+    _smCamPos[2] = cam.pos[2];
     GfxMatrix world;
     ConvertMatrix(world, modelToWorld);
     world._41 -= cam.pos[0];
@@ -1178,6 +1265,19 @@ void EngineWgpu::AddShadowCaster(const Shape& sMesh, const Matrix4& modelToWorld
 
     constexpr int skipMask = NoShadow | ShadowDisabled | IsHidden | IsHiddenProxy;
     constexpr int alphaMask = IsAlpha | IsTransparent;
+
+    // Terrain conform: SceneShadowPass publishes a mode-2 plane for individual ClipLand
+    // vegetation, so the depth shader conforms this shared, undeformed mesh per vertex to
+    // SurfaceY (matching the color pass and Object::Animate) instead of the CPU rewriting
+    // the shadow buffer per instance. Same per-vertex mechanism as DrawSectionTL's mode 2;
+    // buf->Update above uploaded OrigPos, collapsing the per-instance upload storm.
+    WgrVec4 conform0{};
+    WgrVec4 conform2{};
+    if (GCurrentConformPlane.active && GCurrentConformPlane.mode == 2)
+    {
+        conform0 = {GCurrentConformPlane.bcSurfaceY, 0.0f, 0.0f, 0.0f};
+        conform2 = {0.0f, 0.0f, 2.0f, 0.0f};
+    }
 
     WgrShadowCaster run{};
     bool haveRun = false;
@@ -1227,6 +1327,8 @@ void EngineWgpu::AddShadowCaster(const Shape& sMesh, const Matrix4& modelToWorld
         run.alpha_ref = alphaRef;
         run.sampler = 0;
         run.cascade_mask = 0xF;
+        run.conform0 = conform0;
+        run.conform2 = conform2;
         haveRun = true;
     }
     flush();

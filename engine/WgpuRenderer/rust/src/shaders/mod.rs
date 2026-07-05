@@ -35,6 +35,7 @@ pub fn build_composer() -> Composer {
     for (source, file_path) in [
         (include_str!("frame.wgsl"), "frame.wgsl"),
         (include_str!("skin.wgsl"), "skin.wgsl"),
+        (include_str!("conform.wgsl"), "conform.wgsl"),
         (include_str!("lighting.wgsl"), "lighting.wgsl"),
         (include_str!("shadow.wgsl"), "shadow.wgsl"),
     ] {

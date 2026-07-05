@@ -121,6 +121,10 @@ pub struct WgrMeshVertex {
     pub pos: WgrVec3,
     pub norm: WgrVec3,
     pub uv: WgrVec2,
+    // Per-vertex terrain-conform selector (0 = rigid, 1 = ClipLandKeep, 2 = ClipLandOn),
+    // read by vs_main at @location(5). Only meaningful when the draw's conform mode
+    // selects the per-vertex heightmap path (individual ClipLand vegetation).
+    pub conform: u32,
 }
 
 #[repr(C)]
@@ -161,6 +165,14 @@ pub struct WgrDraw3D {
     // off), w = specular power. The lit shader adds `rgb * pow(N.H, max(w,1))`
     // per-fragment when w > 0; w <= 0 means the material has no highlight.
     pub mat_specular: WgrVec4,
+    // Terrain-conform plane for GPU vegetation (ForestPlain). When conform2.z (mode)
+    // > 0 the vertex shader displaces this draw's vertices onto the ground exactly like
+    // ForestPlain::Animate's two-triangle bilinear fit, so the shared forest mesh is
+    // uploaded once undeformed instead of rewritten per instance. Zero (mode 0) for
+    // every non-conformed draw. See terrain-conform-vegetation-roads-plan.
+    pub conform0: WgrVec4, // inv_land_grid, -xf, -zf, bias(=BoundingCenter().y)
+    pub conform1: WgrVec4, // y00, y10, d1000, d0100
+    pub conform2: WgrVec4, // d1011, d0111, mode, _pad
 }
 
 // One frame-global point or spot light, shared by every 3D draw + terrain (bound
@@ -249,6 +261,11 @@ pub struct WgrShadowCaster {
     pub alpha_ref: f32,    // 0 = solid caster; > 0 = discard below (cutout)
     pub sampler: WgrSampler2D,
     pub cascade_mask: u32, // bit c set = render into cascade c
+    // Terrain-conform plane for this caster (mirrors WgrDraw3D::conform*). Mode 2
+    // (conform2.z) conforms ClipLand vegetation to SurfaceY per vertex in the depth
+    // shader, so the shared shadow mesh is uploaded ONCE undeformed. 0 = rigid.
+    pub conform0: WgrVec4, // x = bcSurfaceY
+    pub conform2: WgrVec4, // z = mode
 }
 
 // Cascade depth-pass parameters for one frame; count = 0 disables the pass.
@@ -260,6 +277,9 @@ pub struct WgrShadowPass {
     pub resolution: u32, // depth-map side length per cascade
     pub _pad: u32,
     pub light_vp: [WgrMat4; 4], // camera-relative light view-projections (0..1 NDC z)
+    // Camera world position: casters are camera-relative, so the depth shader adds
+    // this back to reconstruct absolute world xz for surface_y (terrain conform).
+    pub cam_pos: WgrVec4,
 }
 
 #[repr(u32)]
@@ -368,14 +388,14 @@ pub struct WgrFrame {
 // Layouts must match wgpu_renderer.hpp exactly (the C++ side static_asserts the same).
 const _: () = assert!(std::mem::size_of::<WgrVertex2D>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 216);
+const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 36);
+const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 264);
 const _: () = assert!(std::mem::size_of::<WgrLight>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);
-const _: () = assert!(std::mem::size_of::<WgrShadowCaster>() == 104);
-const _: () = assert!(std::mem::size_of::<WgrShadowPass>() == 272);
+const _: () = assert!(std::mem::size_of::<WgrShadowCaster>() == 136);
+const _: () = assert!(std::mem::size_of::<WgrShadowPass>() == 288);
 const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
 const _: () = assert!(std::mem::size_of::<WgrOverlayVertex>() == 20);
 const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
@@ -383,7 +403,7 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrFrame>() == 512);
+const _: () = assert!(std::mem::size_of::<WgrFrame>() == 528);
 
 pub type WgrRenderer = Renderer;
 

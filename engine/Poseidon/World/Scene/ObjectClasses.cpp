@@ -397,9 +397,68 @@ Forest::~Forest()
 
 #define ANIM_FOREST 0
 
+// Compute the (static) bilinear terrain-conform plane for this forest square, matching
+// the corner sampling in ForestPlain::Animate. Forests and terrain don't move, so this
+// is done once and cached; the wgpu backend evaluates it per instance in the vertex
+// shader (see ConformPlane / shader3d.wgsl) instead of the CPU rewriting the shared mesh.
+void ForestPlain::ComputeConformPlane()
+{
+    _conformValid = true;
+    _conformPlane = ConformPlane{};
+    if (!GLandscape)
+    {
+        return;
+    }
+    float xRel = Position().X() * InvLandGrid;
+    float zRel = Position().Z() * InvLandGrid;
+    int x = toIntFloor(xRel);
+    int z = toIntFloor(zRel);
+
+    int subdivLog = TerrainRangeLog - LandRangeLog;
+    int subdiv = 1 << subdivLog;
+    int xs = x * subdiv;
+    int zs = z * subdiv;
+
+    Landscape* land = GLandscape;
+    float y00 = land->GetHeight(zs, xs);
+    float y01 = land->GetHeight(zs, xs + subdiv);
+    float y10 = land->GetHeight(zs + subdiv, xs);
+    float y11 = land->GetHeight(zs + subdiv, xs + subdiv);
+
+    _conformPlane.invLandGrid = InvLandGrid;
+    _conformPlane.xf = float(x);
+    _conformPlane.zf = float(z);
+    _conformPlane.y00 = y00;
+    _conformPlane.y10 = y10;
+    _conformPlane.d1000 = y10 - y00;
+    _conformPlane.d0100 = y01 - y00;
+    _conformPlane.d1011 = y10 - y11;
+    _conformPlane.d0111 = y01 - y11;
+    _conformPlane.bias = _shape->BoundingCenter().Y();
+}
+
 void ForestPlain::Draw(int forceLOD, ClipFlags clipFlags, const FrameBase& pos)
 {
+    // Skewed forest squares (t1/t2) bake their conform into the object matrix already,
+    // so there is nothing to conform on the GPU. Non-skewed squares conform per-vertex:
+    // publish the (static) conform plane so the wgpu backend uploads one shared
+    // undeformed mesh and conforms per instance in the vertex shader, instead of the CPU
+    // rewriting the shared buffer for every instance every frame. The CPU deform in
+    // Animate still runs (bounding box, and the GL33 path, which ignores this plane).
+    if (_singleMatrixT1 || _singleMatrixT2)
+    {
+        base::Draw(forceLOD, clipFlags, pos);
+        return;
+    }
+    if (!_conformValid)
+    {
+        ComputeConformPlane();
+    }
+    ConformPlane saved = GCurrentConformPlane;
+    GCurrentConformPlane = _conformPlane;
+    GCurrentConformPlane.active = true;
     base::Draw(forceLOD, clipFlags, pos);
+    GCurrentConformPlane = saved;
 }
 
 bool ForestPlain::IsAnimated(int level) const
@@ -556,51 +615,58 @@ void ForestPlain::Animate(int level)
         float d1011 = y10 - y11;
         float d0111 = y01 - y11;
 
-        shape->InvalidateNormals();
-
         Matrix4Val toWorld = Transform();
         Matrix4Val fromWorld = GetInvTransform();
 
-        // convert plane equations to model space
-        // change object shape to reflect surface
         // most forest objects are not rotated, only offseted - this can be easily optimized
-        bool rotated = Direction() * VForward < 0.99;
         float yOffset = -_shape->BoundingCenter().Y();
-        if (!rotated)
+
+        // In the wgpu color pass a conform plane is published (GCurrentConformPlane is
+        // active) and the vertex shader conforms this shared, undeformed mesh per
+        // instance — so running the per-vertex CPU deform here is pure per-frame waste
+        // (the conform is static). Skip it; the bounding box below is still animated for
+        // culling. GL33, and the shadow pass (which publishes no plane), keep deforming.
+        if (!GCurrentConformPlane.active)
         {
-            for (int i = 0; i < shape->NPos(); i++)
+            shape->InvalidateNormals();
+            // convert plane equations to model space; change object shape to reflect surface
+            bool rotated = Direction() * VForward < 0.99;
+            if (!rotated)
             {
-                Vector3Val pos = shape->OrigPos(i);
-                // shape y is relative to surface
-                // calculate world coordinates
-                float yPos = pos[1] - yOffset;
-                Vector3 tPos = pos + Position();
+                for (int i = 0; i < shape->NPos(); i++)
+                {
+                    Vector3Val pos = shape->OrigPos(i);
+                    // shape y is relative to surface; calculate world coordinates
+                    float yPos = pos[1] - yOffset;
+                    Vector3 tPos = pos + Position();
 
-                float xIn = tPos.X() * InvLandGrid - xf; // relative 0..1 in square
-                float zIn = tPos.Z() * InvLandGrid - zf;
-                float y = (xIn <= 1 - zIn ? y00 + d1000 * zIn + d0100 * xIn : y10 + d0111 - d1011 * xIn - zIn * d0111);
+                    float xIn = tPos.X() * InvLandGrid - xf; // relative 0..1 in square
+                    float zIn = tPos.Z() * InvLandGrid - zf;
+                    float y =
+                        (xIn <= 1 - zIn ? y00 + d1000 * zIn + d0100 * xIn : y10 + d0111 - d1011 * xIn - zIn * d0111);
 
-                V3& dPos = shape->SetPos(i);
-                dPos[1] = y + yPos - Position().Y();
+                    V3& dPos = shape->SetPos(i);
+                    dPos[1] = y + yPos - Position().Y();
+                }
             }
-        }
-        else
-        {
-            for (int i = 0; i < shape->NPos(); i++)
+            else
             {
-                Vector3Val pos = shape->OrigPos(i);
-                // shape y is relative to surface
-                // calculate world coordinates
-                Vector3 tPos(VFastTransform, toWorld, pos);
-                float xIn = tPos.X() * InvLandGrid - xf; // relative 0..1 in square
-                float zIn = tPos.Z() * InvLandGrid - zf;
+                for (int i = 0; i < shape->NPos(); i++)
+                {
+                    Vector3Val pos = shape->OrigPos(i);
+                    // shape y is relative to surface; calculate world coordinates
+                    Vector3 tPos(VFastTransform, toWorld, pos);
+                    float xIn = tPos.X() * InvLandGrid - xf; // relative 0..1 in square
+                    float zIn = tPos.Z() * InvLandGrid - zf;
 
-                float yPos = pos[1] - yOffset;
-                float y = (xIn <= 1 - zIn ? y00 + d1000 * zIn + d0100 * xIn : y10 + d0111 - d1011 * xIn - zIn * d0111);
-                tPos[1] = y + yPos;
+                    float yPos = pos[1] - yOffset;
+                    float y =
+                        (xIn <= 1 - zIn ? y00 + d1000 * zIn + d0100 * xIn : y10 + d0111 - d1011 * xIn - zIn * d0111);
+                    tPos[1] = y + yPos;
 
-                V3& dPos = shape->SetPos(i);
-                dPos.SetFastTransform(fromWorld, tPos);
+                    V3& dPos = shape->SetPos(i);
+                    dPos.SetFastTransform(fromWorld, tPos);
+                }
             }
         }
 
