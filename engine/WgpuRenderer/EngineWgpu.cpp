@@ -150,21 +150,37 @@ class VertexBufferWgpu : public VertexBuffer
         }
     }
 
-    // Re-upload vertex data when the shape has been animated. Mirrors GL33's
-    // VertexBufferGL33::Update: refresh when the buffer is dynamic by type, the
-    // caller flags this draw as dynamic, or animation dirtied the buffer. Skinned
-    // meshes stay at bind pose (the GPU transforms them), so Update is a no-op.
+    // Re-upload vertex data when the shape's geometry actually changed. `bufferDirty`
+    // is the canonical mutation signal (InvalidateBuffer, raised by the CPU Animate
+    // deform); `dynamic` is a caller-forced refresh; the first upload always runs.
+    // Skinned meshes stay at bind pose (the GPU transforms them), so Update is a no-op.
     //
-    // The classic trigger re-uploads far more than actually changes: VBDynamic
-    // shapes upload every frame they draw, and conformed on-surface objects re-dirty
-    // every frame with terrain-static geometry. GL33 absorbs this (glBufferSubData
-    // is cheap and driver-batched); on wgpu each upload is a discrete staging copy +
-    // barrier, so thousands of unchanged meshes dominated the frame. Keep the same
-    // trigger (never show stale geometry) but hash the rebuilt vertices and skip the
-    // GPU copy when they are byte-identical to the last upload.
+    // A clean, already-uploaded buffer is skipped in O(1) — no rebuild, no hash. This is
+    // the key: `isDynamic` (VBDynamic, every GetAllowAnimation shape) used to force a full
+    // rebuild + FNV content-hash EVERY frame, even when nothing changed. That was added to
+    // suppress a per-instance GPU upload storm, but once terrain-conformed vegetation moved
+    // to GPU conform it stopped deforming on the CPU — so its shared mesh never re-dirties,
+    // yet it was still rebuilt and rehashed every frame (the dominant per-frame CPU cost in
+    // profiling) to avoid a sub-millisecond upload. Trusting bufferDirty removes that waste.
+    // The hash below still guards the genuinely-dirty-but-unchanged case (a CPU-deformed
+    // mesh that re-derives byte-identical geometry), skipping just the GPU copy.
     void Update(const Shape& src, bool dynamic) override
     {
-        if (skinned || !renderer || !mesh || (!isDynamic && !dynamic && !bufferDirty))
+        if (skinned || !renderer || !mesh)
+        {
+            return;
+        }
+        // Skip when the geometry hasn't changed since it was last made current. bufferDirty
+        // (InvalidateBuffer) is raised by EVERY vertex-mutating path (Object deform,
+        // Animation, RtAnimation), so it is the complete change signal. `isDynamic` and the
+        // `dynamic` param are only "this buffer MAY animate" hints (matSource->GetAnimated),
+        // true every frame for vegetation — they must NOT force a rebuild, or conformed veg
+        // (whose CPU deform is skipped, so it never re-dirties) rebuilds + hashes identical
+        // vertices every frame. A static buffer is filled at creation and can't be dirtied
+        // (B-028); a dynamic one is current after its first Update. Either way a clean
+        // buffer needs nothing. `dynamic` is intentionally ignored (it does not mean "the
+        // verts changed" — only bufferDirty does).
+        if (!bufferDirty && (!isDynamic || haveUploadHash))
         {
             return;
         }

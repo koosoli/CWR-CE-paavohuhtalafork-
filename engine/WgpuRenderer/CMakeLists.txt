@@ -69,6 +69,10 @@ set_target_properties(WgpuRenderer PROPERTIES
 
 function(wgpu_renderer_stage_dll APP_TARGET)
     set(_stamp ${CMAKE_CURRENT_BINARY_DIR}/${APP_TARGET}_stage_wgpu.stamp)
+    # The cdylib's PDB (dbg/rwdi only — absent in rel) sits next to the .dll byproduct.
+    # Deploy it alongside so sampling profilers (Superluminal) resolve Rust symbols.
+    set(_wgpu_pdb $<TARGET_FILE_DIR:wgpu_renderer-shared>/wgpu_renderer.pdb)
+    set(_copy_if_exists ${CMAKE_SOURCE_DIR}/cmake/CopyIfExists.cmake)
     add_custom_command(
         OUTPUT ${_stamp}
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -76,6 +80,8 @@ function(wgpu_renderer_stage_dll APP_TARGET)
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:wgpu_renderer-shared> ${DIST_DIR}
+        COMMAND ${CMAKE_COMMAND} -DSRC=${_wgpu_pdb} -DDST=$<TARGET_FILE_DIR:${APP_TARGET}> -P ${_copy_if_exists}
+        COMMAND ${CMAKE_COMMAND} -DSRC=${_wgpu_pdb} -DDST=${DIST_DIR} -P ${_copy_if_exists}
         COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
         DEPENDS $<TARGET_FILE:wgpu_renderer-shared> wgpu_renderer-shared ${APP_TARGET}
         COMMENT "Staging wgpu_renderer cdylib for ${APP_TARGET}"

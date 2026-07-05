@@ -461,6 +461,23 @@ bool Object::PublishConformPlane(const Shape* sShape, ConformPlane& saved)
 
 void Object::AnimatedMinMax(int level, Vector3* minMax)
 {
+    // Static terrain-conform objects (ClipLand vegetation, ForestPlain) have a
+    // time-invariant animated bbox: the terrain is immutable and they never move, so the
+    // deform+measure yields the same box every frame. Caching it skips the per-frame CPU
+    // deform here (previously ~735ms) AND the InvalidateBuffer it triggered, which forced
+    // the shared vertex buffer to be rebuilt+re-hashed in the draw path. IsAnimated is the
+    // conform signal; excluding damage/destruction leaves only the static-conform case
+    // (re-checked each call, so a tree becoming damaged falls back to the live path). The
+    // cache is invalidated on Move.
+    const bool cacheable = IsAnimated(level) && GetTotalDammage() == 0 &&
+                           !(_isDestroyed && _destroyPhase > 0);
+    if (cacheable && _animBBoxLevel == level)
+    {
+        minMax[0] = _animBBoxMin;
+        minMax[1] = _animBBoxMax;
+        return;
+    }
+
     // default implementation - slow, but robust
     Animate(level);
 
@@ -481,6 +498,13 @@ void Object::AnimatedMinMax(int level, Vector3* minMax)
         shape->MinMaxDynamic(minMax);
     }
     Deanimate(level);
+
+    if (cacheable)
+    {
+        _animBBoxMin = minMax[0];
+        _animBBoxMax = minMax[1];
+        _animBBoxLevel = level;
+    }
 }
 
 void Object::AnimatedBSphere(int level, Vector3& bCenter, float& bRadius, bool isAnimated)
@@ -521,11 +545,18 @@ void Object::Deanimate(int level)
     }
     else if ((shape->GetOrHints() & (ClipLandKeep | ClipLandOn)) && GLOB_LAND)
     {
-        // restore saved position
-        shape->RestoreOriginalPos();
-        shape->InvalidateNormals();
-        shape->InvalidateBuffer();
-        shape->RestoreMinMax();
+        // Only restore when the CPU actually deformed. While a conform plane is active
+        // (wgpu draw path) Animate skips the deform — the GPU conforms — so there is
+        // nothing to restore, and crucially no InvalidateBuffer that would re-dirty the
+        // shared vertex buffer and force a needless per-frame rebuild in Update.
+        if (!GCurrentConformPlane.active)
+        {
+            // restore saved position
+            shape->RestoreOriginalPos();
+            shape->InvalidateNormals();
+            shape->InvalidateBuffer();
+            shape->RestoreMinMax();
+        }
     }
 
     shape->RestoreMinMax();
@@ -636,11 +667,13 @@ void Object::DeanimateLandContact()
 
 void Object::Move(Matrix4Par transform)
 {
+    _animBBoxLevel = -1; // moved: the cached conform bbox no longer applies
     GLOB_LAND->MoveObject(this, transform);
 }
 
 void Object::Move(Vector3Par position)
 {
+    _animBBoxLevel = -1; // moved: the cached conform bbox no longer applies
     GLOB_LAND->MoveObject(this, position);
 }
 

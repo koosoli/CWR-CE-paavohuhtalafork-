@@ -245,6 +245,15 @@ class Object: public NetworkObject, public FrameBase, public IAnimator
 	bool _isDestroyed:1; // object is already destructed
 	bool _static:1; // object is static (never changing position)
 
+	// Cached animated bounding box for static terrain-conform objects (ClipLand veg,
+	// ForestPlain): the conform is time-invariant (immutable terrain + no movement), so
+	// AnimatedMinMax computes the deform+measure once and reuses it, skipping the per-frame
+	// CPU deform that also dirtied the shared vertex buffer. _animBBoxLevel = the LOD it was
+	// computed for (-1 = invalid); invalidated on Move.
+	int _animBBoxLevel = -1;
+	Vector3 _animBBoxMin;
+	Vector3 _animBBoxMax;
+
 	SRef<DammageRegions> _dammage; // dammage information
 
 	// optimizes inserting/deleting from the list of objects drawn during Scene rendering

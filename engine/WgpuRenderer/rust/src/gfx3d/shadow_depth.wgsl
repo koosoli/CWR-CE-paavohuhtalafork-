@@ -18,34 +18,38 @@ struct PassData {
 
 struct CasterData {
     world: mat4x4<f32>,  // camera-relative
-    params: vec4<f32>,   // x = alpha_ref
     conform0: vec4<f32>, // x = bcSurfaceY (mode 2)
     conform2: vec4<f32>, // z = mode (0 = none, 2 = per-vertex ClipLand heightmap)
 };
 
 @group(0) @binding(0) var<uniform> pass_data: PassData;
-@group(1) @binding(0) var<uniform> caster: CasterData;  // rigid pipelines
-// Skinned pipelines bind the bone `palette` at this same group(1)/binding(0)
-// slot (declared by the skin module); each entry point uses only one.
+// Per-caster data as a whole-buffer read-only storage array, indexed by
+// @builtin(instance_index) (fed as the draw's base_instance) — one upload per frame,
+// group(1) bound once (no per-caster dynamic offset). Skinned pipelines bind the bone
+// `palette` at this same group(1)/binding(0) slot instead; each entry uses only one.
+@group(1) @binding(0) var<storage, read> casters: array<CasterData>;
 @group(2) @binding(0) var tex: texture_2d<f32>;
 @group(3) @binding(0) var samp: sampler;
 
-// Skinned pipelines have no caster UBO slot; the cutout threshold is baked.
+// Baked cutout threshold: AddShadowCaster classifies casters as solid or 0.5-cutout, so
+// every alpha caster uses 0.5 — it need not be per-caster and the fragment needs no
+// caster data (keeping the storage array vertex-only, no flat instance varying).
+override alpha_ref: f32 = 0.5;
 override skin_alpha_ref: f32 = 0.5;
 
 // Conform the camera-relative world position of a rigid caster vertex to the ground,
 // mirroring vs_main's mode-2 branch (shader3d.wgsl) and Object::Animate exactly. Skinned
 // casters are never terrain-conformed veg, so this is only used by the rigid entries.
-fn conform_pos(world_pos: vec4<f32>, conform_sel: u32) -> vec4<f32> {
+fn conform_pos(c: CasterData, world_pos: vec4<f32>, conform_sel: u32) -> vec4<f32> {
     var wp = world_pos;
-    if (caster.conform2.z > 1.5) {
+    if (c.conform2.z > 1.5) {
         let abs_x = wp.x + pass_data.cam_pos.x;
         let abs_z = wp.z + pass_data.cam_pos.z;
         let sy = surface_y(vec2<f32>(abs_x, abs_z));
         if (conform_sel == 1u) {
             // world.y_abs = SurfaceY + undeformedWorldY - bcSurfaceY (conform0.x); the
             // cam.y offset cancels between the two camera-relative terms.
-            wp.y = sy + wp.y - caster.conform0.x;
+            wp.y = sy + wp.y - c.conform0.x;
         } else if (conform_sel == 2u) {
             wp.y = sy - pass_data.cam_pos.y;
         }
@@ -55,10 +59,12 @@ fn conform_pos(world_pos: vec4<f32>, conform_sel: u32) -> vec4<f32> {
 
 @vertex
 fn vs_solid(
+    @builtin(instance_index) instance: u32,
     @location(0) pos: vec3<f32>,
     @location(5) conform_sel: u32,
 ) -> @builtin(position) vec4<f32> {
-    let world_pos = conform_pos(caster.world * vec4<f32>(pos, 1.0), conform_sel);
+    let c = casters[instance];
+    let world_pos = conform_pos(c, c.world * vec4<f32>(pos, 1.0), conform_sel);
     return pass_data.light_vp * world_pos;
 }
 
@@ -69,13 +75,15 @@ struct VsAlphaOut {
 
 @vertex
 fn vs_alpha(
+    @builtin(instance_index) instance: u32,
     @location(0) pos: vec3<f32>,
     @location(1) norm: vec3<f32>,
     @location(2) uv: vec2<f32>,
     @location(5) conform_sel: u32,
 ) -> VsAlphaOut {
     var out: VsAlphaOut;
-    let world_pos = conform_pos(caster.world * vec4<f32>(pos, 1.0), conform_sel);
+    let c = casters[instance];
+    let world_pos = conform_pos(c, c.world * vec4<f32>(pos, 1.0), conform_sel);
     out.clip = pass_data.light_vp * world_pos;
     out.uv = uv;
     return out;
@@ -83,7 +91,7 @@ fn vs_alpha(
 
 @fragment
 fn fs_alpha(in: VsAlphaOut) {
-    if (textureSample(tex, samp, in.uv).a < caster.params.x) {
+    if (textureSample(tex, samp, in.uv).a < alpha_ref) {
         discard;
     }
 }

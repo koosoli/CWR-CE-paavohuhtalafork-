@@ -9,7 +9,8 @@
 #import skin::{skin_pos, skin_normal}
 #import lighting::lights_contrib
 // Group(4) terrain heightmap + surface_y, shared with the shadow depth pass.
-#import conform::surface_y
+// surface_grad tilts conformed veg normals to follow the ground slope (color pass only).
+#import conform::{surface_y, surface_grad}
 
 struct Object {
     world: mat4x4<f32>,
@@ -131,8 +132,14 @@ fn vs_main(
         } else if (conform_sel == 2u) {
             world_pos.y = sy - frame.cam_pos.y;
         }
-        // Normals: keep the model normal for now (foliage is lit near-flat); the CPU
-        // recomputes them from the conformed faces, a refinement to revisit if needed.
+        // Tilt the conformed vertex's normal by the terrain slope (inverse-transpose of
+        // the vertical height-field shear, same as mode 1) so lighting follows the ground
+        // the CPU's InvalidateNormals would have produced. Rigid verts (sel 0) keep theirs.
+        if (conform_sel != 0u) {
+            let g = surface_grad(vec2<f32>(abs_x, abs_z));
+            normal_ws = vec3<f32>(normal_ws.x - g.x * normal_ws.y, normal_ws.y,
+                                  normal_ws.z - g.y * normal_ws.y);
+        }
     } else if (mode > 0.5) {
         // Mode 1: ForestPlain bilinear plane fit (ObjectClasses.cpp:571-605).
         let s = obj.conform0.x;                          // inv_land_grid

@@ -338,16 +338,23 @@ impl Renderer {
                 multiview_mask: None,
             });
 
+            // Tracks bind/pipeline state across consecutive 3D draws so draw_one can skip
+            // redundant re-binds. A terrain or 2D draw sets its own pipeline + groups,
+            // invalidating the 3D state, so reset it whenever one runs.
+            let mut st3d = crate::gfx3d::Pass3dState::default();
             for cmd in &cmds[start..end] {
                 if cmd.kind == WgrCmdKind::Draw2D as u32 {
+                    st3d = crate::gfx3d::Pass3dState::default();
                     if let Some(b) = batches.get(cmd.arg as usize) {
                         self.gfx2d.draw_one(&mut pass, &self.textures, b);
                     }
                 } else if cmd.kind == WgrCmdKind::Draw3D as u32 {
                     if let Some(d) = draws3d.get(cmd.arg as usize) {
-                        self.gfx3d.draw_one(&mut pass, &self.textures, d, cmd.arg);
+                        self.gfx3d
+                            .draw_one(&mut pass, &self.textures, d, cmd.arg, &mut st3d);
                     }
                 } else if cmd.kind == WgrCmdKind::DrawTerrain as u32 {
+                    st3d = crate::gfx3d::Pass3dState::default();
                     if let (Some(b), Some(cam)) = (
                         terrain_batches.get(cmd.arg as usize),
                         self.gfx3d.camera_bind(),

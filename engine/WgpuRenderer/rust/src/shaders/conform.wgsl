@@ -45,3 +45,32 @@ fn surface_y(world_xz: vec2<f32>) -> f32 {
     }
     return y10 + (y01 - y11) - (y10 - y11) * f.x - (y01 - y11) * f.y;
 }
+
+// Terrain height gradient (dSy/dx, dSy/dz) at world xz — the analytic derivative of
+// surface_y's two-triangle interpolation (piecewise-constant per triangle). Used to tilt
+// conformed vegetation normals so they follow the ground slope, matching the CPU's
+// InvalidateNormals over the deformed faces. Same triangle split as surface_y.
+fn surface_grad(world_xz: vec2<f32>) -> vec2<f32> {
+    if (hm_params.enabled < 0.5) {
+        return vec2<f32>(0.0, 0.0);
+    }
+    let t = (world_xz - hm_params.origin) / hm_params.terrain_grid;
+    let base = floor(t);
+    let ix = i32(base.x);
+    let iz = i32(base.y);
+    let f = t - base;
+    let y00 = hm_load(ix, iz);
+    let y01 = hm_load(ix + 1, iz);
+    let y10 = hm_load(ix, iz + 1);
+    let y11 = hm_load(ix + 1, iz + 1);
+    var dhx: f32;
+    var dhz: f32;
+    if (f.x <= 1.0 - f.y) {
+        dhx = y01 - y00;
+        dhz = y10 - y00;
+    } else {
+        dhx = -(y10 - y11);
+        dhz = -(y01 - y11);
+    }
+    return vec2<f32>(dhx, dhz) / hm_params.terrain_grid;
+}
