@@ -58,6 +58,14 @@ class SortObject : public RefCount
 
     float zCoord; // alpha-pass sort key: camera-space depth; see AlphaSortOrder.hpp
 
+    // Sort keys decorated once per frame in Scene::AdjustComplexity, so the object
+    // sorts' comparators (CmpShapeObj, CmpSurfaceObj) read a plain field instead of
+    // re-deriving these on every one of the O(n log n) comparisons — the derivation
+    // (a Level(0)->NFaces() pointer chase and a virtual PassOrder() call) dominated
+    // the sorts once the Ref-swap churn was removed.
+    int sortComplexity; // GetShape()->Level(0)->NFaces()  (CmpShapeObj shape tiebreak)
+    int sortPassOrder;  // object->PassOrder(drawLOD)       (CmpSurfaceObj primary key)
+
     USE_FAST_ALLOCATOR
 };
 

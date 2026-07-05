@@ -108,13 +108,9 @@ static int CmpShapeObj(const SortObjectItem* p1, const SortObjectItem* p2)
     // no invisible LODs here
     if (sDif)
     {
-        Shape* ss1 = s1->Level(0);
-        Shape* ss2 = s2->Level(0);
-        int complex1 = ss1->NFaces();
-        int complex2 = ss2->NFaces();
-        int cDiff = complex1 - complex2;
-        // sort by shape complexity
-        // first draw simple shapes
+        // Shape complexity (Level(0)->NFaces()) precomputed in AdjustComplexity.
+        // sort by shape complexity - first draw simple shapes
+        int cDiff = o1->sortComplexity - o2->sortComplexity;
         if (cDiff)
         {
             return cDiff;
@@ -140,6 +136,186 @@ static int CmpShapeObj(const SortObjectItem* p1, const SortObjectItem* p2)
     }
     return 0;
 }
+
+// Packed-key object sort. The Pass1/Pass2 object sorts were memory-latency bound:
+// sorting the Ref<SortObject> array made every comparison chase two scattered
+// SortObjects (plus their Objects, for GetShape()) — several cold cache lines per
+// compare, so a comparator doing nothing but int subtractions cost hundreds of ms
+// exclusive. SortListByPackedKey copies the compared fields into a contiguous KeyT
+// array (one sequential pass), sorts that, then reorders the Ref list to match.
+//
+// KeyT must carry a `SortObject* obj` payload. QSortWithContext takes the comparator
+// as a template functor, so the (non-capturing) comparator lambda INLINES into the
+// sort loop — no per-comparison function-pointer call (which dominated the plain-QSort
+// cost). The reorder uses SetRef (raw-pointer assignment, no AddRef/Release): it's a
+// permutation, so the multiset of held SortObjects is unchanged and each is still
+// Released exactly once when the list is cleared — zero refcount traffic. The algorithm
+// is QSort's, so as long as the comparator body matches, the order is byte-identical.
+template <class KeyT, class ListT, class Extract, class Compare>
+static void SortListByPackedKey(ListT& list, Extract extract, Compare comp)
+{
+    const int n = list.Size();
+    if (n < 2)
+    {
+        return;
+    }
+    // Render-thread-only scratch, reused across frames (grows once; one static per call site).
+    static AutoArray<KeyT> keys;
+    keys.Resize(n);
+    for (int i = 0; i < n; i++)
+    {
+        keys[i] = extract(list[i]);
+    }
+    Foundation::QSortWithContext(keys.Data(), n, 0, comp);
+    for (int i = 0; i < n; i++)
+    {
+        list[i].SetRef(keys[i].obj);
+    }
+}
+
+// Pass1 shape-sort key — see CmpShapeObj for the ordering rationale.
+struct DrawKey
+{
+    SortObject* obj;   // payload (non-owning; the owning Ref stays in _drawMergers)
+    const void* shape; // o->object->GetShape() — primary grouping key
+    int passNum;
+    int complexity; // o->sortComplexity (precomputed in AdjustComplexity)
+    int drawLOD;
+    float distance2;
+};
+
+// Sort _drawMergers into CmpShapeObj order. The comparator body is a verbatim copy of
+// CmpShapeObj's ordering over the packed keys, so the order stays byte-identical to
+// QSort(..., CmpShapeObj) (Pass2's unstable-sort tie-breaking depends on it).
+static void SortDrawMergersByShape(SortObjectList& mergers)
+{
+    SortListByPackedKey<DrawKey>(
+        mergers,
+        [](SortObject* o) -> DrawKey
+        {
+            return {o, o->object ? static_cast<const void*>(o->object->GetShape()) : nullptr, o->passNum,
+                    o->sortComplexity, o->drawLOD, o->distance2};
+        },
+        [](const DrawKey* p1, const DrawKey* p2, int) -> int
+        {
+            int sDif = p1->passNum - p2->passNum;
+            if (sDif)
+            {
+                return sDif;
+            }
+            sDif = (intptr_t)p2->shape - (intptr_t)p1->shape;
+            if (sDif)
+            {
+                int cDiff = p1->complexity - p2->complexity;
+                if (cDiff)
+                {
+                    return cDiff;
+                }
+                return sDif;
+            }
+            sDif = p2->drawLOD - p1->drawLOD;
+            if (sDif)
+            {
+                return sDif;
+            }
+            float fDif = p2->distance2 - p1->distance2;
+            if (fDif < 0)
+            {
+                return -1;
+            }
+            if (fDif > 0)
+            {
+                return +1;
+            }
+            return 0;
+        });
+}
+
+// Descending-by-float object sort via an LSD radix sort. `key(o)` extracts the single
+// float to sort on; the list ends up largest-key-first (farthest first). Radix is O(n)
+// with no comparisons and no payload swaps — the comparison sorts these replace were
+// hundreds of ms of QSort on dense scenes. Two callers, both wanting farthest-first:
+//   - the occlusion pre-pass (distance2): order is a pure heuristic, tie order irrelevant;
+//     the caller iterates in reverse to test/render nearest-first.
+//   - the Pass2 alpha pass (zCoord): the primary back-to-front order is exactly the
+//     comparison sort's; equal-depth ties composite identically, and the old QSort was
+//     unstable anyway, so a different-but-valid tie order can't regress transparency.
+template <class ListT, class KeyFn>
+static void RadixSortByFloatDesc(ListT& list, KeyFn key)
+{
+    const int n = list.Size();
+    if (n < 2)
+    {
+        return;
+    }
+    struct RadixItem
+    {
+        uint32_t key;
+        SortObject* obj;
+    };
+    // Render-thread-only scratch, reused across frames (ping-pong buffers; one static
+    // pair per instantiation, i.e. per (list type, key function)).
+    static AutoArray<RadixItem> bufA;
+    static AutoArray<RadixItem> bufB;
+    bufA.Resize(n);
+    bufB.Resize(n);
+    for (int i = 0; i < n; i++)
+    {
+        SortObject* o = list[i];
+        // Map the float to an order-preserving uint32. Raw IEEE-754 bits are already
+        // monotonic for values >= 0, but apply the standard branchless transform so any
+        // stray -0/negative still sorts correctly: sign set -> invert all bits, else set
+        // only the sign bit.
+        uint32_t u;
+        float d = key(o);
+        memcpy(&u, &d, sizeof(u));
+        u ^= (uint32_t(0x80000000) | (uint32_t(0) - (u >> 31)));
+        bufA[i].key = u;
+        bufA[i].obj = o;
+    }
+    // Four passes of 8 bits, counting sort, ping-pong between the buffers.
+    RadixItem* in = bufA.Data();
+    RadixItem* out = bufB.Data();
+    for (int shift = 0; shift < 32; shift += 8)
+    {
+        int count[256] = {0};
+        for (int i = 0; i < n; i++)
+        {
+            count[(in[i].key >> shift) & 0xFF]++;
+        }
+        int sum = 0;
+        for (int b = 0; b < 256; b++)
+        {
+            int c = count[b];
+            count[b] = sum;
+            sum += c;
+        }
+        for (int i = 0; i < n; i++)
+        {
+            out[count[(in[i].key >> shift) & 0xFF]++] = in[i];
+        }
+        RadixItem* tmp = in;
+        in = out;
+        out = tmp;
+    }
+    // `in` now holds ascending key (near-to-far) order. Write back farthest-first
+    // (descending) to match the comparison-sort order the callers expect.
+    for (int i = 0; i < n; i++)
+    {
+        list[i].SetRef(in[n - 1 - i].obj);
+    }
+}
+
+// Packed keys for the Pass2 object sorts. Each carries the `obj` payload plus only the
+// fields its comparator reads — see CmpSurfaceObj / CmpRevAlphaSortObj for the ordering,
+// mirrored verbatim in the SortListByPackedKey call sites so the order is byte-identical.
+struct SurfKey
+{
+    SortObject* obj;
+    int passOrder;     // sortPassOrder (precomputed in AdjustComplexity)
+    const void* shape; // GetShape() identity
+    float distance2;
+};
 
 void Scene::EndObjects()
 {
@@ -605,6 +781,16 @@ int Scene::AdjustComplexity(SortObjectList& objs)
 #endif
             }
             oi->drawLOD = drawLevel;
+        }
+        // Decorate the frame's sort keys once, now that drawLOD is final. Both are
+        // otherwise re-derived per comparison in CmpShapeObj / CmpSurfaceObj: the
+        // complexity is Level(0)->NFaces() (a pointer chase) and PassOrder() is a
+        // virtual call. Level(0) is drawLOD-independent; PassOrder ignores its lod arg,
+        // but pass the real drawLOD so this stays byte-identical to the comparators.
+        {
+            LODShapeWithShadow* srtShape = obj->GetShape();
+            oi->sortComplexity = (srtShape && srtShape->NLevels() > 0) ? srtShape->Level(0)->NFaces() : 0;
+            oi->sortPassOrder = obj->PassOrder(oi->drawLOD);
         }
         // check number of faces in given level
         if (oi->drawLOD != LOD_INVISIBLE)
@@ -1414,7 +1600,7 @@ void Scene::DrawObjectsAndShadowsPass1()
                 occSort.Add(_drawMergers[i]);
             }
         }
-        QSort(occSort.Data(), occSort.Size(), CmpRevDistObj);
+        RadixSortByFloatDesc(occSort, [](const SortObject* o) { return o->distance2; });
 // before drawing anything draw cockpit occlusion
 // check if we are in internal view
 #if 1
@@ -1513,7 +1699,9 @@ void Scene::DrawObjectsAndShadowsPass1()
         }
     }
 
-    QSort(_drawMergers.Data(), _drawMergers.Size(), CmpShapeObj);
+    // Byte-identical to QSort(..., CmpShapeObj) but sorts a packed key array instead
+    // of the scattered Ref<SortObject> array (see SortDrawMergersByShape).
+    SortDrawMergersByShape(_drawMergers);
     // first of all draw non-alpha objects
 
 #if DRAW_OBJS
@@ -1640,11 +1828,12 @@ static int CmpSurfaceObj(const SortObjectItem* p1, const SortObjectItem* p2)
 {
     const SortObject* o1 = *p1;
     const SortObject* o2 = *p2;
+    // PassOrder precomputed in AdjustComplexity (was a virtual call per comparison).
     const Poseidon::SurfaceDraw::SurfaceDrawKey k1{
-        o1->object ? o1->object->PassOrder(o1->drawLOD) : 0,
+        o1->object ? o1->sortPassOrder : 0,
         o1->object ? static_cast<const void*>(o1->object->GetShape()) : nullptr, o1->distance2};
     const Poseidon::SurfaceDraw::SurfaceDrawKey k2{
-        o2->object ? o2->object->PassOrder(o2->drawLOD) : 0,
+        o2->object ? o2->sortPassOrder : 0,
         o2->object ? static_cast<const void*>(o2->object->GetShape()) : nullptr, o2->distance2};
     return Poseidon::SurfaceDraw::CompareSurfaceDraw(k1, k2);
 }
@@ -1672,7 +1861,19 @@ void Scene::DrawObjectsAndShadowsPass2()
         // PassOrder, not distance: a fresh decal carries distance2~=0
         // (SetAutoCenter(false)) and would tie the road tile under the vehicle,
         // letting the road repaint over it.  Re-sorted by distance below.
-        QSort(_drawMergers.Data(), nDraw, CmpSurfaceObj);
+        SortListByPackedKey<SurfKey>(
+            _drawMergers,
+            [](SortObject* o) -> SurfKey
+            {
+                return {o, o->object ? o->sortPassOrder : 0,
+                        o->object ? static_cast<const void*>(o->object->GetShape()) : nullptr, o->distance2};
+            },
+            [](const SurfKey* p1, const SurfKey* p2, int) -> int
+            {
+                const Poseidon::SurfaceDraw::SurfaceDrawKey k1{p1->passOrder, p1->shape, p1->distance2};
+                const Poseidon::SurfaceDraw::SurfaceDrawKey k2{p2->passOrder, p2->shape, p2->distance2};
+                return Poseidon::SurfaceDraw::CompareSurfaceDraw(k1, k2);
+            });
         for (int i = 0; i < nDraw; i++)
         {
             SortObject* oi = _drawMergers[i];
@@ -1752,7 +1953,10 @@ void Scene::DrawObjectsAndShadowsPass2()
     // draw alpha parts of roads
     GEngine->FlushQueues();
     GEngine->EnableReorderQueues(false);
-    QSort(_drawMergers.Data(), _drawMergers.Size(), CmpRevAlphaSortObj);
+    // Back-to-front by camera-space depth (farthest first). Single float key => radix
+    // (see RadixSortByFloatDesc). CmpRevAlphaSortObj / CompareAlphaDepth produced the same
+    // descending-zCoord order; this is O(n) instead of O(n log n).
+    RadixSortByFloatDesc(_drawMergers, [](const SortObject* o) { return o->zCoord; });
     // last draw alpha objects (not roads - they are already drawn)
     for (int i = 0; i < nDraw; i++)
     {
