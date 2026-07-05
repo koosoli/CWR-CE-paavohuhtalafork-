@@ -1,11 +1,11 @@
-use std::collections::HashMap;
-
+use rustc_hash::FxHashMap;
 use slotmap::{Key, KeyData, SlotMap};
 use wgpu::util::DeviceExt;
 
 use crate::ffi::{
     DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE, WgrBlend, WgrCamera,
-    WgrDraw3D, WgrMat4, WgrMeshVertex, WgrLight, WgrShadowCaster, WgrShadowPass, WgrVec4,
+    WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrMat4, WgrMeshVertex, WgrLight, WgrShadowCaster,
+    WgrShadowPass, WgrVec4,
 };
 use crate::textures::SharedTextures;
 
@@ -252,6 +252,28 @@ struct ShadowCasterGpu {
     world: WgrMat4,
     conform0: [f32; 4], // x = bcSurfaceY (mode 2)
     conform2: [f32; 4], // z = conform mode (0 = none, 2 = per-vertex ClipLand heightmap)
+}
+
+// One instanced draw in a cascade's shadow plan (see prepare_shadows). `repr` is a
+// caster index supplying the mesh/section/texture/sampler/skin shared by the bucket;
+// `base..base+count` is the base_instance range into the reordered caster SSBO.
+struct ShadowBucket {
+    repr: u32,
+    base: u32,
+    count: u32,
+}
+
+// Coalesce key for instanceable (non-skinned) shadow casters. Solid casters sample no
+// texture, so their texture/sampler are normalized to 0 in the key to let same-mesh
+// solids merge regardless of their (unused) material.
+#[derive(PartialEq, Eq, Hash)]
+struct ShadowBucketKey {
+    mesh: u64,
+    index_begin: u32,
+    index_count: u32,
+    alpha: bool,
+    texture_id: u64,
+    sampler: u32,
 }
 
 // group(0) of the shadow depth pass: the light view-projection for one cascade plus
@@ -805,7 +827,7 @@ pub struct Gfx3d {
     surface_format: wgpu::TextureFormat,
     vbuf_attrs: [wgpu::VertexAttribute; 4],
     skin_attrs: [wgpu::VertexAttribute; 2],
-    pipelines: HashMap<PipelineKey, wgpu::RenderPipeline>,
+    pipelines: FxHashMap<PipelineKey, wgpu::RenderPipeline>,
 
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_size: (u32, u32),
@@ -813,7 +835,13 @@ pub struct Gfx3d {
     shadow_pass_ubo: DynUbo, // one ShadowPassUbo per cascade
     // Per-caster data as one whole-buffer storage array (indexed by base_instance),
     // uploaded in a single write_buffer — replaces the old per-caster dynamic UBO writes.
+    // Laid out per (cascade, bucket) so each bucket's instances are contiguous; a caster
+    // in N cascades appears N times (its GPU data is cascade-independent, but bucketing
+    // isn't). Built alongside `shadow_plan` in prepare_shadows.
     shadow_caster_ssbo: StorageArray,
+    // Per-cascade instanced draw plan over `shadow_caster_ssbo` (built in prepare_shadows,
+    // replayed in render_shadow_passes). Indexed [cascade][bucket].
+    shadow_plan: Vec<Vec<ShadowBucket>>,
     shadow_caster_layout: wgpu::BindGroupLayout,
     shadow_caster_bind: Option<wgpu::BindGroup>,
     shadow_shader: wgpu::ShaderModule,
@@ -827,6 +855,13 @@ pub struct Gfx3d {
     dummy_shadow_view: wgpu::TextureView,
 
     meshes: SlotMap<MeshKey, Mesh>,
+
+    // Persistent per-frame scratch for the packed world/material upload arrays. Cleared
+    // and refilled each frame (retaining capacity) so prepare() doesn't allocate+free a
+    // fresh Vec of thousands of entries every frame — that alloc/free churn was a
+    // measurable slice of frame-start CPU time.
+    objects_scratch: Vec<ObjectGpu>,
+    materials_scratch: Vec<MaterialUbo>,
 }
 
 impl Gfx3d {
@@ -1035,11 +1070,12 @@ impl Gfx3d {
             surface_format,
             vbuf_attrs,
             skin_attrs,
-            pipelines: HashMap::new(),
+            pipelines: FxHashMap::default(),
             depth: None,
             depth_size: (0, 0),
             shadow_pass_ubo,
             shadow_caster_ssbo,
+            shadow_plan: Vec::new(),
             shadow_caster_layout,
             shadow_caster_bind: None,
             shadow_shader,
@@ -1050,6 +1086,8 @@ impl Gfx3d {
             shadow_gen: 0,
             dummy_shadow_view,
             meshes: SlotMap::with_key(),
+            objects_scratch: Vec::new(),
+            materials_scratch: Vec::new(),
         }
     }
 
@@ -1513,21 +1551,93 @@ impl Gfx3d {
             );
         }
 
-        // Pack every caster contiguously and upload in ONE write_buffer (indexed
-        // in-shader by base_instance) — replaces the per-caster dynamic-UBO write loop.
-        let caster_gpu: Vec<ShadowCasterGpu> = casters
-            .iter()
-            .map(|caster| ShadowCasterGpu {
-                world: caster.world,
-                conform0: caster.conform0,
-                conform2: caster.conform2,
-            })
-            .collect();
+        // Bucket casters per cascade into instanced draws (mirrors plan_3d for the color
+        // pass). Depth-only casters are all order-independent, so within a cascade we
+        // coalesce non-skinned casters by (mesh, section, alpha, texture, sampler) and
+        // pack their GPU data contiguously — one instanced draw per bucket instead of one
+        // draw per caster. Skinned casters can't instance (per-caster palette offset), so
+        // each is its own count-1 bucket. The packed array is laid out per (cascade,
+        // bucket); a caster in several cascades is packed once per cascade (its data is
+        // cascade-independent, but its bucket position isn't).
+        let mut caster_gpu: Vec<ShadowCasterGpu> = Vec::with_capacity(casters.len());
+        self.shadow_plan.clear();
+        let mut bucket_index: FxHashMap<ShadowBucketKey, usize> = FxHashMap::default();
+        for c in 0..count as usize {
+            // Buckets in first-seen order + their member caster indices.
+            let mut buckets: Vec<(u32, Vec<u32>)> = Vec::new();
+            bucket_index.clear();
+            let mut cascade: Vec<ShadowBucket> = Vec::new();
+            for (i, caster) in casters.iter().enumerate() {
+                if caster.cascade_mask & (1 << c) == 0 || caster.index_count == 0 {
+                    continue;
+                }
+                let Some(mesh) = self.meshes.get(KeyData::from_ffi(caster.mesh).into()) else {
+                    continue;
+                };
+                if caster.index_begin + caster.index_count > mesh.index_count {
+                    continue;
+                }
+                let alpha = caster.alpha_ref > 0.0;
+                let skinned = caster.palette_slot != NO_PALETTE && mesh.skin.is_some();
+                if skinned {
+                    // Skinned casters read the bone palette, not the SSBO; base_instance is
+                    // unused by their shader, but pack an entry so the array stays dense.
+                    let base = caster_gpu.len() as u32;
+                    caster_gpu.push(ShadowCasterGpu {
+                        world: caster.world,
+                        conform0: caster.conform0,
+                        conform2: caster.conform2,
+                    });
+                    cascade.push(ShadowBucket {
+                        repr: i as u32,
+                        base,
+                        count: 1,
+                    });
+                } else {
+                    let key = ShadowBucketKey {
+                        mesh: caster.mesh,
+                        index_begin: caster.index_begin,
+                        index_count: caster.index_count,
+                        alpha,
+                        texture_id: if alpha { caster.texture_id } else { 0 },
+                        sampler: if alpha { caster.sampler.0 } else { 0 },
+                    };
+                    let bi = *bucket_index.entry(key).or_insert_with(|| {
+                        buckets.push((i as u32, Vec::new()));
+                        buckets.len() - 1
+                    });
+                    buckets[bi].1.push(i as u32);
+                }
+            }
+            // Flush the cascade's coalesced buckets: pack each contiguously.
+            for (repr, members) in buckets {
+                let base = caster_gpu.len() as u32;
+                let bcount = members.len() as u32;
+                for &mi in &members {
+                    let caster = &casters[mi as usize];
+                    caster_gpu.push(ShadowCasterGpu {
+                        world: caster.world,
+                        conform0: caster.conform0,
+                        conform2: caster.conform2,
+                    });
+                }
+                cascade.push(ShadowBucket {
+                    repr,
+                    base,
+                    count: bcount,
+                });
+            }
+            self.shadow_plan.push(cascade);
+        }
+        // Upload the whole reordered array in ONE write_buffer (indexed in-shader by
+        // base_instance) — replaces the per-caster dynamic-UBO write loop.
         let grew = self
             .shadow_caster_ssbo
             .ensure(device, std::mem::size_of_val(caster_gpu.as_slice()) as u64);
         let buf = self.shadow_caster_ssbo.buf.as_ref().unwrap();
-        queue.write_buffer(buf, 0, bytemuck::cast_slice(&caster_gpu));
+        if !caster_gpu.is_empty() {
+            queue.write_buffer(buf, 0, bytemuck::cast_slice(&caster_gpu));
+        }
         if grew || self.shadow_caster_bind.is_none() {
             self.shadow_caster_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("wgr_shadow_caster_bind"),
@@ -1562,6 +1672,9 @@ impl Gfx3d {
         };
 
         for c in 0..count.min(target.layers) as usize {
+            let Some(plan) = self.shadow_plan.get(c) else {
+                continue;
+            };
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("wgr_shadow_cascade"),
                 color_attachments: &[],
@@ -1578,16 +1691,16 @@ impl Gfx3d {
                 multiview_mask: None,
             });
 
-            for (i, caster) in casters.iter().enumerate() {
-                if caster.cascade_mask & (1 << c) == 0 || caster.index_count == 0 {
-                    continue;
-                }
+            // Group 0 (pass UBO, this cascade's light-VP) shares one layout across every
+            // shadow pipeline and is bound first, so a later pipeline switch never
+            // invalidates it — set it once per cascade instead of per draw.
+            rp.set_bind_group(0, pass_bind, &[(c as u64 * self.shadow_pass_ubo.stride) as u32]);
+
+            for bucket in plan {
+                let caster = &casters[bucket.repr as usize];
                 let Some(mesh) = self.meshes.get(KeyData::from_ffi(caster.mesh).into()) else {
                     continue;
                 };
-                if caster.index_begin + caster.index_count > mesh.index_count {
-                    continue;
-                }
                 let alpha = caster.alpha_ref > 0.0;
                 let skin = if caster.palette_slot != NO_PALETTE {
                     mesh.skin.as_ref()
@@ -1595,11 +1708,6 @@ impl Gfx3d {
                     None
                 };
                 rp.set_pipeline(pipes.get(skin.is_some(), alpha));
-                rp.set_bind_group(
-                    0,
-                    pass_bind,
-                    &[(c as u64 * self.shadow_pass_ubo.stride) as u32],
-                );
                 if let Some(skin) = skin {
                     let Some(palette_bind) = self.palette.bind.as_ref() else {
                         continue;
@@ -1611,7 +1719,7 @@ impl Gfx3d {
                     );
                     rp.set_vertex_buffer(1, skin.slice(..));
                 } else {
-                    // Whole-buffer storage bound once; the caster's slot travels as
+                    // Whole-buffer storage bound once; each instance's slot travels as
                     // base_instance (read via @builtin(instance_index)) — no dynamic offset.
                     rp.set_bind_group(1, caster_bind, &[]);
                 }
@@ -1627,7 +1735,7 @@ impl Gfx3d {
                 rp.draw_indexed(
                     caster.index_begin..(caster.index_begin + caster.index_count),
                     0,
-                    i as u32..(i as u32 + 1),
+                    bucket.base..(bucket.base + bucket.count),
                 );
             }
         }
@@ -1795,6 +1903,11 @@ impl Gfx3d {
         queue: &wgpu::Queue,
         cameras: &[WgrCamera],
         draws: &[WgrDraw3D],
+        // Slot -> draws index, the instancing plan's upload order (see plan_3d): a
+        // bucket's instances occupy contiguous slots so one instanced draw covers them.
+        // The per-draw storage arrays (world, material) are packed in this order and
+        // read in-shader by @builtin(instance_index) == base_instance == slot.
+        order: &[u32],
         palette: &[WgrMat4],
         lights: &[WgrLight],
         shadow_mask_view: &wgpu::TextureView,
@@ -1840,47 +1953,56 @@ impl Gfx3d {
         let mut world_grew = false;
         let mut palette_grew = false;
         let mut material_grew = false;
-        if !draws.is_empty() {
+        if !order.is_empty() {
             // Pack the whole frame's world matrices + materials contiguously and
             // upload each in a SINGLE write_buffer (indexed in-shader by
             // instance_index). This replaces the per-draw write_buffer loops that
-            // produced ~2N staging copies + barriers at frame start.
-            let objects: Vec<ObjectGpu> = draws
-                .iter()
-                .map(|d| ObjectGpu {
+            // produced ~2N staging copies + barriers at frame start. The pack order
+            // is the instancing plan's slot order (not raw draw order): a bucket's
+            // instances land in a contiguous slot range so one draw covers them all.
+            // Reuse the persistent scratch Vecs (clear retains capacity) rather than
+            // collect()ing a fresh allocation every frame — the per-frame alloc/free of
+            // thousands of entries was a measurable slice of prepare()'s cost.
+            self.objects_scratch.clear();
+            self.objects_scratch.extend(order.iter().map(|&i| {
+                let d = &draws[i as usize];
+                ObjectGpu {
                     world: d.world,
                     conform0: d.conform0,
                     conform1: d.conform1,
                     conform2: d.conform2,
-                })
-                .collect();
-            world_grew = self
-                .world
-                .ensure(device, std::mem::size_of_val(objects.as_slice()) as u64);
+                }
+            }));
+            world_grew = self.world.ensure(
+                device,
+                std::mem::size_of_val(self.objects_scratch.as_slice()) as u64,
+            );
             queue.write_buffer(
                 self.world.buf.as_ref().unwrap(),
                 0,
-                bytemuck::cast_slice(&objects),
+                bytemuck::cast_slice(&self.objects_scratch),
             );
 
-            let materials: Vec<MaterialUbo> = draws
-                .iter()
-                .map(|d| MaterialUbo {
+            self.materials_scratch.clear();
+            self.materials_scratch.extend(order.iter().map(|&i| {
+                let d = &draws[i as usize];
+                MaterialUbo {
                     emissive: d.mat_emissive,
                     sun_ambient: d.mat_sun_ambient,
                     sun_diffuse: d.mat_sun_diffuse,
                     light_diffuse: d.mat_light_diffuse,
                     light_ambient: d.mat_light_ambient,
                     specular: d.mat_specular,
-                })
-                .collect();
-            material_grew = self
-                .material
-                .ensure(device, std::mem::size_of_val(materials.as_slice()) as u64);
+                }
+            }));
+            material_grew = self.material.ensure(
+                device,
+                std::mem::size_of_val(self.materials_scratch.as_slice()) as u64,
+            );
             queue.write_buffer(
                 self.material.buf.as_ref().unwrap(),
                 0,
-                bytemuck::cast_slice(&materials),
+                bytemuck::cast_slice(&self.materials_scratch),
             );
         }
         // One dynamic-UBO slot per PALETTE_SIZE-matrix block. A block is exactly
@@ -1943,8 +2065,116 @@ impl Gfx3d {
         }
     }
 
-    // Issue one indexed draw. `index` is the draw's slot in the prepared arrays,
-    // selecting its world matrix; `d.camera` selects its camera. `st` carries the
+    // Build the frame's instancing plan from the command stream. Consecutive
+    // "standard opaque" 3D draws (blend Opaque, no polygon offset, depth test+write,
+    // not skinned) are order-independent, so within a maximal run of them we bucket by
+    // (mesh, section, texture, sampler, camera, pipeline): every bucket collapses to
+    // one instanced draw whose instances read their own world/conform/material from the
+    // per-draw storage arrays via @builtin(instance_index). The upload order (`order`)
+    // lays each bucket's instances in a contiguous slot range so base_instance covers
+    // them. Anything not instanceable (transparent, decal/ZBias, skinned, non-standard
+    // depth) is a barrier: it flushes the run and is emitted as a count-1 draw in place,
+    // preserving draw order across it. Terrain / 2D / ClearDepth also flush and pass
+    // through, so the plan mirrors the stream's ordering exactly.
+    pub fn plan_3d(&self, cmds: &[WgrCmd], draws: &[WgrDraw3D]) -> Plan3d {
+        // slot -> draws index (the storage-array pack order).
+        let mut order: Vec<u32> = Vec::with_capacity(cmds.len());
+        let mut ops: Vec<Plan3dOp> = Vec::with_capacity(cmds.len());
+        // The current reorderable run: buckets in first-seen order + their members
+        // (draws indices), and a key->bucket map to coalesce.
+        let mut buckets: Vec<(u32, Vec<u32>)> = Vec::new();
+        let mut bucket_index: FxHashMap<BucketKey, usize> = FxHashMap::default();
+
+        // Emit the current run's buckets (each becomes one instanced draw over a
+        // contiguous slot range) and reset it. Called at every barrier.
+        fn flush_run(
+            order: &mut Vec<u32>,
+            ops: &mut Vec<Plan3dOp>,
+            buckets: &mut Vec<(u32, Vec<u32>)>,
+            bucket_index: &mut FxHashMap<BucketKey, usize>,
+        ) {
+            for (repr, members) in buckets.drain(..) {
+                let base = order.len() as u32;
+                let count = members.len() as u32;
+                order.extend_from_slice(&members);
+                ops.push(Plan3dOp::Draw3D {
+                    draw: repr,
+                    base,
+                    count,
+                });
+            }
+            bucket_index.clear();
+        }
+
+        for cmd in cmds {
+            if cmd.kind == WgrCmdKind::Draw3D as u32 {
+                let Some(d) = draws.get(cmd.arg as usize) else {
+                    continue;
+                };
+                // Drops draws that render nothing (missing/invalid mesh, empty range),
+                // exactly as draw_one would bail on them — they never reach the GPU, so
+                // omitting them from the plan (and their storage slot) is equivalent.
+                if d.index_count == 0 {
+                    continue;
+                }
+                let Some(mesh) = self.meshes.get(KeyData::from_ffi(d.mesh).into()) else {
+                    continue;
+                };
+                if d.index_begin + d.index_count > mesh.index_count {
+                    continue;
+                }
+                let skinned = d.palette_slot != NO_PALETTE && mesh.skin.is_some();
+                let pkey = PipelineKey::from_draw(d, false);
+                let instanceable = !skinned
+                    && d.blend == WgrBlend::Opaque
+                    && pkey.offset == Offset::None
+                    && d.depth == WgrDepthMode::TestWrite;
+                if instanceable {
+                    let key = BucketKey {
+                        mesh: d.mesh,
+                        index_begin: d.index_begin,
+                        index_count: d.index_count,
+                        texture_id: d.texture_id,
+                        sampler: d.sampler.0,
+                        camera: d.camera,
+                        pipeline: pkey,
+                    };
+                    let bi = *bucket_index.entry(key).or_insert_with(|| {
+                        buckets.push((cmd.arg, Vec::new()));
+                        buckets.len() - 1
+                    });
+                    buckets[bi].1.push(cmd.arg);
+                } else {
+                    // Barrier draw: keep its position by flushing the run first, then
+                    // emit it standalone (its own slot, count 1).
+                    flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
+                    let base = order.len() as u32;
+                    order.push(cmd.arg);
+                    ops.push(Plan3dOp::Draw3D {
+                        draw: cmd.arg,
+                        base,
+                        count: 1,
+                    });
+                }
+            } else if cmd.kind == WgrCmdKind::Draw2D as u32 {
+                flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
+                ops.push(Plan3dOp::Draw2D(cmd.arg));
+            } else if cmd.kind == WgrCmdKind::DrawTerrain as u32 {
+                flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
+                ops.push(Plan3dOp::Terrain(cmd.arg));
+            } else if cmd.kind == WgrCmdKind::ClearDepth as u32 {
+                flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
+                ops.push(Plan3dOp::ClearDepth);
+            }
+        }
+        flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
+        Plan3d { order, ops }
+    }
+
+    // Issue one (possibly instanced) indexed draw. `d` supplies the mesh, section,
+    // texture, sampler, camera and pipeline shared by every instance; `base..base+count`
+    // is the base_instance range, selecting each instance's world/conform/material slot
+    // in the prepared storage arrays via @builtin(instance_index). `st` carries the
     // bind/pipeline/buffer state already set on `pass` so redundant re-binds are
     // skipped — three of the five bind groups (camera, world/material, conform) are
     // frame-constant, so within a run of 3D draws they are set once, not per draw.
@@ -1955,7 +2185,8 @@ impl Gfx3d {
         pass: &mut wgpu::RenderPass<'_>,
         textures: &SharedTextures,
         d: &WgrDraw3D,
-        index: u32,
+        base: u32,
+        count: u32,
         st: &mut Pass3dState,
     ) {
         if d.index_count == 0 {
@@ -2055,8 +2286,40 @@ impl Gfx3d {
             st.ibuf = Some(ibuf_id);
         }
 
-        pass.draw_indexed(d.index_begin..(d.index_begin + d.index_count), 0, index..(index + 1));
+        pass.draw_indexed(d.index_begin..(d.index_begin + d.index_count), 0, base..(base + count));
     }
+}
+
+// Coalesce key for instanceable draws: two draws merge into one instanced draw only
+// when every field draw_one reads from the WgrDraw3D (other than the per-instance
+// world/conform/material, which ride the storage arrays) is identical.
+#[derive(PartialEq, Eq, Hash)]
+struct BucketKey {
+    mesh: u64,
+    index_begin: u32,
+    index_count: u32,
+    texture_id: u64,
+    sampler: u32,
+    camera: u32,
+    pipeline: PipelineKey,
+}
+
+// One replayable step in the instancing plan (see plan_3d). Draw3D carries the repr
+// draw (mesh/section/texture/pipeline) plus the base_instance range of its instances.
+pub enum Plan3dOp {
+    ClearDepth,
+    Draw2D(u32),  // batch index
+    Terrain(u32), // terrain batch index
+    Draw3D { draw: u32, base: u32, count: u32 },
+}
+
+// The frame's instancing plan: `order[slot]` = the draws index whose world/material
+// packs into that storage slot (base_instance), and `ops` replays the stream with 3D
+// runs collapsed into instanced draws. Ownership is separate from Gfx3d so it can be
+// held across the &mut prepare() borrow and consumed in the render loop.
+pub struct Plan3d {
+    pub order: Vec<u32>,
+    pub ops: Vec<Plan3dOp>,
 }
 
 // Bind/pipeline/buffer state already set on a render pass, so draw_one can skip

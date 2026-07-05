@@ -26,3 +26,9 @@ pollster = "0.4"
 slotmap = "1.0"
 bytemuck = "1.25.0"
 glam = { version = "0.33.2", features = ["bytemuck"] }
+# Fast, non-DoS-resistant hasher (FxHashMap) for hot per-frame maps — the draw
+# instancing plan's BucketKey coalesce, the shadow-caster bucketing, and the
+# pipeline-variant cache. Default SipHash dominated plan_3d (~260ms/frame in
+# profiling); keys are small and engine-authored, so the fast hasher is the right
+# trade. Already in the lock via wgpu, so this adds no new download.
+rustc-hash = "2"

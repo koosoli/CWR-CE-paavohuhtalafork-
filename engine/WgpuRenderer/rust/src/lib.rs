@@ -8,7 +8,7 @@ mod terrain;
 mod textures;
 
 use crate::ffi::{
-    WgrCamera, WgrCmd, WgrCmdKind, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex,
+    WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex,
     WgrOverlayDraw, WgrOverlayVertex, WgrLight, WgrShadowCaster, WgrShadowPass,
     WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams, WgrVertex2D,
 };
@@ -224,11 +224,16 @@ impl Renderer {
         let heightmap_view = self.terrain.heightmap_view();
         let heightmap_gen = self.terrain.heightmap_gen();
         let conform_params = self.terrain.conform_params();
+        // Bucket the frame's 3D draws into instanced groups (see Gfx3d::plan_3d). The
+        // plan's `order` drives the storage-array pack order in prepare(); its `ops`
+        // replace the raw command stream in the replay loop below.
+        let plan = self.gfx3d.plan_3d(cmds, draws3d);
         self.gfx3d.prepare(
             &self.device,
             &self.queue,
             cameras,
             draws3d,
+            &plan.order,
             palette,
             lights,
             &shadow_mask_view,
@@ -281,18 +286,21 @@ impl Renderer {
                 .render_shadow_mask(&self.queue, &mut encoder, sun_to_light);
         }
 
-        // Replay the command stream as one or more segments split at CLEAR_DEPTH.
+        // Replay the instancing plan as one or more segments split at ClearDepth.
         // The first segment clears colour; every segment clears depth. Within a
-        // segment, 2D and 3D draws render interleaved in submission order.
+        // segment, 2D and 3D draws render interleaved in submission order (3D runs
+        // already coalesced into instanced draws by plan_3d).
+        use crate::gfx3d::Plan3dOp;
+        let ops = &plan.ops;
         let mut first = true;
         let mut start = 0usize;
         let mut seg_idx = 0usize;
         loop {
-            let end = cmds[start..]
+            let end = ops[start..]
                 .iter()
-                .position(|c| c.kind == WgrCmdKind::ClearDepth as u32)
+                .position(|o| matches!(o, Plan3dOp::ClearDepth))
                 .map(|p| start + p)
-                .unwrap_or(cmds.len());
+                .unwrap_or(ops.len());
 
             let color_load = if first {
                 wgpu::LoadOp::Clear(wgpu::Color {
@@ -342,32 +350,43 @@ impl Renderer {
             // redundant re-binds. A terrain or 2D draw sets its own pipeline + groups,
             // invalidating the 3D state, so reset it whenever one runs.
             let mut st3d = crate::gfx3d::Pass3dState::default();
-            for cmd in &cmds[start..end] {
-                if cmd.kind == WgrCmdKind::Draw2D as u32 {
-                    st3d = crate::gfx3d::Pass3dState::default();
-                    if let Some(b) = batches.get(cmd.arg as usize) {
-                        self.gfx2d.draw_one(&mut pass, &self.textures, b);
+            for op in &ops[start..end] {
+                match op {
+                    Plan3dOp::Draw2D(arg) => {
+                        st3d = crate::gfx3d::Pass3dState::default();
+                        if let Some(b) = batches.get(*arg as usize) {
+                            self.gfx2d.draw_one(&mut pass, &self.textures, b);
+                        }
                     }
-                } else if cmd.kind == WgrCmdKind::Draw3D as u32 {
-                    if let Some(d) = draws3d.get(cmd.arg as usize) {
-                        self.gfx3d
-                            .draw_one(&mut pass, &self.textures, d, cmd.arg, &mut st3d);
+                    Plan3dOp::Draw3D { draw, base, count } => {
+                        if let Some(d) = draws3d.get(*draw as usize) {
+                            self.gfx3d.draw_one(
+                                &mut pass,
+                                &self.textures,
+                                d,
+                                *base,
+                                *count,
+                                &mut st3d,
+                            );
+                        }
                     }
-                } else if cmd.kind == WgrCmdKind::DrawTerrain as u32 {
-                    st3d = crate::gfx3d::Pass3dState::default();
-                    if let (Some(b), Some(cam)) = (
-                        terrain_batches.get(cmd.arg as usize),
-                        self.gfx3d.camera_bind(),
-                    ) {
-                        let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
-                        self.terrain
-                            .draw(&mut pass, cam, off, b.first_node, b.node_count);
+                    Plan3dOp::Terrain(arg) => {
+                        st3d = crate::gfx3d::Pass3dState::default();
+                        if let (Some(b), Some(cam)) = (
+                            terrain_batches.get(*arg as usize),
+                            self.gfx3d.camera_bind(),
+                        ) {
+                            let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                            self.terrain
+                                .draw(&mut pass, cam, off, b.first_node, b.node_count);
+                        }
                     }
+                    Plan3dOp::ClearDepth => {}
                 }
             }
             drop(pass);
 
-            if end >= cmds.len() {
+            if end >= ops.len() {
                 break;
             }
             start = end + 1;

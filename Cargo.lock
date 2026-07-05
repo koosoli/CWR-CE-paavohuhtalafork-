@@ -3996,6 +3996,7 @@ dependencies = [
  "naga_oil",
  "pollster",
  "raw-window-handle",
+ "rustc-hash 2.1.3",
  "slotmap",
  "wgpu",
 ]
