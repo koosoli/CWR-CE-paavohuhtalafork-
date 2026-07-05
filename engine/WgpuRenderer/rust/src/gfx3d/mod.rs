@@ -251,6 +251,12 @@ struct CameraGroup {
     // Frame-global light storage buffer (binding 3). Fixed capacity, created
     // once, so it stays valid across camera-UBO regrowth / shadow-target swaps.
     lights_buf: wgpu::Buffer,
+    // Terrain sun-shadow (bindings 4-6): a clamping filter sampler and the
+    // world->UV mapping uniform (both created once); the mask texture is owned by
+    // Terrain and lent by view, so the bind rebuilds when its generation changes.
+    mask_sampler: wgpu::Sampler,
+    mapping_buf: wgpu::Buffer,
+    bound_mask_gen: u64,
 }
 
 impl CameraGroup {
@@ -299,6 +305,38 @@ impl CameraGroup {
                     },
                     count: None,
                 },
+                // Long-range terrain sun-shadow mask (Rgba16Float, filterable) +
+                // its clamping sampler + the world->UV mapping uniform. Written by
+                // the terrain compute sweep; sampled here so lit meshes (not just
+                // terrain) receive a mountain's cast shadow.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(
+                            std::mem::size_of::<crate::terrain::TerrainShadowMap>() as u64,
+                        ),
+                    },
+                    count: None,
+                },
             ],
         });
         let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -316,6 +354,22 @@ impl CameraGroup {
             compare: Some(wgpu::CompareFunction::LessEqual),
             ..Default::default()
         });
+        let mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_terrain_shadow_mask_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..Default::default()
+        });
+        let mapping_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_terrain_shadow_mapping"),
+            size: std::mem::size_of::<crate::terrain::TerrainShadowMap>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
         let align = device
             .limits()
             .min_uniform_buffer_offset_alignment
@@ -330,6 +384,9 @@ impl CameraGroup {
             bind: None,
             bound_shadow_gen: u64::MAX,
             lights_buf,
+            mask_sampler,
+            mapping_buf,
+            bound_mask_gen: u64::MAX,
         }
     }
 
@@ -342,12 +399,15 @@ impl CameraGroup {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn ensure(
         &mut self,
         device: &wgpu::Device,
         count: usize,
         shadow_view: &wgpu::TextureView,
         shadow_gen: u64,
+        mask_view: &wgpu::TextureView,
+        mask_gen: u64,
     ) {
         let needed = count as u64 * self.stride;
         let grow = self.cap < needed || self.buf.is_none();
@@ -361,7 +421,11 @@ impl CameraGroup {
             }));
             self.cap = cap;
         }
-        if grow || self.bound_shadow_gen != shadow_gen || self.bind.is_none() {
+        if grow
+            || self.bound_shadow_gen != shadow_gen
+            || self.bound_mask_gen != mask_gen
+            || self.bind.is_none()
+        {
             self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
                 label: Some("wgr_3d_camera_bind"),
                 layout: &self.layout,
@@ -386,10 +450,28 @@ impl CameraGroup {
                         binding: 3,
                         resource: self.lights_buf.as_entire_binding(),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: wgpu::BindingResource::TextureView(mask_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: wgpu::BindingResource::Sampler(&self.mask_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 6,
+                        resource: self.mapping_buf.as_entire_binding(),
+                    },
                 ],
             }));
             self.bound_shadow_gen = shadow_gen;
+            self.bound_mask_gen = mask_gen;
         }
+    }
+
+    // Upload the world->UV shadow-mask mapping for this frame (cheap; overwrites).
+    fn upload_mapping(&self, queue: &wgpu::Queue, mapping: &crate::terrain::TerrainShadowMap) {
+        queue.write_buffer(&self.mapping_buf, 0, bytemuck::bytes_of(mapping));
     }
 }
 
@@ -1456,6 +1538,7 @@ impl Gfx3d {
     // Upload cameras, per-draw world matrices, and the skinned-draw bone palette;
     // regrow the dynamic UBOs. `palette` is a flat pool of PALETTE_SIZE-matrix
     // blocks, one per palette slot (world already pre-multiplied in on the C++ side).
+    #[allow(clippy::too_many_arguments)]
     pub fn prepare(
         &mut self,
         device: &wgpu::Device,
@@ -1464,10 +1547,15 @@ impl Gfx3d {
         draws: &[WgrDraw3D],
         palette: &[WgrMat4],
         lights: &[WgrLight],
+        shadow_mask_view: &wgpu::TextureView,
+        shadow_mask_gen: u64,
+        shadow_mapping: &crate::terrain::TerrainShadowMap,
     ) {
         // Frame-global lights into the group-0 storage buffer (shared with
         // terrain via the camera bind group). The per-camera count is in cam_pos.w.
         self.cameras.upload_lights(queue, lights);
+        // Terrain sun-shadow world->UV mapping for the lit-mesh sampler (group 0).
+        self.cameras.upload_mapping(queue, shadow_mapping);
         if !cameras.is_empty() {
             // Bind the current shadow map (or the dummy while none exists); the
             // depth passes for this frame were prepared before this call, so the
@@ -1477,8 +1565,14 @@ impl Gfx3d {
                 .as_ref()
                 .map(|t| &t.sample_view)
                 .unwrap_or(&self.dummy_shadow_view);
-            self.cameras
-                .ensure(device, cameras.len(), shadow_view, self.shadow_gen);
+            self.cameras.ensure(
+                device,
+                cameras.len(),
+                shadow_view,
+                self.shadow_gen,
+                shadow_mask_view,
+                shadow_mask_gen,
+            );
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {
                 queue.write_buffer(buf, i as u64 * self.cameras.stride, bytemuck::bytes_of(c));

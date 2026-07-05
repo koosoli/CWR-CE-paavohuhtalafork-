@@ -196,8 +196,22 @@ impl Renderer {
         // the camera group.
         self.gfx3d
             .prepare_shadows(&self.device, &self.queue, shadow, shadow_casters);
-        self.gfx3d
-            .prepare(&self.device, &self.queue, cameras, draws3d, palette, lights);
+        // The terrain owns the sun-shadow mask; lend its view + world->UV mapping to
+        // the shared camera group(0) so lit meshes receive terrain shadow too.
+        let shadow_mask_view = self.terrain.shadow_mask_view();
+        let shadow_mask_gen = self.terrain.shadow_gen();
+        let shadow_mapping = self.terrain.shadow_mapping();
+        self.gfx3d.prepare(
+            &self.device,
+            &self.queue,
+            cameras,
+            draws3d,
+            palette,
+            lights,
+            &shadow_mask_view,
+            shadow_mask_gen,
+            &shadow_mapping,
+        );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
 

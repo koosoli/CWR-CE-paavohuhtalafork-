@@ -55,6 +55,41 @@ struct Light {
 // is a fixed capacity, so its length is not the count).
 @group(0) @binding(3) var<storage, read> lights: array<Light>;
 
+// Long-range terrain sun-shadow mask (terrain_shadow.wgsl compute sweep), promoted
+// into the shared frame group so BOTH terrain and lit meshes sample it — that is
+// how objects (infantry, buildings, aircraft) receive a mountain's cast shadow, not
+// just the terrain. Per column it stores the world height below which that column is
+// terrain-shadowed: .r = ceiling, .g = penumbra half-width (m), .b = strength; a
+// point at (xz, y) is occluded by how far y sits below the ceiling. `map` takes a
+// world-xz to the mask's [0,1] UV; enabled = 0 until a heightmap is loaded.
+struct TerrainShadowMap {
+    origin: vec2<f32>,     // world_origin
+    inv_span: vec2<f32>,   // 1 / (hm_dims * terrain_grid): world-xz -> [0,1] over the map
+    half_texel: vec2<f32>, // 0.5 / mask_dims
+    enabled: f32,
+    pad: f32,
+};
+@group(0) @binding(4) var terrain_shadow_mask: texture_2d<f32>;
+@group(0) @binding(5) var terrain_shadow_samp: sampler;
+@group(0) @binding(6) var<uniform> terrain_shadow_map: TerrainShadowMap;
+
+// Occlusion [0,1] of the sun by terrain at world position (xz, y): 0 = lit, 1 =
+// fully in terrain shadow. Zero when the feature is off or the point is off the map
+// or above the shadow ceiling. Shared by the terrain and lit-mesh fragment shaders.
+fn terrain_sun_shadow(world_xz: vec2<f32>, world_y: f32) -> f32 {
+    if (terrain_shadow_map.enabled < 0.5) {
+        return 0.0;
+    }
+    let uv = (world_xz - terrain_shadow_map.origin) * terrain_shadow_map.inv_span
+             + terrain_shadow_map.half_texel;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return 0.0;
+    }
+    let sm = textureSampleLevel(terrain_shadow_mask, terrain_shadow_samp, uv, 0.0);
+    let lit = smoothstep(sm.r - sm.g, sm.r + sm.g + 1e-3, world_y);
+    return clamp(sm.b * (1.0 - lit), 0.0, 1.0);
+}
+
 // Reversed-Z: the shared projection is forward (near->0, far->1). Remap to
 // near->1, far->0 so the float depth buffer spends its exponent bits where
 // geometry actually is (far from 0), which massively improves precision at range

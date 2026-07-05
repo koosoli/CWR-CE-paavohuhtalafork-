@@ -4,7 +4,7 @@
 // point): the plain pipeline binds `object`, the skinned pipeline binds the
 // bone `palette` (from the skin module). Shadowing is the shared cascade kernel.
 
-#import frame::{frame, reverse_z, fog_factor}
+#import frame::{frame, reverse_z, fog_factor, terrain_sun_shadow}
 #import shadow::shadow_strength
 #import skin::{skin_pos, skin_normal}
 #import lighting::lights_contrib
@@ -40,6 +40,13 @@ struct Material {
 // per-draw binding avoids a 5th bind group (wgpu's default maxBindGroups is 4).
 override alpha_ref: f32 = 0.0;   // discard fragments with alpha below this (0 = off)
 override is_shadow: f32 = 0.0;   // 1 = output black + shadow-strength alpha
+// Brightness a fully terrain-shadowed alpha-tested surface (foliage cutout) keeps.
+// Dense canopy self-occludes its sky ambient — which the world-space terrain mask
+// can't model and foliage materials inflate for the sunlit look — so shadowed
+// leaves stay too bright under the ambient-preserving model that suits solid
+// ground/decals. This extra multiply darkens only alpha-tested foliage in terrain
+// shadow toward the close-up CSM look. 1 = off (no extra darkening).
+override foliage_shadow_ao: f32 = 0.35;
 // Decal/overlay depth bias in reversed-NDC depth units, pulling the draw toward the
 // camera. Applied in the vertex shader (not DepthBiasState, which is a no-op on the
 // float depth format this backend gets) so roads/decals/overlays win the depth test
@@ -123,7 +130,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // dotted against its negation like the sun term there.
     let nrm = normalize(in.normal);
     let ndotl = max(dot(nrm, -frame.sun_dir_world.xyz), 0.0);
-    let sun = material.emissive.rgb + material.sun_ambient.rgb + material.sun_diffuse.rgb * ndotl;
+    // Long-range terrain sun-shadow (a mountain casting onto this object): removes
+    // the direct sun — diffuse + specular — but keeps ambient/emissive/local, the
+    // same model the terrain uses, so an object darkens like the ground it stands on
+    // and never goes black. Sampled by the object's absolute world position
+    // (world_pos is camera-relative). CSM (below) still handles near object shadows.
+    let world_abs = in.world_pos + frame.cam_pos.xyz;
+    let terrain_s = terrain_sun_shadow(world_abs.xz, world_abs.y);
+    let sun_vis = 1.0 - terrain_s;
+    let sun = material.emissive.rgb + material.sun_ambient.rgb
+              + material.sun_diffuse.rgb * ndotl * sun_vis;
     let local = lights_contrib(in.world_pos, nrm, material.light_diffuse.rgb, material.light_ambient.rgb);
     let lit = clamp(sun + local, vec3<f32>(0.0), vec3<f32>(1.0));
     var rgb = base.rgb * lit;
@@ -137,7 +153,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let half_vec = normalize(-frame.sun_dir_world.xyz + view_dir);
         let n_dot_h = max(dot(nrm, half_vec), 0.0);
         let spec = material.specular.rgb * pow(n_dot_h, max(material.specular.w, 1.0));
-        rgb += clamp(spec, vec3<f32>(0.0), vec3<f32>(1.0));
+        rgb += clamp(spec * sun_vis, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+    // Canopy self-occlusion for alpha-tested foliage in terrain shadow (see the
+    // foliage_shadow_ao note). Terrain-shadow only — CSM already darkens near
+    // foliage correctly — and skipped for solids so ground decals keep matching the
+    // terrain. Compile-time branch (alpha_ref is a pipeline constant), no divergence.
+    if (alpha_ref > 0.0) {
+        rgb *= mix(1.0, foliage_shadow_ao, terrain_s);
     }
     let s = shadow_strength(in.world_pos, nrm, in.fog, dwx, dwy);
     rgb *= mix(1.0, frame.shadow.ctlb.y, s);

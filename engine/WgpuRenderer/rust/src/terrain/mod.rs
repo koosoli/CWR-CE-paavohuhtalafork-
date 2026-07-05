@@ -42,6 +42,20 @@ struct ShadowSweep {
     sun_dir: glam::Vec4,
 }
 
+// World-xz -> shadow-mask-UV mapping, uploaded into the shared frame group(0) so
+// the lit-mesh shader can sample terrain shadow by an object's world position (the
+// terrain shader still maps from its own params). Matches TerrainShadowMap in
+// frame.wgsl. `enabled` gates the sample off until a real heightmap is loaded.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct TerrainShadowMap {
+    pub origin: glam::Vec2,
+    pub inv_span: glam::Vec2,
+    pub half_texel: glam::Vec2,
+    pub enabled: f32,
+    pub _pad: f32,
+}
+
 // Mask dimensions for a heightmap of the given size: `scale`x finer, but never
 // smaller than the heightmap and never past the dimension cap or the device limit.
 fn shadow_mask_dims(w: u32, h: u32, scale: u32, max_dim: u32) -> (u32, u32) {
@@ -67,6 +81,10 @@ pub struct Terrain {
     // heightmap changing. world_origin/terrain_grid/hm_* feed the sweep uniform.
     #[allow(dead_code)] // kept alive: group1_bind + sweep_bind reference its view
     shadow_mask: wgpu::Texture,
+    // Persistent view of the current mask, lent to the shared frame group(0) so lit
+    // meshes sample terrain shadow; mask_gen bumps on realloc so that bind rebuilds.
+    shadow_mask_view: wgpu::TextureView,
+    mask_gen: u64,
     shadow_sweep_ubo: wgpu::Buffer,
     shadow_sweep_layout: wgpu::BindGroupLayout,
     shadow_sweep_bind: wgpu::BindGroup,
@@ -204,7 +222,7 @@ impl Terrain {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture {
                             access: wgpu::StorageTextureAccess::WriteOnly,
-                            format: wgpu::TextureFormat::Rgba8Unorm,
+                            format: wgpu::TextureFormat::Rgba16Float,
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -591,6 +609,8 @@ impl Terrain {
             group1_bind,
             have_heightmap: false,
             shadow_mask,
+            shadow_mask_view,
+            mask_gen: 0,
             shadow_sweep_ubo,
             shadow_sweep_layout,
             shadow_sweep_bind,
@@ -684,6 +704,8 @@ impl Terrain {
             &mask_view,
         );
         self.shadow_mask = shadow_mask;
+        self.shadow_mask_view = mask_view;
+        self.mask_gen += 1;
         self.world_origin = params.world_origin;
         self.terrain_grid = params.terrain_grid;
         // Tallest terrain point: lets the march stop once the ray climbs above all
@@ -791,11 +813,40 @@ impl Terrain {
                     &mview,
                 );
                 self.shadow_mask = mask;
+                self.shadow_mask_view = mview;
+                self.mask_gen += 1;
                 self.mask_width = mw;
                 self.mask_height = mh;
             }
         }
         self.shadow_dirty = true;
+    }
+
+    // Shared-group(0) accessors: the mask view + world->UV mapping + a generation
+    // that bumps on realloc, so the camera bind group (which lends this mask to lit
+    // meshes) rebuilds only when the texture actually moved.
+    pub fn shadow_mask_view(&self) -> wgpu::TextureView {
+        self.shadow_mask_view.clone()
+    }
+
+    pub fn shadow_gen(&self) -> u64 {
+        self.mask_gen
+    }
+
+    pub fn shadow_mapping(&self) -> TerrainShadowMap {
+        TerrainShadowMap {
+            origin: self.world_origin,
+            inv_span: glam::Vec2::new(
+                1.0 / (self.terrain_grid * self.hm_width as f32),
+                1.0 / (self.terrain_grid * self.hm_height as f32),
+            ),
+            half_texel: glam::Vec2::new(
+                0.5 / self.mask_width as f32,
+                0.5 / self.mask_height as f32,
+            ),
+            enabled: if self.have_heightmap { 1.0 } else { 0.0 },
+            _pad: 0.0,
+        }
     }
 
     // Ground layers as views into the shared texture registry (missing handles
@@ -980,9 +1031,11 @@ fn create_heightmap(device: &wgpu::Device, w: u32, h: u32) -> (wgpu::Texture, wg
     (tex, view)
 }
 
-// Rgba8Unorm mask on the heightmap grid: storage-written by the sweep (.r = lit
-// factor), sampled with hardware bilinear in fs_terrain. Rgba8Unorm is the sweet
-// spot — core-guaranteed storage-writable *and* filterable (no FLOAT32_FILTERABLE).
+// Rgba16Float mask on the heightmap grid: storage-written by the sweep (.r =
+// shadow-ceiling world height, .g = penumbra half-width in metres, .b = strength),
+// sampled with hardware bilinear in fs_terrain. Rgba16Float is the sweet spot —
+// core-guaranteed storage-writable *and* filterable (no FLOAT32_FILTERABLE), with
+// ample precision to store a world height (~0.5 m at 500 m).
 fn create_shadow_mask(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("wgr_terrain_shadow_mask"),
@@ -994,7 +1047,7 @@ fn create_shadow_mask(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
+        format: wgpu::TextureFormat::Rgba16Float,
         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     })

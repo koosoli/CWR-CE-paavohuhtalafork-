@@ -231,16 +231,22 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
 
     // Combined sun shadow: CSM (objects + near contact) and the long-range
     // heightfield mask (terrain-on-terrain) compose by max() — whichever occludes
-    // the sun more wins. Both fade out with fog. The mask stores a lit factor in
-    // .r, so its occlusion is 1 - r. Its grid is `scale`x the heightmap (sharper
-    // edges), so sample in mask-texel space: world -> heightfield texel -> * scale,
-    // landing on texel centres at (coord + 0.5)/dims.
+    // the sun more wins. Both fade out with fog. The mask stores, per column, the
+    // world height below which that column is terrain-shadowed (.r = ceiling,
+    // .g = penumbra half-width in metres, .b = strength), so a point is shadowed by
+    // how far its world height sits below the ceiling. Its grid is `scale`x the
+    // heightmap (sharper edges): sample in mask-texel space (world -> heightfield
+    // texel -> * scale), landing on texel centres at (coord + 0.5)/dims.
     let csm_s = shadow_strength(in.world_pos, n, in.fog, dwx, dwy);
     let mask_dims = vec2<f32>(textureDimensions(shadow_mask));
     let mask_scale = mask_dims / vec2<f32>(f32(tp.hm_width), f32(tp.hm_height));
     let mask_coord = (in.world_xz - tp.world_origin) / tp.terrain_grid * mask_scale;
     let mask_uv = (mask_coord + vec2<f32>(0.5)) / mask_dims;
-    let terrain_s = (1.0 - textureSampleLevel(shadow_mask, shadow_mask_samp, mask_uv, 0.0).r) * in.fog;
+    let sm = textureSampleLevel(shadow_mask, shadow_mask_samp, mask_uv, 0.0);
+    // Absolute world height of this fragment (world_pos is camera-relative).
+    let world_y = in.world_pos.y + frame.cam_pos.y;
+    let lit = smoothstep(sm.r - sm.g, sm.r + sm.g + 1e-3, world_y);
+    let terrain_s = clamp(sm.b * (1.0 - lit), 0.0, 1.0) * in.fog;
     let shadow = max(csm_s, terrain_s);
 
     // A shadow removes the direct sun (the N.L diffuse term); sky ambient and the
