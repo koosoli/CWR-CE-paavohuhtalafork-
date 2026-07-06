@@ -855,13 +855,6 @@ pub struct Gfx3d {
     dummy_shadow_view: wgpu::TextureView,
 
     meshes: SlotMap<MeshKey, Mesh>,
-
-    // Persistent per-frame scratch for the packed world/material upload arrays. Cleared
-    // and refilled each frame (retaining capacity) so prepare() doesn't allocate+free a
-    // fresh Vec of thousands of entries every frame — that alloc/free churn was a
-    // measurable slice of frame-start CPU time.
-    objects_scratch: Vec<ObjectGpu>,
-    materials_scratch: Vec<MaterialUbo>,
 }
 
 impl Gfx3d {
@@ -1086,8 +1079,6 @@ impl Gfx3d {
             shadow_gen: 0,
             dummy_shadow_view,
             meshes: SlotMap::with_key(),
-            objects_scratch: Vec::new(),
-            materials_scratch: Vec::new(),
         }
     }
 
@@ -1954,56 +1945,57 @@ impl Gfx3d {
         let mut palette_grew = false;
         let mut material_grew = false;
         if !order.is_empty() {
-            // Pack the whole frame's world matrices + materials contiguously and
-            // upload each in a SINGLE write_buffer (indexed in-shader by
-            // instance_index). This replaces the per-draw write_buffer loops that
-            // produced ~2N staging copies + barriers at frame start. The pack order
-            // is the instancing plan's slot order (not raw draw order): a bucket's
-            // instances land in a contiguous slot range so one draw covers them all.
-            // Reuse the persistent scratch Vecs (clear retains capacity) rather than
-            // collect()ing a fresh allocation every frame — the per-frame alloc/free of
-            // thousands of entries was a measurable slice of prepare()'s cost.
-            self.objects_scratch.clear();
-            self.objects_scratch.extend(order.iter().map(|&i| {
-                let d = &draws[i as usize];
-                ObjectGpu {
-                    world: d.world,
-                    conform0: d.conform0,
-                    conform1: d.conform1,
-                    conform2: d.conform2,
-                }
-            }));
-            world_grew = self.world.ensure(
-                device,
-                std::mem::size_of_val(self.objects_scratch.as_slice()) as u64,
-            );
-            queue.write_buffer(
-                self.world.buf.as_ref().unwrap(),
-                0,
-                bytemuck::cast_slice(&self.objects_scratch),
-            );
+            // Pack the whole frame's world matrices + materials contiguously, one upload each,
+            // indexed in-shader by instance_index. The pack order is the instancing plan's slot
+            // order (not raw draw order): a bucket's instances land in a contiguous slot range so
+            // one draw covers them all.
+            //
+            // write_buffer_with hands us a WRITE-ONLY view of wgpu's staging memory (it may be
+            // write-combined, so reads are disallowed). We build each struct straight into that view
+            // via into_chunks + write_iter — no intermediate scratch Vec and no second memcpy, which
+            // is what plain write_buffer would cost (build a Vec, then memcpy it into staging).
+            // obj_bytes/mat_bytes are exact multiples of the element size, so the chunk remainder is
+            // always empty.
+            let n = order.len();
+            const OBJ_SZ: usize = std::mem::size_of::<ObjectGpu>();
+            let obj_bytes = (n * OBJ_SZ) as u64;
+            world_grew = self.world.ensure(device, obj_bytes);
+            if let Some(sz) = wgpu::BufferSize::new(obj_bytes) {
+                let mut view = queue
+                    .write_buffer_with(self.world.buf.as_ref().unwrap(), 0, sz)
+                    .expect("world staging view");
+                let (chunks, _rem) = view.slice(..).into_chunks::<OBJ_SZ>();
+                chunks.write_iter(order.iter().map(|&i| {
+                    let d = &draws[i as usize];
+                    bytemuck::cast::<ObjectGpu, [u8; OBJ_SZ]>(ObjectGpu {
+                        world: d.world,
+                        conform0: d.conform0,
+                        conform1: d.conform1,
+                        conform2: d.conform2,
+                    })
+                }));
+            }
 
-            self.materials_scratch.clear();
-            self.materials_scratch.extend(order.iter().map(|&i| {
-                let d = &draws[i as usize];
-                MaterialUbo {
-                    emissive: d.mat_emissive,
-                    sun_ambient: d.mat_sun_ambient,
-                    sun_diffuse: d.mat_sun_diffuse,
-                    light_diffuse: d.mat_light_diffuse,
-                    light_ambient: d.mat_light_ambient,
-                    specular: d.mat_specular,
-                }
-            }));
-            material_grew = self.material.ensure(
-                device,
-                std::mem::size_of_val(self.materials_scratch.as_slice()) as u64,
-            );
-            queue.write_buffer(
-                self.material.buf.as_ref().unwrap(),
-                0,
-                bytemuck::cast_slice(&self.materials_scratch),
-            );
+            const MAT_SZ: usize = std::mem::size_of::<MaterialUbo>();
+            let mat_bytes = (n * MAT_SZ) as u64;
+            material_grew = self.material.ensure(device, mat_bytes);
+            if let Some(sz) = wgpu::BufferSize::new(mat_bytes) {
+                let mut view = queue
+                    .write_buffer_with(self.material.buf.as_ref().unwrap(), 0, sz)
+                    .expect("material staging view");
+                let (chunks, _rem) = view.slice(..).into_chunks::<MAT_SZ>();
+                chunks.write_iter(order.iter().map(|&i| {
+                    let d = &draws[i as usize];
+                    bytemuck::cast::<MaterialUbo, [u8; MAT_SZ]>(MaterialUbo {
+                        emissive: d.mat_emissive,
+                        sun_ambient: d.mat_sun_ambient,
+                        sun_diffuse: d.mat_sun_diffuse,
+                        light_diffuse: d.mat_light_diffuse,
+                        light_ambient: d.mat_light_ambient,
+                        specular: d.mat_specular,
+                    })
+                }));
+            }
         }
         // One dynamic-UBO slot per PALETTE_SIZE-matrix block. A block is exactly
         // the UBO bind size, so slot s lives at s * stride.
