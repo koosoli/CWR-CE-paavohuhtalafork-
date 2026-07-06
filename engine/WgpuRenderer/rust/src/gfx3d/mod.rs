@@ -55,7 +55,7 @@ fn decal_scale() -> f32 {
     env_f32("WGR_DECAL_SCALE", 1.0)
 }
 
-fn env_f32(name: &'static str, default: f32) -> f32 {
+pub(crate) fn env_f32(name: &'static str, default: f32) -> f32 {
     use std::collections::HashMap;
     use std::sync::{Mutex, OnceLock};
     static CACHE: OnceLock<Mutex<HashMap<&'static str, f32>>> = OnceLock::new();
@@ -1193,10 +1193,18 @@ impl Gfx3d {
         } else {
             0.0
         };
+        // HDR path: the scene color target is Rgba16Float only when the HDR pipeline
+        // is on, so it doubles as the `linear` shading signal (decode + no clamp).
+        let linear = if self.surface_format == wgpu::TextureFormat::Rgba16Float {
+            1.0
+        } else {
+            0.0
+        };
         let constants = [
             ("alpha_ref", alpha_ref),
             ("is_shadow", is_shadow),
             ("depth_bias", depth_bias),
+            ("linear", linear),
         ];
 
         // Shadow draws exclude already-shadowed pixels via the stencil: test EQUAL
@@ -2157,6 +2165,9 @@ impl Gfx3d {
             } else if cmd.kind == WgrCmdKind::ClearDepth as u32 {
                 flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
                 ops.push(Plan3dOp::ClearDepth);
+            } else if cmd.kind == WgrCmdKind::Resolve as u32 {
+                flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
+                ops.push(Plan3dOp::Resolve);
             }
         }
         flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
@@ -2303,6 +2314,9 @@ pub enum Plan3dOp {
     Draw2D(u32),  // batch index
     Terrain(u32), // terrain batch index
     Draw3D { draw: u32, base: u32, count: u32 },
+    // Scene->UI seam: tonemap the HDR target to the swapchain; ops after this are
+    // display-referred UI (drawn straight to the swapchain).
+    Resolve,
 }
 
 // The frame's instancing plan: `order[slot]` = the draws index whose world/material

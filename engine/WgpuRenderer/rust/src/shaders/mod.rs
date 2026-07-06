@@ -33,6 +33,7 @@ pub fn build_composer() -> Composer {
         | naga::valid::Capabilities::TEXTURE_AND_SAMPLER_BINDING_ARRAY_NON_UNIFORM_INDEXING;
     let mut composer = Composer::default().with_capabilities(capabilities);
     for (source, file_path) in [
+        (include_str!("color.wgsl"), "color.wgsl"),
         (include_str!("frame.wgsl"), "frame.wgsl"),
         (include_str!("skin.wgsl"), "skin.wgsl"),
         (include_str!("conform.wgsl"), "conform.wgsl"),

@@ -10,6 +10,7 @@
 #import frame::{frame, reverse_z, fog_factor}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
+#import color::srgb_to_linear
 
 struct TerrainParams {
     world_origin: vec2<f32>,
@@ -171,6 +172,9 @@ fn vs_terrain(
 // smears a wide muddy seam; narrowing it to a band near the boundary keeps cell
 // interiors crisp. 0 -> hard edges (GL33-like); 0.5 -> full-cell blend.
 override blend_width: f32 = 0.15;
+// HDR path (docs/hdr-pipeline-plan.md): 1 = decode ground albedo + sun/light/fog
+// colours from sRGB to linear and drop the [0,1] radiance clamp. 0 = gamma-naive.
+override linear: f32 = 0.0;
 
 @fragment
 fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
@@ -225,6 +229,11 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     // r0.rgb *= t1.a * 2.0, detail UV = base UV * 32).
     let detail_a = textureSample(detail, ground_samp, tile_uv * 32.0).a;
     rgb *= detail_a * 2.0;
+    // HDR path: decode the gamma-space ground albedo (blend + detail done in gamma,
+    // the §5 pragmatic fold) to linear before lighting.
+    if (linear > 0.5) {
+        rgb = srgb_to_linear(rgb);
+    }
 
     // Per-pixel normal at a fixed heightmap step (independent of patch LOD/morph).
     let n = sample_normal(in.world_xz, tp.terrain_grid);
@@ -255,11 +264,21 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     // shadow and never collapses to pure black when CSM's darkness constant is 0
     // (shadow maps disabled). Terrain has no material, so local lights modulate white.
     let cos_fi = max(dot(n, -frame.sun_dir_world.xyz), 0.0);
-    let sun = min(frame.sun_diffuse.rgb * cos_fi * (1.0 - shadow) + frame.sun_ambient.rgb,
-                  vec3<f32>(1.0));
-    let local = lights_contrib(in.world_pos, n, vec3<f32>(1.0), vec3<f32>(1.0));
-    rgb *= clamp(sun + local, vec3<f32>(0.0), vec3<f32>(1.0));
+    var sun_diffuse = frame.sun_diffuse.rgb;
+    var sun_ambient = frame.sun_ambient.rgb;
+    var fog_color = frame.fog_color.rgb;
+    if (linear > 0.5) {
+        sun_diffuse = srgb_to_linear(sun_diffuse);
+        sun_ambient = srgb_to_linear(sun_ambient);
+        fog_color = srgb_to_linear(fog_color);
+    }
+    let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) + sun_ambient;
+    // HDR keeps radiance uncapped into the float target; LDR saturates like GL33.
+    let sun = select(min(sun_raw, vec3<f32>(1.0)), sun_raw, linear > 0.5);
+    let local = lights_contrib(in.world_pos, n, vec3<f32>(1.0), vec3<f32>(1.0), linear);
+    let light_sum = sun + local;
+    rgb *= select(clamp(light_sum, vec3<f32>(0.0), vec3<f32>(1.0)), max(light_sum, vec3<f32>(0.0)), linear > 0.5);
 
-    rgb = mix(frame.fog_color.rgb, rgb, in.fog);
+    rgb = mix(fog_color, rgb, in.fog);
     return vec4<f32>(rgb, 1.0);
 }

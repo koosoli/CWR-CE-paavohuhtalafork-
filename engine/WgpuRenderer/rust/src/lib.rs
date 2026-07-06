@@ -6,6 +6,7 @@ mod log;
 mod shaders;
 mod terrain;
 mod textures;
+mod tonemap;
 
 use crate::ffi::{
     WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex,
@@ -13,10 +14,34 @@ use crate::ffi::{
     WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams, WgrVertex2D,
 };
 use crate::gfx2d::Gfx2d;
-use crate::gfx3d::Gfx3d;
+use crate::gfx3d::{Gfx3d, env_f32};
 use crate::log::{LogSink, log_level};
 use crate::terrain::Terrain;
 use crate::textures::{SharedTextures, TextureData, TextureFormat};
+use crate::tonemap::Tonemap;
+
+// Offscreen HDR scene target format (see docs/hdr-pipeline-plan.md §0.2). Alpha kept
+// for blending; full float precision to avoid banding in dark skies at night.
+const HDR_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+// Like env_f32 but keeps a 0 value (env_f32 filters to >0 for scales). Used for the
+// tonemap mode/encode toggles where 0 is a meaningful "off".
+fn env_f32_opt(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(default)
+}
+
+// sRGB -> linear for a single channel (matches the shader `srgb_to_linear`), for
+// linearizing the CPU-side clear colour that seeds the HDR target.
+fn srgb_to_linear_ch(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
 
 pub struct Renderer {
     log: LogSink,
@@ -29,6 +54,17 @@ pub struct Renderer {
     gfx2d: Gfx2d,
     gfx3d: Gfx3d,
     terrain: Terrain,
+    // HDR pipeline (docs/hdr-pipeline-plan.md). When enabled, the 3D/terrain/2D
+    // scene renders into `hdr` (linear once Stage 2 lands) and `tonemap` resolves it
+    // to the swapchain; the dev overlay + (later) screen-space UI composite after.
+    // All None/false = the LDR-direct-to-swapchain path, the A/B reference.
+    hdr_enabled: bool,
+    hdr: Option<(wgpu::Texture, wgpu::TextureView)>,
+    hdr_size: (u32, u32),
+    tonemap: Option<Tonemap>,
+    // Live tonemap/look params, pushed from the ImGui Tonemap tab (wgr_set_tonemap).
+    // Seeded from WGR_* env for continuity; the tab is the source of truth once open.
+    tonemap_params: ffi::WgrTonemap,
 }
 
 impl Renderer {
@@ -131,21 +167,41 @@ impl Renderer {
 
         surface.configure(&device, &config);
 
+        // HDR path (docs/hdr-pipeline-plan.md). Gated by WGR_HDR for now; the engine
+        // config/CLI flag drives it once Stage 2's C++ work lands. When on, the scene
+        // subsystems target the offscreen HDR format and a tonemap pass resolves to the
+        // swapchain; the overlay pipeline always targets the swapchain format.
+        let hdr_enabled = std::env::var("WGR_HDR").map(|v| v != "0").unwrap_or(false);
+        let color_format = if hdr_enabled { HDR_FORMAT } else { config.format };
+        if hdr_enabled {
+            log.log(log_level::INFO, "wgpu HDR path enabled (WGR_HDR)");
+        }
+
         let textures = SharedTextures::new(&device, &queue, bc_supported);
         // One composer, pre-loaded with the shared shader modules, shared by the
         // 3D subsystems that #import them.
         let mut composer = shaders::build_composer();
-        let gfx2d = Gfx2d::new(&device, &textures, config.format);
-        let gfx3d = Gfx3d::new(&device, &textures, config.format, &mut composer);
+        let gfx2d = Gfx2d::new(&device, &textures, color_format, config.format);
+        let gfx3d = Gfx3d::new(&device, &textures, color_format, &mut composer);
         let terrain = Terrain::new(
             &device,
             &queue,
             gfx3d.camera_layout(),
-            config.format,
+            color_format,
             !partially_bound.is_empty(),
             textures.white_view().clone(),
             &mut composer,
         );
+        let tonemap = hdr_enabled.then(|| Tonemap::new(&device, config.format));
+        // Seed live params from the env knobs so behaviour is unchanged until the
+        // ImGui tab pushes its own values (env_f32's >0 filter is fine for scales;
+        // env_f32_opt keeps a 0 for the mode/encode toggles).
+        let tonemap_params = ffi::WgrTonemap {
+            exposure: env_f32("WGR_EXPOSURE", 1.0),
+            mode: env_f32_opt("WGR_TONEMAP", 1.0),
+            encode: env_f32_opt("WGR_HDR_ENCODE", 1.0),
+            ..Default::default()
+        };
 
         Ok(Self {
             log,
@@ -157,7 +213,48 @@ impl Renderer {
             gfx2d,
             gfx3d,
             terrain,
+            hdr_enabled,
+            hdr: None,
+            hdr_size: (0, 0),
+            tonemap,
+            tonemap_params,
         })
+    }
+
+    // Live update from the ImGui Tonemap tab (via wgr_set_tonemap). Applied on the
+    // next frame's resolve; ignored on the LDR-direct path (no tonemap pass).
+    fn set_tonemap(&mut self, params: ffi::WgrTonemap) {
+        self.tonemap_params = params;
+    }
+
+    // Tonemap the HDR scene target onto `dst` (the swapchain). No-op if the tonemap
+    // pass doesn't exist (LDR-direct path).
+    fn run_tonemap(&self, encoder: &mut wgpu::CommandEncoder, dst: &wgpu::TextureView) {
+        let Some(tonemap) = self.tonemap.as_ref() else {
+            return;
+        };
+        // Live params from the ImGui Tonemap tab (seeded from WGR_* at startup).
+        tonemap.upload_params(&self.queue, &self.tonemap_params);
+        encoder.push_debug_group("wgr_tonemap");
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wgr_tonemap"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: dst,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        tonemap.render(&mut pass);
+        drop(pass);
+        encoder.pop_debug_group();
     }
 
     fn resize(&mut self, width: u32, height: u32) {
@@ -167,6 +264,38 @@ impl Renderer {
         self.config.width = width;
         self.config.height = height;
         self.surface.configure(&self.device, &self.config);
+    }
+
+    // (Re)allocate the offscreen HDR scene target to match the swapchain size, and
+    // repoint the tonemap resolve at the new view. No-op when the HDR path is off or
+    // the size is unchanged. Mirrors Gfx3d::ensure_depth.
+    fn ensure_hdr(&mut self, width: u32, height: u32) {
+        if !self.hdr_enabled || width == 0 || height == 0 {
+            return;
+        }
+        if self.hdr.is_some() && self.hdr_size == (width, height) {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_hdr_target"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        if let Some(tonemap) = self.tonemap.as_mut() {
+            tonemap.set_source(&self.device, &view);
+        }
+        self.hdr = Some((texture, view));
+        self.hdr_size = (width, height);
     }
 
     // `None` = skip this frame
@@ -245,6 +374,7 @@ impl Renderer {
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
+        self.ensure_hdr(self.config.width, self.config.height);
 
         let Some(frame) = self.acquire()? else {
             return Ok(());
@@ -253,6 +383,14 @@ impl Renderer {
         let color = frame
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
+        // Scene (3D/terrain/interleaved 2D) renders here: the HDR target when the HDR
+        // path is on, else straight to the swapchain. TextureView clones are cheap
+        // (Arc), so cloning avoids holding a borrow of self across the segment loop.
+        let scene_view = self
+            .hdr
+            .as_ref()
+            .map(|(_, v)| v.clone())
+            .unwrap_or_else(|| color.clone());
         let depth = self
             .gfx3d
             .depth_view()
@@ -286,110 +424,147 @@ impl Renderer {
                 .render_shadow_mask(&self.queue, &mut encoder, sun_to_light);
         }
 
-        // Replay the instancing plan as one or more segments split at ClearDepth.
-        // The first segment clears colour; every segment clears depth. Within a
-        // segment, 2D and 3D draws render interleaved in submission order (3D runs
-        // already coalesced into instanced draws by plan_3d).
+        // Replay the instancing plan. It splits into a scene phase and a UI phase at
+        // the Resolve op (the engine's scene->UI seam, WGR_CMD_RESOLVE): scene draws
+        // render into the HDR target; the tonemap then resolves it to the swapchain;
+        // the UI phase draws display-referred straight to the swapchain (2D uses the
+        // swapchain-format pipeline set). Segments additionally split at ClearDepth
+        // (each clears depth). On the LDR-direct path there is no HDR target/tonemap,
+        // and Resolve is a no-op (scene_view IS the swapchain throughout).
         use crate::gfx3d::Plan3dOp;
         let ops = &plan.ops;
-        let mut first = true;
+
+        // The clear colour seeds the scene target. On the HDR path that target is
+        // linear, so decode the gamma-space clear the engine supplies.
+        let clear_rgb = if self.hdr_enabled {
+            [
+                srgb_to_linear_ch(clear[0]),
+                srgb_to_linear_ch(clear[1]),
+                srgb_to_linear_ch(clear[2]),
+            ]
+        } else {
+            [clear[0], clear[1], clear[2]]
+        };
+
+        // `target` is where the current phase's segments render (HDR then swapchain);
+        // `display_2d` picks the swapchain-format 2D pipelines in the UI phase.
+        let mut target = scene_view.clone();
+        let mut display_2d = false;
+        let mut clear_color_next = true;
+        let mut resolved = false;
         let mut start = 0usize;
         let mut seg_idx = 0usize;
         loop {
             let end = ops[start..]
                 .iter()
-                .position(|o| matches!(o, Plan3dOp::ClearDepth))
+                .position(|o| matches!(o, Plan3dOp::ClearDepth | Plan3dOp::Resolve))
                 .map(|p| start + p)
                 .unwrap_or(ops.len());
 
-            let color_load = if first {
+            let color_load = if clear_color_next {
                 wgpu::LoadOp::Clear(wgpu::Color {
-                    r: clear[0] as f64,
-                    g: clear[1] as f64,
-                    b: clear[2] as f64,
+                    r: clear_rgb[0] as f64,
+                    g: clear_rgb[1] as f64,
+                    b: clear_rgb[2] as f64,
                     a: clear[3] as f64,
                 })
             } else {
                 wgpu::LoadOp::Load
             };
-            first = false;
+            clear_color_next = false;
 
             let seg_label = format!("wgr_segment_{seg_idx}");
             seg_idx += 1;
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some(&seg_label),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &color,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: color_load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &depth,
-                    depth_ops: Some(wgpu::Operations {
-                        // Reversed-Z: far plane is 0
-                        load: wgpu::LoadOp::Clear(0.0),
-                        store: wgpu::StoreOp::Store,
+            {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(&seg_label),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: color_load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth,
+                        depth_ops: Some(wgpu::Operations {
+                            // Reversed-Z: far plane is 0
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        // Cleared to 0 each segment so shadow draws (stencil EQUAL 0 /
+                        // INCR) darken each pixel at most once.
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0),
+                            store: wgpu::StoreOp::Store,
+                        }),
                     }),
-                    // Cleared to 0 each segment so shadow draws (stencil EQUAL 0 /
-                    // INCR) darken each pixel at most once.
-                    stencil_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
 
-            // Tracks bind/pipeline state across consecutive 3D draws so draw_one can skip
-            // redundant re-binds. A terrain or 2D draw sets its own pipeline + groups,
-            // invalidating the 3D state, so reset it whenever one runs.
-            let mut st3d = crate::gfx3d::Pass3dState::default();
-            for op in &ops[start..end] {
-                match op {
-                    Plan3dOp::Draw2D(arg) => {
-                        st3d = crate::gfx3d::Pass3dState::default();
-                        if let Some(b) = batches.get(*arg as usize) {
-                            self.gfx2d.draw_one(&mut pass, &self.textures, b);
+                // Tracks bind/pipeline state across consecutive 3D draws so draw_one can
+                // skip redundant re-binds. A terrain or 2D draw sets its own pipeline +
+                // groups, invalidating the 3D state, so reset it whenever one runs.
+                let mut st3d = crate::gfx3d::Pass3dState::default();
+                for op in &ops[start..end] {
+                    match op {
+                        Plan3dOp::Draw2D(arg) => {
+                            st3d = crate::gfx3d::Pass3dState::default();
+                            if let Some(b) = batches.get(*arg as usize) {
+                                self.gfx2d.draw_one(&mut pass, &self.textures, b, display_2d);
+                            }
                         }
-                    }
-                    Plan3dOp::Draw3D { draw, base, count } => {
-                        if let Some(d) = draws3d.get(*draw as usize) {
-                            self.gfx3d.draw_one(
-                                &mut pass,
-                                &self.textures,
-                                d,
-                                *base,
-                                *count,
-                                &mut st3d,
-                            );
+                        Plan3dOp::Draw3D { draw, base, count } => {
+                            if let Some(d) = draws3d.get(*draw as usize) {
+                                self.gfx3d.draw_one(
+                                    &mut pass,
+                                    &self.textures,
+                                    d,
+                                    *base,
+                                    *count,
+                                    &mut st3d,
+                                );
+                            }
                         }
-                    }
-                    Plan3dOp::Terrain(arg) => {
-                        st3d = crate::gfx3d::Pass3dState::default();
-                        if let (Some(b), Some(cam)) = (
-                            terrain_batches.get(*arg as usize),
-                            self.gfx3d.camera_bind(),
-                        ) {
-                            let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
-                            self.terrain
-                                .draw(&mut pass, cam, off, b.first_node, b.node_count);
+                        Plan3dOp::Terrain(arg) => {
+                            st3d = crate::gfx3d::Pass3dState::default();
+                            if let (Some(b), Some(cam)) = (
+                                terrain_batches.get(*arg as usize),
+                                self.gfx3d.camera_bind(),
+                            ) {
+                                let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                                self.terrain
+                                    .draw(&mut pass, cam, off, b.first_node, b.node_count);
+                            }
                         }
+                        Plan3dOp::ClearDepth | Plan3dOp::Resolve => {}
                     }
-                    Plan3dOp::ClearDepth => {}
                 }
+                drop(pass);
             }
-            drop(pass);
 
             if end >= ops.len() {
                 break;
             }
+            // Scene->UI seam: resolve the HDR scene and switch to display-referred UI.
+            if matches!(ops[end], Plan3dOp::Resolve) && self.tonemap.is_some() && !resolved {
+                self.run_tonemap(&mut encoder, &color);
+                resolved = true;
+                target = color.clone();
+                display_2d = true;
+                clear_color_next = false; // UI loads the tonemapped scene
+            }
             start = end + 1;
+        }
+
+        // Fallback: an HDR frame that never emitted the Resolve marker still needs
+        // resolving so the scene reaches the swapchain.
+        if self.tonemap.is_some() && !resolved {
+            self.run_tonemap(&mut encoder, &color);
         }
 
         // Dev-panel overlay composites over the finished frame, no depth.

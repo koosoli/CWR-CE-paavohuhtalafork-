@@ -103,6 +103,18 @@ class EngineWgpu : public EngineDummy
     int GetBias() override { return _bias; }
     void GetZCoefs(float& zAdd, float& zMult) override;
 
+    // HDR tonemap/look tuning (ImGui Tonemap tab). Only meaningful with the HDR
+    // resolve pass; SupportsTonemap gates the tab. SetTonemapSettings pushes to the
+    // renderer immediately (takes effect next frame). In auto mode the grade is driven
+    // from the per-time-of-day presets each frame (UpdateAutoTonemap in NextFrame).
+    bool SupportsTonemap() const override { return _hdrEnabled && _renderer != nullptr; }
+    TonemapSettings GetTonemapSettings() const override { return _tonemap; }
+    void SetTonemapSettings(const TonemapSettings& s) override;
+    bool GetTonemapAuto() const override { return _tonemapAuto; }
+    void SetTonemapAuto(bool enable) override { _tonemapAuto = enable; }
+    // Emit the scene->UI resolve marker (WGR_CMD_RESOLVE) into the command stream.
+    void ResolveSceneToDisplay() override;
+
     // Cascaded shadow maps, GPU-driven caster submission (SceneShadowPass).
     void SetShadowMapsEnabled(bool enabled) override { _smTuning.enabled = enabled; }
     bool ShadowMapsEnabled() const override { return _smTuning.enabled && _renderer != nullptr; }
@@ -166,8 +178,19 @@ class EngineWgpu : public EngineDummy
     // Establish a camera for the frame's first 3D draw if none has been pushed yet.
     void EnsureCamera();
 
+    // Pushes _tonemap to the renderer via wgr_set_tonemap (used on init + on edit).
+    void PushTonemap();
+    // In auto mode, interpolate the per-ToD preset for the current game time into
+    // _tonemap and push it. Called once per frame from NextFrame.
+    void UpdateAutoTonemap();
+
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
+    // HDR path enabled (mirrors the renderer's WGR_HDR gate) — gates the tonemap tab.
+    bool _hdrEnabled = false;
+    // Auto = drive _tonemap from the per-ToD presets; false = manual override (tab).
+    bool _tonemapAuto = true;
+    Engine::TonemapSettings _tonemap;
     TextureBankWgpu* _wbank = nullptr;
     SDLEventWindow _eventWindow;
     int _w = 0;

@@ -3,6 +3,7 @@
 #include "TextureBankWgpu.hpp"
 
 #include <Poseidon/Core/Application.hpp>
+#include <Poseidon/Core/Global.hpp>
 #include <Poseidon/Dev/Debug/DebugOverlay.hpp>
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
@@ -50,6 +51,61 @@ constexpr uint32_t U32(T value)
 WgrSlice<WgrMeshVertex> AsMeshVerts(const std::vector<SVertex>& v)
 {
     return { reinterpret_cast<const WgrMeshVertex*>(v.data()), U32(v.size()) };
+}
+
+// By-eye tonemap/grade presets keyed by time of day (hours). Sorted ascending; the
+// day is interpolated between adjacent keys and clamped outside the range (night
+// keys TBD — need eye adaptation + procedural sky). Exposure/gain seeded from the
+// user's captured curve presets; the grade block starts neutral and is re-tuned via
+// the ImGui Tonemap tab's copy-back. See engine/WgpuRenderer/docs/hdr-pipeline-plan.md.
+struct TonemapKey
+{
+    float hour;
+    Engine::TonemapSettings s;
+};
+// Fields: exposure, temperature, tint, contrast, saturation, lift, gain, hable, encode.
+// Tuned by eye via the ImGui Tonemap tab (copy-back), 2026-07-06.
+const TonemapKey kTonemapPresets[] = {
+    {4.5f, {4.343f, 0.653f, 0.163f, 1.0f, 1.122f, 0.0f, 2.835f, true, true}},
+    {12.0f, {2.958f, 0.125f, -0.011f, 1.0f, 0.967f, 0.0f, 1.842f, true, true}},
+    {16.5f, {2.958f, 0.417f, 0.137f, 1.0f, 1.030f, 0.0f, 2.029f, true, true}},
+};
+
+float LerpF(float a, float b, float t)
+{
+    return a + (b - a) * t;
+}
+
+Engine::TonemapSettings LerpTonemap(const Engine::TonemapSettings& a, const Engine::TonemapSettings& b, float t)
+{
+    Engine::TonemapSettings r;
+    r.exposure = LerpF(a.exposure, b.exposure, t);
+    r.temperature = LerpF(a.temperature, b.temperature, t);
+    r.tint = LerpF(a.tint, b.tint, t);
+    r.contrast = LerpF(a.contrast, b.contrast, t);
+    r.saturation = LerpF(a.saturation, b.saturation, t);
+    r.lift = LerpF(a.lift, b.lift, t);
+    r.gain = LerpF(a.gain, b.gain, t);
+    r.hable = (t < 0.5f ? a : b).hable;
+    r.encode = (t < 0.5f ? a : b).encode;
+    return r;
+}
+
+Engine::TonemapSettings TonemapAtHour(float hour)
+{
+    const int n = int(sizeof(kTonemapPresets) / sizeof(kTonemapPresets[0]));
+    if (hour <= kTonemapPresets[0].hour)
+        return kTonemapPresets[0].s;
+    if (hour >= kTonemapPresets[n - 1].hour)
+        return kTonemapPresets[n - 1].s;
+    for (int i = 0; i + 1 < n; ++i)
+    {
+        const TonemapKey& k0 = kTonemapPresets[i];
+        const TonemapKey& k1 = kTonemapPresets[i + 1];
+        if (hour >= k0.hour && hour < k1.hour)
+            return LerpTonemap(k0.s, k1.s, (hour - k0.hour) / (k1.hour - k0.hour));
+    }
+    return kTonemapPresets[n - 1].s;
 }
 
 void WgrLogThunk(int32_t level, const char* msg, void* /*user*/)
@@ -336,6 +392,36 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
         _smTuning.enabled = std::strtol(sm, nullptr, 10) != 0;
     }
 
+    // Mirror the renderer's WGR_HDR gate so the ImGui Tonemap tab knows the HDR
+    // resolve pass is live (the renderer owns the real gate; this is UI-only). The
+    // grade is driven by the per-ToD presets by default; a WGR_* tonemap env override
+    // switches to manual so env-based tuning still works. UpdateAutoTonemap (per
+    // frame) otherwise owns _tonemap.
+    if (const char* h = std::getenv("WGR_HDR"))
+    {
+        _hdrEnabled = std::strcmp(h, "0") != 0;
+    }
+    if (const char* e = std::getenv("WGR_EXPOSURE"))
+    {
+        const float v = std::strtof(e, nullptr);
+        if (v > 0.0f)
+        {
+            _tonemap.exposure = v;
+            _tonemapAuto = false;
+        }
+    }
+    if (const char* m = std::getenv("WGR_TONEMAP"))
+    {
+        _tonemap.hable = std::strtol(m, nullptr, 10) != 0;
+        _tonemapAuto = false;
+    }
+    if (const char* en = std::getenv("WGR_HDR_ENCODE"))
+    {
+        _tonemap.encode = std::strtol(en, nullptr, 10) != 0;
+        _tonemapAuto = false;
+    }
+    PushTonemap();
+
     Dev::DebugOverlay::InitForEngine(_window);
     _eventWindow.Attach(_window, _w, _h);
 }
@@ -602,6 +688,10 @@ void EngineWgpu::NextFrame()
 {
     if (_renderer)
     {
+        // Interpolate the per-time-of-day tonemap/grade preset for this frame (auto
+        // mode only; manual override holds the tab's values).
+        UpdateAutoTonemap();
+
         // Build + flatten the ImGui frame; SubmitOverlay fills the _overlay*
         // vectors the WgrFrame below points at. Composites over everything,
         // same placement as GL33's BackToFront (pre-present).
@@ -1466,6 +1556,49 @@ void EngineWgpu::GetZCoefs(float& zAdd, float& zMult)
     const auto c = render::zbias::SoftwareCoefs(_bias);
     zAdd = c.zAdd * mult;
     zMult = 1.0f - (1.0f - c.zMult) * mult;
+}
+
+void EngineWgpu::SetTonemapSettings(const TonemapSettings& s)
+{
+    _tonemap = s;
+    PushTonemap();
+}
+
+void EngineWgpu::PushTonemap()
+{
+    if (!_renderer)
+        return;
+    const WgrTonemap t = {
+        _tonemap.exposure,
+        _tonemap.hable ? 1.0f : 0.0f,
+        _tonemap.encode ? 1.0f : 0.0f,
+        _tonemap.temperature,
+        _tonemap.tint,
+        _tonemap.contrast,
+        _tonemap.saturation,
+        _tonemap.lift,
+        _tonemap.gain,
+        0.0f,
+        0.0f,
+        0.0f,
+    };
+    wgr_set_tonemap(_renderer, &t);
+}
+
+void EngineWgpu::UpdateAutoTonemap()
+{
+    if (!_renderer || !_hdrEnabled || !_tonemapAuto)
+        return;
+    _tonemap = TonemapAtHour(Glob.clock.GetTimeOfDay() * 24.0f);
+    PushTonemap();
+}
+
+void EngineWgpu::ResolveSceneToDisplay()
+{
+    // The renderer tonemaps the HDR scene at this marker and draws everything after
+    // it display-referred. Harmless on the LDR-direct path (the renderer ignores it).
+    if (_renderer)
+        _cmds.push_back(WgrCmd{WGR_CMD_RESOLVE, 0});
 }
 
 void EngineWgpu::PrepareMesh(const render::LegacySpec& /*spec*/)

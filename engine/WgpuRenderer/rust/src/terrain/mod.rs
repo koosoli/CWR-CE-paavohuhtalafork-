@@ -553,7 +553,14 @@ impl Terrain {
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(4.0);
         let vs_constants = [("skirt_k", skirt_k)];
-        let fs_constants = [("blend_width", blend_width)];
+        // HDR path: the color target is Rgba16Float only when HDR is on (see gfx3d),
+        // so it signals linear shading (albedo/sun/fog decode + no clamp).
+        let linear = if surface_format == wgpu::TextureFormat::Rgba16Float {
+            1.0
+        } else {
+            0.0
+        };
+        let fs_constants = [("blend_width", blend_width), ("linear", linear)];
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_terrain_pipeline_layout"),
             bind_group_layouts: &[

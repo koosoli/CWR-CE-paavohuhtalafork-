@@ -190,6 +190,47 @@ pub struct WgrLight {
     pub dir: WgrVec4,     // xyz = beam direction (spot), w = isSpot (1) else 0
 }
 
+// Live tonemap/look parameters, pushed from the ImGui Tonemap tab via
+// wgr_set_tonemap. The Hable curve is fixed in the shader; these are exposure + the
+// colour-grade block. Layout matches the `Params` uniform in tonemap.wgsl and the
+// C++ `WgrTonemap` in wgpu_renderer.hpp exactly (12 f32).
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrTonemap {
+    pub exposure: f32,    // linear pre-curve multiplier
+    pub mode: f32,        // 0 = passthrough (clamp), 1 = Hable
+    pub encode: f32,      // 0 = write as-is, 1 = linear->sRGB encode
+    pub temperature: f32, // white balance warm(+)/cool(-)
+    pub tint: f32,        // white balance magenta(+)/green(-)
+    pub contrast: f32,    // post-curve contrast (1 = neutral)
+    pub saturation: f32,  // post-curve saturation (1 = neutral)
+    pub lift: f32,        // shadow lift (0 = neutral)
+    pub gain: f32,        // post-curve overall multiply (1 = neutral)
+    pub _pad0: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
+}
+
+impl Default for WgrTonemap {
+    fn default() -> Self {
+        // Neutral grade, Hable + sRGB-encode on.
+        Self {
+            exposure: 1.0,
+            mode: 1.0,
+            encode: 1.0,
+            temperature: 0.0,
+            tint: 0.0,
+            contrast: 1.0,
+            saturation: 1.0,
+            lift: 0.0,
+            gain: 1.0,
+            _pad0: 0.0,
+            _pad1: 0.0,
+            _pad2: 0.0,
+        }
+    }
+}
+
 pub const NO_PALETTE: u32 = 0xFFFF_FFFF;
 
 // Bits for WgrDraw3D::flags (mirror WgrDraw3DFlags in wgpu_renderer.hpp).
@@ -289,6 +330,10 @@ pub enum WgrCmdKind {
     Draw3D = 1,
     ClearDepth = 2,
     DrawTerrain = 3,
+    // Scene complete: resolve (tonemap) the HDR target to the swapchain. Everything
+    // after this command is display-referred UI, drawn straight to the swapchain.
+    // No-op on the LDR-direct path. Emitted at the engine's scene->UI seam.
+    Resolve = 4,
 }
 
 #[repr(C)]
@@ -391,6 +436,7 @@ const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 36);
 const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 264);
 const _: () = assert!(std::mem::size_of::<WgrLight>() == 64);
+const _: () = assert!(std::mem::size_of::<WgrTonemap>() == 48);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);
@@ -811,6 +857,21 @@ pub unsafe extern "C" fn wgr_render_frame(
         }
     }))
     .unwrap_or(-3)
+}
+
+/// Set the live tonemap/look parameters (exposure, curve, Hable params, output
+/// gain). No-op on the LDR-direct path (no tonemap pass); takes effect next frame.
+///
+/// # Safety
+/// `renderer` must be live; `params` must point to one valid `WgrTonemap` or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_tonemap(renderer: *mut WgrRenderer, params: *const WgrTonemap) {
+    if renderer.is_null() || params.is_null() {
+        return;
+    }
+    let renderer = unsafe { &mut *renderer };
+    let params = unsafe { &*params };
+    renderer.set_tonemap(*params);
 }
 
 /// Read one cascade layer of the shadow depth map back as row-major floats

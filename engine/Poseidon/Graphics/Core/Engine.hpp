@@ -940,6 +940,37 @@ class Engine : public IGraphicsEngine
 
     virtual ITerrainRenderer* GetTerrainRenderer() { return nullptr; }
 
+    // Live tonemap/look parameters for the HDR path (wgpu). Mirrors WgrTonemap; the
+    // ImGui Tonemap tab edits these and the backend pushes them to the renderer. The
+    // Hable curve is fixed; the per-time-of-day look is exposure + this grade block.
+    struct TonemapSettings
+    {
+        float exposure = 1.0f;    // linear pre-curve multiplier (main per-ToD lever)
+        float temperature = 0.0f; // white balance warm(+)/cool(-)
+        float tint = 0.0f;        // white balance magenta(+)/green(-)
+        float contrast = 1.0f;    // post-curve contrast (1 = neutral)
+        float saturation = 1.0f;  // post-curve saturation (1 = neutral)
+        float lift = 0.0f;        // shadow lift (0 = neutral)
+        float gain = 1.0f;        // post-curve overall multiply (1 = neutral)
+        bool hable = true;        // false = passthrough clamp (debug)
+        bool encode = true;       // linear->sRGB encode
+    };
+    // True only on backends with an HDR resolve pass (wgpu w/ HDR enabled); gates
+    // the ImGui Tonemap tab.
+    virtual bool SupportsTonemap() const { return false; }
+    virtual TonemapSettings GetTonemapSettings() const { return {}; }
+    virtual void SetTonemapSettings(const TonemapSettings& /*s*/) {}
+    // Auto = drive the grade from the per-time-of-day preset keyframes; override =
+    // hold the manual values set via SetTonemapSettings (for tuning a keyframe).
+    virtual bool GetTonemapAuto() const { return false; }
+    virtual void SetTonemapAuto(bool /*enable*/) {}
+
+    // Marks the scene->UI seam: the 3D world is done, UI/HUD drawing follows. On the
+    // HDR path the backend resolves (tonemaps) the offscreen scene to the swapchain
+    // here, so subsequent 2D/3D-in-UI composites display-referred (no tonemap). No-op
+    // on LDR-direct backends (GL33).
+    virtual void ResolveSceneToDisplay() {}
+
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy
     // when the viewport changes.

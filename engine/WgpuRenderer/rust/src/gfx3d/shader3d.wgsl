@@ -8,6 +8,7 @@
 #import shadow::shadow_strength
 #import skin::{skin_pos, skin_normal}
 #import lighting::lights_contrib
+#import color::srgb_to_linear
 // Group(4) terrain heightmap + surface_y, shared with the shadow depth pass.
 // surface_grad tilts conformed veg normals to follow the ground slope (color pass only).
 #import conform::{surface_y, surface_grad}
@@ -67,6 +68,11 @@ override foliage_shadow_ao: f32 = 0.35;
 // float depth format this backend gets) so roads/decals/overlays win the depth test
 // against coplanar geometry.
 override depth_bias: f32 = 0.0;
+// HDR path (docs/hdr-pipeline-plan.md): 1 = decode the sampled albedo + folded
+// material/light colours from sRGB to linear and drop the [0,1] radiance clamp, so
+// shading writes linear radiance (that can exceed 1.0) into the HDR target. 0 = the
+// exact gamma-naive GL33 behaviour for the LDR-direct path.
+override linear: f32 = 0.0;
 
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
@@ -198,6 +204,25 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (is_shadow > 0.5) {
         return vec4<f32>(0.0, 0.0, 0.0, frame.params.shadow_strength * base.a);
     }
+    // HDR path: decode the sampled albedo + the CPU-folded material colours from
+    // sRGB to linear (the alpha channel is already linear). LDR path leaves them as
+    // the raw gamma-space values the gamma-naive shading expects.
+    var albedo = base.rgb;
+    var m_emissive = material.emissive.rgb;
+    var m_sun_ambient = material.sun_ambient.rgb;
+    var m_sun_diffuse = material.sun_diffuse.rgb;
+    var m_light_diffuse = material.light_diffuse.rgb;
+    var m_light_ambient = material.light_ambient.rgb;
+    var m_specular = material.specular.rgb;
+    if (linear > 0.5) {
+        albedo = srgb_to_linear(albedo);
+        m_emissive = srgb_to_linear(m_emissive);
+        m_sun_ambient = srgb_to_linear(m_sun_ambient);
+        m_sun_diffuse = srgb_to_linear(m_sun_diffuse);
+        m_light_diffuse = srgb_to_linear(m_light_diffuse);
+        m_light_ambient = srgb_to_linear(m_light_ambient);
+        m_specular = srgb_to_linear(m_specular);
+    }
     // Per-material sun lighting plus frame-global point/spot lights, matching
     // GL33's VSNormal but per-fragment: clamp(emissive + sun_ambient +
     // sun_diffuse * N.L + SUM(local lights), 0, 1), then x texture (the
@@ -213,11 +238,14 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let world_abs = in.world_pos + frame.cam_pos.xyz;
     let terrain_s = terrain_sun_shadow(world_abs.xz, world_abs.y);
     let sun_vis = 1.0 - terrain_s;
-    let sun = material.emissive.rgb + material.sun_ambient.rgb
-              + material.sun_diffuse.rgb * ndotl * sun_vis;
-    let local = lights_contrib(in.world_pos, nrm, material.light_diffuse.rgb, material.light_ambient.rgb);
-    let lit = clamp(sun + local, vec3<f32>(0.0), vec3<f32>(1.0));
-    var rgb = base.rgb * lit;
+    let sun = m_emissive + m_sun_ambient
+              + m_sun_diffuse * ndotl * sun_vis;
+    let local = lights_contrib(in.world_pos, nrm, m_light_diffuse, m_light_ambient, linear);
+    // HDR: keep radiance non-negative but let it exceed 1.0 into the float target.
+    // LDR: the gamma-naive saturate the pack it replaces expects.
+    let raw = sun + local;
+    let lit = select(clamp(raw, vec3<f32>(0.0), vec3<f32>(1.0)), max(raw, vec3<f32>(0.0)), linear > 0.5);
+    var rgb = albedo * lit;
     // Sun-only Blinn-Phong specular (GL33's PSSpecular, moved per-fragment):
     // untextured, additive, added before the shadow multiply so a shadowed
     // surface loses its highlight. world_pos is camera-relative (camera at the
@@ -227,8 +255,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         let view_dir = normalize(-in.world_pos);
         let half_vec = normalize(-frame.sun_dir_world.xyz + view_dir);
         let n_dot_h = max(dot(nrm, half_vec), 0.0);
-        let spec = material.specular.rgb * pow(n_dot_h, max(material.specular.w, 1.0));
-        rgb += clamp(spec * sun_vis, vec3<f32>(0.0), vec3<f32>(1.0));
+        let spec = m_specular * pow(n_dot_h, max(material.specular.w, 1.0));
+        let spec_vis = spec * sun_vis;
+        rgb += select(clamp(spec_vis, vec3<f32>(0.0), vec3<f32>(1.0)), max(spec_vis, vec3<f32>(0.0)), linear > 0.5);
     }
     // Canopy self-occlusion for alpha-tested foliage in terrain shadow (see the
     // foliage_shadow_ao note). Terrain-shadow only — CSM already darkens near
@@ -240,6 +269,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let s = shadow_strength(in.world_pos, nrm, in.fog, dwx, dwy);
     rgb *= mix(1.0, frame.shadow.ctlb.y, s);
     // Blend toward the scene fog colour (matches GL33's mix(fogColor, r0, vFogTC)).
-    rgb = mix(frame.fog_color.rgb, rgb, in.fog);
+    // Fog is authored in gamma space, so decode it to linear for the HDR path.
+    var fog_color = frame.fog_color.rgb;
+    if (linear > 0.5) {
+        fog_color = srgb_to_linear(fog_color);
+    }
+    rgb = mix(fog_color, rgb, in.fog);
     return vec4<f32>(rgb, base.a);
 }

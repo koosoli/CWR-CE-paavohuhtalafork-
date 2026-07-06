@@ -1568,6 +1568,12 @@ void World::Simulate(float deltaT, bool& enableDraw)
 
     perf.Mark(Dev::FrameProfiler::PhaseDrawPost);
 
+    // Scene->UI seam: the 3D world is done; HUD/menus/3D-in-UI follow. On the HDR
+    // renderer this resolves (tonemaps) the offscreen scene to the swapchain so the
+    // UI composites display-referred. No-op on GL33.
+    if (GEngine)
+        GEngine->ResolveSceneToDisplay();
+
     if (enableDraw)
     {
         if (_map && (_showMap || _forceMap))

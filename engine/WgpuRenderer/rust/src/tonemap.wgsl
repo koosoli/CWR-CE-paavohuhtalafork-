@@ -1,0 +1,109 @@
+// Fullscreen tonemap + colour-grade resolve: sample the linear HDR scene target,
+// apply exposure and a fixed Hable filmic curve, then a small colour-grade block
+// (white balance, contrast, saturation, lift, gain), optionally sRGB-encode, and
+// write the swapchain. See docs/hdr-pipeline-plan.md.
+//
+// The Hable curve is FIXED (a chosen "film stock"); the per-time-of-day look comes
+// from exposure + the grading block, which is what real engines vary. Fed no vertex
+// buffer — a single oversized triangle is generated from the vertex index.
+//
+// `encode` gates the linear->sRGB step: 0 while the pipeline is still gamma-naive,
+// 1 once shading is linear. The swapchain is a non-sRGB (Unorm) surface either way,
+// so no hardware encode runs and the gamma-space 2D UI drawn after stays correct.
+
+// Live-tunable via the ImGui Tonemap tab (plumbed through wgr_set_tonemap). Layout
+// matches WgrTonemap on the C side (12 f32).
+struct Params {
+    exposure: f32,    // linear pre-curve multiplier (the main per-ToD lever)
+    mode: f32,        // 0 = passthrough (clamp), 1 = Hable filmic
+    encode: f32,      // 0 = write as-is, 1 = linear->sRGB encode
+    temperature: f32, // white balance warm(+)/cool(-)
+    tint: f32,        // white balance magenta(+)/green(-)
+    contrast: f32,    // post-curve contrast about mid grey (1 = neutral)
+    saturation: f32,  // post-curve saturation (1 = neutral)
+    lift: f32,        // shadow lift / black-point raise (0 = neutral)
+    gain: f32,        // post-curve overall multiply (1 = neutral)
+    _pad0: f32,
+    _pad1: f32,
+    _pad2: f32,
+};
+
+@group(0) @binding(0) var hdr_tex: texture_2d<f32>;
+@group(0) @binding(1) var hdr_samp: sampler;
+@group(0) @binding(2) var<uniform> params: Params;
+
+// Fixed Hable / Uncharted 2 filmic curve (original constants).
+const HABLE_A: f32 = 0.15;
+const HABLE_B: f32 = 0.50;
+const HABLE_C: f32 = 0.10;
+const HABLE_D: f32 = 0.20;
+const HABLE_E: f32 = 0.02;
+const HABLE_F: f32 = 0.30;
+const HABLE_W: f32 = 11.2;
+const LUMA: vec3<f32> = vec3<f32>(0.2126, 0.7152, 0.0722);
+
+struct VsOut {
+    @builtin(position) clip: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
+@vertex
+fn vs_main(@builtin(vertex_index) vi: u32) -> VsOut {
+    let uv = vec2<f32>(f32((vi << 1u) & 2u), f32(vi & 2u));
+    var out: VsOut;
+    out.uv = uv;
+    out.clip = vec4<f32>(uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0), 0.0, 1.0);
+    return out;
+}
+
+fn hable_partial(x: vec3<f32>) -> vec3<f32> {
+    return ((x * (HABLE_A * x + HABLE_C * HABLE_B) + HABLE_D * HABLE_E)
+            / (x * (HABLE_A * x + HABLE_B) + HABLE_D * HABLE_F)) - HABLE_E / HABLE_F;
+}
+
+fn hable(color: vec3<f32>) -> vec3<f32> {
+    let white_scale = vec3<f32>(1.0) / hable_partial(vec3<f32>(HABLE_W));
+    return hable_partial(color) * white_scale;
+}
+
+// Cheap channel-gain white balance (linear, pre-curve). Warm boosts R / cuts B;
+// tint trades green vs magenta. Gentle scale so the [-1,1] knobs stay usable.
+fn white_balance(c: vec3<f32>, temp: f32, tint: f32) -> vec3<f32> {
+    return vec3<f32>(c.r * (1.0 + temp * 0.2), c.g * (1.0 - tint * 0.2), c.b * (1.0 - temp * 0.2));
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let lo = c * 12.92;
+    let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
+    return select(hi, lo, c <= vec3<f32>(0.0031308));
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    var color = textureSampleLevel(hdr_tex, hdr_samp, in.uv, 0.0).rgb;
+
+    // Scene-referred (linear): exposure + white balance.
+    color *= params.exposure;
+    color = white_balance(color, params.temperature, params.tint);
+
+    // Fixed filmic curve (or debug passthrough).
+    if (params.mode > 0.5) {
+        color = hable(color);
+    } else {
+        color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    }
+
+    // Display-referred grading: contrast about mid grey, saturation, shadow lift,
+    // overall gain. lift raises darks more than brights (1 - color weight).
+    color = (color - vec3<f32>(0.5)) * params.contrast + vec3<f32>(0.5);
+    let luma = dot(color, LUMA);
+    color = mix(vec3<f32>(luma), color, params.saturation);
+    color = color + params.lift * (1.0 - color);
+    color *= params.gain;
+
+    color = clamp(color, vec3<f32>(0.0), vec3<f32>(1.0));
+    if (params.encode > 0.5) {
+        color = linear_to_srgb(color);
+    }
+    return vec4<f32>(color, 1.0);
+}

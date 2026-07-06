@@ -44,6 +44,7 @@
 #include <Poseidon/UI/Settings/GameSettingsConfig.hpp>
 #include <Poseidon/UI/Settings/AspectRatio.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
+#include <Poseidon/Core/Global.hpp>
 #include <Poseidon/Foundation/Memory/CheckMem.hpp>
 #include <Poseidon/Foundation/Memory/MemFreeReq.hpp>
 #include <Poseidon/World/World.hpp>
@@ -1515,6 +1516,79 @@ void DrawRenderTab()
     ImGui::Text("target  scale %.2fx, %dx MSAA", GEngine->GetRenderScale(), GEngine->GetMsaaSamples());
     ImGui::TextDisabled("settings are session-only; persist via graphics.cfg");
 }
+// HDR tonemap / look tuning (wgpu HDR path). The Hable curve is fixed; these are
+// exposure + a colour-grade block. "Auto (time of day)" drives the grade from the
+// per-ToD preset keyframes; uncheck to override and tune a keyframe by eye, then
+// copy the preset line back. See engine/WgpuRenderer/docs/hdr-pipeline-plan.md.
+void DrawTonemapTab()
+{
+    if (!GEngine)
+    {
+        ImGui::TextDisabled("engine not up");
+        return;
+    }
+    if (!GEngine->SupportsTonemap())
+    {
+        ImGui::TextDisabled("HDR path off (run the wgpu backend with WGR_HDR=1)");
+        return;
+    }
+
+    bool autoTod = GEngine->GetTonemapAuto();
+    if (ImGui::Checkbox("Auto (time of day)", &autoTod))
+        GEngine->SetTonemapAuto(autoTod);
+    ImGui::SameLine();
+    ImGui::TextDisabled("ToD %.2f h", Glob.clock.GetTimeOfDay() * 24.0f);
+    if (autoTod)
+        ImGui::TextDisabled("grade driven by per-ToD presets; uncheck to override + tune");
+
+    // In auto mode the sliders reflect the live interpolated grade but are read-only
+    // (UpdateAutoTonemap overwrites them each frame).
+    auto t = GEngine->GetTonemapSettings();
+    bool changed = false;
+
+    ImGui::BeginDisabled(autoTod);
+
+    changed |= ImGui::Checkbox("Hable filmic", &t.hable);
+    ImGui::SameLine();
+    changed |= ImGui::Checkbox("sRGB encode", &t.encode);
+    ImGui::SetItemTooltip("Off = passthrough clamp / write-as-is (debug only)");
+
+    changed |= ImGui::SliderFloat("Exposure", &t.exposure, 0.05f, 8.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Grade");
+    changed |= ImGui::SliderFloat("Temperature (warm+/cool-)", &t.temperature, -1.0f, 1.0f, "%.3f");
+    changed |= ImGui::SliderFloat("Tint (magenta+/green-)", &t.tint, -1.0f, 1.0f, "%.3f");
+    changed |= ImGui::SliderFloat("Contrast", &t.contrast, 0.5f, 2.0f, "%.3f");
+    changed |= ImGui::SliderFloat("Saturation", &t.saturation, 0.0f, 2.0f, "%.3f");
+    changed |= ImGui::SliderFloat("Shadow lift", &t.lift, 0.0f, 0.3f, "%.3f");
+    changed |= ImGui::SliderFloat("Gain", &t.gain, 0.1f, 4.0f, "%.3f");
+
+    if (ImGui::Button("Reset to defaults"))
+    {
+        t = decltype(t){};
+        changed = true;
+    }
+
+    if (changed && !autoTod)
+        GEngine->SetTonemapSettings(t);
+
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Preset (copy back to bake into the ToD keyframes):");
+    char preset[512];
+    snprintf(preset, sizeof(preset),
+             "tonemap: exposure=%.3f temp=%.3f tint=%.3f contrast=%.3f sat=%.3f lift=%.3f gain=%.3f "
+             "hable=%s encode=%s",
+             t.exposure, t.temperature, t.tint, t.contrast, t.saturation, t.lift, t.gain,
+             t.hable ? "true" : "false", t.encode ? "true" : "false");
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##tonemapPreset", preset, sizeof(preset), ImGuiInputTextFlags_ReadOnly);
+    if (ImGui::Button("Copy preset to clipboard"))
+        ImGui::SetClipboardText(preset);
+    ImGui::TextDisabled("session-only; paste back to bake into the kTonemapPresets keyframes");
+}
 void DrawMouseTab()
 {
     // Plain field writes into live GInput.mouse — no Defer needed (cf. DrawCheatsTab).
@@ -1694,6 +1768,11 @@ void DrawMainWindow()
         if (ImGui::BeginTabItem("Render"))
         {
             DrawRenderTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Tonemap"))
+        {
+            DrawTonemapTab();
             ImGui::EndTabItem();
         }
         ImGuiTabItemFlags shadowFlags = 0;

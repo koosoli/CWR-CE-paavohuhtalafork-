@@ -111,7 +111,8 @@ enum WgrCmdKind : uint32_t
     WGR_CMD_DRAW_2D = 0,       // arg = index into WgrFrame.batches (its WgrDepthMode picks depth state)
     WGR_CMD_DRAW_3D = 1,       // arg = index into WgrFrame.draws3d
     WGR_CMD_CLEAR_DEPTH = 2,   // arg unused; starts a new depth-cleared segment
-    WGR_CMD_DRAW_TERRAIN = 3   // arg = index into WgrFrame.terrain_batches
+    WGR_CMD_DRAW_TERRAIN = 3,  // arg = index into WgrFrame.terrain_batches
+    WGR_CMD_RESOLVE = 4        // arg unused; tonemap the HDR scene to the swapchain, then draw UI display-referred
 };
 
 // --- Surface / logging -------------------------------------------------------
@@ -263,6 +264,25 @@ struct WgrLight
     WgrVec4 diffuse; /* rgb = diffuse * nightEffect */
     WgrVec4 ambient; /* rgb = ambient * nightEffect */
     WgrVec4 dir;     /* xyz = beam direction (spot), w = isSpot (1) else 0 */
+};
+
+/* Live tonemap/look parameters, pushed via wgr_set_tonemap (from the ImGui Tonemap
+ * tab). The Hable curve is fixed in the shader; these are exposure + the colour-grade
+ * block. Layout matches the Rust WgrTonemap #[repr(C)] and the tonemap.wgsl uniform. */
+struct WgrTonemap
+{
+    float exposure;    /* linear pre-curve multiplier */
+    float mode;        /* 0 = passthrough (clamp), 1 = Hable */
+    float encode;      /* 0 = write as-is, 1 = linear->sRGB encode */
+    float temperature; /* white balance warm(+)/cool(-) */
+    float tint;        /* white balance magenta(+)/green(-) */
+    float contrast;    /* post-curve contrast (1 = neutral) */
+    float saturation;  /* post-curve saturation (1 = neutral) */
+    float lift;        /* shadow lift (0 = neutral) */
+    float gain;        /* post-curve overall multiply (1 = neutral) */
+    float _pad0;
+    float _pad1;
+    float _pad2;
 };
 
 /* Frame-global scalars carried in the camera UBO so the 3D shader can read them
@@ -483,6 +503,7 @@ static_assert(sizeof(WgrMeshVertex) == 36, "WgrMeshVertex must match the engine 
 static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrDraw3D) == 264, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrLight) == 64, "WgrLight layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrTonemap) == 48, "WgrTonemap layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");
@@ -597,6 +618,10 @@ extern "C"
     /* Render + present one frame. Returns 0 on success (incl. transient skipped
      * frames), negative on error. */
     WGR_API int32_t wgr_render_frame(WgrRenderer* renderer, const WgrFrame* frame);
+
+    /* Set the live tonemap/look parameters (exposure, curve, Hable params, output
+     * gain). Takes effect on the next frame's resolve; no-op on the LDR-direct path. */
+    WGR_API void wgr_set_tonemap(WgrRenderer* renderer, const WgrTonemap* params);
 
     /* Read one cascade layer of the shadow depth map back as row-major floats
      * (row 0 = the top texture row). Returns the map resolution (side length),
