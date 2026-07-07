@@ -1002,6 +1002,9 @@ class Engine : public IGraphicsEngine
         int viewSamples = 16;                              // primary ray march steps
         int lightSamples = 8;                              // light ray march steps
         float horizonHaze = 0.0f;                          // legacy sky->fog-colour horizon blend; 0 now that aerial perspective handles the terrain/sky seam
+        float aerialShadow = 1.0f;                          // froxel fog terrain sun-shadowing strength: 0 = off (sun lights fog everywhere), 1 = physical, >1 exaggerated. Pushed via sky.night_horizon.w
+        float fogFalloff = 3.0f;                             // aerial fog distance-ramp exponent (pow(dist/drawDist, k)). High = clear near/mid, fog only at the edge; low (~1) = dense fog throughout, which reveals the volumetric terrain shadowing / god rays. Pushed via camera fog_color.w
+
         // Authored night-sky floor: a deep-blue radiance blended in by sun elevation so
         // twilight/night settle into blue instead of the physical model's near-black.
         // Colours are normalised (0..1, pickable); nightIntensity scales them to radiance.

@@ -73,6 +73,58 @@ struct TerrainShadowMap {
 @group(0) @binding(5) var terrain_shadow_samp: sampler;
 @group(0) @binding(6) var<uniform> terrain_shadow_map: TerrainShadowMap;
 
+// Aerial-perspective froxel volume (filled by cs_froxel in sky.wgsl): XY = screen,
+// Z = distance with a squared distribution. rgb = in-scattered light toward the camera,
+// a = transmittance from the camera to that froxel. The forward shaders apply fog with
+// ONE trilinear tap here — every fragment fogs by its OWN distance, so transparents and
+// foliage are correct and 2D (which never samples this) is simply never fogged. The
+// clamping sampler is shared with the terrain mask (binding 5).
+@group(0) @binding(7) var froxel_tex: texture_3d<f32>;
+@group(0) @binding(8) var froxel_samp: sampler;
+
+// Aerial-perspective fog for a camera-relative fragment position. The froxel volume
+// supplies only the fog COLOUR — the physically scattered airlight along this view ray,
+// so it reddens toward the sun and meets the sky seamlessly at the horizon. The blend
+// AMOUNT comes from the scene fog range (fogStart -> fogMax), NOT the froxel's physical
+// transmittance: over the game's short (~km) view distance physical extinction is far
+// too weak to dissolve distant geometry (objects would pop at the cull edge) and its
+// inscatter is far too bright up close (uniform grey wash, since the airlight is on the
+// sky's physical radiance scale while surfaces are legacy-lit ~1). Gating by the game
+// fog factor fixes both by construction: near -> amount 0 -> untouched surface; at fogMax
+// -> amount 1 -> surface fully replaced by the airlight, dissolving into the sky. The
+// engine widens/narrows [fogStart, fogMax] per weather, so THAT is the atmosphere-density
+// / "not every morning is foggy" control. Per-fragment: foliage, fences and transparents
+// all fog by their own pixel distance; 2D never calls this.
+fn apply_fog(rgb: vec3<f32>, world_pos_rel: vec3<f32>) -> vec3<f32> {
+    if (frame.params.fog_enabled <= 0.5 || frame.params.fog_inv_range <= 0.0) {
+        return rgb;
+    }
+    let dist = length(world_pos_rel);
+    // max_dist = fogStart + 1/fogInvRange = the scene fog-max range, which the engine also
+    // uses as the camera far plane AND the terrain-grid cull distance — i.e. the real max
+    // draw distance. Geometry cannot exist past it, so it's the anchor: at max_dist the fog
+    // is full, so a terrain tile appearing at the far clip is already fully dissolved into
+    // the sky (see cs_froxel: the far froxels ARE the sky) and fades in smoothly as it nears.
+    let max_dist = frame.params.fog_start + 1.0 / frame.params.fog_inv_range;
+    // Exponential (power) ramp, replacing the game's broad linear fogStart->fogMax fade:
+    // pow(u, k) is ~0 across the near/mid field and rises hard only near the edge, so the
+    // scene stays clear yet nothing pops at the cull distance. Density tracks the weather
+    // fog range via max_dist (shorter range in fog -> u climbs sooner -> heavier fog), so
+    // this stays weather-responsive with no gameplay impact (game fog logic is untouched).
+    // Falloff exponent (frame.fog_color.w, from SkySettings::fogFalloff): high = clear near/
+    // mid + fog only at the edge; low (~1) = dense fog throughout, revealing the froxel's
+    // volumetric terrain sun-shadowing / god rays. Guarded so a zero-fill can't full-fog.
+    let falloff = max(frame.fog_color.w, 0.1);
+    let u = clamp(dist / max_dist, 0.0, 1.0);
+    let amount = pow(u, falloff);
+    // Screen uv from a reprojection of the world position (matches cs_froxel's ndc->uv),
+    // and distance -> slice with the fill's squared map (w = sqrt(dist / max)).
+    let clip = frame.proj * frame.view * vec4<f32>(world_pos_rel, 1.0);
+    let uv = (clip.xy / clip.w) * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+    let inscat = textureSampleLevel(froxel_tex, froxel_samp, vec3<f32>(uv, sqrt(u)), 0.0).rgb;
+    return mix(rgb, inscat, amount);
+}
+
 // Occlusion [0,1] of the sun by terrain at world position (xz, y): 0 = lit, 1 =
 // fully in terrain shadow. Zero when the feature is off or the point is off the map
 // or above the shadow ceiling. Shared by the terrain and lit-mesh fragment shaders.

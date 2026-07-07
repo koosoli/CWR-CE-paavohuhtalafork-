@@ -4,7 +4,7 @@
 // point): the plain pipeline binds `object`, the skinned pipeline binds the
 // bone `palette` (from the skin module). Shadowing is the shared cascade kernel.
 
-#import frame::{frame, reverse_z, fog_factor, terrain_sun_shadow}
+#import frame::{frame, reverse_z, fog_factor, terrain_sun_shadow, apply_fog}
 #import shadow::shadow_strength
 #import skin::{skin_pos, skin_normal}
 #import lighting::lights_contrib
@@ -274,9 +274,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (linear > 0.5) {
         fog_color = srgb_to_linear(fog_color);
     }
-    // fog_enabled == 2 = aerial perspective: the deferred sky pass fogs the scene, so
-    // skip the flat colour blend (0 = off, 1 = legacy distance fog).
-    if (frame.params.fog_enabled < 1.5) {
+    // fog_enabled: 2 = aerial perspective via the froxel volume (per-fragment, so this
+    // near transparent/foliage fragment fogs by its OWN distance, not a background's);
+    // 1 = legacy flat distance fog; 0 = off (in.fog = 1, so the mix is a no-op).
+    if (frame.params.fog_enabled >= 1.5) {
+        rgb = apply_fog(rgb, in.world_pos);
+    } else {
         rgb = mix(fog_color, rgb, in.fog);
     }
     return vec4<f32>(rgb, base.a);

@@ -387,6 +387,25 @@ impl CameraGroup {
                     },
                     count: None,
                 },
+                // Aerial-perspective froxel volume (3D) + its sampler (the mask sampler
+                // is reused for it). Sampled per-fragment by the lit-mesh + terrain
+                // fragment shaders (frame::froxel_fog). Owned by Sky, lent by view.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
             ],
         });
         let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -458,6 +477,7 @@ impl CameraGroup {
         shadow_gen: u64,
         mask_view: &wgpu::TextureView,
         mask_gen: u64,
+        froxel_view: &wgpu::TextureView,
     ) {
         let needed = count as u64 * self.stride;
         let grow = self.cap < needed || self.buf.is_none();
@@ -511,6 +531,14 @@ impl CameraGroup {
                     wgpu::BindGroupEntry {
                         binding: 6,
                         resource: self.mapping_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 7,
+                        resource: wgpu::BindingResource::TextureView(froxel_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: wgpu::BindingResource::Sampler(&self.mask_sampler),
                     },
                 ],
             }));
@@ -830,9 +858,6 @@ pub struct Gfx3d {
     pipelines: FxHashMap<PipelineKey, wgpu::RenderPipeline>,
 
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
-    // Depth-only-aspect view of the same texture, for sampling the depth buffer as a
-    // texture (aerial-perspective pass reconstructs world distance from it).
-    depth_sample: Option<wgpu::TextureView>,
     depth_size: (u32, u32),
 
     shadow_pass_ubo: DynUbo, // one ShadowPassUbo per cascade
@@ -1068,7 +1093,6 @@ impl Gfx3d {
             skin_attrs,
             pipelines: FxHashMap::default(),
             depth: None,
-            depth_sample: None,
             depth_size: (0, 0),
             shadow_pass_ubo,
             shadow_caster_ssbo,
@@ -1379,19 +1403,11 @@ impl Gfx3d {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // Depth-only aspect view for sampling (the default view carries the stencil
-        // aspect too, which can't be bound as texture_depth_2d).
-        let sample = texture.create_view(&wgpu::TextureViewDescriptor {
-            label: Some("wgr_3d_depth_sample"),
-            aspect: wgpu::TextureAspect::DepthOnly,
-            ..Default::default()
-        });
         self.depth = Some((texture, view));
-        self.depth_sample = Some(sample);
         self.depth_size = size;
     }
 
@@ -1399,9 +1415,13 @@ impl Gfx3d {
         self.depth.as_ref().map(|(_, v)| v)
     }
 
-    // Depth-only-aspect view for sampling the depth buffer (aerial-perspective pass).
-    pub fn depth_sample_view(&self) -> Option<&wgpu::TextureView> {
-        self.depth_sample.as_ref()
+    // The cascade shadow depth map as a D2Array view (or the 1x1 dummy when no shadows),
+    // lent to the froxel fill so it can occlude the fog by objects + terrain (god rays).
+    pub fn shadow_sample_view(&self) -> &wgpu::TextureView {
+        self.shadow_target
+            .as_ref()
+            .map(|t| &t.sample_view)
+            .unwrap_or(&self.dummy_shadow_view)
     }
 
     // Group-0 (camera UBO + shadow map) layout, shared with the terrain pipeline so
@@ -1932,6 +1952,7 @@ impl Gfx3d {
         heightmap_view: &wgpu::TextureView,
         heightmap_gen: u64,
         conform_params: &crate::terrain::TerrainConformParams,
+        froxel_view: &wgpu::TextureView,
     ) {
         // Lend the terrain heightmap + its sampling params to the mesh conform group
         // (group 4) so vs_main can conform ClipLand vegetation to SurfaceY per vertex.
@@ -1958,6 +1979,7 @@ impl Gfx3d {
                 self.shadow_gen,
                 shadow_mask_view,
                 shadow_mask_gen,
+                froxel_view,
             );
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {

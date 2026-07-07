@@ -23,15 +23,13 @@ struct Sky {
     night_horizon: vec4<f32>, // xyz = night radiance at horizon
     night_params: vec4<f32>,  // x = full-day sun.y, y = full-night sun.y, z = intensity, w = far-fade range (m)
     output: vec4<f32>,        // x = linear output (1) vs self-tonemap (0)
+    cam_pos: vec4<f32>,       // xyz = ABSOLUTE world camera position (froxel -> terrain-mask lookup)
 };
 
 @group(0) @binding(0) var<uniform> sky: Sky;
 @group(0) @binding(1) var lut_sampler: sampler;
 @group(0) @binding(2) var transmittance_lut: texture_2d<f32>;
 @group(0) @binding(3) var multiscatter_lut: texture_2d<f32>;
-// Only bound (and only used) by the aerial-perspective pass (fs_aerial); the other
-// entry points don't reference it, so their pipeline layouts omit binding 4.
-@group(0) @binding(4) var depth_tex: texture_depth_2d;
 
 const PI: f32 = 3.14159265359;
 const TRANSMITTANCE_STEPS: f32 = 40.0;
@@ -392,115 +390,194 @@ fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(color, 1.0);
 }
 
-// ---- Aerial perspective (plan Stage 4) ---------------------------------------
-// A deferred fullscreen pass over the finished scene depth. For each shaded pixel it
-// marches the SAME atmosphere as the sky, but only from the camera to the pixel's
-// world distance, producing the in-scattered haze in front of the surface and the
-// transmittance of the surface radiance through it. Because it reuses fs_sky's exact
-// functions and LUTs, distant terrain fades into precisely the sky colour above it —
-// no separate fog colour, no horizon seam. Composited by hardware blend:
-//   result = inscatter + surface * transmittance   (src=One, dst=SrcAlpha).
+// ---- Aerial-perspective froxel volume (fill) ---------------------------------
+// The Forward+-native replacement for the deferred fs_aerial pass: a frustum-aligned
+// 3D volume where each froxel stores the atmosphere in-scattered toward the camera and
+// the transmittance from the camera up to that froxel's distance. The forward shaders
+// then apply fog with ONE trilinear tap at the fragment's froxel coordinate, so every
+// fragment (terrain, object, foliage, transparent) fogs by its own distance and 2D is
+// simply never sampled — no deferred depth readback, no render-order split.
+//
+// XY = screen; the Z slice maps to distance with a SQUARED distribution (dense near the
+// camera): texel-centre w in [0,1] -> dist = max_dist * w^2, so sampling is
+// w = sqrt(dist / max_dist). Filled once per frame by marching each column front-to-back
+// and storing the running (inscatter, transmittance) at each slice — O(depth) per column.
+// Reuses the exact sky atmosphere (LUTs + phase), so the froxel fog matches the sky.
+// (Stage 1: fill only. Forward-shader sampling + sun-shadowing land in later stages.)
+@group(0) @binding(5) var froxel_out: texture_storage_3d<rgba16float, write>;
 
-struct Aerial {
-    inscatter: vec3<f32>,
-    transmittance: vec3<f32>,
+// Group(1): the long-range terrain sun-shadow mask (same world-space "shadow ceiling"
+// map the forward shaders sample via frame::terrain_sun_shadow), lent to the froxel fill
+// so the fog is occluded by terrain — the sun stops shining THROUGH hills into the haze,
+// and gaps between ridges become god-ray shafts. Standalone-validated shader, so the
+// struct + sampling are duplicated here rather than imported. Matches TerrainShadowMap.
+struct FroxelShadow {
+    origin: vec2<f32>,     // world xz of the mask's (0,0)
+    inv_span: vec2<f32>,   // world-xz -> [0,1] over the map
+    half_texel: vec2<f32>, // 0.5 / mask_dims
+    enabled: f32,          // 0 until a heightmap is loaded
+    pad: f32,
 };
+@group(1) @binding(0) var shadow_mask: texture_2d<f32>;
+@group(1) @binding(1) var shadow_samp: sampler;
+@group(1) @binding(2) var<uniform> shadow_map: FroxelShadow;
 
-fn raymarch_aerial(pos: vec3<f32>, ray: vec3<f32>, sun: vec3<f32>, t_max: f32) -> Aerial {
-    let cos_t = dot(ray, sun);
-    let rp = rayleigh_phase(cos_t);
-    let mp = mie_phase(cos_t);
-    // Aerial perspective is low-frequency; a fixed modest step count is plenty and
-    // the per-segment analytic integral keeps it energy-correct regardless.
-    let steps = 12.0;
-
-    var lum = vec3<f32>(0.0);
-    var trans = vec3<f32>(1.0);
-    var t = 0.0;
-    for (var i = 0.0; i < steps; i += 1.0) {
-        let new_t = ((i + 0.5) / steps) * t_max;
-        let dt = new_t - t;
-        t = new_t;
-        let p = pos + ray * t;
-        let m = scattering_values(p);
-        let safe_ext = max(m.extinction, vec3<f32>(1e-9));
-        let sample_trans = exp(-dt * m.extinction);
-
-        let sun_t = sample_transmittance(p, sun);
-        let psi = sample_multiscatter(p, sun);
-        let rayleigh_in = m.rayleigh * (rp * sun_t + psi);
-        let mie_in = vec3<f32>(m.mie) * (mp * sun_t + psi);
-        let in_scat = rayleigh_in + mie_in;
-        let scat_int = (in_scat - in_scat * sample_trans) / safe_ext;
-        lum += scat_int * trans;
-        trans = trans * sample_trans;
+// Occlusion [0,1] of the sun by terrain at an ABSOLUTE world position: 0 = lit, 1 = fully
+// terrain-shadowed. Mirror of frame::terrain_sun_shadow (a point at (xz, y) is occluded by
+// how far y sits below the column's shadow ceiling, softened by the penumbra half-width).
+fn terrain_occlusion(world_xz: vec2<f32>, world_y: f32) -> f32 {
+    if (shadow_map.enabled < 0.5) {
+        return 0.0;
     }
-
-    var r: Aerial;
-    r.inscatter = lum;
-    r.transmittance = trans;
-    return r;
+    let uv = (world_xz - shadow_map.origin) * shadow_map.inv_span + shadow_map.half_texel;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return 0.0;
+    }
+    let sm = textureSampleLevel(shadow_mask, shadow_samp, uv, 0.0);
+    let lit = smoothstep(sm.r - sm.g, sm.r + sm.g + 1e-3, world_y);
+    return clamp(sm.b * (1.0 - lit), 0.0, 1.0);
 }
 
-@fragment
-fn fs_aerial(in: VsOut) -> @location(0) vec4<f32> {
-    let d_buf = textureLoad(depth_tex, vec2<i32>(in.clip.xy), 0);
-    // Reversed-Z: background (no geometry) keeps the cleared far value 0, where the
-    // sky already drew the full atmosphere — leave it untouched (blend identity).
-    if (d_buf <= 0.0) {
-        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+// Cascade shadow map (near field, objects + terrain), so the fog is occluded by SHARP
+// casters — tree trunks, buildings, ridgelines — which the smooth terrain-ceiling mask
+// can't resolve. That's what carves crisp god-ray shafts. Mirrors WgrCameraShadow; the
+// fog has no surface normal / screen derivatives, so this is a simplified single-tap
+// version of frame::shadow_strength (no PCF, no normal/plane bias — just a constant depth
+// bias), which is plenty for the soft 32^3 volume.
+struct FroxelCsm {
+    cascade_vp: array<mat4x4<f32>, 4>,
+    splits: vec4<f32>,      // frustum tiers: far eye-depth per tier
+    omni_radius: vec4<f32>, // omni tiers: camera-distance radius
+    ctl: vec4<f32>,         // {count, omni_count, fade_range, bias_const}
+    ctlb: vec4<f32>,        // {texel_size, darkness, normal_offset_scale, pcf}
+    cam_fwd: vec4<f32>,     // xyz = camera forward (eye-depth cascade select)
+    sun_dir: vec4<f32>,
+};
+@group(1) @binding(3) var csm_tex: texture_depth_2d_array;
+@group(1) @binding(4) var csm_cmp: sampler_comparison;
+@group(1) @binding(5) var<uniform> csm: FroxelCsm;
+
+// Occlusion [0,1] of the sun by the cascade shadow map at a camera-relative position
+// (1 = shadowed). Same cascade select + far-fade as shadow_strength, single compare tap.
+fn csm_occlusion(pos: vec3<f32>) -> f32 {
+    let n = i32(csm.ctl.x);
+    if (n <= 0) {
+        return 0.0;
+    }
+    let omni_n = i32(csm.ctl.y);
+    let eye_depth = dot(pos, csm.cam_fwd.xyz);
+    let dist3d = length(pos);
+    var ci = n;
+    for (var i = 0; i < 4; i++) {
+        if (i >= n) {
+            break;
+        }
+        let metric = select(eye_depth, dist3d, i < omni_n);
+        if (metric <= csm.splits[i]) {
+            ci = i;
+            break;
+        }
+    }
+    if (ci >= n) {
+        return 0.0;
+    }
+    let cp = csm.cascade_vp[ci] * vec4<f32>(pos, 1.0);
+    let sc = cp.xyz / cp.w;
+    let suv = vec2<f32>(sc.x * 0.5 + 0.5, 0.5 - sc.y * 0.5);
+    if (suv.x <= 0.0 || suv.x >= 1.0 || suv.y <= 0.0 || suv.y >= 1.0 || sc.z <= 0.0 || sc.z >= 1.0) {
+        return 0.0;
+    }
+    let bias = csm.ctl.w * f32(ci + 1) * f32(ci + 1);
+    let lit = textureSampleCompareLevel(csm_tex, csm_cmp, suv, ci, sc.z - bias);
+    // Fade out over the last cascade's tail exactly like shadow_strength, so the near-field
+    // CSM occlusion hands off to the long-range terrain mask without a hard edge.
+    let fade = clamp((csm.splits[n - 1] - eye_depth) / max(csm.ctl.z, 0.001), 0.0, 1.0);
+    return (1.0 - lit) * fade;
+}
+
+@compute @workgroup_size(8, 8, 1)
+fn cs_froxel(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = textureDimensions(froxel_out);
+    if (gid.x >= dims.x || gid.y >= dims.y) {
+        return;
     }
 
-    // Un-reverse to forward NDC z, then unproject with the translation-free
-    // inv_view_proj. Rotation preserves length, so the result's magnitude is the
-    // camera->fragment distance and its direction is the world view ray — no separate
-    // inverse-projection needed.
-    let ndc = in.uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
-    let world_h = sky.inv_view_proj * vec4<f32>(ndc, 1.0 - d_buf, 1.0);
-    let offset = world_h.xyz / world_h.w;
-    let frag_dist = length(offset);
-    let ray = offset / frag_dist;
+    // View ray for this column: unproject the pixel centre at the NEAR plane (NDC z = 0,
+    // safe under the infinite-far projection), translation-free so the length is metric.
+    let uv = (vec2<f32>(f32(gid.x), f32(gid.y)) + 0.5) / vec2<f32>(f32(dims.x), f32(dims.y));
+    let ndc = uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+    let world = sky.inv_view_proj * vec4<f32>(ndc, 0.0, 1.0);
+    let ray = normalize(world.xyz / world.w);
 
     let sun = normalize(sky.sun_dir.xyz);
     let cam_alt = max(sky.night_zenith.w, 0.0);
-    let pos = vec3<f32>(0.0, sky.params.z + cam_alt, 0.0);
+    let origin = vec3<f32>(0.0, sky.params.z + cam_alt, 0.0);
     let radiance = sky.sun_dir.w * sky.params.y;
+    let max_dist = max(sky.night_params.w, 1.0);
+    let depth = f32(dims.z);
 
-    let ap = raymarch_aerial(pos, ray, sun, frag_dist);
-    var inscatter = ap.inscatter * radiance;
-    var trans = ap.transmittance;
+    let cos_t = dot(ray, sun);
+    let rp = rayleigh_phase(cos_t);
+    let mp = mie_phase(cos_t);
 
-    // Far-fade: with the infinite-far projection the terrain edge sits at a finite
-    // distance (the fog/view range) while the sky above it is fogged to infinity, so
-    // the two meet in a soft colour step. As the fragment nears that range, dissolve
-    // the surface into the FULL sky radiance along its ray — at fade = 1 the terrain
-    // pixel equals the sky directly above it, so the horizon is seamless. This is also
-    // what rounds off the peripheral over-draw of the legacy flat-far-plane cull.
-    // night_params.w carries the range (0 = disabled, e.g. no scene).
-    let fog_far = sky.night_params.w;
-    if (fog_far > 0.0) {
-        let fade = smoothstep(fog_far * 0.9, fog_far, frag_dist);
-        if (fade > 0.0) {
-            // Horizon-floored ray so it matches fs_sky's below-horizon continuation.
-            let march_dir = normalize(vec3<f32>(ray.x, max(ray.y, 0.0), ray.z));
-            let atmo = ray_sphere(pos, march_dir, sky.params.z + sky.params.w).y;
-            var full_sky = vec3<f32>(0.0);
-            if (atmo > 0.0) {
-                full_sky = raymarch_sky(pos, march_dir, sun, atmo) * radiance;
-            }
-            // Match fs_sky's night floor so the fade is seamless after dusk too.
-            let night_blend = 1.0 - smoothstep(sky.night_params.y, sky.night_params.x, sun.y);
-            if (night_blend > 0.0) {
-                let night = mix(sky.night_horizon.rgb, sky.night_zenith.rgb, clamp(ray.y, 0.0, 1.0));
-                full_sky += night * sky.night_params.z * night_blend;
-            }
-            inscatter = mix(inscatter, full_sky, fade);
-            trans = trans * (1.0 - fade);
-        }
+    // Full sky radiance along this column (horizon-floored exactly like fs_sky, so a
+    // downward terrain ray still resolves the HORIZON sky it should dissolve into). The
+    // far froxels blend toward this so the terrain edge and newly-streamed tiles fade into
+    // the real sky instead of the dim airlight-to-fog-range (which read as a grey band and
+    // let geometry pop against the sky). This is the froxel-native far-fade.
+    let march_dir = normalize(vec3<f32>(ray.x, max(ray.y, 0.0), ray.z));
+    let atmo = ray_sphere(origin, march_dir, sky.params.z + sky.params.w);
+    var sky_full = vec3<f32>(0.0);
+    if (atmo.y > 0.0) {
+        sky_full = raymarch_sky(origin, march_dir, sun, atmo.y) * radiance;
     }
 
-    // Blend uses a single alpha, so carry luminance-weighted (grey) transmittance.
-    // Chromatic extinction of the background is a later refinement (needs ping-pong).
-    let t_mono = dot(trans, vec3<f32>(0.2126, 0.7152, 0.0722));
-    return vec4<f32>(inscatter, t_mono);
+    // March front-to-back, accumulating into each slice. Two analytic sub-steps per slice
+    // keep the thick far froxels honest; the near ones are thin so it's cheap.
+    let sub = 2u;
+    var lum = vec3<f32>(0.0);
+    var trans = vec3<f32>(1.0);
+    var t_prev = 0.0;
+    for (var z = 0u; z < dims.z; z = z + 1u) {
+        let w_center = (f32(z) + 0.5) / depth;
+        let t_target = max_dist * w_center * w_center;
+        let seg = (t_target - t_prev) / f32(sub);
+        for (var s = 0u; s < sub; s = s + 1u) {
+            let t0 = t_prev + seg * f32(s);
+            let dt = seg;
+            let march = t0 + dt * 0.5;
+            let p = origin + ray * march;
+            let m = scattering_values(p);
+            let safe_ext = max(m.extinction, vec3<f32>(1e-9));
+            let sample_trans = exp(-dt * m.extinction);
+            let sun_t = sample_transmittance(p, sun);
+            let psi = sample_multiscatter(p, sun);
+            // Occlude the DIRECT sun single-scatter by terrain (the froxel sample's absolute
+            // world position = camera + the marched camera-relative offset). Multiscatter
+            // (psi) stays as ambient fill, so shadowed fog is dim-but-not-black. This is what
+            // stops the low sun bleeding through ridges and carves god-ray shafts.
+            let world_off = ray * march;
+            // Fog occlusion by the long-range terrain shadow-ceiling mask (absolute world pos).
+            // CSM froxel occlusion is DISABLED: the cascade range is far shorter than where the
+            // fog is dense, so it never overlaps foggy regions and had zero visible effect. The
+            // path is kept fully wired (csm_occlusion + group(1) bindings 3-5, csm_ubo upload) so
+            // re-enabling is a one-line change once the CSM range is extended:
+            //     let occ = max(csm_occlusion(world_off), occ);
+            // See the wgpu-renderer-project memory, "Stage 3b".
+            let occ = terrain_occlusion(sky.cam_pos.xz + world_off.xz, sky.cam_pos.y + world_off.y);
+            // night_horizon.w = user occlusion strength (0 = off for A/B; 1 = physical; >1 exaggerated).
+            let sun_vis = clamp(1.0 - occ * sky.night_horizon.w, 0.0, 1.0);
+            let in_scat = m.rayleigh * (rp * sun_t * sun_vis + psi) + vec3<f32>(m.mie) * (mp * sun_t * sun_vis + psi);
+            let scat_int = (in_scat - in_scat * sample_trans) / safe_ext;
+            lum += scat_int * trans;
+            trans = trans * sample_trans;
+        }
+        t_prev = t_target;
+        // Blend the physical airlight toward the full sky over the far half of the volume,
+        // so w -> 1 (the draw edge) is the sky and geometry there dissolves seamlessly.
+        let farfade = smoothstep(0.5, 1.0, w_center);
+        let col = mix(lum * radiance, sky_full, farfade);
+        let t_mono = dot(trans, vec3<f32>(0.2126, 0.7152, 0.0722)) * (1.0 - farfade);
+        textureStore(froxel_out, vec3<i32>(i32(gid.x), i32(gid.y), i32(z)), vec4<f32>(col, t_mono));
+    }
 }

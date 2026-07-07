@@ -462,6 +462,7 @@ impl Renderer {
             &heightmap_view,
             heightmap_gen,
             &conform_params,
+            self.sky.froxel_view(),
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
@@ -487,8 +488,6 @@ impl Renderer {
             .depth_view()
             .ok_or("depth target missing")?
             .clone();
-        // Depth-only view for the aerial-perspective pass (sampled, not attached).
-        let depth_sample = self.gfx3d.depth_sample_view().cloned();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -580,22 +579,42 @@ impl Renderer {
                 let proj = glam::DMat4::from_cols_array(&cam.proj.map(f64::from));
                 let inv_vp = view.inverse() * proj.inverse();
                 let m = inv_vp.as_mat4().to_cols_array();
-                [
+                let ivp = [
                     [m[0], m[1], m[2], m[3]],
                     [m[4], m[5], m[6], m[7]],
                     [m[8], m[9], m[10], m[11]],
                     [m[12], m[13], m[14], m[15]],
-                ]
+                ];
+                // Absolute world camera position (the froxel occlusion needs it to place a
+                // marched camera-relative offset onto the world-space terrain shadow mask),
+                // plus this camera's cascade matrices for the froxel's near-field CSM occlusion.
+                (ivp, cam.cam_pos, cam.shadow)
             })
         } else {
             None
         };
         let sky_drawn = sky_ivp.is_some();
-        if let Some(ivp) = sky_ivp {
-            self.sky.upload(&self.queue, &self.sky_params, ivp);
+        if let Some((ivp, cam_pos, cam_shadow)) = sky_ivp {
+            self.sky.upload(
+                &self.queue,
+                &self.sky_params,
+                ivp,
+                cam_pos,
+                &shadow_mapping,
+                &cam_shadow,
+            );
             // Rebuild the transmittance + multiscatter LUTs first if the atmosphere
             // changed (no-op most frames), then draw the fullscreen sky.
             self.sky.render_luts(&mut encoder);
+            // Fill the aerial-perspective froxel volume from the fresh uniform + LUTs, now
+            // occluded by the terrain sun-shadow mask (far) + cascade shadow map (near) so
+            // the sun can't bleed through hills OR objects, and casters carve god-ray shafts.
+            self.sky.render_froxel(
+                &self.device,
+                &mut encoder,
+                &shadow_mask_view,
+                self.gfx3d.shadow_sample_view(),
+            );
             encoder.push_debug_group("wgr_sky");
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("wgr_sky"),
@@ -623,10 +642,9 @@ impl Renderer {
             encoder.pop_debug_group();
         }
 
-        // Aerial perspective composites atmosphere over the geometry once per scene
-        // segment (before the next clears depth). HDR path only — the LDR-direct scene
-        // isn't linear — and only when the sky is active (it reuses the sky's LUTs).
-        let aerial = sky_drawn && self.hdr.is_some() && depth_sample.is_some();
+        // Fog is now applied per-fragment in the forward shaders by sampling the aerial
+        // froxel volume (filled above), so there is no deferred fog pass between the 3D
+        // and 2D sub-passes — the 2D overlays simply never sample it.
 
         // `target` is where the current phase's segments render (HDR then swapchain);
         // `display_2d` picks the swapchain-format 2D pipelines in the UI phase.
@@ -706,9 +724,6 @@ impl Renderer {
             let seg_label = format!("wgr_segment_{seg_idx}");
             seg_idx += 1;
             let seg_ops = &ops[start..end];
-            let has_3d = seg_ops
-                .iter()
-                .any(|o| matches!(o, Plan3dOp::Draw3D { .. } | Plan3dOp::Terrain(_)));
             let has_2d = seg_ops.iter().any(|o| matches!(o, Plan3dOp::Draw2D(_)));
 
             // 3D sub-pass: all non-2D draws (clears depth + stencil — stencil to 0 so
@@ -743,15 +758,6 @@ impl Renderer {
                 });
                 render_ops(&mut pass, seg_ops, display_2d, false);
                 drop(pass);
-            }
-
-            // Fog all the 3D geometry before the 2D overlays composite over it. Skips the
-            // UI phase (display-referred swapchain, no world depth) and 3D-less segments.
-            if aerial && !display_2d && has_3d {
-                if let Some(ds) = &depth_sample {
-                    self.sky
-                        .render_aerial(&self.device, &mut encoder, &target, ds);
-                }
             }
 
             // 2D sub-pass: the overlays, over the fogged colour, loading the 3D depth +

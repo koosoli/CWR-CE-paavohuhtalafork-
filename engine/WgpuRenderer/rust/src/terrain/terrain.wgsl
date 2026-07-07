@@ -7,7 +7,7 @@
 // Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
 // pipeline via the frame module, so terrain receives the same CSM shadows and
 // sun lighting.
-#import frame::{frame, reverse_z, fog_factor}
+#import frame::{frame, reverse_z, fog_factor, apply_fog}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -279,10 +279,12 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     let light_sum = sun + local;
     rgb *= select(clamp(light_sum, vec3<f32>(0.0), vec3<f32>(1.0)), max(light_sum, vec3<f32>(0.0)), linear > 0.5);
 
-    // fog_enabled: 0 = off, 1 = legacy distance fog, 2 = aerial perspective (the
-    // deferred sky pass fogs the scene instead, so skip the flat colour blend here;
-    // in.fog is still used above for distance-faded shadows).
-    if (frame.params.fog_enabled < 1.5) {
+    // fog_enabled: 2 = aerial perspective via the froxel volume (per-fragment); 1 =
+    // legacy flat distance fog; 0 = off. in.fog is still used above for distance-faded
+    // shadows regardless.
+    if (frame.params.fog_enabled >= 1.5) {
+        rgb = apply_fog(rgb, in.world_pos);
+    } else {
         rgb = mix(fog_color, rgb, in.fog);
     }
     return vec4<f32>(rgb, 1.0);

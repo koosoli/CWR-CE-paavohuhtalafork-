@@ -801,7 +801,9 @@ void EngineWgpu::NextFrame()
         {
             std::memcpy(cameras[i].proj.m, &_cameras[i].proj, sizeof(cameras[i].proj.m));
             std::memcpy(cameras[i].view.m, &_cameras[i].view, sizeof(cameras[i].view.m));
-            cameras[i].fog_color = {fog.R(), fog.G(), fog.B(), 1.0f};
+            // .w carries the aerial fog distance-ramp exponent (frame::apply_fog); lower =
+            // denser fog throughout, which reveals the volumetric terrain sun-shadowing.
+            cameras[i].fog_color = {fog.R(), fog.G(), fog.B(), _sky.fogFalloff};
             cameras[i].params = {fogStart, fogInvRange, fogEnabled, shadowStrength};
             // cam_pos.w carries the active point-light count (the storage buffer
             // is fixed-capacity, so its length is not the count).
@@ -1728,7 +1730,9 @@ void EngineWgpu::PushSky()
     Camera* skyCam = GScene ? GScene->GetCamera() : nullptr;
     const float camAlt = skyCam ? static_cast<float>(skyCam->Position().Y()) : 0.0f;
     sky.night_zenith = {_sky.nightZenith[0], _sky.nightZenith[1], _sky.nightZenith[2], camAlt};
-    sky.night_horizon = {_sky.nightHorizon[0], _sky.nightHorizon[1], _sky.nightHorizon[2], 0.0f};
+    // night_horizon.w carries the froxel fog terrain sun-shadow strength (0 = off, for A/B
+    // testing the effect; 1 = physical; >1 exaggerated). The .rgb is the night horizon colour.
+    sky.night_horizon = {_sky.nightHorizon[0], _sky.nightHorizon[1], _sky.nightHorizon[2], _sky.aerialShadow};
     // Blend band expressed as sun_dir.y (= sin elevation) so the shader compares directly.
     // night_params.w = the far-fade range: the aerial pass dissolves the terrain edge
     // into the full sky as it nears the fog/view distance, hiding the horizon colour

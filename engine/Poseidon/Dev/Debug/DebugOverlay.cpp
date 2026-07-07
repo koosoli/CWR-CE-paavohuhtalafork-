@@ -1723,6 +1723,13 @@ void DrawSkyTab()
     changed |= ImGui::ColorEdit3("Ground albedo", s.ground);
     changed |= ImGui::SliderFloat("Horizon haze", &s.horizonHaze, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("Blend the sky toward the scene fog colour at the horizon so it meets the fogged terrain");
+    changed |= ImGui::SliderFloat("Aerial sun shadow", &s.aerialShadow, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("Terrain occlusion of the froxel fog: 0 = off (sun lights the haze everywhere, for A/B), "
+                          "1 = physical, >1 exaggerated to make the shadowed fog / god-ray shafts obvious");
+    changed |= ImGui::SliderFloat("Fog falloff", &s.fogFalloff, 0.5f, 8.0f, "%.2f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Aerial fog distance ramp exponent. High (default 3) = clear near/mid, fog only near the "
+                          "draw edge. Low (~1) = dense fog throughout the view, which makes the volumetric terrain "
+                          "sun-shadowing visible. Drop this to see the aerial-shadow effect.");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Quality");
