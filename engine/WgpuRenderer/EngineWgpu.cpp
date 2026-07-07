@@ -377,13 +377,9 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     // vertex deform. GL33 never sets this and keeps deforming on the CPU.
     GGpuTerrainConform = true;
 
-    // POSEIDON_WGPU_TERRAIN=1 draws terrain via the GPU heightmap path instead of
-    // the legacy per-segment Shape path.
+    // Terrain is always drawn via the GPU heightmap path on this backend (the legacy
+    // per-segment Shape path is GL33-only). It owns the sun-shadow mask, GPU conform, etc.
     _terrain = std::make_unique<TerrainWgpu>(*this, _renderer);
-    if (const char* t = std::getenv("POSEIDON_WGPU_TERRAIN"))
-    {
-        _terrainEnabled = std::strtol(t, nullptr, 10) != 0;
-    }
 
     // WGR_SHADOW_MAPS=1 enables cascaded shadow maps at startup (dev panel /
     // tri verbs can still toggle at runtime).
@@ -1113,7 +1109,7 @@ void EngineWgpu::EnsureCamera()
 
 ITerrainRenderer* EngineWgpu::GetTerrainRenderer()
 {
-    return (_terrainEnabled && _terrain) ? _terrain.get() : nullptr;
+    return _terrain.get();
 }
 
 void EngineWgpu::SubmitTerrain(std::span<const WgrTerrainNode> nodes)

@@ -161,7 +161,7 @@ class EngineWgpu : public EngineDummy
 
     void OnWindowResized(int w, int h) override;
 
-    // GPU terrain renderer; null unless POSEIDON_WGPU_TERRAIN is set.
+    // GPU terrain renderer (always active on this backend).
     ITerrainRenderer* GetTerrainRenderer() override;
     // Called by the terrain renderer: append a batch of `nodes` for the current
     // camera and enqueue its draw in submission order.
@@ -287,7 +287,6 @@ class EngineWgpu : public EngineDummy
 
     // GPU terrain renderer + its per-frame node/batch buffers.
     std::unique_ptr<TerrainWgpu> _terrain;
-    bool _terrainEnabled = false;
     std::vector<WgrTerrainNode> _terrainNodes;
     std::vector<WgrTerrainBatch> _terrainBatches;
 };
