@@ -112,8 +112,20 @@ class EngineWgpu : public EngineDummy
     void SetTonemapSettings(const TonemapSettings& s) override;
     bool GetTonemapAuto() const override { return _tonemapAuto; }
     void SetTonemapAuto(bool enable) override { _tonemapAuto = enable; }
+    ExposureSettings GetExposureSettings() const override { return _exposure; }
+    void SetExposureSettings(const ExposureSettings& s) override;
+    float GetAutoExposureScale() const override;
     // Emit the scene->UI resolve marker (WGR_CMD_RESOLVE) into the command stream.
     void ResolveSceneToDisplay() override;
+
+    // Procedural atmospheric sky (ImGui Sky tab). Authored params are edited here and
+    // pushed to the renderer; the celestial fields are refreshed every frame from
+    // LightSun in PushSky (called from NextFrame). See docs/procedural-sky-plan.md.
+    bool SupportsSky() const override { return _renderer != nullptr; }
+    SkySettings GetSkySettings() const override { return _sky; }
+    void SetSkySettings(const SkySettings& s) override;
+    // Suppress the legacy skydome on wgpu while the procedural sky is drawing.
+    bool ProceduralSkyActive() const override { return _renderer != nullptr && _sky.enabled; }
 
     // Cascaded shadow maps, GPU-driven caster submission (SceneShadowPass).
     void SetShadowMapsEnabled(bool enabled) override { _smTuning.enabled = enabled; }
@@ -180,9 +192,16 @@ class EngineWgpu : public EngineDummy
 
     // Pushes _tonemap to the renderer via wgr_set_tonemap (used on init + on edit).
     void PushTonemap();
+    // Pushes _exposure to the renderer via wgr_set_exposure (auto-exposure params).
+    void PushExposure();
     // In auto mode, interpolate the per-ToD preset for the current game time into
     // _tonemap and push it. Called once per frame from NextFrame.
     void UpdateAutoTonemap();
+
+    // Build a WgrSky from the authored _sky params + live celestial values from
+    // LightSun and push it via wgr_set_sky. Called each frame (celestial refresh)
+    // and on edit from the Sky tab.
+    void PushSky();
 
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
@@ -191,6 +210,20 @@ class EngineWgpu : public EngineDummy
     // Auto = drive _tonemap from the per-ToD presets; false = manual override (tab).
     bool _tonemapAuto = true;
     Engine::TonemapSettings _tonemap;
+    Engine::ExposureSettings _exposure;
+    // Authored procedural-sky params (atmosphere + look); celestial fields are filled
+    // per frame from LightSun in PushSky.
+    Engine::SkySettings _sky;
+    // Smoothed celestial inputs: LightSun::Recalculate refreshes sun/moon direction,
+    // night factor and fog colour only every few seconds with no interpolation, which
+    // makes the sun disc + horizon haze stutter. PushSky eases these toward the live
+    // values each frame (snapping on init / large jumps). See procedural-sky-plan §9.
+    bool _skyInit = false;
+    Vector3 _skySunDir;
+    Vector3 _skyMoonDir;
+    float _skyMoonPhase = 0.5f;
+    float _skyNight = 0.0f;
+    float _skyFog[3] = {0.7f, 0.75f, 0.8f};
     TextureBankWgpu* _wbank = nullptr;
     SDLEventWindow _eventWindow;
     int _w = 0;

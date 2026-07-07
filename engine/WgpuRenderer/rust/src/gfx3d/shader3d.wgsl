@@ -274,6 +274,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (linear > 0.5) {
         fog_color = srgb_to_linear(fog_color);
     }
-    rgb = mix(fog_color, rgb, in.fog);
+    // fog_enabled == 2 = aerial perspective: the deferred sky pass fogs the scene, so
+    // skip the flat colour blend (0 = off, 1 = legacy distance fog).
+    if (frame.params.fog_enabled < 1.5) {
+        rgb = mix(fog_color, rgb, in.fog);
+    }
     return vec4<f32>(rgb, base.a);
 }

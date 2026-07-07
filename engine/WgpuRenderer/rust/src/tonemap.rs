@@ -11,6 +11,7 @@ pub struct Tonemap {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     sampler: wgpu::Sampler,
+    bloom_sampler: wgpu::Sampler,
     params_buf: wgpu::Buffer,
     // Rebuilt whenever the HDR source view is (re)created (allocation / resize).
     bind: Option<wgpu::BindGroup>,
@@ -49,6 +50,34 @@ impl Tonemap {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
                         min_binding_size: None,
+                    },
+                    count: None,
+                },
+                // Bloom pyramid mip0 + a linear sampler for the bilinear upscale.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // 1x1 auto-exposure scale (textureLoad, unfilterable R32Float).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
                     },
                     count: None,
                 },
@@ -94,6 +123,15 @@ impl Tonemap {
             min_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
+        // Bilinear for upsampling the half-res bloom pyramid.
+        let bloom_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_tonemap_bloom_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
 
         let params_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wgr_tonemap_params"),
@@ -105,13 +143,21 @@ impl Tonemap {
             pipeline,
             layout,
             sampler,
+            bloom_sampler,
             params_buf,
             bind: None,
         }
     }
 
-    // Point the resolve at a (re)created HDR target view. Called from ensure_hdr.
-    pub fn set_source(&mut self, device: &wgpu::Device, hdr_view: &wgpu::TextureView) {
+    // Point the resolve at a (re)created HDR target view + the bloom pyramid mip0.
+    // Called from ensure_hdr after the HDR target and bloom pyramid are (re)built.
+    pub fn set_source(
+        &mut self,
+        device: &wgpu::Device,
+        hdr_view: &wgpu::TextureView,
+        bloom_view: &wgpu::TextureView,
+        exposure_view: &wgpu::TextureView,
+    ) {
         self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgr_tonemap_bind"),
             layout: &self.layout,
@@ -127,6 +173,18 @@ impl Tonemap {
                 wgpu::BindGroupEntry {
                     binding: 2,
                     resource: self.params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(bloom_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&self.bloom_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: wgpu::BindingResource::TextureView(exposure_view),
                 },
             ],
         }));

@@ -4,8 +4,11 @@ mod gfx3d;
 mod handles;
 mod log;
 mod shaders;
+mod sky;
 mod terrain;
 mod textures;
+mod bloom;
+mod exposure;
 mod tonemap;
 
 use crate::ffi::{
@@ -16,8 +19,11 @@ use crate::ffi::{
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::{Gfx3d, env_f32};
 use crate::log::{LogSink, log_level};
+use crate::sky::Sky;
 use crate::terrain::Terrain;
 use crate::textures::{SharedTextures, TextureData, TextureFormat};
+use crate::bloom::Bloom;
+use crate::exposure::Exposure;
 use crate::tonemap::Tonemap;
 
 // Offscreen HDR scene target format (see docs/hdr-pipeline-plan.md §0.2). Alpha kept
@@ -62,9 +68,23 @@ pub struct Renderer {
     hdr: Option<(wgpu::Texture, wgpu::TextureView)>,
     hdr_size: (u32, u32),
     tonemap: Option<Tonemap>,
+    // Bloom pyramid, built alongside the tonemap on the HDR path; the resolve adds it.
+    bloom: Option<Bloom>,
+    // Eye adaptation / auto-exposure; produces a 1x1 exposure scale the resolve applies.
+    exposure: Option<Exposure>,
+    exposure_params: ffi::WgrExposure,
     // Live tonemap/look params, pushed from the ImGui Tonemap tab (wgr_set_tonemap).
     // Seeded from WGR_* env for continuity; the tab is the source of truth once open.
     tonemap_params: ffi::WgrTonemap,
+    // Procedural sky (docs/procedural-sky-plan.md): a fullscreen atmospheric pass
+    // drawn into the scene target before geometry. Params pushed via wgr_set_sky
+    // (celestial per frame, authored on edit); skipped when control.x (enabled) = 0.
+    sky: Sky,
+    sky_params: ffi::WgrSky,
+    // WGR_SKY_DEBUG: log the sky's camera count + chosen index when they change, to
+    // catch frame-to-frame camera alternation (the suspected sun/haze stutter cause).
+    sky_debug: bool,
+    sky_dbg_last: (usize, usize),
 }
 
 impl Renderer {
@@ -193,6 +213,11 @@ impl Renderer {
             &mut composer,
         );
         let tonemap = hdr_enabled.then(|| Tonemap::new(&device, config.format));
+        let bloom = hdr_enabled.then(|| Bloom::new(&device, HDR_FORMAT));
+        let exposure = hdr_enabled.then(|| Exposure::new(&device, &queue));
+        // The sky targets the scene color format (HDR target or swapchain), matching
+        // the scene pipelines, and self-tonemaps when that is an LDR-direct swapchain.
+        let sky = Sky::new(&device, color_format);
         // Seed live params from the env knobs so behaviour is unchanged until the
         // ImGui tab pushes its own values (env_f32's >0 filter is fine for scales;
         // env_f32_opt keeps a 0 for the mode/encode toggles).
@@ -217,14 +242,40 @@ impl Renderer {
             hdr: None,
             hdr_size: (0, 0),
             tonemap,
+            bloom,
+            exposure,
+            exposure_params: ffi::WgrExposure::default(),
             tonemap_params,
+            sky,
+            sky_params: ffi::WgrSky::default(),
+            sky_debug: std::env::var("WGR_SKY_DEBUG").is_ok(),
+            sky_dbg_last: (usize::MAX, usize::MAX),
         })
+    }
+
+    // Live update from the ImGui Sky tab / per-frame celestial push (wgr_set_sky).
+    // Applied on the next frame's sky pass.
+    fn set_sky(&mut self, params: ffi::WgrSky) {
+        self.sky_params = params;
     }
 
     // Live update from the ImGui Tonemap tab (via wgr_set_tonemap). Applied on the
     // next frame's resolve; ignored on the LDR-direct path (no tonemap pass).
     fn set_tonemap(&mut self, params: ffi::WgrTonemap) {
         self.tonemap_params = params;
+    }
+
+    // Live update from the ImGui Tonemap tab (via wgr_set_exposure). Applied next frame.
+    fn set_exposure(&mut self, params: ffi::WgrExposure) {
+        self.exposure_params = params;
+    }
+
+    // Debug readback of the current auto-exposure scale (blocking; dev panel only).
+    fn exposure_scale(&self) -> f32 {
+        self.exposure
+            .as_ref()
+            .map(|e| e.read_scale(&self.device, &self.queue))
+            .unwrap_or(1.0)
     }
 
     // Tonemap the HDR scene target onto `dst` (the swapchain). No-op if the tonemap
@@ -235,6 +286,27 @@ impl Renderer {
         };
         // Live params from the ImGui Tonemap tab (seeded from WGR_* at startup).
         tonemap.upload_params(&self.queue, &self.tonemap_params);
+        // Build the bloom pyramid from the finished HDR scene (already includes aerial
+        // perspective) so the resolve can add it. Skipped when intensity is 0 (the
+        // resolve then adds bloom*0, so stale mip contents are harmless).
+        if self.tonemap_params.bloom_intensity > 0.0 {
+            if let Some(bloom) = self.bloom.as_ref() {
+                bloom.upload_params(
+                    &self.queue,
+                    self.tonemap_params.bloom_threshold,
+                    self.tonemap_params.bloom_knee,
+                    1.0,
+                );
+                bloom.render(encoder);
+            }
+        }
+        // Eye adaptation: reduce the scene to average luminance and ease the exposure
+        // scale (the resolve multiplies exposure by it). Always run on the HDR path —
+        // when disabled it just eases to 1.0 — the reduction is a few cheap passes.
+        if let Some(exposure) = self.exposure.as_ref() {
+            exposure.upload_params(&self.queue, &self.exposure_params);
+            exposure.render(encoder);
+        }
         encoder.push_debug_group("wgr_tonemap");
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("wgr_tonemap"),
@@ -291,8 +363,27 @@ impl Renderer {
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Rebuild the bloom pyramid for the new size, then point the resolve at both
+        // the HDR target and the bloom mip0. A 1x1 fallback keeps set_source valid if
+        // the pyramid somehow has no mips.
+        if let Some(bloom) = self.bloom.as_mut() {
+            bloom.resize(&self.device, width, height, HDR_FORMAT, &view);
+        }
+        if let Some(exposure) = self.exposure.as_mut() {
+            exposure.resize(&self.device, width, height, &view);
+        }
         if let Some(tonemap) = self.tonemap.as_mut() {
-            tonemap.set_source(&self.device, &view);
+            let bloom_view = self
+                .bloom
+                .as_ref()
+                .and_then(|b| b.view())
+                .unwrap_or(&view);
+            let scale_view = self
+                .exposure
+                .as_ref()
+                .map(|e| e.scale_view())
+                .unwrap_or(&view);
+            tonemap.set_source(&self.device, &view, bloom_view, scale_view);
         }
         self.hdr = Some((texture, view));
         self.hdr_size = (width, height);
@@ -396,6 +487,8 @@ impl Renderer {
             .depth_view()
             .ok_or("depth target missing")?
             .clone();
+        // Depth-only view for the aerial-perspective pass (sampled, not attached).
+        let depth_sample = self.gfx3d.depth_sample_view().cloned();
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -446,14 +539,151 @@ impl Renderer {
             [clear[0], clear[1], clear[2]]
         };
 
+        // Procedural sky (docs/procedural-sky-plan.md): a fullscreen atmospheric pass
+        // into the scene target BEFORE any geometry, so terrain/objects overdraw it.
+        // Depth is untouched (the pass has none). Skipped when disabled or camera-less;
+        // when it runs it fills every pixel, so the first segment loads over it instead
+        // of clearing. The legacy skydome meshes are suppressed on the C++ side.
+        // Reconstruct the inverse view-projection (for world ray directions) from the
+        // camera the VISIBLE GEOMETRY draws with — the first terrain batch, else the
+        // first 3D draw — not cameras[0]. When several cameras are pushed in a frame
+        // (e.g. flying: main view + cockpit/optics), cameras[0] can be a stale or
+        // secondary view, which makes the sky (and thus the sun disc + horizon haze)
+        // stutter against the terrain as the player moves. None = disabled / no camera.
+        let sky_ivp = if self.sky_params.control[0] != 0.0 {
+            let main_cam = terrain_batches
+                .first()
+                .map(|b| b.camera as usize)
+                .or_else(|| draws3d.first().map(|d| d.camera as usize))
+                .unwrap_or(0);
+            if self.sky_debug {
+                let cur = (cameras.len(), main_cam);
+                if cur != self.sky_dbg_last {
+                    self.sky_dbg_last = cur;
+                    self.log.log(
+                        log_level::INFO,
+                        &format!("wgr_sky: cameras={} main_cam={}", cur.0, cur.1),
+                    );
+                }
+            }
+            cameras.get(main_cam).map(|cam| {
+                // Reconstruct inv(proj*view) = inv(view) * inv(proj), inverting the two
+                // matrices SEPARATELY and in f64. Our projection is reversed-Z with an
+                // infinite far plane (ill-conditioned z-row); inverting the *combined*
+                // f32 matrix smears that poor conditioning into the x/y ray components,
+                // which shows up as horizon jitter when the orientation changes fast
+                // (pitching while flying). inv(view) alone has no such pathology, and the
+                // split keeps the projection's conditioning out of x/y. The view already
+                // has its translation zeroed (see EngineWgpu::PushSceneCamera), so the
+                // result is translation-invariant.
+                let view = glam::DMat4::from_cols_array(&cam.view.map(f64::from));
+                let proj = glam::DMat4::from_cols_array(&cam.proj.map(f64::from));
+                let inv_vp = view.inverse() * proj.inverse();
+                let m = inv_vp.as_mat4().to_cols_array();
+                [
+                    [m[0], m[1], m[2], m[3]],
+                    [m[4], m[5], m[6], m[7]],
+                    [m[8], m[9], m[10], m[11]],
+                    [m[12], m[13], m[14], m[15]],
+                ]
+            })
+        } else {
+            None
+        };
+        let sky_drawn = sky_ivp.is_some();
+        if let Some(ivp) = sky_ivp {
+            self.sky.upload(&self.queue, &self.sky_params, ivp);
+            // Rebuild the transmittance + multiscatter LUTs first if the atmosphere
+            // changed (no-op most frames), then draw the fullscreen sky.
+            self.sky.render_luts(&mut encoder);
+            encoder.push_debug_group("wgr_sky");
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wgr_sky"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &scene_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear_rgb[0] as f64,
+                            g: clear_rgb[1] as f64,
+                            b: clear_rgb[2] as f64,
+                            a: clear[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.sky.render(&mut pass);
+            drop(pass);
+            encoder.pop_debug_group();
+        }
+
+        // Aerial perspective composites atmosphere over the geometry once per scene
+        // segment (before the next clears depth). HDR path only — the LDR-direct scene
+        // isn't linear — and only when the sky is active (it reuses the sky's LUTs).
+        let aerial = sky_drawn && self.hdr.is_some() && depth_sample.is_some();
+
         // `target` is where the current phase's segments render (HDR then swapchain);
         // `display_2d` picks the swapchain-format 2D pipelines in the UI phase.
         let mut target = scene_view.clone();
         let mut display_2d = false;
-        let mut clear_color_next = true;
+        // If the sky filled the target, segments load over it; else the first clears.
+        let mut clear_color_next = !sky_drawn;
         let mut resolved = false;
         let mut start = 0usize;
         let mut seg_idx = 0usize;
+
+        // Aerial perspective is a DEFERRED pass over the scene depth, so it must run after
+        // all foggable 3D world geometry but before the 2D overlays (HUD / sights / scope),
+        // which have no world depth and must never be fogged. 2D and 3D draws are
+        // interleaved in the stream and which 2D draws exist changes frame to frame
+        // (markers, icons), so a "split at the first 2D op" is unstable — it would strand
+        // every later 3D object in the un-fogged tail, and flicker as those 2D draws come
+        // and go. Instead PARTITION each segment: replay all non-2D ops, fog, then replay
+        // all 2D ops. `want_2d` selects which side to draw (order preserved within each);
+        // `display_2d` is threaded as a param (not captured) so the outer mutable changes.
+        let render_ops = |pass: &mut wgpu::RenderPass<'_>,
+                          sub: &[Plan3dOp],
+                          display_2d: bool,
+                          want_2d: bool| {
+            let mut st3d = crate::gfx3d::Pass3dState::default();
+            for op in sub {
+                if matches!(op, Plan3dOp::Draw2D(_)) != want_2d {
+                    continue;
+                }
+                match op {
+                    Plan3dOp::Draw2D(arg) => {
+                        st3d = crate::gfx3d::Pass3dState::default();
+                        if let Some(b) = batches.get(*arg as usize) {
+                            self.gfx2d.draw_one(pass, &self.textures, b, display_2d);
+                        }
+                    }
+                    Plan3dOp::Draw3D { draw, base, count } => {
+                        if let Some(d) = draws3d.get(*draw as usize) {
+                            self.gfx3d
+                                .draw_one(pass, &self.textures, d, *base, *count, &mut st3d);
+                        }
+                    }
+                    Plan3dOp::Terrain(arg) => {
+                        st3d = crate::gfx3d::Pass3dState::default();
+                        if let (Some(b), Some(cam)) =
+                            (terrain_batches.get(*arg as usize), self.gfx3d.camera_bind())
+                        {
+                            let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                            self.terrain
+                                .draw(pass, cam, off, b.first_node, b.node_count);
+                        }
+                    }
+                    Plan3dOp::ClearDepth | Plan3dOp::Resolve => {}
+                }
+            }
+        };
+
         loop {
             let end = ops[start..]
                 .iter()
@@ -475,6 +705,14 @@ impl Renderer {
 
             let seg_label = format!("wgr_segment_{seg_idx}");
             seg_idx += 1;
+            let seg_ops = &ops[start..end];
+            let has_3d = seg_ops
+                .iter()
+                .any(|o| matches!(o, Plan3dOp::Draw3D { .. } | Plan3dOp::Terrain(_)));
+            let has_2d = seg_ops.iter().any(|o| matches!(o, Plan3dOp::Draw2D(_)));
+
+            // 3D sub-pass: all non-2D draws (clears depth + stencil — stencil to 0 so
+            // shadow draws EQUAL 0 / INCR darken each pixel once); colour per the load.
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(&seg_label),
@@ -494,8 +732,6 @@ impl Renderer {
                             load: wgpu::LoadOp::Clear(0.0),
                             store: wgpu::StoreOp::Store,
                         }),
-                        // Cleared to 0 each segment so shadow draws (stencil EQUAL 0 /
-                        // INCR) darken each pixel at most once.
                         stencil_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Clear(0),
                             store: wgpu::StoreOp::Store,
@@ -505,45 +741,49 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
+                render_ops(&mut pass, seg_ops, display_2d, false);
+                drop(pass);
+            }
 
-                // Tracks bind/pipeline state across consecutive 3D draws so draw_one can
-                // skip redundant re-binds. A terrain or 2D draw sets its own pipeline +
-                // groups, invalidating the 3D state, so reset it whenever one runs.
-                let mut st3d = crate::gfx3d::Pass3dState::default();
-                for op in &ops[start..end] {
-                    match op {
-                        Plan3dOp::Draw2D(arg) => {
-                            st3d = crate::gfx3d::Pass3dState::default();
-                            if let Some(b) = batches.get(*arg as usize) {
-                                self.gfx2d.draw_one(&mut pass, &self.textures, b, display_2d);
-                            }
-                        }
-                        Plan3dOp::Draw3D { draw, base, count } => {
-                            if let Some(d) = draws3d.get(*draw as usize) {
-                                self.gfx3d.draw_one(
-                                    &mut pass,
-                                    &self.textures,
-                                    d,
-                                    *base,
-                                    *count,
-                                    &mut st3d,
-                                );
-                            }
-                        }
-                        Plan3dOp::Terrain(arg) => {
-                            st3d = crate::gfx3d::Pass3dState::default();
-                            if let (Some(b), Some(cam)) = (
-                                terrain_batches.get(*arg as usize),
-                                self.gfx3d.camera_bind(),
-                            ) {
-                                let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
-                                self.terrain
-                                    .draw(&mut pass, cam, off, b.first_node, b.node_count);
-                            }
-                        }
-                        Plan3dOp::ClearDepth | Plan3dOp::Resolve => {}
-                    }
+            // Fog all the 3D geometry before the 2D overlays composite over it. Skips the
+            // UI phase (display-referred swapchain, no world depth) and 3D-less segments.
+            if aerial && !display_2d && has_3d {
+                if let Some(ds) = &depth_sample {
+                    self.sky
+                        .render_aerial(&self.device, &mut encoder, &target, ds);
                 }
+            }
+
+            // 2D sub-pass: the overlays, over the fogged colour, loading the 3D depth +
+            // stencil so any depth-tested 2D still occludes and stencil state carries over.
+            if has_2d {
+                let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some(&seg_label),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &target,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                render_ops(&mut pass, seg_ops, display_2d, true);
                 drop(pass);
             }
 

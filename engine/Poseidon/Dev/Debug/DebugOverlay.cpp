@@ -469,6 +469,33 @@ void DrawCheatsTab()
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !canTime)
         ImGui::SetTooltip("Requires an active mission.");
 
+    // Precise time-of-day seek.  The slider re-reads the clock every frame, so it
+    // tracks the advancing time when idle and, when dragged, seeks by skipping the
+    // delta to the target hour — reusing SkipTime so _timeInYear (sun angle/season)
+    // stays consistent.  Ctrl+click the slider to type an exact hour (e.g. 18.50).
+    ImGui::BeginDisabled(!canTime);
+    float todHours = Glob.clock.GetTimeOfDay() * 24.0f;
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::SliderFloat("Time of day", &todHours, 0.0f, 24.0f, "%05.2f h"))
+    {
+        const float cur = Glob.clock.GetTimeOfDay() * 24.0f;
+        DebugCheats::Cmd_SkipTime::InvokeHours(todHours - cur, s_cheatsStatus);
+    }
+    ImGui::SetItemTooltip("Seek the time of day. Ctrl+click to type an exact hour.\n"
+                          "Sun angle & season stay consistent (skips real time).");
+    ImGui::EndDisabled();
+
+    // Skipping time advances the overcast/fog forecast (World::SimulateLandscape), which
+    // rolls new weather and shrinks the view range as you scrub. Freeze it while tuning.
+    if (GWorld)
+    {
+        bool freeze = GWorld->IsWeatherFrozen();
+        if (ImGui::Checkbox("Freeze weather while scrubbing time", &freeze))
+            GWorld->SetFreezeWeather(freeze);
+        ImGui::SetItemTooltip("Stops the overcast/fog forecast from advancing when you skip time,\n"
+                              "so scrubbing changes only the sun/sky — not rain or view distance.");
+    }
+
     // Weather presets — instant overcast change.  No active-value
     // highlight: there's no public World::GetOvercast() to read back,
     // so we can't reliably show which preset is in effect.
@@ -1575,6 +1602,47 @@ void DrawTonemapTab()
 
     ImGui::EndDisabled();
 
+    // Bloom is a global look setting (not per-ToD keyframed), so it stays editable even
+    // in auto mode — its values are preserved across the per-frame preset overwrite.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Bloom");
+    bool bloomChanged = false;
+    bloomChanged |= ImGui::SliderFloat("Intensity##bloom", &t.bloomIntensity, 0.0f, 0.3f, "%.3f");
+    ImGui::SetItemTooltip("Linear weight of the bloom added to the scene (0 = off).");
+    bloomChanged |= ImGui::SliderFloat("Threshold##bloom", &t.bloomThreshold, 0.0f, 4.0f, "%.3f");
+    ImGui::SetItemTooltip("Scene-referred luminance where bloom begins (soft knee).");
+    bloomChanged |= ImGui::SliderFloat("Knee##bloom", &t.bloomKnee, 0.0f, 2.0f, "%.3f");
+    if (bloomChanged)
+        GEngine->SetTonemapSettings(t);
+
+    // Auto-exposure / eye adaptation. Separate from the grade (its own setter), off by
+    // default so it doesn't fight manual per-ToD exposure. Independent of auto/manual.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Auto exposure (eye adaptation)");
+    auto ex = GEngine->GetExposureSettings();
+    bool exChanged = false;
+    exChanged |= ImGui::Checkbox("Enabled##exposure", &ex.enabled);
+    ImGui::SetItemTooltip("Off by default so it doesn't fight manual per-ToD exposure tuning.\n"
+                          "When on, exposure is scaled toward key / scene-average luminance.");
+    ImGui::BeginDisabled(!ex.enabled);
+    exChanged |= ImGui::SliderFloat("Key (target grey)##exposure", &ex.key, 0.02f, 1.0f, "%.3f",
+                                    ImGuiSliderFlags_Logarithmic);
+    exChanged |= ImGui::SliderFloat("Min scale##exposure", &ex.minScale, 0.05f, 1.0f, "%.3f");
+    exChanged |= ImGui::SliderFloat("Max scale##exposure", &ex.maxScale, 1.0f, 16.0f, "%.3f");
+    exChanged |= ImGui::SliderFloat("Adapt rate##exposure", &ex.rate, 0.005f, 0.5f, "%.3f",
+                                    ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Per-frame ease toward the target (framerate-dependent for now).");
+    exChanged |= ImGui::SliderFloat("Sky weight##exposure", &ex.skyWeight, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Metering weight of the top of the frame (sky) vs the bottom (ground).\n"
+                          "1.0 = uniform; lower biases exposure toward the ground so a bright\n"
+                          "sky in view doesn't over-darken the scene.");
+    ImGui::EndDisabled();
+    if (exChanged)
+        GEngine->SetExposureSettings(ex);
+    // Live scale the resolve is applying (blocking GPU readback — diagnostic). 1.0 =
+    // neutral; if this never budges across scenes the reduction/adapt isn't feeding it.
+    ImGui::Text("Current scale: %.3f", GEngine->GetAutoExposureScale());
+
     ImGui::Separator();
     ImGui::TextDisabled("Preset (copy back to bake into the ToD keyframes):");
     char preset[512];
@@ -1588,6 +1656,121 @@ void DrawTonemapTab()
     if (ImGui::Button("Copy preset to clipboard"))
         ImGui::SetClipboardText(preset);
     ImGui::TextDisabled("session-only; paste back to bake into the kTonemapPresets keyframes");
+}
+
+// Procedural sky tuning (wgpu). Celestial inputs (sun/moon direction, night factor)
+// come live from LightSun; these are the authored atmosphere + look knobs. Writes
+// immediately (a renderer-param setter, like the Tonemap tab). See
+// engine/WgpuRenderer/docs/procedural-sky-plan.md.
+void DrawSkyTab()
+{
+    if (!GEngine)
+    {
+        ImGui::TextDisabled("engine not up");
+        return;
+    }
+    if (!GEngine->SupportsSky())
+    {
+        ImGui::TextDisabled("procedural sky unavailable (run the wgpu backend)");
+        return;
+    }
+
+    auto s = GEngine->GetSkySettings();
+    bool changed = false;
+
+    changed |= ImGui::Checkbox("Enabled", &s.enabled);
+    ImGui::SetItemTooltip("Off = skip the sky pass and restore the legacy skydome");
+    ImGui::SameLine();
+    ImGui::TextDisabled("ToD %.2f h", Glob.clock.GetTimeOfDay() * 24.0f);
+
+    ImGui::BeginDisabled(!s.enabled);
+
+    changed |= ImGui::SliderFloat("Exposure", &s.exposure, 0.05f, 8.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Sun");
+    changed |= ImGui::SliderFloat("Intensity", &s.sunIntensity, 1.0f, 60.0f, "%.2f");
+    float sunDeg = s.sunAngularRadius * 180.0f / 3.14159265f;
+    if (ImGui::SliderFloat("Angular radius (deg)", &sunDeg, 0.1f, 5.0f, "%.2f"))
+    {
+        s.sunAngularRadius = sunDeg * 3.14159265f / 180.0f;
+        changed = true;
+    }
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Atmosphere");
+    // Rayleigh/Mie coeffs are tiny (1/m); edit in convenient 1e-6 units.
+    float rayleigh[3] = {s.rayleigh[0] * 1e6f, s.rayleigh[1] * 1e6f, s.rayleigh[2] * 1e6f};
+    if (ImGui::SliderFloat3("Rayleigh (x1e-6)", rayleigh, 0.0f, 60.0f, "%.2f"))
+    {
+        s.rayleigh[0] = rayleigh[0] * 1e-6f;
+        s.rayleigh[1] = rayleigh[1] * 1e-6f;
+        s.rayleigh[2] = rayleigh[2] * 1e-6f;
+        changed = true;
+    }
+    float mie = s.mie * 1e6f;
+    if (ImGui::SliderFloat("Mie (x1e-6)", &mie, 0.0f, 100.0f, "%.2f"))
+    {
+        s.mie = mie * 1e-6f;
+        changed = true;
+    }
+    changed |= ImGui::SliderFloat("Mie anisotropy g", &s.mieG, 0.0f, 0.99f, "%.3f");
+    changed |= ImGui::SliderFloat("Rayleigh height (m)", &s.rayleighHeight, 1000.0f, 16000.0f, "%.0f");
+    changed |= ImGui::SliderFloat("Mie height (m)", &s.mieHeight, 200.0f, 4000.0f, "%.0f");
+    changed |= ImGui::SliderFloat("Turbidity", &s.turbidity, 0.5f, 10.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Ozone", &s.ozone, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("Ozone absorption strength — higher keeps twilight blue (the blue-hour knob)");
+    changed |= ImGui::ColorEdit3("Ground albedo", s.ground);
+    changed |= ImGui::SliderFloat("Horizon haze", &s.horizonHaze, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Blend the sky toward the scene fog colour at the horizon so it meets the fogged terrain");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Quality");
+    changed |= ImGui::SliderInt("View samples", &s.viewSamples, 4, 64);
+    changed |= ImGui::SliderInt("Light samples", &s.lightSamples, 2, 32);
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Night floor");
+    ImGui::TextDisabled("authored deep-blue that fills in as the sun sets (the physical model goes near-black)");
+    // Colours are normalised (click the swatch for the picker); intensity scales them.
+    changed |= ImGui::ColorEdit3("Zenith colour", s.nightZenith);
+    changed |= ImGui::ColorEdit3("Horizon colour", s.nightHorizon);
+    changed |= ImGui::SliderFloat("Night intensity", &s.nightIntensity, 0.0f, 0.2f, "%.4f",
+                                  ImGuiSliderFlags_Logarithmic);
+    changed |= ImGui::SliderFloat("Day at sun elev (deg)", &s.nightStartDeg, -10.0f, 20.0f, "%.1f");
+    ImGui::SetItemTooltip("Sun elevation at/above which it's full day (night floor off)");
+    changed |= ImGui::SliderFloat("Night at sun elev (deg)", &s.nightEndDeg, -20.0f, 5.0f, "%.1f");
+    ImGui::SetItemTooltip("Sun elevation at/below which it's full night (night floor at full intensity)");
+
+    if (ImGui::Button("Reset to defaults"))
+    {
+        s = decltype(s){};
+        changed = true;
+    }
+
+    ImGui::EndDisabled();
+
+    if (changed)
+        GEngine->SetSkySettings(s);
+
+    // Copy the full authored sky state so it can be pasted into per-ToD keyframes
+    // (no auto-interpolation for the sky yet; this is the hand-authoring hook).
+    ImGui::Separator();
+    ImGui::TextDisabled("Preset (copy to hand-author keyframes):");
+    char preset[768];
+    snprintf(preset, sizeof(preset),
+             "sky: exposure=%.3f sunInt=%.2f sunRad=%.4f rayleigh=%.2f,%.2f,%.2f mie=%.2f mieG=%.3f "
+             "ozone=%.2f turbidity=%.2f ground=%.3f,%.3f,%.3f haze=%.2f "
+             "night=%.3f,%.3f,%.3f/%.3f,%.3f,%.3f int=%.4f band=%.1f,%.1f",
+             s.exposure, s.sunIntensity, s.sunAngularRadius, s.rayleigh[0] * 1e6f, s.rayleigh[1] * 1e6f,
+             s.rayleigh[2] * 1e6f, s.mie * 1e6f, s.mieG, s.ozone, s.turbidity, s.ground[0], s.ground[1],
+             s.ground[2], s.horizonHaze, s.nightZenith[0], s.nightZenith[1], s.nightZenith[2],
+             s.nightHorizon[0], s.nightHorizon[1], s.nightHorizon[2], s.nightIntensity, s.nightStartDeg,
+             s.nightEndDeg);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##skyPreset", preset, sizeof(preset), ImGuiInputTextFlags_ReadOnly);
+    if (ImGui::Button("Copy preset to clipboard"))
+        ImGui::SetClipboardText(preset);
 }
 void DrawMouseTab()
 {
@@ -1773,6 +1956,11 @@ void DrawMainWindow()
         if (ImGui::BeginTabItem("Tonemap"))
         {
             DrawTonemapTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Sky"))
+        {
+            DrawSkyTab();
             ImGui::EndTabItem();
         }
         ImGuiTabItemFlags shadowFlags = 0;

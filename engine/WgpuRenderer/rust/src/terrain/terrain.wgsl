@@ -279,6 +279,11 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     let light_sum = sun + local;
     rgb *= select(clamp(light_sum, vec3<f32>(0.0), vec3<f32>(1.0)), max(light_sum, vec3<f32>(0.0)), linear > 0.5);
 
-    rgb = mix(fog_color, rgb, in.fog);
+    // fog_enabled: 0 = off, 1 = legacy distance fog, 2 = aerial perspective (the
+    // deferred sky pass fogs the scene instead, so skip the flat colour blend here;
+    // in.fog is still used above for distance-faded shadows).
+    if (frame.params.fog_enabled < 1.5) {
+        rgb = mix(fog_color, rgb, in.fog);
+    }
     return vec4<f32>(rgb, 1.0);
 }

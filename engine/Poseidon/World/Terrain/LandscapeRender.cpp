@@ -1379,6 +1379,15 @@ void Landscape::DrawGround(const LandBegEnd& bigRect, Scene& scene, const Ground
 
 void Landscape::DrawHorizont(Scene& scene)
 {
+    // The legacy horizon polygon is a large fog-coloured quad at the far clip that
+    // fills the distance — under the procedural sky it just hides the lower sky, so
+    // suppress it on wgpu (the sky's horizon haze fills that band instead). Backend-
+    // aware: GL33 keeps it. See engine/WgpuRenderer/docs/procedural-sky-plan.md.
+    if (GEngine && GEngine->ProceduralSkyActive())
+    {
+        return;
+    }
+
     GEngine->EnableReorderQueues(false);
     GEngine->FlushQueues();
 
@@ -1646,6 +1655,15 @@ void Landscape::DrawSky(Scene& scene)
 {
     // if( !ENGINE_CONFIG.background ) return;
 
+    // The wgpu backend draws a fully procedural atmospheric sky (sun/moon/stars);
+    // suppress the legacy skydome meshes there so they don't paint over it. Backend-
+    // aware: GL33 keeps its dome (ProceduralSkyActive() is false there). See
+    // engine/WgpuRenderer/docs/procedural-sky-plan.md.
+    if (GEngine && GEngine->ProceduralSkyActive())
+    {
+        return;
+    }
+
     Camera& camera = *scene.GetCamera();
 
     // calculate sun position
@@ -1716,6 +1734,14 @@ struct CloudInfo
 
 void Landscape::DrawClouds(Scene& scene)
 {
+    // Suppressed under the wgpu procedural sky (the legacy cloud layers paint over it).
+    // Backend-aware, so GL33 keeps its clouds. Dynamic procedural clouds land later
+    // (plan Stage 5). See engine/WgpuRenderer/docs/procedural-sky-plan.md.
+    if (GEngine && GEngine->ProceduralSkyActive())
+    {
+        return;
+    }
+
     const Camera& camera = *scene.GetCamera();
 
     // Matrix4Val invView=camera.Transform();

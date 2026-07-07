@@ -23,14 +23,20 @@ struct Params {
     saturation: f32,  // post-curve saturation (1 = neutral)
     lift: f32,        // shadow lift / black-point raise (0 = neutral)
     gain: f32,        // post-curve overall multiply (1 = neutral)
-    _pad0: f32,
-    _pad1: f32,
-    _pad2: f32,
+    bloom_intensity: f32, // linear weight of the bloom pyramid added to the scene
+    bloom_threshold: f32, // (used by the bloom passes; unused here)
+    bloom_knee: f32,      // (used by the bloom passes; unused here)
 };
 
 @group(0) @binding(0) var hdr_tex: texture_2d<f32>;
 @group(0) @binding(1) var hdr_samp: sampler;
 @group(0) @binding(2) var<uniform> params: Params;
+// Bloom pyramid mip0 (linear), bilinearly upsampled to full res and added to the
+// scene before exposure. A 1x1 black texture is bound when bloom is disabled.
+@group(0) @binding(3) var bloom_tex: texture_2d<f32>;
+@group(0) @binding(4) var bloom_samp: sampler;
+// 1x1 auto-exposure scale from the eye-adaptation module (1.0 when disabled).
+@group(0) @binding(5) var exposure_tex: texture_2d<f32>;
 
 // Fixed Hable / Uncharted 2 filmic curve (original constants).
 const HABLE_A: f32 = 0.15;
@@ -78,12 +84,24 @@ fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
     return select(hi, lo, c <= vec3<f32>(0.0031308));
 }
 
+// Interleaved gradient noise (Jimenez) — ~1 LSB dither to break up 8-bit banding
+// in smooth gradients (the sky especially) before the swapchain write.
+fn ign(p: vec2<f32>) -> f32 {
+    return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
+}
+
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     var color = textureSampleLevel(hdr_tex, hdr_samp, in.uv, 0.0).rgb;
 
-    // Scene-referred (linear): exposure + white balance.
-    color *= params.exposure;
+    // Add bloom to the linear scene before exposure (bloom is scene-referred light
+    // spread by the pyramid; exposure + curve then act on the sum).
+    let bloom = textureSampleLevel(bloom_tex, bloom_samp, in.uv, 0.0).rgb;
+    color += bloom * params.bloom_intensity;
+
+    // Scene-referred (linear): exposure (x auto-exposure scale) + white balance.
+    let auto_exp = textureLoad(exposure_tex, vec2<i32>(0, 0), 0).r;
+    color *= params.exposure * auto_exp;
     color = white_balance(color, params.temperature, params.tint);
 
     // Fixed filmic curve (or debug passthrough).
@@ -105,5 +123,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (params.encode > 0.5) {
         color = linear_to_srgb(color);
     }
+    // Dither in display space (~1 LSB) so smooth gradients don't band on the 8-bit
+    // swapchain. in.clip.xy is the framebuffer pixel coordinate.
+    color += (ign(in.clip.xy) - 0.5) / 255.0;
     return vec4<f32>(color, 1.0);
 }

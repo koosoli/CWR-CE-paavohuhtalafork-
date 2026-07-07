@@ -421,6 +421,7 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
         _tonemapAuto = false;
     }
     PushTonemap();
+    PushSky();
 
     Dev::DebugOverlay::InitForEngine(_window);
     _eventWindow.Attach(_window, _w, _h);
@@ -691,6 +692,9 @@ void EngineWgpu::NextFrame()
         // Interpolate the per-time-of-day tonemap/grade preset for this frame (auto
         // mode only; manual override holds the tab's values).
         UpdateAutoTonemap();
+        // Refresh the procedural sky's live celestial params (sun/moon direction,
+        // night factor) from LightSun; authored look params ride along unchanged.
+        PushSky();
 
         // Build + flatten the ImGui frame; SubmitOverlay fills the _overlay*
         // vectors the WgrFrame below points at. Composites over everything,
@@ -714,6 +718,14 @@ void EngineWgpu::NextFrame()
             const float fogEnd = GScene->GetFogMaxRange();
             fogInvRange = (fogEnd > fogStart) ? 1.0f / (fogEnd - fogStart) : 0.0f;
             fogEnabled = 1.0f;
+        }
+        // Aerial-perspective mode (fogEnabled == 2): when the procedural sky drives the
+        // HDR path, the renderer fogs the scene with a deferred atmosphere pass, so the
+        // 3D shaders skip their flat fog-colour blend (they still use the distance
+        // factor for shadow fade). Must match the renderer's aerial gate.
+        if (_hdrEnabled && _sky.enabled && fogEnabled > 0.5f)
+        {
+            fogEnabled = 2.0f;
         }
 
         // Sun light for GPU-lit terrain, matching GL33's material upload:
@@ -1061,6 +1073,18 @@ void EngineWgpu::PushSceneCamera()
         entry.view._42 = 0;
         entry.view._43 = 0;
         ConvertProjectionMatrix(entry.proj, camera->ProjectionNormal(), 0);
+        // Infinite-far reversed-Z (wgpu only; GL33 keeps its finite forward-Z). The
+        // shared projection puts the far plane at ~1.01x the fog range, so terrain drawn
+        // out to the fog range sits right at the far plane, where reversed-Z depth packs
+        // to ~0 — which the aerial-perspective pass reads as background sky and skips,
+        // leaving a black seam at the horizon. An infinite far plane maps every finite
+        // depth into (0,1], so terrain always has depth > 0 (gets fogged, not skipped),
+        // and with this GPU's D32F depth it is the precision-optimal form — which also
+        // eases distant z-fighting. Forward: z_view=cNear -> ndc.z=0, z_view=inf ->
+        // ndc.z=1; the shader's reverse_z() then flips near->1, far->0. (_33=c, _43=d.)
+        const float cNear = static_cast<float>(camera->ClipNear());
+        entry.proj._33 = 1.0f;
+        entry.proj._43 = -cNear;
 
         const Vector3 pos = camera->Position();
         entry.pos[0] = pos.X();
@@ -1578,19 +1602,143 @@ void EngineWgpu::PushTonemap()
         _tonemap.saturation,
         _tonemap.lift,
         _tonemap.gain,
-        0.0f,
+        _tonemap.bloomIntensity,
+        _tonemap.bloomThreshold,
+        _tonemap.bloomKnee,
+    };
+    wgr_set_tonemap(_renderer, &t);
+}
+
+void EngineWgpu::SetExposureSettings(const ExposureSettings& s)
+{
+    _exposure = s;
+    PushExposure();
+}
+
+float EngineWgpu::GetAutoExposureScale() const
+{
+    return _renderer ? wgr_get_exposure_scale(_renderer) : 1.0f;
+}
+
+void EngineWgpu::PushExposure()
+{
+    if (!_renderer)
+        return;
+    const WgrExposure e = {
+        _exposure.enabled ? 1.0f : 0.0f,
+        _exposure.key,
+        _exposure.minScale,
+        _exposure.maxScale,
+        _exposure.rate,
+        _exposure.skyWeight,
         0.0f,
         0.0f,
     };
-    wgr_set_tonemap(_renderer, &t);
+    wgr_set_exposure(_renderer, &e);
 }
 
 void EngineWgpu::UpdateAutoTonemap()
 {
     if (!_renderer || !_hdrEnabled || !_tonemapAuto)
         return;
+    // Bloom is a global look setting, not part of the per-ToD keyframes, so carry the
+    // current values across the auto overwrite (else the Tonemap tab's bloom sliders
+    // would be reset every frame in auto mode).
+    const float bi = _tonemap.bloomIntensity, bt = _tonemap.bloomThreshold, bk = _tonemap.bloomKnee;
     _tonemap = TonemapAtHour(Glob.clock.GetTimeOfDay() * 24.0f);
+    _tonemap.bloomIntensity = bi;
+    _tonemap.bloomThreshold = bt;
+    _tonemap.bloomKnee = bk;
     PushTonemap();
+}
+
+void EngineWgpu::SetSkySettings(const SkySettings& s)
+{
+    _sky = s;
+    PushSky();
+}
+
+void EngineWgpu::PushSky()
+{
+    if (!_renderer)
+        return;
+
+    // Live celestial targets from LightSun. The legacy dome placed each body at
+    // camPos - astronomicalDir * range, so the view direction TOWARD it is the
+    // negated astronomical direction (up by day, below the horizon at night).
+    Vector3 tSun(0.0f, 1.0f, 0.0f);
+    Vector3 tMoon(0.0f, -1.0f, 0.0f);
+    float tPhase = 0.5f;
+    float tNight = 0.0f;
+    if (GScene && GScene->MainLight())
+    {
+        LightSun* sun = GScene->MainLight();
+        tSun = -sun->SunDirection();
+        tMoon = -sun->MoonDirection();
+        tPhase = sun->MoonPhase();
+        tNight = sun->NightEffect();
+    }
+    tSun.Normalize();
+    tMoon.Normalize();
+    const Color tFog = FogColor();
+
+    // Ease the coarse LightSun-driven inputs toward their live values each frame so the
+    // sun disc + horizon haze move smoothly instead of snapping every few seconds. Snap
+    // on the first push and on large jumps (teleport / time-skip) to avoid a slow sweep.
+    const float alpha = 0.1f;
+    if (!_skyInit || tSun.DotProduct(_skySunDir) < 0.5f)
+    {
+        _skySunDir = tSun;
+        _skyMoonDir = tMoon;
+        _skyMoonPhase = tPhase;
+        _skyNight = tNight;
+        _skyFog[0] = tFog.R();
+        _skyFog[1] = tFog.G();
+        _skyFog[2] = tFog.B();
+        _skyInit = true;
+    }
+    else
+    {
+        _skySunDir = _skySunDir + (tSun - _skySunDir) * alpha;
+        _skySunDir.Normalize();
+        _skyMoonDir = _skyMoonDir + (tMoon - _skyMoonDir) * alpha;
+        _skyMoonDir.Normalize();
+        _skyMoonPhase += (tPhase - _skyMoonPhase) * alpha;
+        _skyNight += (tNight - _skyNight) * alpha;
+        _skyFog[0] += (tFog.R() - _skyFog[0]) * alpha;
+        _skyFog[1] += (tFog.G() - _skyFog[1]) * alpha;
+        _skyFog[2] += (tFog.B() - _skyFog[2]) * alpha;
+    }
+
+    const float haze = GScene ? _sky.horizonHaze : 0.0f;
+
+    WgrSky sky{};
+    sky.sun_dir = {_skySunDir.X(), _skySunDir.Y(), _skySunDir.Z(), _sky.sunIntensity};
+    sky.moon_dir = {_skyMoonDir.X(), _skyMoonDir.Y(), _skyMoonDir.Z(), _skyMoonPhase};
+    sky.rayleigh = {_sky.rayleigh[0], _sky.rayleigh[1], _sky.rayleigh[2], _sky.rayleighHeight};
+    sky.mie = {_sky.mie, _sky.mieG, _sky.mieHeight, _sky.turbidity};
+    sky.ground_albedo = {_sky.ground[0], _sky.ground[1], _sky.ground[2], _skyNight};
+    sky.params = {_sky.sunAngularRadius, _sky.exposure, _sky.planetRadius, _sky.atmosphereHeight};
+    sky.control = {_sky.enabled ? 1.0f : 0.0f, static_cast<float>(_sky.viewSamples),
+                   static_cast<float>(_sky.lightSamples), _sky.ozone};
+    sky.fog_color = {_skyFog[0], _skyFog[1], _skyFog[2], haze};
+    // Camera altitude ASL feeds the aerial/sky raymarch origin: with the old fixed 200 m
+    // the march dived below the terrain when flying (fake density -> grey wash). Sea level
+    // is y = 0 in OFP, so the camera's world Y is the altitude directly.
+    Camera* skyCam = GScene ? GScene->GetCamera() : nullptr;
+    const float camAlt = skyCam ? static_cast<float>(skyCam->Position().Y()) : 0.0f;
+    sky.night_zenith = {_sky.nightZenith[0], _sky.nightZenith[1], _sky.nightZenith[2], camAlt};
+    sky.night_horizon = {_sky.nightHorizon[0], _sky.nightHorizon[1], _sky.nightHorizon[2], 0.0f};
+    // Blend band expressed as sun_dir.y (= sin elevation) so the shader compares directly.
+    // night_params.w = the far-fade range: the aerial pass dissolves the terrain edge
+    // into the full sky as it nears the fog/view distance, hiding the horizon colour
+    // step left by the infinite-far projection (the terrain edge is finite, the sky is
+    // fogged to infinity). 0 when there's no scene, which disables the fade.
+    const float fogFar = GScene ? GScene->GetFogMaxRange() : 0.0f;
+    const float deg2rad = 3.14159265f / 180.0f;
+    sky.night_params = {std::sin(_sky.nightStartDeg * deg2rad), std::sin(_sky.nightEndDeg * deg2rad),
+                        _sky.nightIntensity, fogFar};
+    wgr_set_sky(_renderer, &sky);
 }
 
 void EngineWgpu::ResolveSceneToDisplay()

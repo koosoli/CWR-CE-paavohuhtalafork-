@@ -278,6 +278,10 @@ class World
 
 	float _timeToSkip;
 
+	// Debug: freeze the weather-change simulation (overcast/fog forecast) so scrubbing
+	// the time-of-day in the dev panel doesn't roll new weather / shrink the view range.
+	bool _freezeWeather = false;
+
 	bool _playerManual;
 	bool _playerSuspended;
 
@@ -587,6 +591,11 @@ class World
 	void SetAcceleratedTime( float time ) {_acceleratedTime=time;}
 	
 	void SkipTime(float time);
+
+	// Debug: while set, SimulateLandscape does not advance the weather-change forecast
+	// (overcast/fog), so dev-panel time scrubbing changes only the sun/sky.
+	void SetFreezeWeather(bool freeze) {_freezeWeather = freeze;}
+	bool IsWeatherFrozen() const {return _freezeWeather;}
 	
 	AbstractUI *UI() const {return _ui;}
 	AbstractOptionsUI *Options() const {return _options;}

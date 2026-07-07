@@ -954,6 +954,11 @@ class Engine : public IGraphicsEngine
         float gain = 1.0f;        // post-curve overall multiply (1 = neutral)
         bool hable = true;        // false = passthrough clamp (debug)
         bool encode = true;       // linear->sRGB encode
+        // Bloom (HDR only). A global look setting, not per-time-of-day keyframed, so
+        // it is preserved across the auto-preset overwrite. intensity 0 = off.
+        float bloomIntensity = 0.04f; // linear weight of the bloom added to the scene
+        float bloomThreshold = 1.0f;  // soft-knee centre (scene-referred luminance)
+        float bloomKnee = 0.5f;       // soft-knee half-width
     };
     // True only on backends with an HDR resolve pass (wgpu w/ HDR enabled); gates
     // the ImGui Tonemap tab.
@@ -970,6 +975,78 @@ class Engine : public IGraphicsEngine
     // here, so subsequent 2D/3D-in-UI composites display-referred (no tonemap). No-op
     // on LDR-direct backends (GL33).
     virtual void ResolveSceneToDisplay() {}
+
+    // Authored parameters for the procedural atmospheric sky (wgpu). The celestial
+    // inputs (sun/moon direction, night factor) come live from LightSun each frame;
+    // these are the tunable atmosphere + look knobs edited in the ImGui Sky tab and
+    // pushed to the renderer. See engine/WgpuRenderer/docs/procedural-sky-plan.md.
+    struct SkySettings
+    {
+        float rayleigh[3] = {5.8e-6f, 13.5e-6f, 33.1e-6f}; // scattering coeff per channel (1/m)
+        float rayleighHeight = 8000.0f;                    // Rayleigh density scale height (m)
+        float mie = 6.0e-6f;                               // Mie scattering coeff (1/m). Lowered from
+                                                           // the Earth clear-day 21e-6: the aerial glare
+                                                           // (Mie forward phase x sun radiance) was
+                                                           // washing the scene. Tunable in the Sky tab;
+                                                           // the froxel LUT + sun-shadowing is the real fix.
+        float mieG = 0.76f;                                // Mie anisotropy [0,1)
+        float mieHeight = 1200.0f;                         // Mie density scale height (m)
+        float turbidity = 1.0f;                            // haze amount
+        float ozone = 1.0f;                                // ozone absorption strength (blue-hour knob)
+        float ground[3] = {0.1f, 0.1f, 0.1f};              // ground albedo
+        float sunAngularRadius = 0.0047f;                  // sun disc half-angle (rad, ~0.27 deg)
+        float sunIntensity = 22.0f;                        // sun radiance scale
+        float exposure = 1.0f;                             // radiance -> scene-referred scale
+        float planetRadius = 6360000.0f;                   // planet radius (m)
+        float atmosphereHeight = 60000.0f;                 // atmosphere thickness (m)
+        int viewSamples = 16;                              // primary ray march steps
+        int lightSamples = 8;                              // light ray march steps
+        float horizonHaze = 0.0f;                          // legacy sky->fog-colour horizon blend; 0 now that aerial perspective handles the terrain/sky seam
+        // Authored night-sky floor: a deep-blue radiance blended in by sun elevation so
+        // twilight/night settle into blue instead of the physical model's near-black.
+        // Colours are normalised (0..1, pickable); nightIntensity scales them to radiance.
+        float nightZenith[3] = {0.15f, 0.30f, 0.80f};     // night colour at the zenith
+        float nightHorizon[3] = {0.35f, 0.45f, 0.90f};    // night colour at the horizon
+        float nightIntensity = 0.035f;                     // scales the night colours to radiance
+        // Band chosen to OVERLAP the physical sunset: the model's blue/zenith collapses to
+        // near-black by ~-2deg sun elevation, so the floor must be well underway by then to
+        // avoid an orange->black->blue gap. Ramps in from +4deg, full night by -6deg.
+        float nightStartDeg = 4.0f;                        // sun elevation for full day (night = 0)
+        float nightEndDeg = -6.0f;                         // sun elevation for full night (night = 1)
+        bool enabled = true;                               // draw the procedural sky
+    };
+    // True on backends with a procedural sky pass (wgpu); gates the ImGui Sky tab.
+    virtual bool SupportsSky() const { return false; }
+    virtual SkySettings GetSkySettings() const { return {}; }
+    virtual void SetSkySettings(const SkySettings& /*s*/) {}
+    // True while the procedural sky owns the background, so the legacy skydome meshes
+    // must be suppressed (backend-aware: only the wgpu backend with the sky enabled
+    // returns true, so GL33 keeps drawing its dome). See Landscape::DrawSky.
+    virtual bool ProceduralSkyActive() const { return false; }
+
+    // Eye adaptation / auto-exposure (HDR only, gated by SupportsTonemap). Off by
+    // default so it doesn't fight manual per-time-of-day exposure tuning; when on, the
+    // resolve multiplies exposure by a scale eased toward key / scene-average-luminance.
+    // NOTE: appended at the class end on purpose — inserting virtuals mid-class shifts
+    // every later vtable slot and misdispatches across TUs (see git history / memory).
+    struct ExposureSettings
+    {
+        bool enabled = true;    // auto-exposure on/off (defaulted on to validate the path)
+        float key = 0.18f;      // target middle-grey luminance (higher = brighter)
+        float minScale = 0.25f; // clamp on the exposure multiplier
+        float maxScale = 4.0f;
+        float rate = 0.03f;     // per-frame adaptation ease (0..1; framerate-dependent)
+        // Spatial metering: relative weight given to the TOP of the frame (the sky) vs
+        // the bottom (the ground), so a bright sky in view doesn't drag the average up
+        // and over-darken the ground. 1.0 = uniform; lower biases metering toward the
+        // lower screen. See exposure.wgsl fs_lum_first.
+        float skyWeight = 0.3f;
+    };
+    virtual ExposureSettings GetExposureSettings() const { return {}; }
+    virtual void SetExposureSettings(const ExposureSettings& /*s*/) {}
+    // Debug: the current auto-exposure scale the resolve is applying (1.0 = neutral).
+    // Blocking GPU readback on the wgpu backend; call only from the dev panel.
+    virtual float GetAutoExposureScale() const { return 1.0f; }
 
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy

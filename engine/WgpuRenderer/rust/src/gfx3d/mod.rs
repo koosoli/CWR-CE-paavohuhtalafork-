@@ -830,6 +830,9 @@ pub struct Gfx3d {
     pipelines: FxHashMap<PipelineKey, wgpu::RenderPipeline>,
 
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
+    // Depth-only-aspect view of the same texture, for sampling the depth buffer as a
+    // texture (aerial-perspective pass reconstructs world distance from it).
+    depth_sample: Option<wgpu::TextureView>,
     depth_size: (u32, u32),
 
     shadow_pass_ubo: DynUbo, // one ShadowPassUbo per cascade
@@ -1065,6 +1068,7 @@ impl Gfx3d {
             skin_attrs,
             pipelines: FxHashMap::default(),
             depth: None,
+            depth_sample: None,
             depth_size: (0, 0),
             shadow_pass_ubo,
             shadow_caster_ssbo,
@@ -1375,16 +1379,29 @@ impl Gfx3d {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Depth-only aspect view for sampling (the default view carries the stencil
+        // aspect too, which can't be bound as texture_depth_2d).
+        let sample = texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("wgr_3d_depth_sample"),
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
         self.depth = Some((texture, view));
+        self.depth_sample = Some(sample);
         self.depth_size = size;
     }
 
     pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
         self.depth.as_ref().map(|(_, v)| v)
+    }
+
+    // Depth-only-aspect view for sampling the depth buffer (aerial-perspective pass).
+    pub fn depth_sample_view(&self) -> Option<&wgpu::TextureView> {
+        self.depth_sample.as_ref()
     }
 
     // Group-0 (camera UBO + shadow map) layout, shared with the terrain pipeline so

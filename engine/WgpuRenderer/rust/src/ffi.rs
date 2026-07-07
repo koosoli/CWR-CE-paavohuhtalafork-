@@ -206,9 +206,9 @@ pub struct WgrTonemap {
     pub saturation: f32,  // post-curve saturation (1 = neutral)
     pub lift: f32,        // shadow lift (0 = neutral)
     pub gain: f32,        // post-curve overall multiply (1 = neutral)
-    pub _pad0: f32,
-    pub _pad1: f32,
-    pub _pad2: f32,
+    pub bloom_intensity: f32, // linear weight of the bloom added to the scene (0 = off)
+    pub bloom_threshold: f32, // bloom soft-knee centre (scene-referred luminance)
+    pub bloom_knee: f32,      // bloom soft-knee half-width
 }
 
 impl Default for WgrTonemap {
@@ -224,9 +224,105 @@ impl Default for WgrTonemap {
             saturation: 1.0,
             lift: 0.0,
             gain: 1.0,
-            _pad0: 0.0,
+            bloom_intensity: 0.04,
+            bloom_threshold: 1.0,
+            bloom_knee: 0.5,
+        }
+    }
+}
+
+// Eye-adaptation / auto-exposure parameters, pushed via wgr_set_exposure. Matches the
+// `ExpParams` uniform in exposure.wgsl and the C++ `WgrExposure` (8 f32). Disabled by
+// default so manual per-time-of-day exposure tuning is untouched until enabled.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrExposure {
+    pub enabled: f32,   // 0 = off (scale eases to 1.0), 1 = auto-exposure on
+    pub key: f32,       // target middle-grey luminance (higher = brighter)
+    pub min_scale: f32, // clamp on the exposure multiplier
+    pub max_scale: f32,
+    pub rate: f32,       // per-frame ease toward the target (0..1)
+    pub sky_weight: f32, // metering weight of the top of frame (sky) vs bottom (ground)
+    pub _pad1: f32,
+    pub _pad2: f32,
+}
+
+impl Default for WgrExposure {
+    fn default() -> Self {
+        Self {
+            enabled: 1.0,
+            key: 0.18,
+            min_scale: 0.25,
+            max_scale: 4.0,
+            rate: 0.03,
+            sky_weight: 0.3,
             _pad1: 0.0,
             _pad2: 0.0,
+        }
+    }
+}
+
+// Procedural sky parameters, pushed from the C++ side (per frame for the celestial
+// fields, and on edit for the authored look) via wgr_set_sky. Celestial fields
+// (sun/moon direction, night factor) come live from LightSun; the atmosphere +
+// look fields are authored and tuned in the ImGui Sky tab. The renderer combines
+// these with the per-frame inverse view-projection into the sky pass uniform. Layout
+// matches the C++ `WgrSky` in wgpu_renderer.hpp exactly (7 vec4 = 112 bytes). See
+// docs/procedural-sky-plan.md.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrSky {
+    // xyz = unit direction TO the sun (up by day, down at night); w = sun radiance scale.
+    pub sun_dir: WgrVec4,
+    // xyz = unit direction TO the moon; w = moon phase (0.5 = full).
+    pub moon_dir: WgrVec4,
+    // xyz = Rayleigh scattering coefficients (per channel, 1/m); w = Rayleigh scale height (m).
+    pub rayleigh: WgrVec4,
+    // x = Mie scattering coeff (1/m), y = Mie anisotropy g [0,1), z = Mie scale height (m), w = turbidity.
+    pub mie: WgrVec4,
+    // xyz = ground albedo; w = night factor (0 day .. 1 night).
+    pub ground_albedo: WgrVec4,
+    // x = sun angular radius (rad), y = exposure (radiance->scene scale), z = planet radius (m),
+    // w = atmosphere thickness (m).
+    pub params: WgrVec4,
+    // x = enabled (0 skips the pass), y = view ray sample count, z = light ray sample count, w = pad.
+    pub control: WgrVec4,
+    // xyz = scene fog colour the distant terrain fogs toward; w = horizon-haze strength
+    // (0 = off). The sky blends toward this near the horizon so the fogged terrain band
+    // and the sky meet without a seam (interim until aerial perspective, plan Stage 4).
+    pub fog_color: WgrVec4,
+    // Authored night-sky floor (plan Stage 6): a deep-blue radiance that fills in as the
+    // sun drops below the horizon, so twilight/night settle into a believable blue
+    // instead of the physical model's near-black. Blended in by sun altitude.
+    // w = camera altitude above sea level (m): the aerial/sky raymarch starts here, so a
+    // wrong value makes the march dive below the terrain when flying (huge fake density).
+    pub night_zenith: WgrVec4,  // xyz = night radiance at the zenith, w = camera altitude (m)
+    pub night_horizon: WgrVec4, // xyz = night radiance at the horizon
+    // x = sun_dir.y at/above which it is full day (night = 0), y = sun_dir.y at/below
+    // which it is full night (night = 1), z = night intensity, w = far-fade range (m):
+    // the aerial pass dissolves the terrain edge into the full sky as it nears this
+    // distance (the fog/view range) so the horizon has no colour step. 0 = disabled.
+    pub night_params: WgrVec4,
+}
+
+impl Default for WgrSky {
+    fn default() -> Self {
+        // Earth-like clear-sky defaults (metres). Sun straight up as a neutral seed;
+        // C++ overwrites the celestial fields every frame from LightSun.
+        Self {
+            sun_dir: [0.0, 1.0, 0.0, 22.0],
+            moon_dir: [0.0, -1.0, 0.0, 0.5],
+            rayleigh: [5.8e-6, 13.5e-6, 33.1e-6, 8000.0],
+            mie: [21e-6, 0.76, 1200.0, 1.0],
+            ground_albedo: [0.1, 0.1, 0.1, 0.0],
+            params: [0.0047, 1.0, 6_360_000.0, 60_000.0],
+            control: [1.0, 16.0, 8.0, 0.0],
+            fog_color: [0.7, 0.75, 0.8, 1.0],
+            // Normalised colours (0..1, pickable); night_params.z scales to radiance.
+            night_zenith: [0.15, 0.30, 0.80, 0.0],
+            night_horizon: [0.35, 0.45, 0.90, 0.0],
+            // Full day above +3 deg sun elevation, full night below -8 deg; intensity 0.02.
+            night_params: [0.052, -0.139, 0.02, 0.0],
         }
     }
 }
@@ -437,6 +533,7 @@ const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 36);
 const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 264);
 const _: () = assert!(std::mem::size_of::<WgrLight>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTonemap>() == 48);
+const _: () = assert!(std::mem::size_of::<WgrSky>() == 176);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);
@@ -872,6 +969,50 @@ pub unsafe extern "C" fn wgr_set_tonemap(renderer: *mut WgrRenderer, params: *co
     let renderer = unsafe { &mut *renderer };
     let params = unsafe { &*params };
     renderer.set_tonemap(*params);
+}
+
+/// Set the eye-adaptation / auto-exposure parameters. Takes effect next frame.
+///
+/// # Safety
+/// `renderer` must be live; `params` must point to one valid `WgrExposure` or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_exposure(renderer: *mut WgrRenderer, params: *const WgrExposure) {
+    if renderer.is_null() || params.is_null() {
+        return;
+    }
+    let renderer = unsafe { &mut *renderer };
+    let params = unsafe { &*params };
+    renderer.set_exposure(*params);
+}
+
+/// Debug: read back the current auto-exposure scale (blocking GPU sync — dev panel
+/// only). Returns 1.0 if the renderer is null or the HDR path is off.
+///
+/// # Safety
+/// `renderer` must be a live `WgrRenderer` or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_get_exposure_scale(renderer: *mut WgrRenderer) -> f32 {
+    if renderer.is_null() {
+        return 1.0;
+    }
+    let renderer = unsafe { &*renderer };
+    renderer.exposure_scale()
+}
+
+/// Set the procedural sky parameters (celestial + authored look). Pushed per frame
+/// for the celestial fields and on edit from the ImGui Sky tab. Takes effect next
+/// frame. See docs/procedural-sky-plan.md.
+///
+/// # Safety
+/// `renderer` must be live; `params` must point to one valid `WgrSky` or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_sky(renderer: *mut WgrRenderer, params: *const WgrSky) {
+    if renderer.is_null() || params.is_null() {
+        return;
+    }
+    let renderer = unsafe { &mut *renderer };
+    let params = unsafe { &*params };
+    renderer.set_sky(*params);
 }
 
 /// Read one cascade layer of the shadow depth map back as row-major floats

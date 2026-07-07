@@ -280,9 +280,45 @@ struct WgrTonemap
     float saturation;  /* post-curve saturation (1 = neutral) */
     float lift;        /* shadow lift (0 = neutral) */
     float gain;        /* post-curve overall multiply (1 = neutral) */
-    float _pad0;
+    float bloom_intensity; /* linear weight of the bloom added to the scene (0 = off) */
+    float bloom_threshold; /* bloom soft-knee centre (scene-referred luminance) */
+    float bloom_knee;      /* bloom soft-knee half-width */
+};
+
+/* Eye-adaptation / auto-exposure parameters, pushed via wgr_set_exposure. Layout
+ * matches the Rust WgrExposure #[repr(C)] and exposure.wgsl's ExpParams (8 f32). */
+struct WgrExposure
+{
+    float enabled;   /* 0 = off (scale eases to 1.0), 1 = auto-exposure on */
+    float key;       /* target middle-grey luminance (higher = brighter) */
+    float min_scale; /* clamp on the exposure multiplier */
+    float max_scale;
+    float rate;       /* per-frame ease toward the target (0..1) */
+    float sky_weight; /* metering weight of the top of frame (sky) vs bottom (ground) */
     float _pad1;
     float _pad2;
+};
+
+/* Procedural sky parameters, pushed via wgr_set_sky. The celestial fields
+ * (sun/moon direction, night factor) are refreshed every frame from LightSun; the
+ * atmosphere + look fields are authored and tuned in the ImGui Sky tab. The renderer
+ * combines these with the per-frame inverse view-projection into the sky pass.
+ * Layout matches the Rust WgrSky #[repr(C)] (7 vec4). See docs/procedural-sky-plan.md. */
+struct WgrSky
+{
+    WgrVec4 sun_dir;       /* xyz = unit dir TO the sun (up by day); w = sun radiance scale */
+    WgrVec4 moon_dir;      /* xyz = unit dir TO the moon; w = moon phase (0.5 = full) */
+    WgrVec4 rayleigh;      /* xyz = Rayleigh scattering coeff (1/m); w = Rayleigh scale height (m) */
+    WgrVec4 mie;           /* x = Mie scattering coeff, y = Mie g, z = Mie scale height (m), w = turbidity */
+    WgrVec4 ground_albedo; /* xyz = ground albedo; w = night factor (0 day .. 1 night) */
+    WgrVec4 params;        /* x = sun angular radius (rad), y = exposure, z = planet radius (m), w = atmosphere (m) */
+    WgrVec4 control;       /* x = enabled, y = view samples, z = light samples, w = pad */
+    WgrVec4 fog_color;     /* xyz = scene fog colour; w = horizon-haze strength (0 = off) */
+    /* Authored night-sky floor (plan Stage 6): a deep-blue radiance blended in by sun
+     * altitude so twilight/night settle into blue instead of near-black. */
+    WgrVec4 night_zenith;  /* xyz = night radiance at the zenith, w = camera altitude ASL (m; aerial/sky raymarch origin) */
+    WgrVec4 night_horizon; /* xyz = night radiance at the horizon */
+    WgrVec4 night_params;  /* x = full-day sun_dir.y, y = full-night sun_dir.y, z = intensity, w = far-fade range (m; aerial dissolves the terrain edge into sky by this dist, 0 = off) */
 };
 
 /* Frame-global scalars carried in the camera UBO so the 3D shader can read them
@@ -504,6 +540,8 @@ static_assert(sizeof(WgrDraw2DBatch) == 32, "WgrDraw2DBatch layout must match th
 static_assert(sizeof(WgrDraw3D) == 264, "WgrDraw3D layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrLight) == 64, "WgrLight layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTonemap) == 48, "WgrTonemap layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrExposure) == 32, "WgrExposure layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSky) == 176, "WgrSky layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");
@@ -622,6 +660,13 @@ extern "C"
     /* Set the live tonemap/look parameters (exposure, curve, Hable params, output
      * gain). Takes effect on the next frame's resolve; no-op on the LDR-direct path. */
     WGR_API void wgr_set_tonemap(WgrRenderer* renderer, const WgrTonemap* params);
+    WGR_API void wgr_set_exposure(WgrRenderer* renderer, const WgrExposure* params);
+    WGR_API float wgr_get_exposure_scale(WgrRenderer* renderer);
+
+    /* Set the procedural sky parameters (celestial + authored look). Pushed per
+     * frame for the celestial fields and on edit from the ImGui Sky tab. Takes
+     * effect next frame; the sky pass is skipped when control.x (enabled) is 0. */
+    WGR_API void wgr_set_sky(WgrRenderer* renderer, const WgrSky* params);
 
     /* Read one cascade layer of the shadow depth map back as row-major floats
      * (row 0 = the top texture row). Returns the map resolution (side length),

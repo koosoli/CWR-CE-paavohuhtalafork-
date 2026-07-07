@@ -1251,7 +1251,7 @@ void World::SimulateLandscape(float deltaT)
     }
 #endif
 
-    if (scaledTime > 0)
+    if (scaledTime > 0 && !_freezeWeather)
     {
         saturate(_wantedOvercast, 0, 1);
         saturate(_wantedFog, 0, 1);
