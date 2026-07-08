@@ -1002,26 +1002,30 @@ impl Gfx3d {
             Some((PALETTE_SIZE * std::mem::size_of::<WgrMat4>()) as u64),
         );
 
+        // Groups 2/3 are the BINDLESS object-texture array + the 8-variant sampler array
+        // (docs/bindless-textures-plan.md), bound once for the whole lit-mesh + prepass;
+        // the per-instance texture/sampler indices ride the material array. The shadow
+        // pipelines keep their own single-texture layouts.
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_3d_pipeline_layout"),
             bind_group_layouts: &[
                 Some(&cameras.layout),
                 Some(&group1_plain_layout),
-                Some(&textures.texture_layout),
-                Some(&textures.sampler_layout),
+                Some(&textures.bindless_layout),
+                Some(&textures.sampler_array_layout),
                 Some(&conform.layout),
             ],
             immediate_size: 0,
         });
         // Skinned layout swaps the per-draw world matrix (group 1 binding 0) for the
-        // bone palette; groups 0/2/3 (camera/texture/sampler) are identical.
+        // bone palette; groups 0/2/3 (camera/textures/samplers) are identical.
         let skinned_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_3d_skinned_pipeline_layout"),
             bind_group_layouts: &[
                 Some(&cameras.layout),
                 Some(&group1_skinned_layout),
-                Some(&textures.texture_layout),
-                Some(&textures.sampler_layout),
+                Some(&textures.bindless_layout),
+                Some(&textures.sampler_array_layout),
                 Some(&conform.layout),
             ],
             immediate_size: 0,
@@ -2089,6 +2093,9 @@ impl Gfx3d {
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
+        // Resolves each draw's texture handle to its bindless slot for packing into the
+        // per-instance material (the fragment shader indexes the bindless arrays with it).
+        textures: &SharedTextures,
         cameras: &[WgrCamera],
         draws: &[WgrDraw3D],
         // Slot -> draws index, the instancing plan's upload order (see plan_3d): a
@@ -2185,8 +2192,17 @@ impl Gfx3d {
                 let (chunks, _rem) = view.slice(..).into_chunks::<MAT_SZ>();
                 chunks.write_iter(order.iter().map(|&i| {
                     let d = &draws[i as usize];
+                    // Pack the bindless indices into the material's spare emissive.w
+                    // (only emissive.rgb is read for shading): (tex_slot << 3) | sampler.
+                    // The fragment shader unpacks it to index the bindless texture +
+                    // sampler arrays, so texture/sampler need no per-draw bind and drop
+                    // out of the instancing key (plan_3d).
+                    let slot = textures.texture_slot(d.texture_id);
+                    let packed = (slot << 3) | (d.sampler.index() as u32 & 0x7);
+                    let mut emissive = d.mat_emissive;
+                    emissive[3] = f32::from_bits(packed);
                     bytemuck::cast::<MaterialUbo, [u8; MAT_SZ]>(MaterialUbo {
-                        emissive: d.mat_emissive,
+                        emissive,
                         sun_ambient: d.mat_sun_ambient,
                         sun_diffuse: d.mat_sun_diffuse,
                         light_diffuse: d.mat_light_diffuse,
@@ -2338,8 +2354,6 @@ impl Gfx3d {
                         mesh: d.mesh,
                         index_begin: d.index_begin,
                         index_count: d.index_count,
-                        texture_id: d.texture_id,
-                        sampler: d.sampler.0,
                         camera: d.camera,
                         pipeline: pkey,
                     };
@@ -2459,8 +2473,7 @@ impl Gfx3d {
         if st.last_skinned.is_some() && st.last_skinned != Some(skinned) {
             st.group1_plain = false;
             st.skinned_off = None;
-            st.tex = None;
-            st.sampler = None;
+            st.bindless = false;
             st.conform = false;
         }
         st.last_skinned = Some(skinned);
@@ -2495,15 +2508,13 @@ impl Gfx3d {
             st.skinned_off = None;
         }
 
-        // Group 2 (texture) + 3 (sampler): the only genuinely per-draw groups.
-        if st.tex != Some(d.texture_id) {
-            pass.set_bind_group(2, textures.texture_bind(d.texture_id), &[]);
-            st.tex = Some(d.texture_id);
-        }
-        let samp = d.sampler.index();
-        if st.sampler != Some(samp) {
-            pass.set_bind_group(3, textures.sampler_bind(samp), &[]);
-            st.sampler = Some(samp);
+        // Groups 2 (bindless object textures) + 3 (8-variant sampler array) are
+        // frame-constant, bound once per run — the per-instance texture/sampler indices
+        // ride the material array, so these are no longer per-draw.
+        if !st.bindless {
+            pass.set_bind_group(2, textures.bindless_bind(), &[]);
+            pass.set_bind_group(3, textures.sampler_array_bind(), &[]);
+            st.bindless = true;
         }
 
         // Group 4: conform heightmap (frame-constant, bind once).
@@ -2530,14 +2541,14 @@ impl Gfx3d {
 
 // Coalesce key for instanceable draws: two draws merge into one instanced draw only
 // when every field draw_one reads from the WgrDraw3D (other than the per-instance
-// world/conform/material, which ride the storage arrays) is identical.
+// world/conform/material, which ride the storage arrays) is identical. Texture + sampler
+// are NOT here: they're bindless (indexed per-instance from the material), so same-mesh
+// draws with different textures/samplers merge into one instanced draw.
 #[derive(PartialEq, Eq, Hash)]
 struct BucketKey {
     mesh: u64,
     index_begin: u32,
     index_count: u32,
-    texture_id: u64,
-    sampler: u32,
     camera: u32,
     pipeline: PipelineKey,
 }
@@ -2585,8 +2596,7 @@ pub struct Pass3dState {
     cam_off: Option<u32>,
     group1_plain: bool,        // plain group-1 (world/material) currently bound
     skinned_off: Option<u32>,  // skinned group-1 palette offset currently bound
-    tex: Option<u64>,
-    sampler: Option<usize>,
+    bindless: bool,            // groups 2/3 (bindless textures + sampler array) bound
     conform: bool,             // group-4 conform heightmap currently bound
     vbuf: Option<usize>,       // vertex buffer at slot 0 (pointer identity)
     ibuf: Option<usize>,       // index buffer (pointer identity)

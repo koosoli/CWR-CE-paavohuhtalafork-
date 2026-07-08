@@ -75,7 +75,12 @@ pub struct TextureData<'a> {
 pub struct Texture2D {
     texture: wgpu::Texture,
     pub view: wgpu::TextureView,
+    // Single-texture group used by the shadow-depth pass (per-caster alpha cutout).
     pub bind_group: wgpu::BindGroup,
+    // Dense index into the bindless object-texture array (0 = white fallback). Read
+    // per-instance by the lit-mesh + prepass fragment shaders. Assigned by
+    // SharedTextures on create, freed on destroy.
+    pub slot: u32,
 }
 
 // Handle 0 is reserved for the white fallback; slotmap versions start at 1, so a
@@ -112,6 +117,7 @@ impl TextureRegistry {
         queue: &wgpu::Queue,
         layout: &wgpu::BindGroupLayout,
         tex: &TextureData,
+        slot: u32,
     ) -> u64 {
         let TextureData {
             width,
@@ -182,6 +188,7 @@ impl TextureRegistry {
             texture,
             view,
             bind_group,
+            slot,
         });
         key.data().as_ffi()
     }
@@ -208,8 +215,27 @@ impl TextureRegistry {
 
 pub struct SharedTextures {
     registry: TextureRegistry,
+    // Single-texture layout (binding_array of 1), used by the shadow-depth pass.
     pub texture_layout: wgpu::BindGroupLayout,
     pub sampler_layout: wgpu::BindGroupLayout,
+    // Bindless object textures (docs/bindless-textures-plan.md): one
+    // binding_array<texture_2d> covering every live object texture, bound ONCE for the
+    // whole lit-mesh + prepass, indexed per-instance by a dense slot (see Texture2D::slot).
+    // Rebuilt lazily by ensure_bindless when a texture is created/destroyed.
+    pub bindless_layout: wgpu::BindGroupLayout,
+    bindless_bind: wgpu::BindGroup,
+    // slot -> view (slot 0 = white fallback / holes). `bindless_free` recycles slots
+    // freed by destroy so the array stays dense.
+    bindless_slots: Vec<Option<wgpu::TextureView>>,
+    bindless_free: Vec<u32>,
+    bindless_dirty: bool,
+    object_cap: u32,
+    partially_bound: bool,
+    // Bindless sampler layout + the 8-variant array bind (frame-constant), for the
+    // lit-mesh + prepass object path. The single-sampler `sampler_binds` below stay for
+    // the shadow-depth pass.
+    pub sampler_array_layout: wgpu::BindGroupLayout,
+    sampler_array_bind: wgpu::BindGroup,
     #[allow(dead_code)] // kept alive: the sampler bind groups reference these
     samplers: [wgpu::Sampler; 8],
     sampler_binds: [wgpu::BindGroup; 8],
@@ -219,8 +245,43 @@ pub struct SharedTextures {
     white_bind: wgpu::BindGroup,
 }
 
+// Build the bindless object-texture bind group from the current slot views, padding
+// holes / the tail with the white fallback. With PARTIALLY_BOUND we bind only up to the
+// high-water slot; otherwise the whole declared array must be bound.
+fn build_bindless_bind(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    slots: &[Option<wgpu::TextureView>],
+    white_view: &wgpu::TextureView,
+    object_cap: u32,
+    partially_bound: bool,
+) -> wgpu::BindGroup {
+    let len = if partially_bound {
+        slots.len().max(1)
+    } else {
+        object_cap as usize
+    };
+    let refs: Vec<&wgpu::TextureView> = (0..len)
+        .map(|i| slots.get(i).and_then(|o| o.as_ref()).unwrap_or(white_view))
+        .collect();
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("wgr_bindless_texture_bind"),
+        layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::TextureViewArray(&refs),
+        }],
+    })
+}
+
 impl SharedTextures {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, bc_supported: bool) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        bc_supported: bool,
+        object_cap: u32,
+        partially_bound: bool,
+    ) -> Self {
         let texture_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_texture_layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -235,6 +296,23 @@ impl SharedTextures {
             }],
         });
 
+        // Bindless object-texture layout: a fragment-visible binding_array sized to the
+        // object-texture cap. Same element type as texture_layout; only `count` differs.
+        let object_cap = object_cap.max(1);
+        let bindless_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_bindless_texture_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: Some(std::num::NonZeroU32::new(object_cap).unwrap()),
+            }],
+        });
+
         let sampler_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_sampler_layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -244,6 +322,20 @@ impl SharedTextures {
                 count: None,
             }],
         });
+
+        // Bindless sampler layout: the 8 fixed sampler variants as a binding_array,
+        // bound ONCE for the lit-mesh + prepass and indexed per-instance (sampler arrays
+        // ride the same TEXTURE_BINDING_ARRAY feature; DX12/Vulkan/Metal).
+        let sampler_array_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgr_sampler_array_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: Some(std::num::NonZeroU32::new(8).unwrap()),
+                }],
+            });
 
         let samplers: [wgpu::Sampler; 8] = std::array::from_fn(|i| {
             let i = i as u32;
@@ -288,6 +380,16 @@ impl SharedTextures {
                 }],
             })
         });
+        // All 8 variants in one bind group for the bindless object path.
+        let sampler_refs: Vec<&wgpu::Sampler> = samplers.iter().collect();
+        let sampler_array_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_sampler_array_bind"),
+            layout: &sampler_array_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::SamplerArray(&sampler_refs),
+            }],
+        });
 
         let white_tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_white"),
@@ -321,10 +423,31 @@ impl SharedTextures {
             }],
         });
 
+        // Slot 0 = the white fallback, so a draw with a missing/zero texture samples
+        // white (matching texture_bind's fallback). Real textures take slots >= 1.
+        let bindless_slots = vec![Some(white_view.clone())];
+        let bindless_bind = build_bindless_bind(
+            device,
+            &bindless_layout,
+            &bindless_slots,
+            &white_view,
+            object_cap,
+            partially_bound,
+        );
+
         SharedTextures {
             registry: TextureRegistry::new(bc_supported),
             texture_layout,
             sampler_layout,
+            bindless_layout,
+            bindless_bind,
+            bindless_slots,
+            bindless_free: Vec::new(),
+            bindless_dirty: false,
+            object_cap,
+            partially_bound,
+            sampler_array_layout,
+            sampler_array_bind,
             samplers,
             sampler_binds,
             white_tex,
@@ -359,8 +482,27 @@ impl SharedTextures {
     }
 
     pub fn create(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, tex: &TextureData) -> u64 {
-        self.registry
-            .create(device, queue, &self.texture_layout, tex)
+        // Reserve a bindless slot up front (recycled free slot, else grow); None = the
+        // array is at cap, so the texture still loads but samples via slot 0 (white).
+        let slot = self.alloc_slot();
+        let slot_idx = slot.unwrap_or(0);
+        let handle = self
+            .registry
+            .create(device, queue, &self.texture_layout, tex, slot_idx);
+        if handle == 0 {
+            // Creation failed (bad data / unsupported format): return the slot.
+            if let Some(s) = slot {
+                self.bindless_free.push(s);
+            }
+            return 0;
+        }
+        if slot.is_some() {
+            if let Some(t) = self.registry.get(handle) {
+                self.bindless_slots[slot_idx as usize] = Some(t.view.clone());
+                self.bindless_dirty = true;
+            }
+        }
+        handle
     }
 
     pub fn update_rgba(&mut self, queue: &wgpu::Queue, handle: u64, data: &[u8]) {
@@ -368,7 +510,61 @@ impl SharedTextures {
     }
 
     pub fn destroy(&mut self, handle: u64) {
+        if let Some(t) = self.registry.get(handle) {
+            let slot = t.slot;
+            if slot != 0 && (slot as usize) < self.bindless_slots.len() {
+                self.bindless_slots[slot as usize] = None;
+                self.bindless_free.push(slot);
+                self.bindless_dirty = true;
+            }
+        }
         self.registry.destroy(handle);
+    }
+
+    // Dense bindless slot for `handle` (0 = white fallback for missing/zero handles).
+    // Packed per-instance into the material array so the fragment shader can index the
+    // bindless texture array.
+    pub fn texture_slot(&self, handle: u64) -> u32 {
+        self.registry.get(handle).map_or(0, |t| t.slot)
+    }
+
+    // The bindless object-texture bind group (valid after ensure_bindless this frame).
+    pub fn bindless_bind(&self) -> &wgpu::BindGroup {
+        &self.bindless_bind
+    }
+
+    // The 8-variant bindless sampler bind group (frame-constant).
+    pub fn sampler_array_bind(&self) -> &wgpu::BindGroup {
+        &self.sampler_array_bind
+    }
+
+    // Rebuild the bindless bind group if any texture was created/destroyed since the
+    // last call. Cheap no-op on frames with no texture churn (the common case).
+    pub fn ensure_bindless(&mut self, device: &wgpu::Device) {
+        if !self.bindless_dirty {
+            return;
+        }
+        self.bindless_bind = build_bindless_bind(
+            device,
+            &self.bindless_layout,
+            &self.bindless_slots,
+            &self.white_view,
+            self.object_cap,
+            self.partially_bound,
+        );
+        self.bindless_dirty = false;
+    }
+
+    fn alloc_slot(&mut self) -> Option<u32> {
+        if let Some(s) = self.bindless_free.pop() {
+            return Some(s);
+        }
+        let next = self.bindless_slots.len() as u32;
+        if next >= self.object_cap {
+            return None;
+        }
+        self.bindless_slots.push(None);
+        Some(next)
     }
 }
 

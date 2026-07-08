@@ -166,9 +166,25 @@ impl Renderer {
         // Optional: lets the terrain bind group carry fewer views than the
         // declared array size; without it unused slots are padded with a dummy.
         let partially_bound = adapter.features() & wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
+        let partially_bound_enabled = !partially_bound.is_empty();
 
+        // Bindless object textures (docs/bindless-textures-plan.md): one binding_array
+        // covering all live object textures. Cap chosen so a non-PARTIALLY_BOUND adapter
+        // doesn't pad an enormous array (a level with more unique textures overflows to
+        // the white slot — 8192 comfortably covers OFP content). Must be >= terrain's 512.
+        let object_texture_cap = 8192u32.max(terrain::TERRAIN_MAX_GROUND_LAYERS);
+
+        // BOTH binding-array limits DEFAULT TO 0 even on devices that fully support
+        // binding arrays, so both must be requested explicitly or layout creation panics
+        // ("limit is 0"). Deriving from adapter.limits() is unreliable (it can report the
+        // 0 default); the wgpu docs guarantee any array-capable device supports >= 500k
+        // resources / 1000 samplers, and we gate on array features above, so request the
+        // fixed values we use. NB wgpu counts the sampler array's 8 elements against the
+        // GENERAL elements limit too (not only the sampler limit), so the object pipeline
+        // layout needs `object_texture_cap + 8`; request headroom above that.
         let required_limits = wgpu::Limits {
-            max_binding_array_elements_per_shader_stage: terrain::TERRAIN_MAX_GROUND_LAYERS,
+            max_binding_array_elements_per_shader_stage: object_texture_cap + 64,
+            max_binding_array_sampler_elements_per_shader_stage: 8,
             // The lit mesh pipelines take a 5th bind group (group 4) for the terrain
             // heightmap used to conform vegetation on the GPU. Ample on desktop.
             max_bind_groups: 5,
@@ -212,7 +228,13 @@ impl Renderer {
             log.log(log_level::INFO, "wgpu depth prepass disabled (WGR_PREPASS=0)");
         }
 
-        let textures = SharedTextures::new(&device, &queue, bc_supported);
+        let textures = SharedTextures::new(
+            &device,
+            &queue,
+            bc_supported,
+            object_texture_cap,
+            partially_bound_enabled,
+        );
         // One composer, pre-loaded with the shared shader modules, shared by the
         // 3D subsystems that #import them.
         let mut composer = shaders::build_composer();
@@ -456,6 +478,10 @@ impl Renderer {
             .prepare_overlay(&self.device, &self.queue, overlay_verts, overlay_indices);
         self.gfx3d
             .ensure_depth(&self.device, self.config.width, self.config.height);
+        // Rebuild the bindless object-texture array if any texture was created/destroyed
+        // since last frame (no-op on churn-free frames), so this frame's draws index a
+        // current array.
+        self.textures.ensure_bindless(&self.device);
         // Shadows first: prepare() binds the frame's final shadow target into
         // the camera group.
         self.gfx3d
@@ -477,6 +503,7 @@ impl Renderer {
         self.gfx3d.prepare(
             &self.device,
             &self.queue,
+            &self.textures,
             cameras,
             draws3d,
             &plan.order,

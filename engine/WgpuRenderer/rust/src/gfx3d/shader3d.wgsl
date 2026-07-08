@@ -49,8 +49,11 @@ struct Material {
 // `objects`; each entry point statically uses only one, so both coexist.
 @group(1) @binding(0) var<storage, read> objects: array<Object>;   // plain pipeline
 @group(1) @binding(1) var<storage, read> materials: array<Material>;
-@group(2) @binding(0) var tex: texture_2d<f32>;
-@group(3) @binding(0) var samp: sampler;
+// Bindless object textures + the 8-variant sampler array, bound once for the whole
+// lit-mesh + prepass. Each draw's texture/sampler index is packed per-instance into
+// material.emissive.w (docs/bindless-textures-plan.md): (tex_slot << 3) | sampler.
+@group(2) @binding(0) var textures: binding_array<texture_2d<f32>>;
+@group(3) @binding(0) var samplers: binding_array<sampler, 8>;
 
 // Baked per-pipeline (pipeline-overridable constants): the alpha-test cutout
 // threshold and whether this is a shadow-darken pipeline. Keeping them out of a
@@ -196,12 +199,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Derivatives must run in uniform control flow — before the discard.
     let dwx = dpdx(in.world_pos);
     let dwy = dpdy(in.world_pos);
-    let base = textureSample(tex, samp, in.uv);
+    // Per-draw material for this draw slot (base_instance == draw slot). Its emissive.w
+    // packs the bindless texture + sampler indices ((tex_slot << 3) | sampler); the index
+    // is uniform across a derivative quad (one instance per primitive), so implicit-mip
+    // textureSample stays legal.
+    let material = materials[in.instance];
+    let packed = bitcast<u32>(material.emissive.w);
+    let base = textureSample(textures[packed >> 3u], samplers[packed & 7u], in.uv);
     if (base.a < alpha_ref) {
         discard;
     }
-    // Per-draw material for this draw slot (base_instance == draw slot).
-    let material = materials[in.instance];
     if (is_shadow > 0.5) {
         return vec4<f32>(0.0, 0.0, 0.0, frame.params.shadow_strength * base.a);
     }
@@ -321,7 +328,8 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
 @fragment
 fn fs_prepass(in: VsOut) -> @location(0) vec2<f32> {
     if (alpha_ref > 0.0) {
-        if (textureSample(tex, samp, in.uv).a < alpha_ref) {
+        let packed = bitcast<u32>(materials[in.instance].emissive.w);
+        if (textureSample(textures[packed >> 3u], samplers[packed & 7u], in.uv).a < alpha_ref) {
             discard;
         }
     }
