@@ -9,6 +9,7 @@
 #import skin::{skin_pos, skin_normal}
 #import lighting::lights_contrib
 #import color::srgb_to_linear
+#import gbuffer::oct_encode
 // Group(4) terrain heightmap + surface_y, shared with the shadow depth pass.
 // surface_grad tilts conformed veg normals to follow the ground slope (color pass only).
 #import conform::{surface_y, surface_grad}
@@ -308,4 +309,24 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         rgb = mix(fog_color, rgb, in.fog);
     }
     return vec4<f32>(rgb, base.a);
+}
+
+// Depth + normal prepass fragment (docs/depth-prepass-plan.md). Reuses vs_main/
+// vs_skinned unchanged (same VS + override constants -> bit-for-bit depth as fs_main),
+// and writes ONLY the view-space octahedral normal into the Rg16Float G-buffer; depth is
+// written by the fixed-function stage. Cutout foliage (alpha_ref > 0) applies the SAME
+// hard discard as fs_main so prepass coverage matches the colour pass by construction.
+// `alpha_ref` is a pipeline-override constant, so the branch is compile-time uniform and
+// the textureSample stays legal.
+@fragment
+fn fs_prepass(in: VsOut) -> @location(0) vec2<f32> {
+    if (alpha_ref > 0.0) {
+        if (textureSample(tex, samp, in.uv).a < alpha_ref) {
+            discard;
+        }
+    }
+    // in.normal is world space (camera-relative world uses the same orientation); the
+    // view matrix's translation is zeroed, so multiplying the direction gives view space.
+    let n_view = (frame.view * vec4<f32>(normalize(in.normal), 0.0)).xyz;
+    return oct_encode(normalize(n_view));
 }

@@ -1,7 +1,16 @@
 use wgpu::util::DeviceExt;
 
 use crate::ffi::{WgrTerrainNode, WgrTerrainParams};
-use crate::gfx3d::DEPTH_FORMAT;
+use crate::gfx3d::{DEPTH_FORMAT, NORMAL_FORMAT};
+
+// Which terrain pipeline a draw uses (docs/depth-prepass-plan.md). Color = the shading
+// pass (depth write ON). ColorNoWrite = the prepassed segment's colour pass (depth
+// already complete -> GreaterEqual/write-off). Prepass = the depth+normal G-buffer pass.
+pub enum TerrainPass {
+    Color,
+    ColorNoWrite,
+    Prepass,
+}
 
 // Grid mesh resolution: GRID_N quads per axis, (GRID_N+1)^2 vertices, u16 indices.
 const GRID_N: u32 = 32;
@@ -145,6 +154,11 @@ pub struct Terrain {
     instance_count: u32,
 
     pipeline: wgpu::RenderPipeline,
+    // Depth-prepass companions (docs/depth-prepass-plan.md): the same shading pipeline
+    // with depth-write OFF (colour pass of the prepassed segment), and the depth+normal
+    // prepass pipeline (writes the view-space normal G-buffer + depth).
+    pipeline_no_write: wgpu::RenderPipeline,
+    prepass_pipeline: wgpu::RenderPipeline,
     max_dim: u32,
 }
 
@@ -573,59 +587,85 @@ impl Terrain {
         let grid_attrs = wgpu::vertex_attr_array![0 => Float32x3];
         let inst_attrs =
             wgpu::vertex_attr_array![1 => Float32x2, 2 => Float32, 3 => Uint32, 4 => Float32x2];
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("wgr_terrain_pipeline"),
-            layout: Some(&pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_terrain"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &vs_constants,
+        let vbuf_layouts = [
+            wgpu::VertexBufferLayout {
+                array_stride: 12,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &grid_attrs,
+            },
+            wgpu::VertexBufferLayout {
+                array_stride: std::mem::size_of::<WgrTerrainNode>() as u64,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &inst_attrs,
+            },
+        ];
+        // Three variants sharing the VS (skirt_k) + layout + geometry: the shading
+        // pipeline (fs_terrain, depth-write ON), its write-off twin for the prepassed
+        // colour pass, and the depth+normal prepass (fs_terrain_prepass -> NORMAL_FORMAT).
+        let make_pipeline = |label: &str,
+                             fs_entry: &str,
+                             fs_constants: &[(&str, f64)],
+                             target: wgpu::TextureFormat,
+                             depth_write: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_terrain"),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: &vs_constants,
+                        ..Default::default()
+                    },
+                    buffers: &vbuf_layouts,
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
                     ..Default::default()
                 },
-                buffers: &[
-                    wgpu::VertexBufferLayout {
-                        array_stride: 12,
-                        step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &grid_attrs,
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(depth_write),
+                    // Reversed-Z: nearer geometry has the larger depth value.
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: wgpu::StencilState::default(),
+                    bias: wgpu::DepthBiasState::default(),
+                }),
+                multisample: wgpu::MultisampleState::default(),
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fs_entry),
+                    compilation_options: wgpu::PipelineCompilationOptions {
+                        constants: fs_constants,
+                        ..Default::default()
                     },
-                    wgpu::VertexBufferLayout {
-                        array_stride: std::mem::size_of::<WgrTerrainNode>() as u64,
-                        step_mode: wgpu::VertexStepMode::Instance,
-                        attributes: &inst_attrs,
-                    },
-                ],
-            },
-            primitive: wgpu::PrimitiveState {
-                topology: wgpu::PrimitiveTopology::TriangleList,
-                cull_mode: None,
-                ..Default::default()
-            },
-            depth_stencil: Some(wgpu::DepthStencilState {
-                format: DEPTH_FORMAT,
-                depth_write_enabled: Some(true),
-                // Reversed-Z: nearer geometry has the larger depth value.
-                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                stencil: wgpu::StencilState::default(),
-                bias: wgpu::DepthBiasState::default(),
-            }),
-            multisample: wgpu::MultisampleState::default(),
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_terrain"),
-                compilation_options: wgpu::PipelineCompilationOptions {
-                    constants: &fs_constants,
-                    ..Default::default()
-                },
-                targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_format,
-                    blend: None,
-                    write_mask: wgpu::ColorWrites::ALL,
-                })],
-            }),
-            multiview_mask: None,
-            cache: None,
-        });
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let pipeline =
+            make_pipeline("wgr_terrain_pipeline", "fs_terrain", &fs_constants, surface_format, true);
+        let pipeline_no_write = make_pipeline(
+            "wgr_terrain_pipeline_no_write",
+            "fs_terrain",
+            &fs_constants,
+            surface_format,
+            false,
+        );
+        let prepass_pipeline = make_pipeline(
+            "wgr_terrain_prepass_pipeline",
+            "fs_terrain_prepass",
+            &[],
+            NORMAL_FORMAT,
+            true,
+        );
 
         Terrain {
             group1_layout,
@@ -673,6 +713,8 @@ impl Terrain {
             instance_cap,
             instance_count: 0,
             pipeline,
+            pipeline_no_write,
+            prepass_pipeline,
             max_dim: device.limits().max_texture_dimension_2d,
         }
     }
@@ -1035,6 +1077,7 @@ impl Terrain {
         camera_offset: u32,
         first_node: u32,
         node_count: u32,
+        kind: TerrainPass,
     ) {
         if !self.have_heightmap || node_count == 0 {
             return;
@@ -1042,7 +1085,12 @@ impl Terrain {
         if first_node + node_count > self.instance_count {
             return;
         }
-        pass.set_pipeline(&self.pipeline);
+        let pipeline = match kind {
+            TerrainPass::Color => &self.pipeline,
+            TerrainPass::ColorNoWrite => &self.pipeline_no_write,
+            TerrainPass::Prepass => &self.prepass_pipeline,
+        };
+        pass.set_pipeline(pipeline);
         pass.set_bind_group(0, camera_bind, &[camera_offset]);
         pass.set_bind_group(1, &self.group1_bind, &[]);
         pass.set_bind_group(2, &self.group2_bind, &[]);

@@ -34,6 +34,7 @@ pub fn build_composer() -> Composer {
     let mut composer = Composer::default().with_capabilities(capabilities);
     for (source, file_path) in [
         (include_str!("color.wgsl"), "color.wgsl"),
+        (include_str!("gbuffer.wgsl"), "gbuffer.wgsl"),
         (include_str!("frame.wgsl"), "frame.wgsl"),
         (include_str!("skin.wgsl"), "skin.wgsl"),
         (include_str!("conform.wgsl"), "conform.wgsl"),

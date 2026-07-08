@@ -14,6 +14,11 @@ use crate::textures::SharedTextures;
 // compound — mirrors GL33's stencil EQUAL 0 / INCR shadow path).
 pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusStencil8;
 
+// Depth+normal prepass G-buffer target (docs/depth-prepass-plan.md, decision 9): a
+// view-space octahedral normal, Rg16Float (compact + banding-free for SSAO/GTAO/SSR).
+// Written unconditionally by the prepass; sampled by no consumer yet (Stage 1).
+pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+
 // Cascade shadow depth maps: one D32 array layer per cascade.
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_CASCADES: u32 = 4;
@@ -41,6 +46,21 @@ struct PipelineKey {
     offset: Offset,      // polygon-offset variant
     alpha_ref_bits: u32, // f32::to_bits of the cutout threshold
     skinned: bool,
+    // Colour-pass depth-write override for the depth prepass (decision 2/4): when the
+    // prepass already laid down this segment's opaque depth, the colour pass draws the
+    // prepassed set GreaterEqual + write-OFF. Same key otherwise, so post-ClearDepth
+    // segments (no prepass) still get the write-ON variant.
+    depth_write_off: bool,
+}
+
+// Identifies one depth+normal prepass pipeline variant (docs/depth-prepass-plan.md,
+// decision 3). The prepass only ever draws the opaque set (blend Opaque, offset None,
+// depth TestWrite), so blend/depth/offset are fixed and drop out of the key — only the
+// VS path (skinned) and the cutout threshold (foliage vs pure opaque) vary.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+struct PrepassKey {
+    skinned: bool,
+    alpha_ref_bits: u32,
 }
 
 // Per-level constant depth-bias magnitude for ZBias overlay faces (signs).
@@ -90,7 +110,22 @@ impl PipelineKey {
             offset,
             alpha_ref_bits: d.alpha_ref.to_bits(),
             skinned,
+            depth_write_off: false,
         }
+    }
+
+    // The prepassed opaque set (decision 4): opaque blend, no polygon offset, depth
+    // test+write. Foliage (alpha_ref > 0) qualifies; skinned qualifies. Transparents,
+    // decals/ZBias and the shadow-darken pass do not. Derives entirely from the key.
+    fn prepassed(&self) -> bool {
+        self.blend == WgrBlend::Opaque as u8
+            && self.offset == Offset::None
+            && self.depth == WgrDepthMode::TestWrite as u8
+    }
+
+    fn with_write_off(mut self) -> Self {
+        self.depth_write_off = true;
+        self
     }
 }
 
@@ -856,8 +891,14 @@ pub struct Gfx3d {
     vbuf_attrs: [wgpu::VertexAttribute; 4],
     skin_attrs: [wgpu::VertexAttribute; 2],
     pipelines: FxHashMap<PipelineKey, wgpu::RenderPipeline>,
+    // Depth+normal prepass variants (docs/depth-prepass-plan.md), built lazily
+    // alongside the colour pipelines for every opaque draw the frame submits.
+    prepass_pipelines: FxHashMap<PrepassKey, wgpu::RenderPipeline>,
 
     depth: Option<(wgpu::Texture, wgpu::TextureView)>,
+    // View-space normal G-buffer, allocated with (and to the same size as) the depth
+    // target; the prepass' one colour attachment. Sampled by no consumer yet (Stage 1).
+    normal: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_size: (u32, u32),
 
     shadow_pass_ubo: DynUbo, // one ShadowPassUbo per cascade
@@ -1092,7 +1133,9 @@ impl Gfx3d {
             vbuf_attrs,
             skin_attrs,
             pipelines: FxHashMap::default(),
+            prepass_pipelines: FxHashMap::default(),
             depth: None,
+            normal: None,
             depth_size: (0, 0),
             shadow_pass_ubo,
             shadow_caster_ssbo,
@@ -1183,11 +1226,17 @@ impl Gfx3d {
         };
 
         // WgrDepthMode: 0 none, 1 test (no write), 2 test + write.
-        let (test, write) = match key.depth {
+        let (test, mut write) = match key.depth {
             0 => (false, false),
             1 => (true, false),
             _ => (true, true),
         };
+        // Prepassed opaque draws in the colour pass keep GreaterEqual but stop writing:
+        // the prepass already holds the frontmost depth (decision 2). GreaterEqual (not
+        // Equal) is robust to any sub-ULP VS drift; write-off just removes redundant writes.
+        if key.depth_write_off {
+            write = false;
+        }
         // Shadows still use DepthBiasState (works well enough for them: drawn
         // depth-test-no-write on the surface). Decal/ZBias overlays instead bias in
         // the vertex shader (depth_bias below) — DepthBiasState's constant term is
@@ -1308,6 +1357,86 @@ impl Gfx3d {
         self.pipelines.insert(key, pipeline);
     }
 
+    // Create the depth+normal prepass pipeline for `key` if absent. Reuses the colour
+    // pass' VS entry + pipeline layout + vertex buffers + override constants (VS parity
+    // is load-bearing — see the plan's hazards), writes depth GreaterEqual/write-ON and
+    // the view-space normal into NORMAL_FORMAT via fs_prepass. All prepassed draws have
+    // offset None, so depth_bias is 0 here, matching their colour VS exactly.
+    fn ensure_prepass_pipeline(&mut self, device: &wgpu::Device, key: PrepassKey) {
+        if self.prepass_pipelines.contains_key(&key) {
+            return;
+        }
+        let module = &self.shader;
+        let (vs_entry, layout) = if key.skinned {
+            ("vs_skinned", &self.skinned_layout)
+        } else {
+            ("vs_main", &self.plain_layout)
+        };
+        let vbuf_layout = wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<WgrMeshVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &self.vbuf_attrs,
+        };
+        let skin_layout = wgpu::VertexBufferLayout {
+            array_stride: 8,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &self.skin_attrs,
+        };
+        let plain_buffers = [vbuf_layout.clone()];
+        let skinned_buffers = [vbuf_layout, skin_layout];
+        let buffers: &[wgpu::VertexBufferLayout] = if key.skinned {
+            &skinned_buffers
+        } else {
+            &plain_buffers
+        };
+        let alpha_ref = f32::from_bits(key.alpha_ref_bits) as f64;
+        let constants = [("alpha_ref", alpha_ref), ("depth_bias", 0.0)];
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wgr_3d_prepass_pipeline"),
+            layout: Some(layout),
+            vertex: wgpu::VertexState {
+                module,
+                entry_point: Some(vs_entry),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                },
+                buffers,
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                front_face: wgpu::FrontFace::Cw,
+                cull_mode: Some(wgpu::Face::Back),
+                ..Default::default()
+            },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                // Reversed-Z: nearer geometry has the larger depth value.
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module,
+                entry_point: Some("fs_prepass"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: NORMAL_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        self.prepass_pipelines.insert(key, pipeline);
+    }
+
     pub fn mesh_create(
         &mut self,
         device: &wgpu::Device,
@@ -1408,11 +1537,34 @@ impl Gfx3d {
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
         self.depth = Some((texture, view));
+        // View-space normal G-buffer, matched to the depth size. TEXTURE_BINDING now
+        // (harmless) so Stage 2 can expose it to SSAO without a realloc.
+        let normal = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_3d_normal"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: NORMAL_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let normal_view = normal.create_view(&wgpu::TextureViewDescriptor::default());
+        self.normal = Some((normal, normal_view));
         self.depth_size = size;
     }
 
     pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
         self.depth.as_ref().map(|(_, v)| v)
+    }
+
+    // The prepass' view-space normal G-buffer view (the prepass colour attachment).
+    pub fn normal_view(&self) -> Option<&wgpu::TextureView> {
+        self.normal.as_ref().map(|(_, v)| v)
     }
 
     // The cascade shadow depth map as a D2Array view (or the 1x1 dummy when no shadows),
@@ -2100,7 +2252,20 @@ impl Gfx3d {
                 .get(KeyData::from_ffi(d.mesh).into())
                 .is_some_and(|m| m.skin.is_some());
             let skinned = d.palette_slot != NO_PALETTE && has_skin;
-            self.ensure_pipeline(device, PipelineKey::from_draw(d, skinned));
+            let key = PipelineKey::from_draw(d, skinned);
+            self.ensure_pipeline(device, key);
+            // Opaque draws are prepassed: also build their colour write-off variant (used
+            // in the prepassed segment) and their depth+normal prepass pipeline.
+            if key.prepassed() {
+                self.ensure_pipeline(device, key.with_write_off());
+                self.ensure_prepass_pipeline(
+                    device,
+                    PrepassKey {
+                        skinned,
+                        alpha_ref_bits: key.alpha_ref_bits,
+                    },
+                );
+            }
         }
     }
 
@@ -2225,6 +2390,7 @@ impl Gfx3d {
     // frame-constant, so within a run of 3D draws they are set once, not per draw.
     // The caller resets `st` (Pass3dState::default) whenever another pipeline runs on
     // the pass (terrain/2D) or a new pass begins, since that invalidates this state.
+    #[allow(clippy::too_many_arguments)]
     pub fn draw_one(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
@@ -2233,6 +2399,7 @@ impl Gfx3d {
         base: u32,
         count: u32,
         st: &mut Pass3dState,
+        mode: Pass3dMode,
     ) {
         if d.index_count == 0 {
             return;
@@ -2250,8 +2417,34 @@ impl Gfx3d {
             return;
         }
         let skinned = d.palette_slot != NO_PALETTE && mesh.skin.is_some();
-        let Some(pipeline) = self.pipelines.get(&PipelineKey::from_draw(d, skinned)) else {
-            return;
+        let base_key = PipelineKey::from_draw(d, skinned);
+        // Pipeline by pass mode. Prepass draws ONLY the opaque set (self-filter here so
+        // the caller can replay a whole segment); the colour pass flips the same set to
+        // its write-off variant when the prepass already laid its depth (decision 2/4).
+        let pipeline = match mode {
+            Pass3dMode::Prepass => {
+                if !base_key.prepassed() {
+                    return;
+                }
+                let Some(p) = self.prepass_pipelines.get(&PrepassKey {
+                    skinned,
+                    alpha_ref_bits: base_key.alpha_ref_bits,
+                }) else {
+                    return;
+                };
+                p
+            }
+            Pass3dMode::Color { depth_write_off } => {
+                let key = if depth_write_off && base_key.prepassed() {
+                    base_key.with_write_off()
+                } else {
+                    base_key
+                };
+                let Some(p) = self.pipelines.get(&key) else {
+                    return;
+                };
+                p
+            }
         };
         // Bail (without touching `st`) if the group-1 backing the draw needs isn't ready.
         if skinned && self.group1_skinned_bind.is_none() {
@@ -2369,6 +2562,16 @@ pub enum Plan3dOp {
 pub struct Plan3d {
     pub order: Vec<u32>,
     pub ops: Vec<Plan3dOp>,
+}
+
+// Which pass draw_one records into (docs/depth-prepass-plan.md). Prepass = the
+// depth+normal G-buffer (opaque set only, self-filtered). Color = the shading pass;
+// `depth_write_off` is set for the prepassed segment so its opaque set draws
+// GreaterEqual/write-off over the already-complete depth.
+#[derive(Clone, Copy)]
+pub enum Pass3dMode {
+    Prepass,
+    Color { depth_write_off: bool },
 }
 
 // Bind/pipeline/buffer state already set on a render pass, so draw_one can skip

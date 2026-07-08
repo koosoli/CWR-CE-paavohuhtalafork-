@@ -89,6 +89,11 @@ pub struct Renderer {
     // catch frame-to-frame camera alternation (the suspected sun/haze stutter cause).
     sky_debug: bool,
     sky_dbg_last: (usize, usize),
+    // Depth+normal prepass (docs/depth-prepass-plan.md). Ships unconditionally on wgpu
+    // (decision 8); WGR_PREPASS=0 is a TEMPORARY dev A/B for bring-up validation only,
+    // not a shipped runtime flag. When on, the first (world) depth segment gets a
+    // depth+normal prepass and its opaque colour draws early-Z with depth-write off.
+    prepass_enabled: bool,
 }
 
 impl Renderer {
@@ -197,10 +202,14 @@ impl Renderer {
         // gamma-naive fallback and looks broken. WGR_HDR=0 still forces it off for A/B.
         // When on, the scene subsystems target the offscreen HDR format and a tonemap pass
         // resolves to the swapchain; the overlay pipeline always targets the swapchain format.
+        let prepass_enabled = std::env::var("WGR_PREPASS").map(|v| v != "0").unwrap_or(true);
         let hdr_enabled = std::env::var("WGR_HDR").map(|v| v != "0").unwrap_or(true);
         let color_format = if hdr_enabled { HDR_FORMAT } else { config.format };
         if hdr_enabled {
             log.log(log_level::INFO, "wgpu HDR path enabled (WGR_HDR)");
+        }
+        if !prepass_enabled {
+            log.log(log_level::INFO, "wgpu depth prepass disabled (WGR_PREPASS=0)");
         }
 
         let textures = SharedTextures::new(&device, &queue, bc_supported);
@@ -264,6 +273,7 @@ impl Renderer {
             sky_params: ffi::WgrSky::default(),
             sky_debug: std::env::var("WGR_SKY_DEBUG").is_ok(),
             sky_dbg_last: (usize::MAX, usize::MAX),
+            prepass_enabled,
         })
     }
 
@@ -506,6 +516,18 @@ impl Renderer {
             .depth_view()
             .ok_or("depth target missing")?
             .clone();
+        // The prepass' view-space normal G-buffer target (None when the prepass is
+        // disabled). Cloned (Arc) so no borrow of self is held across the segment loop.
+        let normal = if self.prepass_enabled {
+            Some(
+                self.gfx3d
+                    .normal_view()
+                    .ok_or("normal target missing")?
+                    .clone(),
+            )
+        } else {
+            None
+        };
         let mut encoder = self
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -683,10 +705,14 @@ impl Renderer {
         // and go. Instead PARTITION each segment: replay all non-2D ops, fog, then replay
         // all 2D ops. `want_2d` selects which side to draw (order preserved within each);
         // `display_2d` is threaded as a param (not captured) so the outer mutable changes.
+        // `depth_write_off` = this is the prepassed segment's colour pass, so its opaque
+        // set (objects + terrain) draws over the already-complete depth GreaterEqual/
+        // write-off. False for post-ClearDepth segments (no prepass) and the 2D sub-pass.
         let render_ops = |pass: &mut wgpu::RenderPass<'_>,
                           sub: &[Plan3dOp],
                           display_2d: bool,
-                          want_2d: bool| {
+                          want_2d: bool,
+                          depth_write_off: bool| {
             let mut st3d = crate::gfx3d::Pass3dState::default();
             for op in sub {
                 if matches!(op, Plan3dOp::Draw2D(_)) != want_2d {
@@ -701,8 +727,15 @@ impl Renderer {
                     }
                     Plan3dOp::Draw3D { draw, base, count } => {
                         if let Some(d) = draws3d.get(*draw as usize) {
-                            self.gfx3d
-                                .draw_one(pass, &self.textures, d, *base, *count, &mut st3d);
+                            self.gfx3d.draw_one(
+                                pass,
+                                &self.textures,
+                                d,
+                                *base,
+                                *count,
+                                &mut st3d,
+                                crate::gfx3d::Pass3dMode::Color { depth_write_off },
+                            );
                         }
                     }
                     Plan3dOp::Terrain(arg) => {
@@ -711,8 +744,13 @@ impl Renderer {
                             (terrain_batches.get(*arg as usize), self.gfx3d.camera_bind())
                         {
                             let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                            let kind = if depth_write_off {
+                                crate::terrain::TerrainPass::ColorNoWrite
+                            } else {
+                                crate::terrain::TerrainPass::Color
+                            };
                             self.terrain
-                                .draw(pass, cam, off, b.first_node, b.node_count);
+                                .draw(pass, cam, off, b.first_node, b.node_count, kind);
                         }
                     }
                     Plan3dOp::Water(arg) => {
@@ -754,8 +792,89 @@ impl Renderer {
             let seg_ops = &ops[start..end];
             let has_2d = seg_ops.iter().any(|o| matches!(o, Plan3dOp::Draw2D(_)));
 
-            // 3D sub-pass: all non-2D draws (clears depth + stencil — stencil to 0 so
-            // shadow draws EQUAL 0 / INCR darken each pixel once); colour per the load.
+            // Depth+normal prepass over the FIRST (world) depth segment only
+            // (docs/depth-prepass-plan.md, decision 5): start == 0 marks it. The prepass
+            // replays the segment's opaque set (objects self-filter; terrain always) into
+            // the normal G-buffer + depth (cleared 0.0 reversed-Z, stencil cleared 0). The
+            // colour sub-pass below then LOADS this depth and draws the opaque set early-Z
+            // with depth-write off. Later segments (near/weapon) keep the single-pass path.
+            let do_prepass = start == 0;
+            if let (true, Some(normal_view)) = (do_prepass, normal.as_ref()) {
+                encoder.push_debug_group("wgr_depth_prepass");
+                let mut pp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("wgr_depth_prepass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: normal_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &depth,
+                        depth_ops: Some(wgpu::Operations {
+                            // Reversed-Z: far plane is 0
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        // Clear stencil to 0 here so the colour pass can LOAD it (the
+                        // shadow-darken pass wants stencil == 0 to start).
+                        stencil_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                let mut st3d = crate::gfx3d::Pass3dState::default();
+                for op in seg_ops {
+                    match op {
+                        Plan3dOp::Draw3D { draw, base, count } => {
+                            if let Some(d) = draws3d.get(*draw as usize) {
+                                self.gfx3d.draw_one(
+                                    &mut pp,
+                                    &self.textures,
+                                    d,
+                                    *base,
+                                    *count,
+                                    &mut st3d,
+                                    crate::gfx3d::Pass3dMode::Prepass,
+                                );
+                            }
+                        }
+                        Plan3dOp::Terrain(arg) => {
+                            st3d = crate::gfx3d::Pass3dState::default();
+                            if let (Some(b), Some(cam)) =
+                                (terrain_batches.get(*arg as usize), self.gfx3d.camera_bind())
+                            {
+                                let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                                self.terrain.draw(
+                                    &mut pp,
+                                    cam,
+                                    off,
+                                    b.first_node,
+                                    b.node_count,
+                                    crate::terrain::TerrainPass::Prepass,
+                                );
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                drop(pp);
+                encoder.pop_debug_group();
+            }
+            // When the prepass ran, the depth (+ stencil 0) it wrote is complete, so the
+            // colour sub-pass LOADS it; otherwise it clears as before.
+            let prepassed = do_prepass && normal.is_some();
+
+            // 3D sub-pass: all non-2D draws. Depth/stencil are cleared here only when the
+            // prepass didn't already fill them (stencil to 0 so shadow draws EQUAL 0 /
+            // INCR darken each pixel once); colour per the load.
             {
                 let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some(&seg_label),
@@ -771,12 +890,20 @@ impl Renderer {
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                         view: &depth,
                         depth_ops: Some(wgpu::Operations {
-                            // Reversed-Z: far plane is 0
-                            load: wgpu::LoadOp::Clear(0.0),
+                            load: if prepassed {
+                                wgpu::LoadOp::Load
+                            } else {
+                                // Reversed-Z: far plane is 0
+                                wgpu::LoadOp::Clear(0.0)
+                            },
                             store: wgpu::StoreOp::Store,
                         }),
                         stencil_ops: Some(wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(0),
+                            load: if prepassed {
+                                wgpu::LoadOp::Load
+                            } else {
+                                wgpu::LoadOp::Clear(0)
+                            },
                             store: wgpu::StoreOp::Store,
                         }),
                     }),
@@ -784,7 +911,7 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                render_ops(&mut pass, seg_ops, display_2d, false);
+                render_ops(&mut pass, seg_ops, display_2d, false, prepassed);
                 drop(pass);
             }
 
@@ -817,7 +944,7 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                render_ops(&mut pass, seg_ops, display_2d, true);
+                render_ops(&mut pass, seg_ops, display_2d, true, false);
                 drop(pass);
             }
 

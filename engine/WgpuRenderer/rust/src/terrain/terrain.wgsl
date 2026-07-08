@@ -11,6 +11,7 @@
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
+#import gbuffer::oct_encode
 
 struct TerrainParams {
     world_origin: vec2<f32>,
@@ -293,4 +294,16 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
         rgb = mix(fog_color, rgb, in.fog);
     }
     return vec4<f32>(rgb, 1.0);
+}
+
+// Depth + normal prepass fragment (docs/depth-prepass-plan.md). Reuses vs_terrain
+// unchanged and writes ONLY the view-space octahedral normal into the Rg16Float
+// G-buffer (depth is written by the fixed-function stage). The normal is the same
+// per-fragment heightmap central difference fs_terrain derives, transformed to view
+// space (view translation is zeroed, so the direction transform is a pure rotation).
+@fragment
+fn fs_terrain_prepass(in: VsOut) -> @location(0) vec2<f32> {
+    let n = sample_normal(in.world_xz, tp.terrain_grid);
+    let n_view = (frame.view * vec4<f32>(n, 0.0)).xyz;
+    return oct_encode(normalize(n_view));
 }
