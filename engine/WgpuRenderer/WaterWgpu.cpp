@@ -3,6 +3,7 @@
 #include "CdlodDriver.hpp"
 #include "EngineWgpu.hpp"
 
+#include <Poseidon/Core/Global.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
@@ -49,7 +50,7 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // map edges to the horizon (the legacy path fills off-map with all-water tiles).
     const int coverage = std::max(range, static_cast<int>(std::lround(_extentFactor * range)));
     const int rootTexels = CdlodRootTexels(coverage, WaterGridN);
-    const int originTexel = -((rootTexels - range) / 2);
+    const int originTexel = CdlodCenteredOrigin(rootTexels, range, WaterGridN);
 
     // Same leaf min/max scan as terrain where the leaf overlaps the map (water
     // existence is defined by the terrain dipping below sea level); off-map texels are
@@ -117,6 +118,13 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     {
         return;
     }
+    const Engine::WaterSettings& look = _engine.WaterLook();
+    if (!look.enabled)
+    {
+        // Water suppressed from the tab: draw nothing (the seabed shows, for A/B).
+        return;
+    }
+
     const Landscape& land = *GLandscape;
     RebuildIfNeeded(land);
     if (_rootIndex < 0)
@@ -130,9 +138,22 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         return;
     }
 
-    // Refresh the animated sea level every frame; the whole plane rides at this
-    // height (no mesh regeneration — the legacy path re-levelled cached vertices).
+    // Refresh the animated sea level + wave clock + live look every frame; the whole
+    // plane rides at this height (no mesh regeneration — the legacy path re-levelled
+    // cached vertices), and the Gerstner waves advance off `time` in the shader.
     _params.sea_level = land.GetSeaLevel();
+    _params.time = Glob.time.toFloat();
+    _params.wave_amp = look.waveAmp;
+    _params.wave_choppy = look.waveChoppy;
+    _params.wave_speed = look.waveSpeed;
+    _params.wave_scale = look.waveScale;
+    _params.fade_start = look.fadeStart;
+    _params.fade_end = look.fadeEnd;
+    _params.warp_amp = look.warpAmp;
+    _params.spec_power = look.specPower;
+    _params.spec_intensity = look.specIntensity;
+    _params.alpha = look.alpha;
+    _params.shadow_dim = look.shadowDim;
     wgr_water_set_params(_renderer, &_params);
 
     // Water clips to the whole (over-sized) tree, not the engine's land draw-distance

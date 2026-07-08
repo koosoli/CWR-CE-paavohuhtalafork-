@@ -164,6 +164,17 @@ inline int CdlodRootTexels(int coverageTexels, int leafTexels)
     return r;
 }
 
+// Top-left texel of a `rootTexels`-wide root centred over a `range`-wide map, snapped
+// to a whole leaf so the in-map leaves keep the exact texel alignment of an
+// un-extended (origin 0) tree — extending the tree then adds an off-map border without
+// disturbing the in-map tessellation. Returns 0 when the root barely exceeds the map.
+inline int CdlodCenteredOrigin(int rootTexels, int range, int leafTexels)
+{
+    int margin = (rootTexels - range) / 2;
+    margin -= margin % leafTexels; // snap down to a whole leaf
+    return -margin;
+}
+
 // Builds a CDLOD quadtree with a `rootTexels` x `rootTexels` root (must be a
 // power-of-two multiple of `leafTexels`, e.g. from CdlodRootTexels) whose top-left
 // corner is texel (originTexelX, originTexelZ) — usually (0,0), but water offsets it

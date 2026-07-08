@@ -55,14 +55,27 @@ impl Water {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
+        // Seeded once; the C++ side pushes real look values every frame (Water tab).
         let default_params = WgrWaterParams {
             world_origin: crate::ffi::WgrVec2 { x: 0.0, y: 0.0 },
             terrain_grid: 1.0,
             sea_level: 0.0,
             hm_width: 1,
             hm_height: 1,
-            _pad0: 0,
-            _pad1: 0,
+            time: 0.0,
+            wave_amp: 1.0,
+            wave_choppy: 0.5,
+            wave_speed: 1.0,
+            wave_scale: 1.0,
+            fade_start: 200.0,
+            fade_end: 2500.0,
+            warp_amp: 3.0,
+            spec_power: 240.0,
+            spec_intensity: 14.0,
+            alpha: 0.9,
+            shadow_dim: 0.5,
+            _pad1: 0.0,
+            _pad2: 0.0,
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 
@@ -92,22 +105,23 @@ impl Water {
             include_str!("water.wgsl"),
             "water/water.wgsl",
         );
-        // Flat water needs no skirts: adjacent LOD levels are coplanar at sea level, so
-        // there are no cracks to wall off — and with a transparent surface the skirt
-        // walls show through as vertical seams between tiles. Default them off (0 =
-        // skirt verts collapse onto the plane). The sibling wave plan can raise this.
+        // Gerstner LOD-transitions are crack-free via the morph (adjacent levels agree at
+        // the boundary), so skirts stay off by default — their walls would show through
+        // the transparent surface as seams. Raise WGR_WATER_SKIRT_K if a seam appears.
+        // (The wave/fade/warp/spec look params are UBO fields now, live-tuned by the
+        // Water ImGui tab, so only the structural overrides remain here.)
         let skirt_k = std::env::var("WGR_WATER_SKIRT_K")
             .ok()
             .and_then(|v| v.parse::<f64>().ok())
             .unwrap_or(0.0);
-        let vs_constants = [("skirt_k", skirt_k)];
         // HDR path: the color target is Rgba16Float only when HDR is on, so it signals
-        // linear shading (tint/fog decode).
+        // linear shading (tint/fog decode + un-clamped glint that blooms).
         let linear = if surface_format == wgpu::TextureFormat::Rgba16Float {
             1.0
         } else {
             0.0
         };
+        let vs_constants = [("skirt_k", skirt_k)];
         let fs_constants = [("linear", linear)];
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {

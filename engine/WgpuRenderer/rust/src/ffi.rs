@@ -484,8 +484,21 @@ pub struct WgrWaterParams {
     pub sea_level: f32,
     pub hm_width: u32,
     pub hm_height: u32,
-    pub _pad0: u32,
-    pub _pad1: u32,
+    pub time: f32,
+    // Live look params (edited by the Water ImGui tab). See wgpu_renderer.hpp.
+    pub wave_amp: f32,
+    pub wave_choppy: f32,
+    pub wave_speed: f32,
+    pub wave_scale: f32,
+    pub fade_start: f32,
+    pub fade_end: f32,
+    pub warp_amp: f32,
+    pub spec_power: f32,
+    pub spec_intensity: f32,
+    pub alpha: f32,
+    pub shadow_dim: f32,
+    pub _pad1: f32,
+    pub _pad2: f32,
 }
 
 // One water node (shared grid mesh at world-xz `origin`, `size` wide, level `lod`).
@@ -583,7 +596,7 @@ const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 32);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 80);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);

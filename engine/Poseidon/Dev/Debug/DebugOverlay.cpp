@@ -1796,6 +1796,75 @@ void DrawSkyTab()
     if (ImGui::Button("Copy preset to clipboard"))
         ImGui::SetClipboardText(preset);
 }
+void DrawWaterTab()
+{
+    if (!GEngine)
+    {
+        ImGui::TextDisabled("engine not up");
+        return;
+    }
+    if (!GEngine->SupportsWater())
+    {
+        ImGui::TextDisabled("GPU water unavailable (run the wgpu backend with WGR_GPU_WATER)");
+        return;
+    }
+
+    auto s = GEngine->GetWaterSettings();
+    bool changed = false;
+
+    changed |= ImGui::Checkbox("Enabled", &s.enabled);
+    ImGui::SetItemTooltip("Off = draw no water surface (the seabed shows through), for A/B");
+
+    ImGui::BeginDisabled(!s.enabled);
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Waves (cosmetic — buoyancy stays on the flat plane)");
+    changed |= ImGui::SliderFloat("Amplitude", &s.waveAmp, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("Overall wave height scale. Kept gentle so boats never float in air.");
+    changed |= ImGui::SliderFloat("Choppiness", &s.waveChoppy, 0.0f, 1.5f, "%.2f");
+    ImGui::SetItemTooltip("Horizontal steepness of the crests (Gerstner Q).");
+    changed |= ImGui::SliderFloat("Speed", &s.waveSpeed, 0.0f, 3.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Scale (wavelength)", &s.waveScale, 0.25f, 8.0f, "%.2f",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Multiplies every wavelength: >1 makes larger, farther-apart waves — the main "
+                          "knob for how the field reads from a distance.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Distance detail (kills far-field moiré / repetition)");
+    changed |= ImGui::SliderFloat("Fade start (m)", &s.fadeStart, 0.0f, 4000.0f, "%.0f");
+    ImGui::SetItemTooltip("Distance at which wave detail begins to flatten.");
+    changed |= ImGui::SliderFloat("Fade end (m)", &s.fadeEnd, 0.0f, 20000.0f, "%.0f",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Distance by which the water is fully flat (a smooth horizon mirror). Lower this "
+                          "if the airplane view still shimmers or looks tiled; raise it if distant water "
+                          "looks too dead.");
+    changed |= ImGui::SliderFloat("De-tile warp (m)", &s.warpAmp, 0.0f, 20.0f, "%.2f");
+    ImGui::SetItemTooltip("Low-frequency domain warp that bends the wave field off the regular grid.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Shading");
+    changed |= ImGui::SliderFloat("Specular power", &s.specPower, 8.0f, 2000.0f, "%.0f",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Sun-glint sharpness (higher = tighter highlight).");
+    changed |= ImGui::SliderFloat("Specular intensity", &s.specIntensity, 0.0f, 60.0f, "%.2f");
+    ImGui::SetItemTooltip("Sun-glint brightness. Un-clamped on HDR so it blooms.");
+    changed |= ImGui::SliderFloat("Opacity", &s.alpha, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Base opacity looking straight down (grazing angles go opaque via Fresnel).");
+    changed |= ImGui::SliderFloat("Shadow dim", &s.shadowDim, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Terrain + CSM sun-shadow always removes the glint/direct sun on shadowed water; "
+                          "this additionally darkens the shadowed surface (0 = physical sun-only removal).");
+
+    if (ImGui::Button("Reset to defaults"))
+    {
+        s = decltype(s){};
+        changed = true;
+    }
+
+    ImGui::EndDisabled();
+
+    if (changed)
+        GEngine->SetWaterSettings(s);
+}
 void DrawMouseTab()
 {
     // Plain field writes into live GInput.mouse — no Defer needed (cf. DrawCheatsTab).
@@ -1985,6 +2054,11 @@ void DrawMainWindow()
         if (ImGui::BeginTabItem("Sky"))
         {
             DrawSkyTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Water"))
+        {
+            DrawWaterTab();
             ImGui::EndTabItem();
         }
         ImGuiTabItemFlags shadowFlags = 0;

@@ -1067,6 +1067,35 @@ class Engine : public IGraphicsEngine
     // Blocking GPU readback on the wgpu backend; call only from the dev panel.
     virtual float GetAutoExposureScale() const { return 1.0f; }
 
+    // GPU water surface look (wgpu only; gated by SupportsWater). Live-tunable via the
+    // ImGui Water tab; the backend pushes these into the water UBO each frame. Purely
+    // cosmetic — gameplay reads the flat sea plane regardless. See docs/water-rendering-plan.md.
+    // NOTE: appended at the class end on purpose (see the vtable-slot note above).
+    struct WaterSettings
+    {
+        bool enabled = true;         // draw the GPU water surface (off = seabed only, for A/B)
+        float waveAmp = 0.56f;       // overall wave amplitude scale (gentle; buoyancy is flat)
+        float waveChoppy = 0.18f;    // horizontal steepness of the crests
+        float waveSpeed = 1.47f;     // wave animation speed
+        float waveScale = 1.09f;     // wavelength scale (>1 = larger, farther-apart waves)
+        // Distance detail LOD: wave detail flattens between these (metres), killing the
+        // far-field moiré / repetition — past fadeEnd the water is a smooth horizon mirror.
+        float fadeStart = 589.0f;
+        float fadeEnd = 865.0f;
+        float warpAmp = 2.52f;       // low-frequency domain warp (m) that de-tiles the field
+        float specPower = 168.0f;    // sun-glint sharpness
+        float specIntensity = 5.71f; // sun-glint brightness (HDR, blooms)
+        float alpha = 0.96f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
+        // Sun shadow: terrain heightfield + CSM occlusion removes the sun glint and
+        // direct-sun sheen where the water is shadowed; shadowDim additionally darkens
+        // the whole shadowed surface (0 = physical sun-only removal, 1 = strong artistic).
+        float shadowDim = 0.5f;
+    };
+    // True on backends with a GPU water renderer (wgpu with water enabled); gates the tab.
+    virtual bool SupportsWater() const { return false; }
+    virtual WaterSettings GetWaterSettings() const { return {}; }
+    virtual void SetWaterSettings(const WaterSettings& /*s*/) {}
+
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy
     // when the viewport changes.

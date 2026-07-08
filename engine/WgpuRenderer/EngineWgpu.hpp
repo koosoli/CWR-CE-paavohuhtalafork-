@@ -128,6 +128,14 @@ class EngineWgpu : public EngineDummy
     // Suppress the legacy skydome on wgpu while the procedural sky is drawing.
     bool ProceduralSkyActive() const override { return _renderer != nullptr && _sky.enabled; }
 
+    // GPU water look (ImGui Water tab). Edited here and read live by WaterWgpu, which
+    // pushes them into the water UBO each frame. Gated on the water renderer existing.
+    bool SupportsWater() const override { return _renderer != nullptr && _water != nullptr; }
+    WaterSettings GetWaterSettings() const override { return _waterLook; }
+    void SetWaterSettings(const WaterSettings& s) override { _waterLook = s; }
+    // Live look, read by WaterWgpu::DrawWater when building the per-frame water UBO.
+    const WaterSettings& WaterLook() const { return _waterLook; }
+
     // Cascaded shadow maps, GPU-driven caster submission (SceneShadowPass).
     void SetShadowMapsEnabled(bool enabled) override { _smTuning.enabled = enabled; }
     bool ShadowMapsEnabled() const override { return _smTuning.enabled && _renderer != nullptr; }
@@ -223,6 +231,8 @@ class EngineWgpu : public EngineDummy
     bool _tonemapAuto = true;
     Engine::TonemapSettings _tonemap;
     Engine::ExposureSettings _exposure;
+    // Live GPU-water look, edited by the Water tab, read by WaterWgpu each frame.
+    Engine::WaterSettings _waterLook;
     // Authored procedural-sky params (atmosphere + look); celestial fields are filled
     // per frame from LightSun in PushSky.
     Engine::SkySettings _sky;

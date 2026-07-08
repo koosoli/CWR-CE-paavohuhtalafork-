@@ -464,7 +464,10 @@ struct WgrTerrainBatch
 /* Per-map + per-frame water parameters (a small UBO). `world_origin`/`terrain_grid`/
  * `hm_width`/`hm_height` describe the terrain heightmap the sibling look plan samples
  * for shoreline depth (unused by the flat-plane geometry pass); `sea_level` is the
- * animated global sea height (Landscape::GetSeaLevel), refreshed every frame. */
+ * animated global sea height (Landscape::GetSeaLevel) and `time` the wave-animation
+ * clock (seconds). The look block (wave_amp..alpha) is the live-tunable water look,
+ * edited by the ImGui Water tab; `fade_start`/`fade_end` flatten wave detail with
+ * distance (metres) to kill far-field moiré. All refreshed every frame. */
 struct WgrWaterParams
 {
     WgrVec2 world_origin;
@@ -472,8 +475,20 @@ struct WgrWaterParams
     float sea_level;
     uint32_t hm_width;
     uint32_t hm_height;
-    uint32_t _pad0;
-    uint32_t _pad1;
+    float time;
+    float wave_amp;
+    float wave_choppy;
+    float wave_speed;
+    float wave_scale;
+    float fade_start;
+    float fade_end;
+    float warp_amp;
+    float spec_power;
+    float spec_intensity;
+    float alpha;
+    float shadow_dim;
+    float _pad1;
+    float _pad2;
 };
 
 /* One water node instance: byte-identical to WgrTerrainNode (the shared grid mesh
@@ -599,7 +614,7 @@ static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match th
 static_assert(sizeof(WgrTerrainParams) == 32, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrWaterParams) == 32, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterParams) == 80, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 24, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrame) == 560, "WgrFrame layout must match the Rust #[repr(C)] struct");

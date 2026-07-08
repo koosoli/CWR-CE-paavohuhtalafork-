@@ -52,10 +52,20 @@ class TerrainWgpu : public ITerrainRenderer
     float _leafSize = 0.0f;
     std::vector<float> _ranges;
 
+    // When extended (WGR_TERRAIN_EXTENT > 1), the tree is over-sized and map-centred so
+    // land continues past the map edges (clamped edge heights) to complement the
+    // infinite ocean; below-sea off-map areas are pruned (the water covers them). These
+    // are the tree's world-xz bounds; _extended selects the extended vs. map-only paths.
+    bool _extended = false;
+    float _treeMin = 0.0f;
+    float _treeMax = 0.0f;
+
     // LOD tuning, read from the environment once at construction.
     float _baseMult;
     float _lodRatio;
     float _morphRegion;
+    // Land extent past the map as a multiple of the map size (1 = map only).
+    float _extentFactor;
 
     std::vector<WgrTerrainNode> _selected;
 };
