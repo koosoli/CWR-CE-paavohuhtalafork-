@@ -219,6 +219,12 @@ impl Renderer {
         // When on, the scene subsystems target the offscreen HDR format and a tonemap pass
         // resolves to the swapchain; the overlay pipeline always targets the swapchain format.
         let prepass_enabled = std::env::var("WGR_PREPASS").map(|v| v != "0").unwrap_or(true);
+        // Compute skin bake is OPT-IN (default off): it is correct + validated but pure
+        // overhead until GPU-driven rendering consumes the baked rigid geometry (VS skinning
+        // is ~free for OFP's low-poly characters, so amortizing it saves nothing measurable).
+        // WGR_SKIN_BAKE=1 re-enables it so the path stays exercisable. See
+        // docs/compute-skin-bake-plan.md + docs/gpu-culling-and-depth-plan.md.
+        let skin_bake_enabled = std::env::var("WGR_SKIN_BAKE").map(|v| v != "0").unwrap_or(false);
         let hdr_enabled = std::env::var("WGR_HDR").map(|v| v != "0").unwrap_or(true);
         let color_format = if hdr_enabled { HDR_FORMAT } else { config.format };
         if hdr_enabled {
@@ -226,6 +232,12 @@ impl Renderer {
         }
         if !prepass_enabled {
             log.log(log_level::INFO, "wgpu depth prepass disabled (WGR_PREPASS=0)");
+        }
+        if skin_bake_enabled {
+            log.log(
+                log_level::INFO,
+                "wgpu compute skin bake enabled (WGR_SKIN_BAKE); VS skinning path bypassed",
+            );
         }
 
         let textures = SharedTextures::new(
@@ -239,7 +251,13 @@ impl Renderer {
         // 3D subsystems that #import them.
         let mut composer = shaders::build_composer();
         let gfx2d = Gfx2d::new(&device, &textures, color_format, config.format);
-        let gfx3d = Gfx3d::new(&device, &textures, color_format, &mut composer);
+        let gfx3d = Gfx3d::new(
+            &device,
+            &textures,
+            color_format,
+            &mut composer,
+            skin_bake_enabled,
+        );
         let terrain = Terrain::new(
             &device,
             &queue,
@@ -482,6 +500,11 @@ impl Renderer {
         // since last frame (no-op on churn-free frames), so this frame's draws index a
         // current array.
         self.textures.ensure_bindless(&self.device);
+        // Compute skin bake (docs/compute-skin-bake-plan.md): plan + upload BEFORE both
+        // prepare_shadows and prepare so those pack an identity world for every baked
+        // draw/caster. Spans both draws and casters (one bake per skinned mesh+pose).
+        self.gfx3d
+            .prepare_skin_bake(&self.device, &self.queue, draws3d, shadow_casters, palette);
         // Shadows first: prepare() binds the frame's final shadow target into
         // the camera group.
         self.gfx3d
@@ -560,6 +583,12 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("wgr_frame"),
             });
+
+        // Compute skin bake runs first of all (docs/compute-skin-bake-plan.md): it writes
+        // the shared skinned vertex buffer that the shadow cascades, the depth prepass, and
+        // the forward pass all read, so it must precede them; wgpu inserts the storage->
+        // vertex barrier. No-op when the bake is off or there is no skinned geometry.
+        self.gfx3d.skin_bake(&mut encoder);
 
         // Cascade shadow depth passes run first so every segment's draws can
         // sample the completed map, regardless of submission order. Debug groups

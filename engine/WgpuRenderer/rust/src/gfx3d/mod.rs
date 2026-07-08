@@ -169,6 +169,42 @@ struct MaterialUbo {
     specular: [f32; 4],
 }
 
+// Column-major identity, packed into the per-instance world SSBO / ShadowCasterGpu for
+// a baked skinned draw: the compute bake already folded the camera-relative world into
+// the palette (palette[i] = world * bone[i]), so the rigid pipeline must NOT re-apply it.
+const IDENTITY_MAT4: WgrMat4 = [
+    1.0, 0.0, 0.0, 0.0, //
+    0.0, 1.0, 0.0, 0.0, //
+    0.0, 0.0, 1.0, 0.0, //
+    0.0, 0.0, 0.0, 1.0,
+];
+
+// One compute-skin-bake dispatch (docs/compute-skin-bake-plan.md): all instances of one
+// skinned mesh, baked into `skinned_vbuf` starting at `out_base_vertex`. Phase 1 always
+// has instance_count == 1 (one dispatch per distinct palette_slot); Phase 2 flattens
+// same-mesh instances into a single dispatch. `palette_base` is the absolute palette
+// block of instance 0 (== the draw/caster's palette_slot).
+struct BakeGroup {
+    mesh: MeshKey,
+    palette_base: u32,
+    out_base_vertex: u32,
+    instance_count: u32,
+    vert_count: u32,
+}
+
+// Per-dispatch uniform for the skin bake, mirrored by `BakeParams` in skin_bake.wgsl.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct BakeParamsGpu {
+    vert_count: u32,
+    instance_count: u32,
+    palette_base: u32,
+    out_base_vertex: u32,
+}
+
+// Bytes per baked vertex = one WgrMeshVertex (pos+norm+uv+conform, 9 words).
+const BAKED_VERT_SIZE: u64 = std::mem::size_of::<WgrMeshVertex>() as u64;
+
 // Blocking copy of one D32 texture layer into `out` (row 0 = top).
 fn read_depth_layer(
     device: &wgpu::Device,
@@ -923,6 +959,32 @@ pub struct Gfx3d {
     // 1x1 stand-in bound while no shadow map exists (the layout always binds).
     dummy_shadow_view: wgpu::TextureView,
 
+    // Compute skin bake (docs/compute-skin-bake-plan.md). WGR_SKIN_BAKE=0 disables it and
+    // falls back to per-pass VS skinning (the skinned pipelines above); default on.
+    skin_bake_enabled: bool,
+    skin_bake_pipeline: wgpu::ComputePipeline,
+    // group(0) = {in_v ro, in_s ro, palette ro, out rw}; rebuilt per dispatch (mesh
+    // buffers differ). group(1) = BakeParams (dynamic-offset UBO, one slot per group).
+    skin_bake_layout: wgpu::BindGroupLayout,
+    skin_bake_params: DynUbo,
+    // The whole palette as a flat STORAGE buffer (block b = matrices [b*128..b*128+128)),
+    // uploaded once/frame when the bake is on (replaces the fallback dynamic-offset UBO).
+    palette_buf: StorageArray,
+    // Every baked instance's output verts, base_vertex-addressed; STORAGE (compute writes)
+    // + VERTEX (every pass reads). Grow-only.
+    skinned_vbuf: Option<wgpu::Buffer>,
+    skinned_cap: u64,
+    // This frame's bake plan (one dispatch per distinct skinned mesh+pose) and the
+    // draw/caster-side lookup palette_slot -> baked base_vertex. Rebuilt in prepare_skin_bake.
+    bake_groups: Vec<BakeGroup>,
+    skin_base_vertex: FxHashMap<u32, u32>,
+    // group(0) skin-bake bind ({vbuf, skin, palette_buf, skinned_vbuf}) cached by mesh.
+    // palette_buf/skinned_vbuf are whole-buffer and vbuf/skin are per-mesh-constant, so a
+    // mesh's bind is stable frame-to-frame — rebuilt only when palette_buf or skinned_vbuf
+    // is (re)allocated (rare growth), evicted on mesh destroy/reskin. This turns the
+    // per-frame "one vkUpdateDescriptorSets per skinned mesh" into zero on steady frames.
+    bake_bind_cache: FxHashMap<MeshKey, wgpu::BindGroup>,
+
     meshes: SlotMap<MeshKey, Mesh>,
 }
 
@@ -932,6 +994,7 @@ impl Gfx3d {
         textures: &SharedTextures,
         surface_format: wgpu::TextureFormat,
         composer: &mut naga_oil::compose::Composer,
+        skin_bake_enabled: bool,
     ) -> Self {
         let shader = crate::shaders::make_module(
             device,
@@ -1120,6 +1183,73 @@ impl Gfx3d {
             ..Default::default()
         });
 
+        // Compute skin bake (docs/compute-skin-bake-plan.md). group(0) = the four
+        // storage buffers (source verts / skin data / palette / baked output), all
+        // whole-buffer so min_binding_size is left open; group(1) = BakeParams.
+        let skin_bake_shader = crate::shaders::make_module(
+            device,
+            composer,
+            "wgr_skin_bake_shader",
+            include_str!("skin_bake.wgsl"),
+            "gfx3d/skin_bake.wgsl",
+        );
+        // Runtime-sized arrays: min_binding_size is one element (4 B for the u32 vertex/
+        // skin/output arrays, 64 B for the mat4 palette). All bound whole-buffer.
+        let storage_arr = |read_only: bool, min: u64| wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only },
+            has_dynamic_offset: false,
+            min_binding_size: wgpu::BufferSize::new(min),
+        };
+        let skin_bake_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_skin_bake_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: storage_arr(true, 4),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: storage_arr(true, 4),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: storage_arr(true, 64),
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: storage_arr(false, 4),
+                    count: None,
+                },
+            ],
+        });
+        let skin_bake_params = DynUbo::new(
+            device,
+            "wgr_skin_bake_params",
+            std::mem::size_of::<BakeParamsGpu>() as u64,
+            wgpu::ShaderStages::COMPUTE,
+        );
+        let skin_bake_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgr_skin_bake_pipeline_layout"),
+                bind_group_layouts: &[Some(&skin_bake_layout), Some(&skin_bake_params.layout)],
+                immediate_size: 0,
+            });
+        let skin_bake_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("wgr_skin_bake_pipeline"),
+            layout: Some(&skin_bake_pipeline_layout),
+            module: &skin_bake_shader,
+            entry_point: Some("main"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            cache: None,
+        });
+
         Gfx3d {
             cameras,
             conform,
@@ -1153,6 +1283,16 @@ impl Gfx3d {
             shadow_target: None,
             shadow_gen: 0,
             dummy_shadow_view,
+            skin_bake_enabled,
+            skin_bake_pipeline,
+            skin_bake_layout,
+            skin_bake_params,
+            palette_buf: StorageArray::new("wgr_skin_palette_ssbo"),
+            skinned_vbuf: None,
+            skinned_cap: 0,
+            bake_groups: Vec::new(),
+            skin_base_vertex: FxHashMap::default(),
+            bake_bind_cache: FxHashMap::default(),
             meshes: SlotMap::with_key(),
         }
     }
@@ -1453,7 +1593,11 @@ impl Gfx3d {
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wgr_3d_vbuf"),
             contents: bytemuck::cast_slice(verts),
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            // STORAGE so the compute skin bake can read it as the rest-pose source
+            // (docs/compute-skin-bake-plan.md); non-skinned meshes never bind it there.
+            usage: wgpu::BufferUsages::VERTEX
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
         });
         let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wgr_3d_ibuf"),
@@ -1478,7 +1622,8 @@ impl Gfx3d {
         bones: &[u8],
         weights: &[u8],
     ) {
-        let Some(mesh) = self.meshes.get_mut(KeyData::from_ffi(handle).into()) else {
+        let key: MeshKey = KeyData::from_ffi(handle).into();
+        let Some(mesh) = self.meshes.get_mut(key) else {
             return;
         };
         let n = mesh.vert_count as usize;
@@ -1495,9 +1640,13 @@ impl Gfx3d {
             device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("wgr_3d_skin"),
                 contents: &data,
-                usage: wgpu::BufferUsages::VERTEX,
+                // STORAGE so the compute skin bake reads bones/weights; VERTEX so the
+                // fallback VS-skinning path (WGR_SKIN_BAKE=0) can still bind it as attrs.
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::STORAGE,
             }),
         );
+        // A cached skin-bake bind would reference the old (or absent) skin buffer.
+        self.bake_bind_cache.remove(&key);
     }
 
     // Re-upload vertex data for an existing (dynamic) mesh, e.g. a skeletally
@@ -1515,8 +1664,227 @@ impl Gfx3d {
 
     pub fn mesh_destroy(&mut self, handle: u64) {
         if handle != 0 {
-            self.meshes.remove(KeyData::from_ffi(handle).into());
+            let key: MeshKey = KeyData::from_ffi(handle).into();
+            self.meshes.remove(key);
+            // Drop any cached skin-bake bind that referenced this mesh's buffers.
+            self.bake_bind_cache.remove(&key);
         }
+    }
+
+    // The baked-vertex offset for a skinned draw/caster, or None when the skin bake is
+    // off or this slot isn't skinned (docs/compute-skin-bake-plan.md). When Some, the
+    // draw/caster routes through the RIGID pipeline with an identity world and this
+    // base_vertex into `skinned_vbuf` instead of re-skinning in the VS.
+    fn baked_base_vertex(&self, palette_slot: u32) -> Option<u32> {
+        if !self.skin_bake_enabled || palette_slot == NO_PALETTE {
+            return None;
+        }
+        self.skin_base_vertex.get(&palette_slot).copied()
+    }
+
+    // Build this frame's skin-bake plan (docs/compute-skin-bake-plan.md) from BOTH the
+    // color draws and the shadow casters, deduped by palette_slot (1:1 with a mesh+pose),
+    // upload the palette as one flat storage buffer, and grow the shared output vertex
+    // buffer. Must run BEFORE prepare_shadows + prepare so those pack an identity world
+    // for every baked entry. No-op (and clears state) when the bake is disabled.
+    pub fn prepare_skin_bake(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        draws: &[WgrDraw3D],
+        casters: &[WgrShadowCaster],
+        palette: &[WgrMat4],
+    ) {
+        self.bake_groups.clear();
+        self.skin_base_vertex.clear();
+        // bake_bind_cache persists across frames (mesh-keyed); it is invalidated only on
+        // buffer growth (below) or mesh destroy/reskin, not rebuilt per frame.
+        if !self.skin_bake_enabled {
+            return;
+        }
+
+        // Collect distinct skinned instances by palette_slot. A palette block is one
+        // skeleton's skinning, so a slot maps to exactly one (mesh, pose): first-seen wins.
+        let mut out_base: u32 = 0;
+        let mut consider = |mesh_id: u64, palette_slot: u32, this: &mut Self| {
+            if palette_slot == NO_PALETTE {
+                return;
+            }
+            let Some(mesh) = this.meshes.get(KeyData::from_ffi(mesh_id).into()) else {
+                return;
+            };
+            if mesh.skin.is_none() || mesh.vert_count == 0 {
+                return;
+            }
+            if this.skin_base_vertex.contains_key(&palette_slot) {
+                return;
+            }
+            let key = KeyData::from_ffi(mesh_id).into();
+            this.skin_base_vertex.insert(palette_slot, out_base);
+            this.bake_groups.push(BakeGroup {
+                mesh: key,
+                palette_base: palette_slot,
+                out_base_vertex: out_base,
+                instance_count: 1,
+                vert_count: mesh.vert_count,
+            });
+            out_base += mesh.vert_count;
+        };
+        for d in draws {
+            consider(d.mesh, d.palette_slot, self);
+        }
+        for c in casters {
+            consider(c.mesh, c.palette_slot, self);
+        }
+        if self.bake_groups.is_empty() {
+            return;
+        }
+
+        // Palette (all blocks) as a flat storage buffer, block b at b*128. Uploaded once
+        // here for the compute bake; the fallback VS path's dynamic-offset UBO is skipped
+        // in prepare() when the bake is on. `ensure` reports growth so the (whole-buffer)
+        // cached binds referencing it can be dropped only when it actually moved.
+        let mut buffers_grew = false;
+        if !palette.is_empty() {
+            buffers_grew |= self
+                .palette_buf
+                .ensure(device, std::mem::size_of_val(palette) as u64);
+            queue.write_buffer(
+                self.palette_buf.buf.as_ref().unwrap(),
+                0,
+                bytemuck::cast_slice(palette),
+            );
+        }
+
+        // Grow the shared output vertex buffer (STORAGE for the compute write + VERTEX for
+        // every pass' read). `out_base` is the total baked vertex count.
+        let needed = out_base as u64 * BAKED_VERT_SIZE;
+        if self.skinned_cap < needed || self.skinned_vbuf.is_none() {
+            let cap = needed.next_power_of_two().max(64 * 1024);
+            self.skinned_vbuf = Some(device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some("wgr_skinned_vbuf"),
+                size: cap,
+                usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::VERTEX,
+                mapped_at_creation: false,
+            }));
+            self.skinned_cap = cap;
+            buffers_grew = true;
+        }
+        // A cached group(0) bind pins the specific palette_buf/skinned_vbuf it was built
+        // against; when either regrows they are stale, so flush.
+        if buffers_grew {
+            self.bake_bind_cache.clear();
+        }
+
+        // All group params in ONE upload (the dynamic-offset UBO strides entries by
+        // min_uniform_buffer_offset_alignment). Building the whole strided region in a
+        // scratch buffer and writing it once replaces the per-group write_buffer that
+        // showed up in captures as a copy-per-group.
+        self.skin_bake_params.ensure(device, self.bake_groups.len());
+        let pbuf = self.skin_bake_params.buf.as_ref().unwrap();
+        let stride = self.skin_bake_params.stride as usize;
+        let mut scratch = vec![0u8; self.bake_groups.len() * stride];
+        for (i, g) in self.bake_groups.iter().enumerate() {
+            let p = BakeParamsGpu {
+                vert_count: g.vert_count,
+                instance_count: g.instance_count,
+                palette_base: g.palette_base,
+                out_base_vertex: g.out_base_vertex,
+            };
+            let off = i * stride;
+            scratch[off..off + std::mem::size_of::<BakeParamsGpu>()]
+                .copy_from_slice(bytemuck::bytes_of(&p));
+        }
+        queue.write_buffer(pbuf, 0, &scratch);
+
+        // Ensure a cached group(0) bind exists for each group's mesh (device available
+        // here; skin_bake only records). Whole-buffer palette/output + per-mesh vbuf/skin,
+        // so one bind serves every instance of a mesh and persists across frames. Build
+        // missing ones into a temp Vec first, then insert — keeps the self borrows disjoint.
+        let (Some(pal_buf), Some(out_buf)) =
+            (self.palette_buf.buf.as_ref(), self.skinned_vbuf.as_ref())
+        else {
+            self.bake_groups.clear();
+            self.skin_base_vertex.clear();
+            return;
+        };
+        let mut new_binds: Vec<(MeshKey, wgpu::BindGroup)> = Vec::new();
+        for g in &self.bake_groups {
+            if self.bake_bind_cache.contains_key(&g.mesh)
+                || new_binds.iter().any(|(k, _)| *k == g.mesh)
+            {
+                continue;
+            }
+            let Some(mesh) = self.meshes.get(g.mesh) else {
+                continue;
+            };
+            let Some(skin) = mesh.skin.as_ref() else {
+                continue;
+            };
+            let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wgr_skin_bake_bind"),
+                layout: &self.skin_bake_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: mesh.vbuf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: skin.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: pal_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: out_buf.as_entire_binding(),
+                    },
+                ],
+            });
+            new_binds.push((g.mesh, bind));
+        }
+        for (k, b) in new_binds {
+            self.bake_bind_cache.insert(k, b);
+        }
+    }
+
+    // Record the compute skin-bake pass: one dispatch per BakeGroup, skinning its verts
+    // into `skinned_vbuf`. Recorded FIRST in the frame encoder so wgpu's automatic
+    // storage->vertex barrier covers every later read (shadows, prepass, forward). No-op
+    // when the bake is off or the frame has no skinned geometry.
+    pub fn skin_bake(&self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.skin_bake_enabled || self.bake_groups.is_empty() {
+            return;
+        }
+        let Some(params_bind) = self.skin_bake_params.bind.as_ref() else {
+            return;
+        };
+        encoder.push_debug_group("wgr_skin_bake");
+        let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("wgr_skin_bake"),
+            timestamp_writes: None,
+        });
+        cp.set_pipeline(&self.skin_bake_pipeline);
+        // group(0) is per-mesh (cached); only rebind it when the mesh changes from the
+        // previous dispatch. group(1) is the same buffer at a per-group dynamic offset —
+        // a cheap offset rebind, not a descriptor update.
+        let mut last_mesh: Option<MeshKey> = None;
+        for (i, g) in self.bake_groups.iter().enumerate() {
+            let Some(bind) = self.bake_bind_cache.get(&g.mesh) else {
+                continue;
+            };
+            if last_mesh != Some(g.mesh) {
+                cp.set_bind_group(0, bind, &[]);
+                last_mesh = Some(g.mesh);
+            }
+            cp.set_bind_group(1, params_bind, &[(i as u64 * self.skin_bake_params.stride) as u32]);
+            let threads = g.vert_count * g.instance_count;
+            cp.dispatch_workgroups(threads.div_ceil(64), 1, 1);
+        }
+        drop(cp);
+        encoder.pop_debug_group();
     }
 
     // (Re)create the depth target to match the surface
@@ -1770,7 +2138,15 @@ impl Gfx3d {
                     continue;
                 }
                 let alpha = caster.alpha_ref > 0.0;
-                let skinned = caster.palette_slot != NO_PALETTE && mesh.skin.is_some();
+                // Baked casters (docs/compute-skin-bake-plan.md) route through the RIGID
+                // depth pipeline reading skinned_vbuf; `skinned` = the VS-skinning fallback.
+                let baked = if mesh.skin.is_some() {
+                    self.baked_base_vertex(caster.palette_slot)
+                } else {
+                    None
+                };
+                let skinned =
+                    caster.palette_slot != NO_PALETTE && mesh.skin.is_some() && baked.is_none();
                 if skinned {
                     // Skinned casters read the bone palette, not the SSBO; base_instance is
                     // unused by their shader, but pack an entry so the array stays dense.
@@ -1779,6 +2155,22 @@ impl Gfx3d {
                         world: caster.world,
                         conform0: caster.conform0,
                         conform2: caster.conform2,
+                    });
+                    cascade.push(ShadowBucket {
+                        repr: i as u32,
+                        base,
+                        count: 1,
+                    });
+                } else if baked.is_some() {
+                    // Baked caster: the rigid vs_solid/vs_alpha reads casters[instance].world,
+                    // so pack an IDENTITY world (the pose's world is folded into the palette,
+                    // already applied by the bake). Each pose is unique, so it can't coalesce
+                    // with the rigid mesh's buffer — its own count-1 bucket.
+                    let base = caster_gpu.len() as u32;
+                    caster_gpu.push(ShadowCasterGpu {
+                        world: IDENTITY_MAT4,
+                        conform0: [0.0; 4],
+                        conform2: [0.0; 4],
                     });
                     cascade.push(ShadowBucket {
                         repr: i as u32,
@@ -1894,7 +2286,14 @@ impl Gfx3d {
                     continue;
                 };
                 let alpha = caster.alpha_ref > 0.0;
-                let skin = if caster.palette_slot != NO_PALETTE {
+                // Baked casters route through the rigid pipeline reading skinned_vbuf at
+                // base_vertex (identity world in the SSBO); `skin` = the VS-skinning fallback.
+                let baked = if caster.palette_slot != NO_PALETTE {
+                    self.baked_base_vertex(caster.palette_slot)
+                } else {
+                    None
+                };
+                let skin = if caster.palette_slot != NO_PALETTE && baked.is_none() {
                     mesh.skin.as_ref()
                 } else {
                     None
@@ -1922,11 +2321,19 @@ impl Gfx3d {
                 );
                 rp.set_bind_group(3, textures.sampler_bind(caster.sampler.index()), &[]);
                 rp.set_bind_group(4, conform_bind, &[]);
-                rp.set_vertex_buffer(0, mesh.vbuf.slice(..));
+                // Baked casters pull rest-of-space verts from the shared skinned buffer at
+                // base_vertex; rigid/VS-skinned from the mesh's own. Index buffer unchanged.
+                let (vbuf, base_vertex) = match baked {
+                    Some(bv) if self.skinned_vbuf.is_some() => {
+                        (self.skinned_vbuf.as_ref().unwrap(), bv as i32)
+                    }
+                    _ => (&mesh.vbuf, 0),
+                };
+                rp.set_vertex_buffer(0, vbuf.slice(..));
                 rp.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint16);
                 rp.draw_indexed(
                     caster.index_begin..(caster.index_begin + caster.index_count),
-                    0,
+                    base_vertex,
                     bucket.base..(bucket.base + bucket.count),
                 );
             }
@@ -2163,6 +2570,11 @@ impl Gfx3d {
             // obj_bytes/mat_bytes are exact multiples of the element size, so the chunk remainder is
             // always empty.
             let n = order.len();
+            // A baked skinned draw routes through the rigid pipeline: its world is folded
+            // into the palette (baked position is camera-relative world space already), so
+            // pack an identity world + no conform so vs_main leaves the baked verts alone.
+            let bake_on = self.skin_bake_enabled;
+            let base_map = &self.skin_base_vertex;
             const OBJ_SZ: usize = std::mem::size_of::<ObjectGpu>();
             let obj_bytes = (n * OBJ_SZ) as u64;
             world_grew = self.world.ensure(device, obj_bytes);
@@ -2173,12 +2585,25 @@ impl Gfx3d {
                 let (chunks, _rem) = view.slice(..).into_chunks::<OBJ_SZ>();
                 chunks.write_iter(order.iter().map(|&i| {
                     let d = &draws[i as usize];
-                    bytemuck::cast::<ObjectGpu, [u8; OBJ_SZ]>(ObjectGpu {
-                        world: d.world,
-                        conform0: d.conform0,
-                        conform1: d.conform1,
-                        conform2: d.conform2,
-                    })
+                    let baked = bake_on
+                        && d.palette_slot != NO_PALETTE
+                        && base_map.contains_key(&d.palette_slot);
+                    let obj = if baked {
+                        ObjectGpu {
+                            world: IDENTITY_MAT4,
+                            conform0: [0.0; 4],
+                            conform1: [0.0; 4],
+                            conform2: [0.0; 4],
+                        }
+                    } else {
+                        ObjectGpu {
+                            world: d.world,
+                            conform0: d.conform0,
+                            conform1: d.conform1,
+                            conform2: d.conform2,
+                        }
+                    };
+                    bytemuck::cast::<ObjectGpu, [u8; OBJ_SZ]>(obj)
                 }));
             }
 
@@ -2213,9 +2638,11 @@ impl Gfx3d {
             }
         }
         // One dynamic-UBO slot per PALETTE_SIZE-matrix block. A block is exactly
-        // the UBO bind size, so slot s lives at s * stride.
+        // the UBO bind size, so slot s lives at s * stride. Skipped when the compute skin
+        // bake is on: it uploads the palette as a storage buffer (prepare_skin_bake) and
+        // no draw uses the VS-skinning path, so this UBO would be dead weight.
         let slots = palette.len() / PALETTE_SIZE;
-        if slots > 0 {
+        if slots > 0 && !self.skin_bake_enabled {
             palette_grew = self.palette.ensure(device, slots);
             let buf = self.palette.buf.as_ref().unwrap();
             for s in 0..slots {
@@ -2267,7 +2694,10 @@ impl Gfx3d {
                 .meshes
                 .get(KeyData::from_ffi(d.mesh).into())
                 .is_some_and(|m| m.skin.is_some());
-            let skinned = d.palette_slot != NO_PALETTE && has_skin;
+            // A baked draw draws through the RIGID pipeline (identity world + baked verts),
+            // so build the plain variant for it, not the skinned one.
+            let baked = self.baked_base_vertex(d.palette_slot).is_some() && has_skin;
+            let skinned = d.palette_slot != NO_PALETTE && has_skin && !baked;
             let key = PipelineKey::from_draw(d, skinned);
             self.ensure_pipeline(device, key);
             // Opaque draws are prepassed: also build their colour write-off variant (used
@@ -2430,7 +2860,19 @@ impl Gfx3d {
         if d.index_begin + d.index_count > mesh.index_count {
             return;
         }
-        let skinned = d.palette_slot != NO_PALETTE && mesh.skin.is_some();
+        // Compute skin bake (docs/compute-skin-bake-plan.md): a baked skinned draw routes
+        // through the RIGID pipeline (identity world packed in prepare) reading the shared
+        // baked vertex buffer at `base_vertex`, so it is NOT `skinned` for pipeline/bind
+        // selection. Only the true VS-skinning fallback (WGR_SKIN_BAKE=0) sets `skinned`.
+        let baked = if mesh.skin.is_some() {
+            self.baked_base_vertex(d.palette_slot)
+        } else {
+            None
+        };
+        if baked.is_some() && self.skinned_vbuf.is_none() {
+            return;
+        }
+        let skinned = d.palette_slot != NO_PALETTE && mesh.skin.is_some() && baked.is_none();
         let base_key = PipelineKey::from_draw(d, skinned);
         // Pipeline by pass mode. Prepass draws ONLY the opaque set (self-filter here so
         // the caller can replay a whole segment); the colour pass flips the same set to
@@ -2523,10 +2965,17 @@ impl Gfx3d {
             st.conform = true;
         }
 
-        // Vertex/index buffers at slot 0: skip when the same mesh repeats back-to-back.
-        let vbuf_id = &mesh.vbuf as *const wgpu::Buffer as usize;
+        // Vertex buffer at slot 0: baked draws pull from the shared skinned output buffer
+        // at `base_vertex`; rigid/VS-skinned draws pull from the mesh's own buffer. The
+        // index buffer is always the mesh's (indices are unchanged by the bake). Skip
+        // re-binding when the same source buffer repeats back-to-back.
+        let (vertex_buf, base_vertex) = match baked {
+            Some(bv) => (self.skinned_vbuf.as_ref().unwrap(), bv as i32),
+            None => (&mesh.vbuf, 0),
+        };
+        let vbuf_id = vertex_buf as *const wgpu::Buffer as usize;
         if st.vbuf != Some(vbuf_id) {
-            pass.set_vertex_buffer(0, mesh.vbuf.slice(..));
+            pass.set_vertex_buffer(0, vertex_buf.slice(..));
             st.vbuf = Some(vbuf_id);
         }
         let ibuf_id = &mesh.ibuf as *const wgpu::Buffer as usize;
@@ -2535,7 +2984,11 @@ impl Gfx3d {
             st.ibuf = Some(ibuf_id);
         }
 
-        pass.draw_indexed(d.index_begin..(d.index_begin + d.index_count), 0, base..(base + count));
+        pass.draw_indexed(
+            d.index_begin..(d.index_begin + d.index_count),
+            base_vertex,
+            base..(base + count),
+        );
     }
 }
 

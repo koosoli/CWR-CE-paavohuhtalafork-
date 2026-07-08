@@ -114,6 +114,10 @@ mod tests {
             "gfx3d/shadow_depth.wgsl",
         );
         compose(
+            include_str!("../gfx3d/skin_bake.wgsl"),
+            "gfx3d/skin_bake.wgsl",
+        );
+        compose(
             include_str!("../terrain/terrain.wgsl"),
             "terrain/terrain.wgsl",
         );
