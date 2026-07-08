@@ -64,16 +64,111 @@ struct TonemapKey
     Engine::TonemapSettings s;
 };
 // Fields: exposure, temperature, tint, contrast, saturation, lift, gain, hable, encode.
-// Tuned by eye via the ImGui Tonemap tab (copy-back), 2026-07-06.
+// Tuned by eye via the ImGui Tonemap tab (copy-back), 2026-07-07. The night preset is
+// duplicated at 2:00 and 20:00 so the [first,last]-clamping interpolation wraps midnight
+// (00:00-02:00 clamps to the 2:00 night key; 20:00-24:00 clamps to the 20:00 night key).
 const TonemapKey kTonemapPresets[] = {
-    {4.5f, {4.343f, 0.653f, 0.163f, 1.0f, 1.122f, 0.0f, 2.835f, true, true}},
-    {12.0f, {2.958f, 0.125f, -0.011f, 1.0f, 0.967f, 0.0f, 1.842f, true, true}},
-    {16.5f, {2.958f, 0.417f, 0.137f, 1.0f, 1.030f, 0.0f, 2.029f, true, true}},
+    {2.0f,   {3.625f, 0.031f, 0.145f, 1.0f, 0.939f, 0.0f, 1.029f, true, true}}, // night
+    {5.833f, {2.512f, 0.258f, 0.056f, 1.0f, 1.083f, 0.0f, 2.758f, true, true}}, // 5:50 dawn
+    {12.0f,  {3.625f, 0.045f, 0.040f, 1.0f, 1.119f, 0.0f, 0.945f, true, true}}, // noon
+    {17.0f,  {3.625f, 0.150f, 0.109f, 1.0f, 1.066f, 0.0f, 1.016f, true, true}}, // 17:00
+    {18.5f,  {3.625f, 0.107f, 0.145f, 1.0f, 1.142f, 0.0f, 1.061f, true, true}}, // 18:30 dusk
+    {20.0f,  {3.625f, 0.031f, 0.145f, 1.0f, 0.939f, 0.0f, 1.029f, true, true}}, // night
+};
+
+// By-eye procedural-sky atmosphere presets keyed by time of day (hours), interpolated
+// like the tonemap keys. Only the fields the Sky tab captures vary; everything else
+// (heights, radii, samples, night colours, band, and the user toggles) keeps its
+// SkySettings default and is preserved live by UpdateAutoSky. rayleigh/mie are the raw
+// 1/m coeffs (the Sky-tab print shows them x1e6). Night preset duplicated at 2:00/20:00
+// to wrap midnight, same as the tonemap table. Tuned 2026-07-07.
+struct SkyKey
+{
+    float hour;
+    Engine::SkySettings s;
+};
+const SkyKey kSkyPresets[] = {
+    {2.0f, {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f}, .mie = 20.94e-6f, .mieG = 0.752f,
+            .turbidity = 2.44f, .ozone = 3.73f, .sunAngularRadius = 0.0051f, .sunIntensity = 2.07f,
+            .exposure = 0.272f, .nightIntensity = 0.0002f}}, // night
+    {5.833f, {.rayleigh = {5.80e-6f, 13.50e-6f, 33.10e-6f}, .mie = 16.18e-6f, .mieG = 0.760f,
+              .turbidity = 2.56f, .ozone = 1.55f, .sunAngularRadius = 0.0070f, .sunIntensity = 4.01f,
+              .exposure = 0.329f, .nightIntensity = 0.0005f}}, // 5:50 dawn
+    {12.0f, {.rayleigh = {5.80e-6f, 14.13e-6f, 48.89e-6f}, .mie = 22.42e-6f, .mieG = 0.760f,
+             .turbidity = 2.44f, .ozone = 1.00f, .sunAngularRadius = 0.0070f, .sunIntensity = 24.74f,
+             .exposure = 0.909f, .nightIntensity = 0.0005f}}, // noon
+    {17.0f, {.rayleigh = {1.99e-6f, 9.08e-6f, 48.89e-6f}, .mie = 20.94e-6f, .mieG = 0.857f,
+             .turbidity = 2.44f, .ozone = 1.55f, .sunAngularRadius = 0.0183f, .sunIntensity = 24.74f,
+             .exposure = 0.909f, .nightIntensity = 0.0005f}}, // 17:00
+    {18.5f, {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f}, .mie = 20.94e-6f, .mieG = 0.752f,
+             .turbidity = 2.44f, .ozone = 3.73f, .sunAngularRadius = 0.0173f, .sunIntensity = 8.26f,
+             .exposure = 0.385f, .nightIntensity = 0.0005f}}, // 18:30 dusk
+    {20.0f, {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f}, .mie = 20.94e-6f, .mieG = 0.752f,
+             .turbidity = 2.44f, .ozone = 3.73f, .sunAngularRadius = 0.0051f, .sunIntensity = 2.07f,
+             .exposure = 0.272f, .nightIntensity = 0.0002f}}, // night
 };
 
 float LerpF(float a, float b, float t)
 {
     return a + (b - a) * t;
+}
+
+// CPU port of sky.wgsl's transmittance integral, for a single ray from the camera altitude
+// toward the sun: per-channel atmospheric transmittance (0 = sun below the horizon / fully
+// occluded by the planet). Feeds sky-based scene lighting so the surface sun colour reddens
+// at dusk and fades to zero at night, on the same physical radiance scale as the sky/fog.
+Vector3 AtmosphereSunTransmittance(const Engine::SkySettings& s, float camAlt, Vector3 dirToSun)
+{
+    const float Rg = s.planetRadius;
+    const float Rt = Rg + s.atmosphereHeight;
+    const Vector3 origin(0.0f, Rg + (camAlt > 0.0f ? camAlt : 0.0f), 0.0f);
+    dirToSun.Normalize();
+
+    // near/far parametric hits of a sphere centred at the planet origin (miss -> returns false).
+    auto raySphere = [](const Vector3& o, const Vector3& d, float r, float& t0, float& t1) -> bool
+    {
+        const float b = o.DotProduct(d);
+        const float c = o.DotProduct(o) - r * r;
+        const float disc = b * b - c;
+        if (disc < 0.0f)
+            return false;
+        const float sq = std::sqrt(disc);
+        t0 = -b - sq;
+        t1 = -b + sq;
+        return true;
+    };
+
+    float g0 = 0.0f, g1 = 0.0f;
+    if (raySphere(origin, dirToSun, Rg, g0, g1) && g0 > 0.0f)
+        return Vector3(0.0f, 0.0f, 0.0f); // planet-shadowed: sun is below the local horizon
+
+    float a0 = 0.0f, a1 = 0.0f;
+    if (!raySphere(origin, dirToSun, Rt, a0, a1))
+        return Vector3(1.0f, 1.0f, 1.0f);
+    const float tMax = a1;
+
+    const int STEPS = 32;
+    const float atmosH = s.atmosphereHeight;
+    float odR = 0.0f, odM = 0.0f, odO = 0.0f, t = 0.0f;
+    for (int i = 0; i < STEPS; i++)
+    {
+        const float nt = ((i + 0.5f) / STEPS) * tMax;
+        const float dt = nt - t;
+        t = nt;
+        const Vector3 p = origin + dirToSun * t;
+        const float alt = p.Size() - Rg;
+        odR += std::exp(-alt / s.rayleighHeight) * dt;
+        odM += std::exp(-alt / (s.mieHeight > 1.0f ? s.mieHeight : 1.0f)) * dt;
+        const float ozo = 1.0f - std::fabs(alt - atmosH * 0.417f) / (atmosH * 0.25f);
+        odO += (ozo > 0.0f ? ozo : 0.0f) * dt;
+    }
+    // Mie extinction ~1.11x scattering; Earth ozone absorption (1/m at peak). Matches sky.wgsl.
+    const float MIE_EXT = 1.11f;
+    const float ozoneAbs[3] = {0.650e-6f, 1.881e-6f, 0.085e-6f};
+    const float tauR = s.rayleigh[0] * odR + s.mie * MIE_EXT * odM + ozoneAbs[0] * odO * s.ozone;
+    const float tauG = s.rayleigh[1] * odR + s.mie * MIE_EXT * odM + ozoneAbs[1] * odO * s.ozone;
+    const float tauB = s.rayleigh[2] * odR + s.mie * MIE_EXT * odM + ozoneAbs[2] * odO * s.ozone;
+    return Vector3(std::exp(-tauR), std::exp(-tauG), std::exp(-tauB));
 }
 
 Engine::TonemapSettings LerpTonemap(const Engine::TonemapSettings& a, const Engine::TonemapSettings& b, float t)
@@ -106,6 +201,44 @@ Engine::TonemapSettings TonemapAtHour(float hour)
             return LerpTonemap(k0.s, k1.s, (hour - k0.hour) / (k1.hour - k0.hour));
     }
     return kTonemapPresets[n - 1].s;
+}
+
+// Interpolate only the atmosphere fields the Sky-tab keyframes vary; every other field
+// keeps `a`'s value (all keys share the same constants, so this is exact for them). The
+// user toggles (skyLighting/ambient/aerialShadow/fogFalloff/enabled/samples) are preserved
+// separately in UpdateAutoSky, so they are intentionally not touched here.
+Engine::SkySettings LerpSky(const Engine::SkySettings& a, const Engine::SkySettings& b, float t)
+{
+    Engine::SkySettings r = a;
+    r.rayleigh[0] = LerpF(a.rayleigh[0], b.rayleigh[0], t);
+    r.rayleigh[1] = LerpF(a.rayleigh[1], b.rayleigh[1], t);
+    r.rayleigh[2] = LerpF(a.rayleigh[2], b.rayleigh[2], t);
+    r.mie = LerpF(a.mie, b.mie, t);
+    r.mieG = LerpF(a.mieG, b.mieG, t);
+    r.turbidity = LerpF(a.turbidity, b.turbidity, t);
+    r.ozone = LerpF(a.ozone, b.ozone, t);
+    r.sunAngularRadius = LerpF(a.sunAngularRadius, b.sunAngularRadius, t);
+    r.sunIntensity = LerpF(a.sunIntensity, b.sunIntensity, t);
+    r.exposure = LerpF(a.exposure, b.exposure, t);
+    r.nightIntensity = LerpF(a.nightIntensity, b.nightIntensity, t);
+    return r;
+}
+
+Engine::SkySettings SkyAtHour(float hour)
+{
+    const int n = int(sizeof(kSkyPresets) / sizeof(kSkyPresets[0]));
+    if (hour <= kSkyPresets[0].hour)
+        return kSkyPresets[0].s;
+    if (hour >= kSkyPresets[n - 1].hour)
+        return kSkyPresets[n - 1].s;
+    for (int i = 0; i + 1 < n; ++i)
+    {
+        const SkyKey& k0 = kSkyPresets[i];
+        const SkyKey& k1 = kSkyPresets[i + 1];
+        if (hour >= k0.hour && hour < k1.hour)
+            return LerpSky(k0.s, k1.s, (hour - k0.hour) / (k1.hour - k0.hour));
+    }
+    return kSkyPresets[n - 1].s;
 }
 
 void WgrLogThunk(int32_t level, const char* msg, void* /*user*/)
@@ -688,6 +821,9 @@ void EngineWgpu::NextFrame()
         // Interpolate the per-time-of-day tonemap/grade preset for this frame (auto
         // mode only; manual override holds the tab's values).
         UpdateAutoTonemap();
+        // Interpolate the per-time-of-day atmosphere preset (auto mode only; manual holds
+        // the Sky tab's values). Runs before PushSky so the frame pushes the ToD look.
+        UpdateAutoSky();
         // Refresh the procedural sky's live celestial params (sun/moon direction,
         // night factor) from LightSun; authored look params ride along unchanged.
         PushSky();
@@ -740,6 +876,34 @@ void EngineWgpu::NextFrame()
             sunDir = GScene->MainLight()->Direction();
         }
         sunDir.Normalize();
+
+        // Sky-based scene lighting (HDR + procedural sky + toggle): replace the legacy sun/
+        // ambient with atmosphere-derived radiance on the physical scale, flagged to the shaders
+        // via sun_diffuse.w so they skip the sRGB decode and take the unified path. The values
+        // can far exceed 1, so they go straight to floats (bypassing any Color clamp).
+        float sunLin[3] = {sunDiffuse.R(), sunDiffuse.G(), sunDiffuse.B()};
+        float ambLin[3] = {sunAmbient.R(), sunAmbient.G(), sunAmbient.B()};
+        float skyLit = 0.0f;
+        if (_hdrEnabled && _sky.enabled && _sky.skyLighting && GScene && GScene->MainLight())
+        {
+            const float camAlt = GScene->GetCamera() ? static_cast<float>(GScene->GetCamera()->Position().Y()) : 0.0f;
+            const Vector3 tr = AtmosphereSunTransmittance(_sky, camAlt, -GScene->MainLight()->SunDirection());
+            const float rad = _sky.sunIntensity * _sky.exposure;
+            sunLin[0] = tr.X() * rad;
+            sunLin[1] = tr.Y() * rad;
+            sunLin[2] = tr.Z() * rad;
+            // Non-physical ambient fill (no GI yet, and none coming for a long while): the
+            // engine's ToD-varying ambient used directly (gamma space, NOT sRGB-decoded — the
+            // decode crushes midtones to ~6% of the sun and blackens interiors/shadowed faces),
+            // scaled onto the sun's physical range. A generous, readable floor that still fades
+            // toward night as the engine dims its ambient. Real sky irradiance replaces this later.
+            const Color amb = GScene->MainLight()->Ambient();
+            const float ambScale = _sky.skyAmbient * rad;
+            ambLin[0] = amb.R() * ambScale;
+            ambLin[1] = amb.G() * ambScale;
+            ambLin[2] = amb.B() * ambScale;
+            skyLit = 1.0f;
+        }
 
         // Frame-global point/spot lights for the GPU-lit paths (objects + terrain).
         // Mirrors GL33's UploadVSLights, but ONE scene-wide list instead of a
@@ -804,8 +968,11 @@ void EngineWgpu::NextFrame()
             // cam_pos.w carries the active point-light count (the storage buffer
             // is fixed-capacity, so its length is not the count).
             cameras[i].cam_pos = {_cameras[i].pos[0], _cameras[i].pos[1], _cameras[i].pos[2], lightCount};
-            cameras[i].sun_diffuse = {sunDiffuse.R(), sunDiffuse.G(), sunDiffuse.B(), 0.0f};
-            cameras[i].sun_ambient = {sunAmbient.R(), sunAmbient.G(), sunAmbient.B(), 0.0f};
+            // sun_diffuse.w = sky-lighting flag (1 = rgb are physical linear radiance, skip the
+            // shader's sRGB decode; 0 = legacy gamma sun). sun_ambient/diffuse rgb are already the
+            // right space for the active path (see the skyLit block above).
+            cameras[i].sun_diffuse = {sunLin[0], sunLin[1], sunLin[2], skyLit};
+            cameras[i].sun_ambient = {ambLin[0], ambLin[1], ambLin[2], 0.0f};
             cameras[i].sun_dir_world = {sunDir.X(), sunDir.Y(), sunDir.Z(), 0.0f};
             if (shadowActive)
             {
@@ -1648,6 +1815,28 @@ void EngineWgpu::UpdateAutoTonemap()
     _tonemap.bloomThreshold = bt;
     _tonemap.bloomKnee = bk;
     PushTonemap();
+}
+
+void EngineWgpu::UpdateAutoSky()
+{
+    if (!_renderer || !_hdrEnabled || !_sky.autoToD)
+        return;
+    // Copy ONLY the keyframed atmosphere fields from the interpolated preset into _sky;
+    // everything else (density heights, night colours/band, samples, planet/atmosphere
+    // geometry, and the user toggles: sky lighting, ambient, aerial shadow, fog falloff,
+    // enabled) stays exactly as the Sky tab left it. Kept in sync with LerpSky's field set.
+    const SkySettings k = SkyAtHour(Glob.clock.GetTimeOfDay() * 24.0f);
+    _sky.exposure = k.exposure;
+    _sky.sunIntensity = k.sunIntensity;
+    _sky.sunAngularRadius = k.sunAngularRadius;
+    _sky.rayleigh[0] = k.rayleigh[0];
+    _sky.rayleigh[1] = k.rayleigh[1];
+    _sky.rayleigh[2] = k.rayleigh[2];
+    _sky.mie = k.mie;
+    _sky.mieG = k.mieG;
+    _sky.ozone = k.ozone;
+    _sky.turbidity = k.turbidity;
+    _sky.nightIntensity = k.nightIntensity;
 }
 
 void EngineWgpu::SetSkySettings(const SkySettings& s)

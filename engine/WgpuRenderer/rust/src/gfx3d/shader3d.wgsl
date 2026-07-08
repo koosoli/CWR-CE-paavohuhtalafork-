@@ -230,16 +230,38 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // dotted against its negation like the sun term there.
     let nrm = normalize(in.normal);
     let ndotl = max(dot(nrm, -frame.sun_dir_world.xyz), 0.0);
+    let sky_lit = frame.sun_diffuse.w > 0.5;
+    // CSM shadow strength (near contact shadows). Computed here so the sky-lit path can
+    // fold it into the direct-sun removal below, exactly like the terrain shader.
+    let csm_s = shadow_strength(in.world_pos, nrm, in.fog, dwx, dwy);
     // Long-range terrain sun-shadow (a mountain casting onto this object): removes
     // the direct sun — diffuse + specular — but keeps ambient/emissive/local, the
     // same model the terrain uses, so an object darkens like the ground it stands on
     // and never goes black. Sampled by the object's absolute world position
-    // (world_pos is camera-relative). CSM (below) still handles near object shadows.
+    // (world_pos is camera-relative).
     let world_abs = in.world_pos + frame.cam_pos.xyz;
     let terrain_s = terrain_sun_shadow(world_abs.xz, world_abs.y);
-    let sun_vis = 1.0 - terrain_s;
-    let sun = m_emissive + m_sun_ambient
+    // Sky-lit: BOTH shadows remove the direct sun (leaving the ambient fill), like terrain —
+    // a physical shadow that stays visible under the bright HDR sun, where the legacy final
+    // colour multiply gets crushed by the tonemap shoulder into no visible difference. Legacy
+    // path keeps CSM as a final multiply (below), so here it uses terrain occlusion only.
+    let sun_occ = select(terrain_s, max(terrain_s, csm_s), sky_lit);
+    let sun_vis = 1.0 - sun_occ;
+    var sun: vec3<f32>;
+    if (sky_lit) {
+        // Sky-based lighting: frame-global atmosphere sun + ambient fill (already linear
+        // radiance, same source + physical scale as the terrain), applied STRAIGHT — the base
+        // texture (albedo) is the reflectance via `rgb = albedo * lit` below, exactly like the
+        // terrain shader. Do NOT gate this by m_light_diffuse (matDif): that is the LOCAL-light
+        // material tint and is ~0 for many surfaces (e.g. building walls), which multiplied the
+        // whole term — ambient AND sun-facing diffuse — to zero and turned interiors and even
+        // sun-facing walls pure black. The per-material folded sun (m_sun_*) is unused here.
+        sun = m_emissive
+              + frame.sun_ambient.rgb + frame.sun_diffuse.rgb * ndotl * sun_vis;
+    } else {
+        sun = m_emissive + m_sun_ambient
               + m_sun_diffuse * ndotl * sun_vis;
+    }
     let local = lights_contrib(in.world_pos, nrm, m_light_diffuse, m_light_ambient, linear);
     // HDR: keep radiance non-negative but let it exceed 1.0 into the float target.
     // LDR: the gamma-naive saturate the pack it replaces expects.
@@ -266,8 +288,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     if (alpha_ref > 0.0) {
         rgb *= mix(1.0, foliage_shadow_ao, terrain_s);
     }
-    let s = shadow_strength(in.world_pos, nrm, in.fog, dwx, dwy);
-    rgb *= mix(1.0, frame.shadow.ctlb.y, s);
+    // Legacy path: CSM as a final colour multiply (gamma-naive look). Sky-lit already
+    // removed the direct sun in shadow via sun_vis above, so don't double-darken here.
+    if (!sky_lit) {
+        rgb *= mix(1.0, frame.shadow.ctlb.y, csm_s);
+    }
     // Blend toward the scene fog colour (matches GL33's mix(fogColor, r0, vFogTC)).
     // Fog is authored in gamma space, so decode it to linear for the HDR path.
     var fog_color = frame.fog_color.rgb;

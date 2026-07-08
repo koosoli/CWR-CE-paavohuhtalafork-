@@ -1778,7 +1778,21 @@ void SetVisibility(float distance)
     // the master distance via setViewDistance — e.g. the demo ambush intro's
     // `setViewDistance 2000` renders objects out to ~1333 m so the distant scene
     // is visible through the binoculars.
-    const ViewDistances vd = ViewDistanceResolver::Derive(distance);
+    // The --vd CLI override is meant to bypass the 5000 m view-distance clamp, but
+    // Derive() re-clamps to its default maxView (5000) — so raise the terrain view cap to
+    // the override when it is active, or terrain silently stays pinned at 5 km. Objects
+    // (and shadows) are kept at 5 km regardless, so their streaming/cull cost doesn't blow
+    // up with a very long terrain view.
+    ViewDistanceLimits limits;
+    const float cliVD = AppConfig::Instance().GetViewDistanceOverride();
+    if (cliVD > 0.0f)
+    {
+        if (limits.maxView < cliVD)
+            limits.maxView = cliVD;
+        if (limits.objectCap < 5000.0f)
+            limits.objectCap = 5000.0f;
+    }
+    const ViewDistances vd = ViewDistanceResolver::Derive(distance, limits);
     LOG_DEBUG(Script, "Visibility set: view={} objects={} shadows={}", vd.view, vd.objects, vd.shadows);
     ENGINE_CONFIG.tacticalZ = vd.view;
     ENGINE_CONFIG.horizontZ = vd.view;

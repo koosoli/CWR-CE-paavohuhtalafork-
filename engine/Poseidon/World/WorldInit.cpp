@@ -717,7 +717,8 @@ bool World::InitVehicles(GameMode gameMode, ArcadeTemplate& t)
     Shapes.OptimizeAll();
     LOG_DEBUG(Core, "LOAD: Shapes.OptimizeAll {}ms", GetTickCount() - tOpt);
 
-    // Pre-fill terrain segment cache in parallel before first frame
+    // Pre-fill terrain segment cache in parallel before first frame. FillCache /
+    // CreateNearVBuffers self-skip when a GPU terrain renderer is active (see Landscape.cpp).
     if (_cameraOn && _scene.GetLandscape())
     {
         auto& camPos = _cameraOn->Position();

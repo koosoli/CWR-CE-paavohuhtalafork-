@@ -858,6 +858,9 @@ void Landscape::CreateAllVBuffers()
 
 void Landscape::CreateNearVBuffers(float cx, float cz, float radius)
 {
+    // Legacy segment VBs are unused under a GPU terrain renderer (see FillCache).
+    if (GEngine && GEngine->GetTerrainRenderer())
+        return;
     float r2 = radius * radius;
     int created = 0;
     _segCache._cache.ForEach(
@@ -897,6 +900,13 @@ void Landscape::FlushCache()
 
 void Landscape::FillCache(const Frame& pos)
 {
+    // The legacy segment cache is only consumed by the CPU/GL33 terrain path. Under a GPU
+    // terrain renderer (wgpu) the ground is drawn from the heightmap directly, so pre-filling
+    // it — and recomputing every tile on setTerrainGrid or a big camera jump — is pure
+    // overhead. Skip it here so every caller (load, vehicle switch, setTerrainGrid) is covered;
+    // grass overlays still generate their segments on demand in DrawGround.
+    if (GEngine && GEngine->GetTerrainRenderer())
+        return;
     if (ENGINE_CONFIG.noTerrainCache)
         return;
     LOG_DEBUG(World, "Recreate caches {:.1f},{:.1f}", pos.Position().X(), pos.Position().Z());

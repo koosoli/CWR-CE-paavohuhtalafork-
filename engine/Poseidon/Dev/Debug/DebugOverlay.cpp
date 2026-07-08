@@ -1683,6 +1683,13 @@ void DrawSkyTab()
     ImGui::SameLine();
     ImGui::TextDisabled("ToD %.2f h", Glob.clock.GetTimeOfDay() * 24.0f);
 
+    changed |= ImGui::Checkbox("Auto (time-of-day presets)", &s.autoToD);
+    ImGui::SetItemTooltip("On = drive the atmosphere look (exposure, sun intensity, rayleigh, mie, ozone, "
+                          "turbidity, sun radius, night intensity) from the per-ToD preset table each frame, "
+                          "interpolated like the tonemap grade — the sliders below show the live values but "
+                          "edits are overwritten next frame. Off = hold your manual values so you can tune "
+                          "(then copy the preset). The toggles (sky lighting, aerial shadow, fog falloff) stay live either way.");
+
     ImGui::BeginDisabled(!s.enabled);
 
     changed |= ImGui::SliderFloat("Exposure", &s.exposure, 0.05f, 8.0f, "%.3f", ImGuiSliderFlags_Logarithmic);
@@ -1730,6 +1737,16 @@ void DrawSkyTab()
     ImGui::SetItemTooltip("Aerial fog distance ramp exponent. High (default 3) = clear near/mid, fog only near the "
                           "draw edge. Low (~1) = dense fog throughout the view, which makes the volumetric terrain "
                           "sun-shadowing visible. Drop this to see the aerial-shadow effect.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Scene lighting (experimental, HDR only)");
+    changed |= ImGui::Checkbox("Sky-based lighting", &s.skyLighting);
+    ImGui::SetItemTooltip("Light terrain + objects FROM the atmosphere: sun = sunIntensity*exposure*transmittance "
+                          "(reddens at dusk, fades below the horizon), on the physical scale. Off = legacy GL33 sun. "
+                          "Toggle for A/B; the whole scene shifts scale, so exposure/grade will need re-tuning.");
+    changed |= ImGui::SliderFloat("Sky ambient", &s.skyAmbient, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Ambient scale for sky-based lighting (Stage 1 bootstrap: the engine's ToD ambient scaled "
+                          "to the physical range; real sky irradiance later).");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Quality");

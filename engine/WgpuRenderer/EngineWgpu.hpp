@@ -202,11 +202,16 @@ class EngineWgpu : public EngineDummy
     // LightSun and push it via wgr_set_sky. Called each frame (celestial refresh)
     // and on edit from the Sky tab.
     void PushSky();
+    // In auto mode (_sky.autoToD), interpolate the per-ToD atmosphere preset for the
+    // current game time into _sky (preserving the live toggle knobs). Called once per
+    // frame from NextFrame, before PushSky.
+    void UpdateAutoSky();
 
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
     // HDR path enabled (mirrors the renderer's WGR_HDR gate) — gates the tonemap tab.
-    bool _hdrEnabled = false;
+    // Default on, matching the renderer; WGR_HDR=0 forces it off (see the ctor env read).
+    bool _hdrEnabled = true;
     // Auto = drive _tonemap from the per-ToD presets; false = manual override (tab).
     bool _tonemapAuto = true;
     Engine::TonemapSettings _tonemap;

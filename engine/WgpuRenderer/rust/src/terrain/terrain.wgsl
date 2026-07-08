@@ -267,9 +267,14 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     var sun_diffuse = frame.sun_diffuse.rgb;
     var sun_ambient = frame.sun_ambient.rgb;
     var fog_color = frame.fog_color.rgb;
+    // sun_diffuse.w = 1: sky-based lighting, sun/ambient are already physical linear radiance
+    // (atmosphere-derived), so don't sRGB-decode them (that path only applies to legacy gamma sun).
+    let sky_lit = frame.sun_diffuse.w > 0.5;
     if (linear > 0.5) {
-        sun_diffuse = srgb_to_linear(sun_diffuse);
-        sun_ambient = srgb_to_linear(sun_ambient);
+        if (!sky_lit) {
+            sun_diffuse = srgb_to_linear(sun_diffuse);
+            sun_ambient = srgb_to_linear(sun_ambient);
+        }
         fog_color = srgb_to_linear(fog_color);
     }
     let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) + sun_ambient;

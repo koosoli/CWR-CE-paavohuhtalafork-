@@ -1017,6 +1017,17 @@ class Engine : public IGraphicsEngine
         float nightStartDeg = 4.0f;                        // sun elevation for full day (night = 0)
         float nightEndDeg = -6.0f;                         // sun elevation for full night (night = 1)
         bool enabled = true;                               // draw the procedural sky
+        // Sky-based scene lighting (HDR only): light terrain + objects FROM the atmosphere —
+        // sun = sunIntensity*exposure*transmittance(camAlt->sun) (reddens at sunset, -> 0 below
+        // horizon), on the same physical radiance scale as the sky/fog. Off = legacy GL33 sun.
+        // A toggle for A/B while the look is re-tuned. See lighting.wgsl / EngineWgpu PushFrame.
+        bool skyLighting = false;                          // atmosphere-driven surface sun/ambient
+        float skyAmbient = 0.35f;                          // non-physical ambient fill fraction (no GI): engine ToD ambient x this x sun scale. ~0.2-0.3 keeps interiors/shadows readable; real sky irradiance later
+        // Drive the atmosphere look (exposure/sunIntensity/rayleigh/mie/ozone/turbidity/
+        // sun radius/night intensity) from the per-time-of-day preset table each frame,
+        // like the tonemap grade. Off = hold the Sky tab's manually edited values so the
+        // atmosphere sliders can be tuned. The toggle knobs above are always live.
+        bool autoToD = true;                               // interpolate atmosphere from the ToD presets
     };
     // True on backends with a procedural sky pass (wgpu); gates the ImGui Sky tab.
     virtual bool SupportsSky() const { return false; }

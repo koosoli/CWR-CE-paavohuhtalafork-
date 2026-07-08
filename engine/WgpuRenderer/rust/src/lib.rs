@@ -187,11 +187,13 @@ impl Renderer {
 
         surface.configure(&device, &config);
 
-        // HDR path (docs/hdr-pipeline-plan.md). Gated by WGR_HDR for now; the engine
-        // config/CLI flag drives it once Stage 2's C++ work lands. When on, the scene
-        // subsystems target the offscreen HDR format and a tonemap pass resolves to the
-        // swapchain; the overlay pipeline always targets the swapchain format.
-        let hdr_enabled = std::env::var("WGR_HDR").map(|v| v != "0").unwrap_or(false);
+        // HDR path (docs/hdr-pipeline-plan.md). Now the default for the wgpu backend —
+        // the procedural sky, aerial fog, sky-based lighting and tonemap/bloom/exposure
+        // all live on this path, so running without it drops the renderer onto the legacy
+        // gamma-naive fallback and looks broken. WGR_HDR=0 still forces it off for A/B.
+        // When on, the scene subsystems target the offscreen HDR format and a tonemap pass
+        // resolves to the swapchain; the overlay pipeline always targets the swapchain format.
+        let hdr_enabled = std::env::var("WGR_HDR").map(|v| v != "0").unwrap_or(true);
         let color_format = if hdr_enabled { HDR_FORMAT } else { config.format };
         if hdr_enabled {
             log.log(log_level::INFO, "wgpu HDR path enabled (WGR_HDR)");
