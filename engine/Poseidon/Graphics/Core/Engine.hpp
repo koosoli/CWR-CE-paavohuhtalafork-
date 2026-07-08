@@ -283,6 +283,7 @@ struct Line2DFloat
 //@}
 
 class ITerrainRenderer;
+class IWaterRenderer;
 
 class Engine : public IGraphicsEngine
 {
@@ -939,6 +940,10 @@ class Engine : public IGraphicsEngine
     }
 
     virtual ITerrainRenderer* GetTerrainRenderer() { return nullptr; }
+
+    // The GPU water-surface renderer, when the backend has one (wgpu). Null on GL33,
+    // which keeps drawing the legacy per-segment water mesh. Mirrors GetTerrainRenderer.
+    virtual IWaterRenderer* GetWaterRenderer() { return nullptr; }
 
     // Live tonemap/look parameters for the HDR path (wgpu). Mirrors WgrTonemap; the
     // ImGui Tonemap tab edits these and the backend pushes them to the renderer. The

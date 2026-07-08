@@ -1,5 +1,6 @@
 #include "EngineWgpu.hpp"
 #include "TerrainWgpu.hpp"
+#include "WaterWgpu.hpp"
 #include "TextureBankWgpu.hpp"
 
 #include <Poseidon/Core/Application.hpp>
@@ -514,6 +515,19 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     // per-segment Shape path is GL33-only). It owns the sun-shadow mask, GPU conform, etc.
     _terrain = std::make_unique<TerrainWgpu>(*this, _renderer);
 
+    // GPU water surface (flat CDLOD plane at sea level). Gated by WGR_GPU_WATER
+    // (default on) so the legacy per-segment water mesh can be re-enabled during
+    // bring-up; when null, Landscape::DrawWater falls through to the legacy path.
+    bool gpuWater = true;
+    if (const char* w = std::getenv("WGR_GPU_WATER"))
+    {
+        gpuWater = std::strtol(w, nullptr, 10) != 0;
+    }
+    if (gpuWater)
+    {
+        _water = std::make_unique<WaterWgpu>(*this, _renderer);
+    }
+
     // WGR_SHADOW_MAPS=1 enables cascaded shadow maps at startup (dev panel /
     // tri verbs can still toggle at runtime).
     if (const char* sm = std::getenv("WGR_SHADOW_MAPS"))
@@ -1024,6 +1038,8 @@ void EngineWgpu::NextFrame()
         frame.terrain_nodes = _terrainNodes;
         frame.terrain_batches = _terrainBatches;
         frame.lights = _lights;
+        frame.water_nodes = _waterNodes;
+        frame.water_batches = _waterBatches;
         wgr_render_frame(_renderer, &frame);
     }
     _verts.clear();
@@ -1038,6 +1054,8 @@ void EngineWgpu::NextFrame()
     _overlayDraws.clear();
     _terrainNodes.clear();
     _terrainBatches.clear();
+    _waterNodes.clear();
+    _waterBatches.clear();
     _smCascadesValid = false;
     _haveCamera = false;
     _currentCamera = 0;
@@ -1297,6 +1315,32 @@ void EngineWgpu::SubmitTerrain(std::span<const WgrTerrainNode> nodes)
     WgrCmd cmd{};
     cmd.kind = WGR_CMD_DRAW_TERRAIN;
     cmd.arg = U32(_terrainBatches.size() - 1);
+    _cmds.push_back(cmd);
+}
+
+IWaterRenderer* EngineWgpu::GetWaterRenderer()
+{
+    return _water.get();
+}
+
+void EngineWgpu::SubmitWater(std::span<const WgrWaterNode> nodes)
+{
+    if (!_renderer || nodes.empty())
+    {
+        return;
+    }
+    EnsureCamera();
+
+    WgrWaterBatch batch{};
+    batch.first_node = U32(_waterNodes.size());
+    batch.node_count = U32(nodes.size());
+    batch.camera = _currentCamera;
+    _waterNodes.insert(_waterNodes.end(), nodes.begin(), nodes.end());
+    _waterBatches.push_back(batch);
+
+    WgrCmd cmd{};
+    cmd.kind = WGR_CMD_DRAW_WATER;
+    cmd.arg = U32(_waterBatches.size() - 1);
     _cmds.push_back(cmd);
 }
 

@@ -19,6 +19,7 @@ namespace Poseidon
 {
 class TextureBankWgpu;
 class TerrainWgpu;
+class WaterWgpu;
 class ITerrainRenderer;
 
 enum class Sampler2DFlags : uint32_t
@@ -167,6 +168,12 @@ class EngineWgpu : public EngineDummy
     // camera and enqueue its draw in submission order.
     void SubmitTerrain(std::span<const WgrTerrainNode> nodes);
 
+    // GPU water renderer (active unless WGR_GPU_WATER=0; null keeps legacy water).
+    IWaterRenderer* GetWaterRenderer() override;
+    // Called by the water renderer: append a batch of `nodes` for the current camera
+    // and enqueue its draw in submission order (after the opaque terrain + 3D).
+    void SubmitWater(std::span<const WgrWaterNode> nodes);
+
   private:
     // A camera-relative view/projection plus the world-space camera position the
     // per-object world matrices are offset by, and the forward direction (shadow
@@ -294,6 +301,11 @@ class EngineWgpu : public EngineDummy
     std::unique_ptr<TerrainWgpu> _terrain;
     std::vector<WgrTerrainNode> _terrainNodes;
     std::vector<WgrTerrainBatch> _terrainBatches;
+
+    // GPU water renderer + its per-frame node/batch buffers (null on WGR_GPU_WATER=0).
+    std::unique_ptr<WaterWgpu> _water;
+    std::vector<WgrWaterNode> _waterNodes;
+    std::vector<WgrWaterBatch> _waterBatches;
 };
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params);

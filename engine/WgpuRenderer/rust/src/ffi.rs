@@ -430,6 +430,7 @@ pub enum WgrCmdKind {
     // after this command is display-referred UI, drawn straight to the swapchain.
     // No-op on the LDR-direct path. Emitted at the engine's scene->UI seam.
     Resolve = 4,
+    DrawWater = 5,
 }
 
 #[repr(C)]
@@ -468,6 +469,40 @@ pub struct WgrTerrainNode {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WgrTerrainBatch {
+    pub first_node: u32,
+    pub node_count: u32,
+    pub camera: u32,
+    pub _pad: u32,
+}
+
+// Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrWaterParams {
+    pub world_origin: WgrVec2,
+    pub terrain_grid: f32,
+    pub sea_level: f32,
+    pub hm_width: u32,
+    pub hm_height: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+}
+
+// One water node (shared grid mesh at world-xz `origin`, `size` wide, level `lod`).
+// Byte-identical to WgrTerrainNode; uploaded as instance-step vertex data.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrWaterNode {
+    pub origin: WgrVec2,
+    pub size: f32,
+    pub lod: u32,
+    pub morph_start: f32,
+    pub morph_end: f32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrWaterBatch {
     pub first_node: u32,
     pub node_count: u32,
     pub camera: u32,
@@ -524,6 +559,9 @@ pub struct WgrFrame {
     // storage buffer shared by 3D draws + terrain. The per-camera light count
     // rides in WgrCamera::cam_pos.w.
     pub lights: WgrSlice<WgrLight>,
+    // GPU water nodes, drawn on WGR_CMD_DRAW_WATER.
+    pub water_nodes: WgrSlice<WgrWaterNode>,
+    pub water_batches: WgrSlice<WgrWaterBatch>,
 }
 
 // Layouts must match wgpu_renderer.hpp exactly (the C++ side static_asserts the same).
@@ -545,8 +583,11 @@ const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 32);
+const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
+const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrFrame>() == 528);
+const _: () = assert!(std::mem::size_of::<WgrFrame>() == 560);
 
 pub type WgrRenderer = Renderer;
 
@@ -789,6 +830,27 @@ pub unsafe extern "C" fn wgr_terrain_set_heightmap(
     }));
 }
 
+/// Set/refresh the water placement params (incl. the animated sea level). See
+/// wgpu_renderer.hpp.
+///
+/// # Safety
+/// `renderer` must be live; `params` must point to one valid `WgrWaterParams` or
+/// be null (in which case the call is ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_water_set_params(
+    renderer: *mut WgrRenderer,
+    params: *const WgrWaterParams,
+) {
+    if renderer.is_null() || params.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let params = unsafe { *params };
+        renderer.water_set_params(params);
+    }));
+}
+
 /// Set the terrain ground layers as a list of wgr_texture_create handles (one
 /// per Landscape texture index). See wgpu_renderer.hpp.
 ///
@@ -926,6 +988,8 @@ pub unsafe extern "C" fn wgr_render_frame(
         let terrain_nodes = unsafe { frame.terrain_nodes.as_slice() };
         let terrain_batches = unsafe { frame.terrain_batches.as_slice() };
         let lights = unsafe { frame.lights.as_slice() };
+        let water_nodes = unsafe { frame.water_nodes.as_slice() };
+        let water_batches = unsafe { frame.water_batches.as_slice() };
         match renderer.render_frame(
             frame.clear,
             frame.fog_color.to_array(),
@@ -943,6 +1007,8 @@ pub unsafe extern "C" fn wgr_render_frame(
             terrain_nodes,
             terrain_batches,
             lights,
+            water_nodes,
+            water_batches,
         ) {
             Ok(()) => 0,
             Err(e) => {

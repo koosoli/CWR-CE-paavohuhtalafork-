@@ -120,5 +120,6 @@ mod tests {
             include_str!("../terrain/terrain_shadow.wgsl"),
             "terrain/terrain_shadow.wgsl",
         );
+        compose(include_str!("../water/water.wgsl"), "water/water.wgsl");
     }
 }

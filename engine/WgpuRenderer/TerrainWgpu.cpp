@@ -1,5 +1,6 @@
 #include "TerrainWgpu.hpp"
 
+#include "CdlodDriver.hpp"
 #include "EngineWgpu.hpp"
 #include "TextureWgpu.hpp"
 
@@ -29,55 +30,6 @@ static float EnvFloat(const char* name, float fallback)
     return std::strtof(v, nullptr);
 }
 
-static int BuildNode(std::vector<CdlodNode>& tree, const Landscape& land, int range, float grid, int leafTexels,
-                     int oxTexel, int ozTexel, int spanTexels, int level)
-{
-    CdlodNode n{};
-    n.originX = oxTexel * grid;
-    n.originZ = ozTexel * grid;
-    n.size = spanTexels * grid;
-    n.level = level;
-    n.child[0] = n.child[1] = n.child[2] = n.child[3] = -1;
-
-    if (spanTexels <= leafTexels)
-    {
-        float mn = 1e30f;
-        float mx = -1e30f;
-        for (int z = ozTexel; z <= ozTexel + spanTexels; z++)
-        {
-            for (int x = oxTexel; x <= oxTexel + spanTexels; x++)
-            {
-                const float h = land.GetHeight(std::min(z, range - 1), std::min(x, range - 1));
-                mn = std::min(mn, h);
-                mx = std::max(mx, h);
-            }
-        }
-        n.minY = mn;
-        n.maxY = mx;
-    }
-    else
-    {
-        const int half = spanTexels / 2;
-        int c[4];
-        c[0] = BuildNode(tree, land, range, grid, leafTexels, oxTexel, ozTexel, half, level - 1);
-        c[1] = BuildNode(tree, land, range, grid, leafTexels, oxTexel + half, ozTexel, half, level - 1);
-        c[2] = BuildNode(tree, land, range, grid, leafTexels, oxTexel, ozTexel + half, half, level - 1);
-        c[3] = BuildNode(tree, land, range, grid, leafTexels, oxTexel + half, ozTexel + half, half, level - 1);
-        n.minY = 1e30f;
-        n.maxY = -1e30f;
-        for (int i = 0; i < 4; i++)
-        {
-            n.minY = std::min(n.minY, tree[c[i]].minY);
-            n.maxY = std::max(n.maxY, tree[c[i]].maxY);
-            n.child[i] = c[i];
-        }
-    }
-
-    const int idx = static_cast<int>(tree.size());
-    tree.push_back(n);
-    return idx;
-}
-
 TerrainWgpu::TerrainWgpu(EngineWgpu& engine, WgrRenderer* renderer) : _engine(engine), _renderer(renderer)
 {
     _baseMult = EnvFloat("WGR_TERRAIN_LOD_BASE", 4.0f);
@@ -87,26 +39,28 @@ TerrainWgpu::TerrainWgpu(EngineWgpu& engine, WgrRenderer* renderer) : _engine(en
 
 void TerrainWgpu::BuildQuadtree(const Landscape& land)
 {
-    _tree.clear();
-    _rootIndex = -1;
-    _numLevels = 0;
-
     const int range = land.GetTerrainRange();
     const float grid = land.GetTerrainGrid();
-    if (range <= 0 || grid <= 0.0f)
+    // Each leaf's world-height extent is scanned from the heightmap (same
+    // per-texel min/max the CDLOD selection frustum-tests against).
+    auto leafBounds = [&](int ox, int oz, int span, float& mn, float& mx)
+    {
+        for (int z = oz; z <= oz + span; z++)
+        {
+            for (int x = ox; x <= ox + span; x++)
+            {
+                const float h = land.GetHeight(std::min(z, range - 1), std::min(x, range - 1));
+                mn = std::min(mn, h);
+                mx = std::max(mx, h);
+            }
+        }
+    };
+    const int rootTexels = CdlodRootTexels(range, TerrainGridN);
+    BuildCdlodTree(rootTexels, 0, 0, grid, TerrainGridN, leafBounds, _tree, _rootIndex, _numLevels, _leafSize);
+    if (_rootIndex < 0)
     {
         return;
     }
-
-    int rootTexels = TerrainGridN;
-    _numLevels = 1;
-    while (rootTexels < range)
-    {
-        rootTexels *= 2;
-        _numLevels++;
-    }
-    _leafSize = TerrainGridN * grid;
-    _rootIndex = BuildNode(_tree, land, range, grid, TerrainGridN, 0, 0, rootTexels, _numLevels - 1);
     ComputeCdlodRanges(_leafSize * _baseMult, _lodRatio, _numLevels, _ranges);
 }
 
@@ -270,8 +224,6 @@ void TerrainWgpu::DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zE
     {
         return;
     }
-    const Vector3 camPos = camera->Position();
-
     // Clip to the visible land rectangle so terrain honours the engine's draw distance.
     const float landGrid = land.GetLandGrid();
     const int landRange = land.GetLandRange();
@@ -279,24 +231,7 @@ void TerrainWgpu::DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zE
     const float rz0 = std::max(zBeg, 0) * landGrid;
     const float rx1 = std::min(xEnd, landRange) * landGrid;
     const float rz1 = std::min(zEnd, landRange) * landGrid;
-    if (rx1 <= rx0 || rz1 <= rz0)
-    {
-        return;
-    }
 
-    auto visible = [&](const CdlodNode& n) -> bool
-    {
-        const float maxX = n.originX + n.size;
-        const float maxZ = n.originZ + n.size;
-        if (maxX <= rx0 || n.originX >= rx1 || maxZ <= rz0 || n.originZ >= rz1)
-        {
-            return false;
-        }
-        const Vector3 center(n.originX + n.size * 0.5f, (n.minY + n.maxY) * 0.5f, n.originZ + n.size * 0.5f);
-        const float dy = n.maxY - n.minY;
-        const float radius = 0.5f * std::sqrt(2.0f * n.size * n.size + dy * dy);
-        return !camera->IsClipped(center, radius, 1);
-    };
     auto emit = [&](const CdlodSelection& s)
     {
         WgrTerrainNode node{};
@@ -309,8 +244,9 @@ void TerrainWgpu::DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zE
     };
 
     _selected.clear();
-    SelectCdlod(_tree, _rootIndex, _numLevels - 1, camPos.X(), camPos.Y(), camPos.Z(), _ranges, _morphRegion,
-                visible, emit);
+    // Terrain draws every node; the below-sea prune only applies to water.
+    SelectVisibleCdlod(_tree, _rootIndex, _numLevels, _ranges, _morphRegion, *camera, rx0, rz0, rx1, rz1,
+                       [](const CdlodNode&) { return true; }, emit);
 
     _engine.SubmitTerrain(_selected);
 }

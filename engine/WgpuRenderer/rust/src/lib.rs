@@ -7,6 +7,7 @@ mod shaders;
 mod sky;
 mod terrain;
 mod textures;
+mod water;
 mod bloom;
 mod exposure;
 mod tonemap;
@@ -15,6 +16,7 @@ use crate::ffi::{
     WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex,
     WgrOverlayDraw, WgrOverlayVertex, WgrLight, WgrShadowCaster, WgrShadowPass,
     WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams, WgrVertex2D,
+    WgrWaterBatch, WgrWaterNode, WgrWaterParams,
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::{Gfx3d, env_f32};
@@ -22,6 +24,7 @@ use crate::log::{LogSink, log_level};
 use crate::sky::Sky;
 use crate::terrain::Terrain;
 use crate::textures::{SharedTextures, TextureData, TextureFormat};
+use crate::water::Water;
 use crate::bloom::Bloom;
 use crate::exposure::Exposure;
 use crate::tonemap::Tonemap;
@@ -60,6 +63,7 @@ pub struct Renderer {
     gfx2d: Gfx2d,
     gfx3d: Gfx3d,
     terrain: Terrain,
+    water: Water,
     // HDR pipeline (docs/hdr-pipeline-plan.md). When enabled, the 3D/terrain/2D
     // scene renders into `hdr` (linear once Stage 2 lands) and `tonemap` resolves it
     // to the swapchain; the dev overlay + (later) screen-space UI composite after.
@@ -214,6 +218,13 @@ impl Renderer {
             textures.white_view().clone(),
             &mut composer,
         );
+        let water = Water::new(
+            &device,
+            &queue,
+            gfx3d.camera_layout(),
+            color_format,
+            &mut composer,
+        );
         let tonemap = hdr_enabled.then(|| Tonemap::new(&device, config.format));
         let bloom = hdr_enabled.then(|| Bloom::new(&device, HDR_FORMAT));
         let exposure = hdr_enabled.then(|| Exposure::new(&device, &queue));
@@ -240,6 +251,7 @@ impl Renderer {
             gfx2d,
             gfx3d,
             terrain,
+            water,
             hdr_enabled,
             hdr: None,
             hdr_size: (0, 0),
@@ -424,6 +436,8 @@ impl Renderer {
         terrain_nodes: &[WgrTerrainNode],
         terrain_batches: &[WgrTerrainBatch],
         lights: &[WgrLight],
+        water_nodes: &[WgrWaterNode],
+        water_batches: &[WgrWaterBatch],
     ) -> Result<(), String> {
         let screen = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
         self.gfx2d
@@ -468,6 +482,8 @@ impl Renderer {
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
+        self.water
+            .prepare(&self.device, &self.queue, water_nodes);
         self.ensure_hdr(self.config.width, self.config.height);
 
         let Some(frame) = self.acquire()? else {
@@ -699,6 +715,16 @@ impl Renderer {
                                 .draw(pass, cam, off, b.first_node, b.node_count);
                         }
                     }
+                    Plan3dOp::Water(arg) => {
+                        st3d = crate::gfx3d::Pass3dState::default();
+                        if let (Some(b), Some(cam)) =
+                            (water_batches.get(*arg as usize), self.gfx3d.camera_bind())
+                        {
+                            let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                            self.water
+                                .draw(pass, cam, off, b.first_node, b.node_count);
+                        }
+                    }
                     Plan3dOp::ClearDepth | Plan3dOp::Resolve => {}
                 }
             }
@@ -901,6 +927,10 @@ impl Renderer {
     fn terrain_set_heightmap(&mut self, heights: &[f32], params: WgrTerrainParams) {
         self.terrain
             .set_heightmap(&self.device, &self.queue, heights, params);
+    }
+
+    fn water_set_params(&mut self, params: WgrWaterParams) {
+        self.water.set_params(&self.queue, params);
     }
 
     fn terrain_set_ground_layers(&mut self, handles: &[u64]) {

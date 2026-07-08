@@ -8,6 +8,7 @@
 #include <Poseidon/World/World.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
 #include <Poseidon/Graphics/Core/ITerrainRenderer.hpp>
+#include <Poseidon/Graphics/Core/IWaterRenderer.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
 #include <Poseidon/IO/ParamFileExt.hpp>
 #include <Poseidon/Game/OperMap.hpp>
@@ -1145,6 +1146,15 @@ static AnimatorDefault GAnimatorWater(Color(0.8, 0.8, 0.8));
 
 void Landscape::DrawWater(const LandBegEnd& bigRect, Scene& scene)
 {
+    // GPU water path: hand the whole rectangle to the backend's water renderer (a flat
+    // CDLOD surface at sea level, depth-cut by coastlines) and skip the legacy per-
+    // segment _wTable meshes below. GL33 has no water renderer and falls through.
+    if (IWaterRenderer* water = GEngine->GetWaterRenderer())
+    {
+        water->DrawWater(scene, bigRect.xBeg, bigRect.zBeg, bigRect.xEnd, bigRect.zEnd);
+        return;
+    }
+
     for (int x = bigRect.xBeg; x < bigRect.xEnd; x += LandSegmentSize)
     {
         for (int z = bigRect.zBeg; z < bigRect.zEnd; z += LandSegmentSize)

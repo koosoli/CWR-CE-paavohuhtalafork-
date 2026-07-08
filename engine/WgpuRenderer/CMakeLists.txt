@@ -47,10 +47,13 @@ add_library(WgpuRenderer STATIC
     EngineWgpu.cpp
     GraphicsBackendWgpu.cpp
     TerrainWgpu.cpp
+    WaterWgpu.cpp
     TextureWgpu.cpp
     TextureBankWgpu.cpp
+    CdlodDriver.hpp
     EngineWgpu.hpp
     TerrainWgpu.hpp
+    WaterWgpu.hpp
     TextureWgpu.hpp
     TextureBankWgpu.hpp
 )

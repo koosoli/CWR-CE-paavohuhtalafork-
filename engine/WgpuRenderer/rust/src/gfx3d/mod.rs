@@ -2201,6 +2201,9 @@ impl Gfx3d {
             } else if cmd.kind == WgrCmdKind::DrawTerrain as u32 {
                 flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
                 ops.push(Plan3dOp::Terrain(cmd.arg));
+            } else if cmd.kind == WgrCmdKind::DrawWater as u32 {
+                flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
+                ops.push(Plan3dOp::Water(cmd.arg));
             } else if cmd.kind == WgrCmdKind::ClearDepth as u32 {
                 flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
                 ops.push(Plan3dOp::ClearDepth);
@@ -2352,6 +2355,7 @@ pub enum Plan3dOp {
     ClearDepth,
     Draw2D(u32),  // batch index
     Terrain(u32), // terrain batch index
+    Water(u32),   // water batch index
     Draw3D { draw: u32, base: u32, count: u32 },
     // Scene->UI seam: tonemap the HDR target to the swapchain; ops after this are
     // display-referred UI (drawn straight to the swapchain).

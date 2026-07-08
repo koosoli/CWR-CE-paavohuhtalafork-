@@ -1,6 +1,7 @@
 // Terrain CDLOD quadtree selection — pure, no engine dependencies.
 #pragma once
 
+#include <algorithm>
 #include <vector>
 
 namespace Poseidon
@@ -104,6 +105,96 @@ bool SelectCdlod(const std::vector<CdlodNode>& nodes, int idx, int lodLevel, flo
         }
     }
     return true;
+}
+
+// Recursive builder for BuildCdlodTree. `leafBounds(oxTexel, ozTexel, spanTexels,
+// minY, maxY)` fills the world-height extent of a leaf covering the texel square
+// [ox, ox+span] x [oz, oz+span]; interior nodes aggregate their children.
+template <typename LeafBoundsFn>
+inline int BuildCdlodNode(std::vector<CdlodNode>& tree, float grid, int leafTexels, int oxTexel, int ozTexel,
+                          int spanTexels, int level, LeafBoundsFn& leafBounds)
+{
+    CdlodNode n{};
+    n.originX = oxTexel * grid;
+    n.originZ = ozTexel * grid;
+    n.size = spanTexels * grid;
+    n.level = level;
+    n.child[0] = n.child[1] = n.child[2] = n.child[3] = -1;
+
+    if (spanTexels <= leafTexels)
+    {
+        float mn = 1e30f;
+        float mx = -1e30f;
+        leafBounds(oxTexel, ozTexel, spanTexels, mn, mx);
+        n.minY = mn;
+        n.maxY = mx;
+    }
+    else
+    {
+        const int half = spanTexels / 2;
+        int c[4];
+        c[0] = BuildCdlodNode(tree, grid, leafTexels, oxTexel, ozTexel, half, level - 1, leafBounds);
+        c[1] = BuildCdlodNode(tree, grid, leafTexels, oxTexel + half, ozTexel, half, level - 1, leafBounds);
+        c[2] = BuildCdlodNode(tree, grid, leafTexels, oxTexel, ozTexel + half, half, level - 1, leafBounds);
+        c[3] = BuildCdlodNode(tree, grid, leafTexels, oxTexel + half, ozTexel + half, half, level - 1, leafBounds);
+        n.minY = 1e30f;
+        n.maxY = -1e30f;
+        for (int i = 0; i < 4; i++)
+        {
+            n.minY = std::min(n.minY, tree[c[i]].minY);
+            n.maxY = std::max(n.maxY, tree[c[i]].maxY);
+            n.child[i] = c[i];
+        }
+    }
+
+    const int idx = static_cast<int>(tree.size());
+    tree.push_back(n);
+    return idx;
+}
+
+// Smallest power-of-two multiple of `leafTexels` that covers `coverageTexels` — the
+// span a CDLOD root must have so every level halves cleanly down to a leaf.
+inline int CdlodRootTexels(int coverageTexels, int leafTexels)
+{
+    int r = leafTexels;
+    while (r < coverageTexels)
+    {
+        r *= 2;
+    }
+    return r;
+}
+
+// Builds a CDLOD quadtree with a `rootTexels` x `rootTexels` root (must be a
+// power-of-two multiple of `leafTexels`, e.g. from CdlodRootTexels) whose top-left
+// corner is texel (originTexelX, originTexelZ) — usually (0,0), but water offsets it
+// negative to centre a larger tree over the map so the ocean reaches past the edges.
+// `grid` is the world spacing between texels; `leafBounds` supplies each leaf's
+// world-height extent (see BuildCdlodNode). Fills `tree` (root last), and reports the
+// root index, the tree depth, and a leaf's world size. Terrain and water share this:
+// they differ only in the emit/visible functors used at selection time.
+template <typename LeafBoundsFn>
+inline void BuildCdlodTree(int rootTexels, int originTexelX, int originTexelZ, float grid, int leafTexels,
+                           LeafBoundsFn leafBounds, std::vector<CdlodNode>& tree, int& rootIndex, int& numLevels,
+                           float& leafSize)
+{
+    tree.clear();
+    rootIndex = -1;
+    numLevels = 0;
+    if (rootTexels <= 0 || grid <= 0.0f || leafTexels <= 0)
+    {
+        return;
+    }
+
+    numLevels = 1;
+    int t = leafTexels;
+    while (t < rootTexels)
+    {
+        t *= 2;
+        numLevels++;
+    }
+    leafSize = leafTexels * grid;
+    rootIndex = BuildCdlodNode(tree, grid, leafTexels, originTexelX, originTexelZ, rootTexels, numLevels - 1,
+                               leafBounds);
 }
 
 } // namespace Poseidon

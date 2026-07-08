@@ -112,7 +112,8 @@ enum WgrCmdKind : uint32_t
     WGR_CMD_DRAW_3D = 1,       // arg = index into WgrFrame.draws3d
     WGR_CMD_CLEAR_DEPTH = 2,   // arg unused; starts a new depth-cleared segment
     WGR_CMD_DRAW_TERRAIN = 3,  // arg = index into WgrFrame.terrain_batches
-    WGR_CMD_RESOLVE = 4        // arg unused; tonemap the HDR scene to the swapchain, then draw UI display-referred
+    WGR_CMD_RESOLVE = 4,       // arg unused; tonemap the HDR scene to the swapchain, then draw UI display-referred
+    WGR_CMD_DRAW_WATER = 5     // arg = index into WgrFrame.water_batches
 };
 
 // --- Surface / logging -------------------------------------------------------
@@ -458,6 +459,46 @@ struct WgrTerrainBatch
     uint32_t _pad;
 };
 
+// --- Water (GPU CDLOD surface) -----------------------------------------------
+
+/* Per-map + per-frame water parameters (a small UBO). `world_origin`/`terrain_grid`/
+ * `hm_width`/`hm_height` describe the terrain heightmap the sibling look plan samples
+ * for shoreline depth (unused by the flat-plane geometry pass); `sea_level` is the
+ * animated global sea height (Landscape::GetSeaLevel), refreshed every frame. */
+struct WgrWaterParams
+{
+    WgrVec2 world_origin;
+    float terrain_grid;
+    float sea_level;
+    uint32_t hm_width;
+    uint32_t hm_height;
+    uint32_t _pad0;
+    uint32_t _pad1;
+};
+
+/* One water node instance: byte-identical to WgrTerrainNode (the shared grid mesh
+ * placed at world-xz `origin`, `size` x `size`, level `lod`, morphing over the
+ * `morph_start`/`morph_end` camera-distance band). A distinct type so the two can
+ * evolve independently (the look plan adds per-node flags). */
+struct WgrWaterNode
+{
+    WgrVec2 origin;
+    float size;
+    uint32_t lod;
+    float morph_start;
+    float morph_end;
+};
+
+/* A run [first_node, first_node+node_count) of WgrFrame.water_nodes drawn with the
+ * shared grid mesh, transformed by camera `camera` (indexes WgrFrame.cameras). */
+struct WgrWaterBatch
+{
+    uint32_t first_node;
+    uint32_t node_count;
+    uint32_t camera;
+    uint32_t _pad;
+};
+
 /* Overlay (dev panel / ImGui) vertex: framebuffer pixels, top-left origin.
  * `color` is RGBA with R in the low byte (ImGui packing, NOT WgrRgba8). */
 struct WgrOverlayVertex
@@ -523,6 +564,11 @@ struct WgrFrame
      * storage buffer shared by 3D draws + terrain. The per-camera light count
      * rides in WgrCamera::cam_pos.w. */
     WgrSlice<WgrLight> lights;
+
+    /* GPU water nodes, drawn on WGR_CMD_DRAW_WATER. Placement params (incl. the
+     * per-frame sea level) are uploaded separately via wgr_water_set_params. */
+    WgrSlice<WgrWaterNode> water_nodes;
+    WgrSlice<WgrWaterBatch> water_batches;
 };
 
 // --- Layout guards (mirror rust/src/ffi.rs) ----------------------------------
@@ -553,7 +599,10 @@ static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match th
 static_assert(sizeof(WgrTerrainParams) == 32, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrFrame) == 528, "WgrFrame layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterParams) == 32, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterNode) == 24, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFrame) == 560, "WgrFrame layout must match the Rust #[repr(C)] struct");
 
 // --- Functions ---------------------------------------------------------------
 
@@ -652,6 +701,10 @@ extern "C"
      * reallocates the mask; any change re-runs the amortized sweep next frame. */
     WGR_API void wgr_terrain_set_sun_shadow(WgrRenderer* renderer, float strength, uint32_t scale,
                                             uint32_t max_steps, float penumbra_deg);
+
+    /* Set/refresh the water placement params (see WgrWaterParams). Cheap; called on
+     * map load and each frame to update the animated `sea_level`. */
+    WGR_API void wgr_water_set_params(WgrRenderer* renderer, const WgrWaterParams* params);
 
     /* Render + present one frame. Returns 0 on success (incl. transient skipped
      * frames), negative on error. */
