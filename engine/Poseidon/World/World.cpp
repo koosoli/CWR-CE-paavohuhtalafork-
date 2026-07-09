@@ -1339,6 +1339,14 @@ void World::Simulate(float deltaT, bool& enableDraw)
         enableDraw = GEngine->IsAbleToDraw();
     }
     perf.Mark(Dev::FrameProfiler::PhaseSetup);
+    // States where the 3D world must NOT be shown even though its resources stay resident:
+    // the mission editor (DisplayArcadeMap; its display gate is lost because the editor world
+    // has no _options, so IsDisplayEnabled() wrongly returns true), any covering full-screen UI
+    // / loading progress (!IsDisplayEnabled()), and shutdown (Glob.exit / m_closeRequest). In
+    // these we skip the 3D scene submission below and clear to black — otherwise the world keeps
+    // rendering behind the UI and leaks through the letterboxed sides (HUD aspect limit).
+    const bool suppressWorld =
+        _editor || !IsDisplayEnabled() || Glob.exit || (GApp && GApp->m_closeRequest);
     if (enableDraw)
     {
         PackedColor color(GEngine->FogColor());
@@ -1346,6 +1354,8 @@ void World::Simulate(float deltaT, bool& enableDraw)
         // (same reasoning as Blender/Maya default mid-grey backgrounds).
         if (AppConfig::Instance().IsViewerMode())
             color = PackedColor(Color(0.18f, 0.18f, 0.20f, 1.0f));
+        if (suppressWorld)
+            color = PackedColor(Color(0.0f, 0.0f, 0.0f, 1.0f));
         GEngine->InitDraw(clear, color);
     }
 
@@ -1384,7 +1394,7 @@ void World::Simulate(float deltaT, bool& enableDraw)
 
         if (enableDraw)
         {
-            if (!_showMap && IsDisplayEnabled())
+            if (!_showMap && IsDisplayEnabled() && !suppressWorld)
             {
                 {
                     LandBegEnd objBegEnd;

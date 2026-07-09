@@ -1454,6 +1454,14 @@ float Scene::GetSmokeGeneralization() const
 static void DrawSortObject(SortObject* oi)
 {
     Object* obj = oi->object;
+    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b): objects handed to
+    // the GPU retained scene are culled + drawn by the compute/indirect path, so skip their
+    // CPU colour draw. Their shadow casters stay on the CPU path (SceneShadowPass, a separate
+    // pass). No-op unless WGR_GPU_DRIVEN is on and this object was registered.
+    if (GEngine->GpuDrivenObject(obj))
+    {
+        return;
+    }
     const bool cockpit =
         GWorld && oi->drawLOD != LOD_INVISIBLE && oi->drawLOD == obj->InsideLOD(GWorld->GetCameraType());
     if (!cockpit)

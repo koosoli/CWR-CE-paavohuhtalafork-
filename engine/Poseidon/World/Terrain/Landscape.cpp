@@ -2070,6 +2070,12 @@ void Landscape::AddObject(Object* obj, int* xr, int* zr, bool avoidRecalculation
     // add into corresponding list
     ObjectList& list = _objects(x, z);
     Verify(list.Add(obj, x, z, avoidRecalculation) >= 0); // <0  -> error
+    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b): let a GPU-driven
+    // backend register this object into its retained scene. No-op unless WGR_GPU_DRIVEN is on.
+    if (GEngine)
+    {
+        GEngine->SceneObjectCreated(obj);
+    }
 #ifdef LOG_OBJ_SHAPE
     if (IsShape(obj, LOG_OBJ_SHAPE))
     {
@@ -2095,6 +2101,12 @@ void Landscape::Recalculate()
 
 void Landscape::RemoveObject(Object* obj)
 {
+    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b): drop this object
+    // from a GPU-driven backend's retained scene before it leaves. No-op unless enabled.
+    if (GEngine)
+    {
+        GEngine->SceneObjectRemoved(obj);
+    }
     int x, z;
     SelectObjectList(x, z, obj->Position().X(), obj->Position().Z());
     ObjectList& list = _objects(x, z);
@@ -2180,6 +2192,12 @@ void Landscape::MoveObject(Object* obj, const Matrix4& transform)
     }
 #endif
     obj->SetTransform(transform);
+    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b): patch this object's
+    // retained instance to the new transform. No-op unless WGR_GPU_DRIVEN is on.
+    if (GEngine)
+    {
+        GEngine->SceneObjectMoved(obj);
+    }
     if (&list == &move)
     {
         // recalc bsphere

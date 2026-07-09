@@ -7,6 +7,7 @@
 #include <Poseidon/IO/ParamFile/ParamFile.hpp>
 #include <Poseidon/IO/Serialization/ParamArchive.hpp>
 #include <Poseidon/AI/AI.hpp>
+#include <Poseidon/Graphics/Core/Engine.hpp> // GEngine (GPU-driven retained-scene drop on cell unload)
 #include <Poseidon/World/Scene/ObjectClasses.hpp>
 
 #include <Poseidon/Graphics/Rendering/Primitives/Poly.hpp>
@@ -1229,6 +1230,14 @@ void Landscape::ReleaseObjects(int x, int z)
         Object* obj = ol[oi];
         if (obj->GetType() == Primary || obj->GetType() == Network)
         {
+            // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b): this cell
+            // unload deletes the object directly (not via RemoveObject), so drop it from the
+            // retained scene here too or its instance slot + dangling key would leak. No-op
+            // unless WGR_GPU_DRIVEN is on.
+            if (GEngine)
+            {
+                GEngine->SceneObjectRemoved(obj);
+            }
             ol.Delete(oi);
         }
         else

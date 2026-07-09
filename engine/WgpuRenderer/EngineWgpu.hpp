@@ -11,6 +11,8 @@
 
 #include <memory>
 #include <span>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 struct SDL_Window;
@@ -21,6 +23,8 @@ class TextureBankWgpu;
 class TerrainWgpu;
 class WaterWgpu;
 class ITerrainRenderer;
+class Object;
+class LODShapeWithShadow;
 
 enum class Sampler2DFlags : uint32_t
 {
@@ -91,6 +95,16 @@ class EngineWgpu : public EngineDummy
     // (GL33 parity: emissive + sun_ambient + sun_diffuse * N.L). Called by
     // ShapeSection::PrepareTL immediately before each DrawSectionTL.
     void SetMaterial(const TLMaterial& mat, const LightList& lights, const render::LegacySpec& spec) override;
+
+    // GPU-driven retained scene hooks (docs/gpu-culling-and-depth-plan.md Stage 3b).
+    // Active only with WGR_GPU_DRIVEN: register the object's shape once, then stream its
+    // retained instance (add on create, patch on move, drop on remove). GpuDrivenObject
+    // reports whether an object is currently drawn by the GPU path, so the scene draw loop
+    // suppresses its CPU colour draw while its shadow caster stays on the CPU path.
+    void SceneObjectCreated(Object* obj) override;
+    void SceneObjectRemoved(Object* obj) override;
+    void SceneObjectMoved(Object* obj) override;
+    bool GpuDrivenObject(const Object* obj) const override;
 
     // Software-T&L path: 3D-in-UI objects (e.g. the menu laptop) arrive here with
     // CPU-projected screen-space vertices, drawn depth-tested like 2D-with-depth.
@@ -261,6 +275,33 @@ class EngineWgpu : public EngineDummy
     std::vector<WgrMat4> _palette;
     // Frame-global point/spot lights (rebuilt each frame in NextFrame, <= WGR_MAX_LIGHTS).
     std::vector<WgrLight> _lights;
+
+    // --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) ---
+    // On when WGR_GPU_DRIVEN=1 at construction (mirrors the Rust-side gate); the hooks and
+    // GpuDrivenObject are inert otherwise, so every other path keeps the CPU draw.
+    bool _gpuDriven = false;
+    // Registered shapes -> model id. WGR_INVALID_MODEL marks a shape scanned and found
+    // ineligible (transparent/decal/etc.), so an object using it never re-scans and stays
+    // on the CPU path.
+    std::unordered_map<const LODShapeWithShadow*, uint32_t> _gpuModels;
+    // Shapes registered as terrain-conform (ClipLand, mode 2): their instances carry the
+    // CONFORM_CLIPLAND flag + bcSurfaceY so the GPU-driven VS conforms them to SurfaceY.
+    std::unordered_set<const LODShapeWithShadow*> _gpuConformShapes;
+    struct GpuInstance
+    {
+        uint32_t model;
+        uint32_t slot;
+    };
+    // Objects handed to the GPU path -> their model + retained instance slot.
+    std::unordered_map<const Object*, GpuInstance> _gpuInstances;
+    // Dedicated pool meshes the retained scene OWNS (one per registered model LOD), created
+    // directly from shape geometry so they survive ShapeBank::OptimizeAll's release of the
+    // shapes' own vertex buffers. Destroyed in the dtor. (Map-change re-registration is a TODO:
+    // the shape-keyed _gpuModels map would otherwise go stale when ShapeBank clears.)
+    std::vector<uint64_t> _gpuMeshes;
+    // Register `shape` (all graphical LODs + per-section geometry/material) if not already,
+    // returning its model id or WGR_INVALID_MODEL if it is ineligible for the GPU path.
+    uint32_t RegisterGpuModel(LODShapeWithShadow* shape);
 
     std::vector<CameraEntry> _cameras;
     uint32_t _currentCamera = 0;

@@ -389,6 +389,21 @@ class Engine : public IGraphicsEngine
     // and rebuild the GL infrastructure, keeping the window + device alive. Used
     // by the in-process mod re-mount; default no-op for headless backends.
     virtual void ResetForRemount() {}
+
+    // --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) ---
+    // Notifications from the landscape/world so a GPU-driven backend can keep a
+    // GPU-resident retained scene (register the shape's model once, stream instance
+    // deltas). Default no-op: only EngineWgpu with WGR_GPU_DRIVEN implements them; every
+    // other backend and the flag-off wgpu path ignore them and keep the CPU draw path.
+    // `SceneObjectCreated` fires when a drawable object enters the world (static clutter
+    // load or spawn), `Removed` before it leaves, `Moved` after its transform changes.
+    // `GpuDrivenObject(obj)` reports whether `obj` is currently drawn by the GPU path, so
+    // the scene draw loop can suppress its CPU colour draw (shadow casters stay on CPU).
+    virtual void SceneObjectCreated(Object* /*obj*/) {}
+    virtual void SceneObjectRemoved(Object* /*obj*/) {}
+    virtual void SceneObjectMoved(Object* /*obj*/) {}
+    virtual bool GpuDrivenObject(const Object* /*obj*/) const { return false; }
+
     void FogColorChanged(ColorVal fogColor) override = 0;
 
     bool SwitchRes(int w, int h, int bpp) override = 0; // switch to resolution nearest to w,h

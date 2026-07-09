@@ -13,10 +13,10 @@ mod exposure;
 mod tonemap;
 
 use crate::ffi::{
-    WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrMat4, WgrMeshVertex,
-    WgrOverlayDraw, WgrOverlayVertex, WgrLight, WgrShadowCaster, WgrShadowPass,
-    WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams, WgrVertex2D,
-    WgrWaterBatch, WgrWaterNode, WgrWaterParams,
+    WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrInstance, WgrMat4, WgrMeshVertex,
+    WgrModelLod, WgrModelMaterial, WgrModelSection, WgrOverlayDraw, WgrOverlayVertex, WgrLight,
+    WgrShadowCaster, WgrShadowPass, WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams,
+    WgrVertex2D, WgrWaterBatch, WgrWaterNode, WgrWaterParams,
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::{Gfx3d, env_f32};
@@ -168,6 +168,23 @@ impl Renderer {
         let partially_bound = adapter.features() & wgpu::Features::PARTIALLY_BOUND_BINDING_ARRAY;
         let partially_bound_enabled = !partially_bound.is_empty();
 
+        // GPU-driven indirect draw (docs/gpu-culling-and-depth-plan.md Stage 2). Our
+        // instancing model puts each bucket's base_instance in the indirect args'
+        // first_instance, so INDIRECT_FIRST_INSTANCE is the gating feature. Stage 2 issues
+        // single draw_indexed_indirect (core wgpu, portable incl. Metal), so nothing more
+        // is needed here; the Stage-3 GPU-produced multi-draw will request its own feature.
+        // Adapter-gated exactly like `partially_bound`; when absent the direct path stays.
+        let indirect_avail = adapter.features() & wgpu::Features::INDIRECT_FIRST_INSTANCE;
+        let indirect_first_instance = !indirect_avail.is_empty();
+
+        // MULTI_DRAW_INDIRECT_COUNT (docs/gpu-culling-and-depth-plan.md Stage 3b-4): a GPU
+        // count buffer that trims the empty tail of the compute-produced indirect args, so the
+        // GPU-driven draw dispatches only the surviving sub-draws instead of the full
+        // conservative per-variant capacity. Present on desktop Vulkan/DX12; Metal lacks it and
+        // falls back to the no-op-tail multi_draw. Adapter-gated like the features above.
+        let mdic_avail = adapter.features() & wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
+        let multi_draw_count = !mdic_avail.is_empty();
+
         // Bindless object textures (docs/bindless-textures-plan.md): one binding_array
         // covering all live object textures. Cap chosen so a non-PARTIALLY_BOUND adapter
         // doesn't pad an enormous array (a level with more unique textures overflows to
@@ -192,7 +209,11 @@ impl Renderer {
         };
 
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            required_features: bc_features | bindless | partially_bound,
+            required_features: bc_features
+                | bindless
+                | partially_bound
+                | indirect_avail
+                | mdic_avail,
             required_limits,
             ..Default::default()
         }))
@@ -225,6 +246,15 @@ impl Renderer {
         // WGR_SKIN_BAKE=1 re-enables it so the path stays exercisable. See
         // docs/compute-skin-bake-plan.md + docs/gpu-culling-and-depth-plan.md.
         let skin_bake_enabled = std::env::var("WGR_SKIN_BAKE").map(|v| v != "0").unwrap_or(false);
+        // Indirect draw is default-on when the adapter supports it; WGR_INDIRECT=0 forces
+        // the direct draw_one path for A/B. Disabled outright without INDIRECT_FIRST_INSTANCE.
+        let indirect_enabled = indirect_first_instance
+            && std::env::var("WGR_INDIRECT").map(|v| v != "0").unwrap_or(true);
+        // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3). OPT-IN and
+        // inert until C++ registers a retained scene (Stage 3b-3); needs first_instance for
+        // its indirect args. Off by default while the path is built up.
+        let gpu_driven_enabled = indirect_first_instance
+            && std::env::var("WGR_GPU_DRIVEN").map(|v| v == "1").unwrap_or(false);
         let hdr_enabled = std::env::var("WGR_HDR").map(|v| v != "0").unwrap_or(true);
         let color_format = if hdr_enabled { HDR_FORMAT } else { config.format };
         if hdr_enabled {
@@ -237,6 +267,17 @@ impl Renderer {
             log.log(
                 log_level::INFO,
                 "wgpu compute skin bake enabled (WGR_SKIN_BAKE); VS skinning path bypassed",
+            );
+        }
+        if indirect_enabled {
+            log.log(
+                log_level::INFO,
+                "wgpu GPU-driven indirect draws enabled (WGR_INDIRECT)",
+            );
+        } else if !indirect_first_instance {
+            log.log(
+                log_level::WARN,
+                "adapter lacks INDIRECT_FIRST_INSTANCE; indirect draws off, using direct path",
             );
         }
 
@@ -257,7 +298,22 @@ impl Renderer {
             color_format,
             &mut composer,
             skin_bake_enabled,
+            indirect_enabled,
+            gpu_driven_enabled,
+            gpu_driven_enabled && multi_draw_count,
         );
+        if gpu_driven_enabled {
+            log.log(
+                log_level::INFO,
+                "wgpu GPU-driven rendering enabled (WGR_GPU_DRIVEN); inert until a scene registers",
+            );
+            if !multi_draw_count {
+                log.log(
+                    log_level::INFO,
+                    "adapter lacks MULTI_DRAW_INDIRECT_COUNT; GPU-driven draws use the conservative no-op-tail path",
+                );
+            }
+        }
         let terrain = Terrain::new(
             &device,
             &queue,
@@ -522,7 +578,12 @@ impl Renderer {
         // Bucket the frame's 3D draws into instanced groups (see Gfx3d::plan_3d). The
         // plan's `order` drives the storage-array pack order in prepare(); its `ops`
         // replace the raw command stream in the replay loop below.
-        let plan = self.gfx3d.plan_3d(cmds, draws3d);
+        let mut plan = self.gfx3d.plan_3d(cmds, draws3d);
+        // Stage 2: turn the plan's instanceable buckets into CPU-built indirect draws over
+        // the geometry pool (no-op when indirect is off). Tags each eligible op with its
+        // args-buffer offset for the replay below.
+        self.gfx3d
+            .build_indirect(&self.device, &self.queue, draws3d, &mut plan.ops);
         self.gfx3d.prepare(
             &self.device,
             &self.queue,
@@ -544,6 +605,17 @@ impl Renderer {
             .prepare(&self.device, &self.queue, terrain_nodes);
         self.water
             .prepare(&self.device, &self.queue, water_nodes);
+        // GPU-driven rendering (Stage 3): upload the retained scene + this frame's cull
+        // params from the main scene camera (the terrain camera, else the first 3D draw's).
+        // No-op when disabled; inert until C++ registers a scene.
+        let gpu_main_cam = terrain_batches
+            .first()
+            .map(|b| b.camera as usize)
+            .or_else(|| draws3d.first().map(|d| d.camera as usize))
+            .unwrap_or(0);
+        if let Some(cam) = cameras.get(gpu_main_cam) {
+            self.gfx3d.prepare_cull(&self.device, &self.queue, cam);
+        }
         self.ensure_hdr(self.config.width, self.config.height);
 
         let Some(frame) = self.acquire()? else {
@@ -589,6 +661,11 @@ impl Renderer {
         // the forward pass all read, so it must precede them; wgpu inserts the storage->
         // vertex barrier. No-op when the bake is off or there is no skinned geometry.
         self.gfx3d.skin_bake(&mut encoder);
+
+        // GPU cull compute (Stage 3): culls + LOD-selects the retained scene into the
+        // indirect args the colour pass consumes. Recorded before the render passes so
+        // wgpu barriers its storage writes -> the indirect reads. No-op when disabled.
+        self.gfx3d.cull_dispatch(&mut encoder);
 
         // Cascade shadow depth passes run first so every segment's draws can
         // sample the completed map, regardless of submission order. Debug groups
@@ -781,17 +858,28 @@ impl Renderer {
                             self.gfx2d.draw_one(pass, &self.textures, b, display_2d);
                         }
                     }
-                    Plan3dOp::Draw3D { draw, base, count } => {
+                    Plan3dOp::Draw3D {
+                        draw,
+                        base,
+                        count,
+                        kind,
+                    } => {
                         if let Some(d) = draws3d.get(*draw as usize) {
-                            self.gfx3d.draw_one(
-                                pass,
-                                &self.textures,
-                                d,
-                                *base,
-                                *count,
-                                &mut st3d,
-                                crate::gfx3d::Pass3dMode::Color { depth_write_off },
-                            );
+                            let mode = crate::gfx3d::Pass3dMode::Color { depth_write_off };
+                            if let crate::gfx3d::DrawKind::Indirect(off) = kind {
+                                self.gfx3d
+                                    .draw_indirect(pass, &self.textures, d, *off, &mut st3d, mode);
+                            } else {
+                                self.gfx3d.draw_one(
+                                    pass,
+                                    &self.textures,
+                                    d,
+                                    *base,
+                                    *count,
+                                    &mut st3d,
+                                    mode,
+                                );
+                            }
                         }
                     }
                     Plan3dOp::Terrain(arg) => {
@@ -889,17 +977,34 @@ impl Renderer {
                 let mut st3d = crate::gfx3d::Pass3dState::default();
                 for op in seg_ops {
                     match op {
-                        Plan3dOp::Draw3D { draw, base, count } => {
+                        Plan3dOp::Draw3D {
+                            draw,
+                            base,
+                            count,
+                            kind,
+                        } => {
                             if let Some(d) = draws3d.get(*draw as usize) {
-                                self.gfx3d.draw_one(
-                                    &mut pp,
-                                    &self.textures,
-                                    d,
-                                    *base,
-                                    *count,
-                                    &mut st3d,
-                                    crate::gfx3d::Pass3dMode::Prepass,
-                                );
+                                let mode = crate::gfx3d::Pass3dMode::Prepass;
+                                if let crate::gfx3d::DrawKind::Indirect(off) = kind {
+                                    self.gfx3d.draw_indirect(
+                                        &mut pp,
+                                        &self.textures,
+                                        d,
+                                        *off,
+                                        &mut st3d,
+                                        mode,
+                                    );
+                                } else {
+                                    self.gfx3d.draw_one(
+                                        &mut pp,
+                                        &self.textures,
+                                        d,
+                                        *base,
+                                        *count,
+                                        &mut st3d,
+                                        mode,
+                                    );
+                                }
                             }
                         }
                         Plan3dOp::Terrain(arg) => {
@@ -921,6 +1026,12 @@ impl Renderer {
                         _ => {}
                     }
                 }
+                // GPU-driven opaque set into the SAME depth+normal prepass (reuses this
+                // frame's cull out_args — the cull dispatch already ran before the passes).
+                // Writes depth + view-space normals so the set gets early-Z + SSAO normals.
+                let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
+                self.gfx3d
+                    .draw_gpu_driven_prepass(&mut pp, &self.textures, cam_off);
                 drop(pp);
                 encoder.pop_debug_group();
             }
@@ -968,6 +1079,12 @@ impl Renderer {
                     multiview_mask: None,
                 });
                 render_ops(&mut pass, seg_ops, display_2d, false, prepassed);
+                // GPU-driven opaque world objects (Stage 3), in the world segment only
+                // (start == 0). Depth-tested opaque, so order vs the CPU set is irrelevant.
+                if start == 0 {
+                    let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
+                    self.gfx3d.draw_gpu_driven(&mut pass, &self.textures, cam_off);
+                }
                 drop(pass);
             }
 
@@ -1091,7 +1208,8 @@ impl Renderer {
     }
 
     fn mesh_create(&mut self, verts: &[WgrMeshVertex], indices: &[u16]) -> u64 {
-        self.gfx3d.mesh_create(&self.device, verts, indices)
+        self.gfx3d
+            .mesh_create(&self.device, &self.queue, verts, indices)
     }
 
     fn mesh_update(&mut self, handle: u64, verts: &[WgrMeshVertex]) {
@@ -1105,6 +1223,41 @@ impl Renderer {
 
     fn mesh_destroy(&mut self, handle: u64) {
         self.gfx3d.mesh_destroy(handle);
+    }
+
+    // --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) ---
+
+    fn model_register(
+        &mut self,
+        bounding_sphere: f32,
+        lods: &[WgrModelLod],
+        sections: &[WgrModelSection],
+        materials: &[WgrModelMaterial],
+    ) -> u32 {
+        self.gfx3d
+            .register_model(bounding_sphere, lods, sections, materials, &self.textures)
+    }
+
+    fn instance_add(&mut self, inst: &WgrInstance) -> u32 {
+        self.gfx3d.instance_add(inst)
+    }
+
+    fn instance_update(&mut self, slot: u32, inst: &WgrInstance) {
+        self.gfx3d.instance_update(slot, inst);
+    }
+
+    fn instance_remove(&mut self, slot: u32) {
+        self.gfx3d.instance_remove(slot);
+    }
+
+    fn set_dynamic(&mut self, instances: &[WgrInstance]) {
+        self.gfx3d.set_dynamic(instances);
+    }
+
+    // Push the engine's per-frame cull + LOD inputs (the real Scene::LevelFromDistance2 values).
+    fn set_cull_inputs(&mut self, objects_z: f32, lod_scale: f32, lod_inv_width: f32, pixel_limit: f32) {
+        self.gfx3d
+            .set_cull_inputs(objects_z, lod_scale, lod_inv_width, pixel_limit);
     }
 
     fn terrain_set_heightmap(&mut self, heights: &[f32], params: WgrTerrainParams) {

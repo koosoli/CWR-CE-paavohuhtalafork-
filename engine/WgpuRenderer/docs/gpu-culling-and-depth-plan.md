@@ -2,8 +2,31 @@
 
 **Repo:** `paavohuhtala/CWR-CE`, branch `new-renderer-infrastructure`
 **Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust) + C++ bridge (`EngineWgpu`)
-**Status:** PLANNED (2026-07-08). Concrete.
+**Status:** IN PROGRESS (2026-07-09). All Rust built + tested through the GPU-driven draw path; the C++
+retained-scene feed is the remaining piece. Everything is on branch `new-renderer-infrastructure`, gated,
+and A/B-toggleable.
 **Roadmap slot:** Phase 4 — see [implementation-roadmap.md](implementation-roadmap.md).
+
+### Implementation status (2026-07-09)
+
+The coarse Stage 1–6 below was sub-divided in practice. What's **DONE** (Rust-side, in `engine/WgpuRenderer/rust/src/gfx3d/`):
+
+- **Geometry pool** (`pool.rs`) — merged Uint32 vbuf/ibuf + free-list; every mesh suballocates. `WGR_*` none (always on). Verified in-game. *(Was "Stage 1" here; the rest of the doc's Stage 1 — model/LOD table, instance buffer — landed in the cull work below instead.)*
+- **CPU-built indirect** (`draw_indirect` in `mod.rs`, `DrawKind` in `plan_3d`) — `WGR_INDIRECT` (default on when `INDIRECT_FIRST_INSTANCE` present). Verified in-game. This is the doc's **Stage 2**.
+- **GPU cull+LOD compute** (`cull.rs` + `cull.wgsl`) — frustum + near-clamp distance + sub-pixel cull + `FindSqrtLevel`-shaped LOD (tunable, **no exact-parity requirement** per the user — push LODs further once the CPU is out of the loop), atomic-append `DrawIndexedIndirect` per surviving (section,instance) into per-variant partitions + a `{instance,section}` record. Headless GPU test. Doc's **Stage 3, §3**.
+- **Retained-scene buffers** (`CullState` in `cull.rs`) — unified instance buffer (static slots + free-list, `model=INVALID_MODEL` holes; dynamic region re-copied each frame), model/LOD/section/section-material tables, cull-params uniform, out_args/out_records/counters. `register_model` / instance add-update-remove / set_dynamic / prepare / dispatch. Doc's **Stage 3, §2**.
+- **GPU-driven draw** (`gpu_driven.wgsl` + `mod.rs`) — `multi_draw_indexed_indirect` per variant; VS reads the record→instance world (absolute→cam-relative in-shader), FS folds raw section material × frame sun and calls the shared `shade()` (`shaders/shading.wgsl`, extracted from `fs_main` — verified the per-draw path is visually unchanged). `WGR_GPU_DRIVEN` (default **off**). Doc's **Stage 3, §3.4/§4**.
+
+**NOT yet done** (the next session):
+
+- **C++ retained scene ("3b-3") — ✅ IMPLEMENTED + VALIDATED IN-GAME (2026-07-09, uncommitted).** FFI (`wgr_model_register` / `wgr_instance_add`/`update`/`remove` / `wgr_set_dynamic`) mirrored C++↔Rust (header + ffi.rs + Gfx3d/Renderer wrappers). Engine feed via **new no-op `Engine` virtuals** `SceneObjectCreated`/`Removed`/`Moved` + `GpuDrivenObject` (only `EngineWgpu` implements them; gated on `WGR_GPU_DRIVEN==1` read in the ctor). `EngineWgpu::RegisterGpuModel(LODShapeWithShadow*)` lazily builds the model — **owns its geometry** (`wgr_mesh_create` from `BuildVertices`/`BuildIndices`/`BuildSections`, stored in `_gpuMeshes`; borrowing the shape's `_buffer` failed — `ShapeBank::OptimizeAll`→`ReleaseAllVBuffers` frees them during world load) — graphical `IsNormalLevel` LODs → per-section raw material via `CreateMaterial(HWhite,section.material)`+`surfMat->Combine`, texture via `EnsureUploaded`→bindless slot, `SamplerForSpec`/`AlphaRefFromDesc`; **eligibility = opaque `BlendMode::Opaque` + `SurfaceMode::Default`, non-conform (no `ClipLandKeep/On`)** — any transparent/decal/conform section ⇒ whole shape stays CPU, cached as `WGR_INVALID_MODEL`. Instances streamed at `Landscape::AddObject`→add / `RemoveObject`+`ReleaseObjects`(cell unload — direct-delete, needed its own hook)→remove / `MoveObject`→update; **destruction** (`Object::SetDestroyed` first `_isDestroyed` edge)→remove (drops to CPU, which draws the destroyed geometry — the GPU path holds intact geometry only). CPU colour draw suppressed in `DrawSortObject` via `GpuDrivenObject` (shadows stay CPU — `SceneShadowPass` is separate). **Scope: static (`Static()`) opaque-rigid clutter only**; dynamics/skinned/transparent stay CPU.
+- ~~**`MULTI_DRAW_INDIRECT_COUNT` count-buffer trim ("3b-4")**~~ **✅ DONE (2026-07-09).** The cull counter buffer is now a dedicated `STORAGE|INDIRECT|COPY_DST` buffer (fixed `CULL_VARIANT_COUNT` words, `cull.rs`), doubling as the count buffer. `lib.rs` gates `Features::MULTI_DRAW_INDIRECT_COUNT` (adapter-optional, requested when present). `Gfx3d.multi_draw_count_enabled` (= `gpu_driven_enabled && feature present`) switches `draw_gpu_driven` between `multi_draw_indexed_indirect_count(args, v·cap·20, counters, v·4, cap)` (desktop trim) and the conservative `multi_draw_indexed_indirect(args, off, cap)` no-op-tail fallback (Metal). Compiles + clippy clean + 13 tests green.
+- ~~**Cull correctness (frustum / LOD scale / bounding sphere)**~~ **✅ FIXED + user-confirmed working (2026-07-09).** Three bugs found once the path ran live: **(a) LOD/distance scale** — the compute hardcoded `lod_scale=lod_inv_width=1`, but the legacy `resol2 = dist²·_lodInvWidth²·Camera::Left()²` has `_lodInvWidth ≈ lodCoef·2/screenWidth ≈ 1e-3` and `Left() ≈ 0.75`, so `resol2` was ~1e6× too large (every model → coarsest LOD within metres). Fixed by plumbing the real values through new FFI `wgr_set_cull_params(objects_z, lod_scale, lod_inv_width, pixel_limit)`, pushed each frame from `PushSceneCamera`; sub-pixel cull re-enabled at legacy 0.125. **(b) Near-plane normal** — the engine is D3D-style **left-handed** (row-major `GfxMatrix`, `w_clip=+z_view`); a hand-derived forward (`-Z`, then `view.z_axis`) pointed wrong and culled a direction-dependent half-space (objects popped in/out on rotation). Fixed: **all six planes now come from `proj*view` directly** — `frustum_planes` takes only `view_proj`, near = `row3` (the `clip.w≥0` half-space, projection-consistent for any orientation). **(c) Cull-sphere center** — `BuildGpuInstance` used `Transform·BoundingCenter()`, but `CalculateBoundingSphere` re-centers the stored vertices around the vertex-space origin (`pos -= changeBoundingCenter`) and `_boundingSphere` is the radius about THAT origin, drawn at `Transform.Position()`. Using `BoundingCenter` offset the sphere and culled offset-origin objects early / when touching. Fixed: **center = `Transform.Position()`** (matches legacy `SceneDraw.cpp` center=`trans.Position()`, radius=`BoundingSphere()·Scale`). Rotated-camera frustum↔projection consistency test added (`frustum_matches_projection_rotated`).
+- **GPU-driven set draws in the COLOUR PASS ONLY — two known gaps + the further-out work:**
+  - ~~**(gap 1) Depth+normal PREPASS participation**~~ **✅ DONE + confirmed in-game (2026-07-09, Rust-only, uncommitted).** `build_gpu_pipeline` now returns BOTH the colour pipeline (`fs_gpu`) and a prepass pipeline (`fs_gpu_prepass`) from one shared module; `gpu_driven.wgsl` gained `fs_gpu_prepass` (imports `gbuffer::oct_encode`, discards cutout via the per-section alpha_ref, writes the view-space octahedral normal into `NORMAL_FORMAT` — mirrors shader3d's `fs_prepass`). `Gfx3d.gpu_prepass_pipeline` + `draw_gpu_driven_prepass` (shares `draw_gpu_driven_impl`, same per-frame cull `out_args` — the cull dispatch already ran before both passes). `lib.rs` calls it inside the `do_prepass` block (world segment) before the pass is dropped, so the GPU-driven set now writes prepass depth (⇒ early-Z in the colour pass) and populates the view-space normal G-buffer at parity with the CPU set. **(SSAO itself is not implemented yet — a future plan; this just makes the GPU-driven set a first-class prepass participant so SSAO/any prepass-depth consumer covers it for free when it lands.)** Colour-pass GPU draw kept depth-write ON (GreaterEqual re-passes on equal depth — harmless; a depth-write-off colour variant is a later micro-opt). Composer test validates `fs_gpu_prepass`; clippy + 15 tests green.
+  - **(gap 2) Instancing collapse — LARGER, after gap 1. Detailed plan in §3.6.** The cull emits one sub-draw per *(instance, section)* with **`instance_count = 1`** (hardcoded in `cull.wgsl`). N identical models × S sections = N·S sub-draws, not S instanced draws. CPU draw-call overhead is already amortized (one `multi_draw` per variant), so this is a GPU sub-draw-setup + `out_args` size cost, not a correctness issue. **Plan (§3.6): a 3-pass compute (count per section → atomic-bump-allocate + emit args → scatter records) — no parallel prefix sum needed at our scale; VS/FS/C++ unchanged.**
+- ~~**Terrain-conforming objects (ClipLand veg/fences) — mode 2 (§11)**~~ **✅ IMPLEMENTED (2026-07-09, uncommitted — pending in-game check).** `gpu_driven.wgsl` `vs_gpu` now imports `conform::{surface_y,surface_grad}`, reads `@location(5) conform_sel`, and conforms per vertex when `inst.flags & CONFORM_CLIPLAND` (bcSurfaceY rides `inst._pad0` bitcast). `build_gpu_pipeline` adds group(4) (`conform.layout`) to BOTH colour + prepass pipelines + the `5 => Uint32` attr; `draw_gpu_driven_impl` binds `self.conform.bind` at group 4 (covers colour + prepass). `RegisterGpuModel` no longer rejects ClipLand — records conform shapes in `_gpuConformShapes`; `BuildGpuInstance(obj, model, conform, bcSurfaceY)` sets the flag + `bcSurfaceY = SurfaceY(Transform·−BoundingCenter)` (exact `PublishConformPlane` parity), recomputed on move. Rust green (clippy + composer test validates `vs_gpu` conform); C++ builds next. **ForestPlain (mode 1) still open — see §11.3.**
+- **Destroyed variants, GPU-path shadow casting, occlusion (§5), multi-view (§6), skinned/transparent (§6)** — all still ahead (static objects still feed CPU shadow casters).
 
 > Moves the whole opaque object path onto the GPU: the level is a **GPU-resident retained scene**, and a
 > compute pass does **distance + frustum + occlusion culling *and* LOD selection** per instance each
@@ -215,37 +238,98 @@ One compute dispatch over all instances (or over a coarse pre-cull list), per vi
   GPU-driven breaks the per-frame triangle read-back. Options (decide during impl): (a) keep a CPU
   estimate from last frame's culled counts; (b) **read back the GPU-emitted instance/triangle counts one
   frame late** and adapt (simplest correct closed loop, one-frame latency is invisible); (c) a fixed /
-  view-distance-governed bias. Lean (b).
+  view-distance-governed bias. Lean (b). *(Currently (c) — fixed bias fed from `Camera::Left()·_lodInvWidth` via `wgr_set_cull_params`.)*
+
+### 3.6 Instancing collapse (gap 2) — concrete plan
+
+**Today (shipped):** `cull.wgsl` emits one `DrawIndexedIndirect` per surviving **(instance, section)** with
+`instance_count = 1`, `first_instance` = the record slot, `out_records[slot] = {instance, section}` 1:1 with
+args. So *N* instances × *S* sections = *N·S* sub-draws, *N·S* args, *N·S* records. The CPU draw-call cost is
+already amortized (one `multi_draw` per variant), so the cost is GPU sub-draw setup + the `out_args` size, not
+API overhead — a throughput optimization, not correctness.
+
+**Target:** one `DrawIndexedIndirect` per surviving **global section** with `instance_count =` (# instances that
+selected a LOD containing it), its instances laid out **contiguously** in `out_records` at
+`first_instance = run_base`. Args drop from *N·S* to *(# distinct surviving sections)* (≤ registered-section
+count); records stay *N·S*. The section id already encodes (model, LOD, section), so grouping key = **global
+section id** — instances at different distances pick different LODs → different sections → separate draws,
+automatically.
+
+**Do we need a parallel prefix sum? No.** The contiguous per-section record runs are carved with a single
+**atomic bump per section** (one thread per global section, `atomicAdd` on a global records cursor), not a
+scan. At our scale (#sections ~10³–10⁴, #instances ~10⁴–10⁵) a full scan buys nothing; the per-variant arg
+compaction already uses atomic-append (§3.3) and works. There is **no batteries-included wgpu scan worth a
+dependency**; if we ever needed one (to kill atomic contention at 10⁶+ items) we'd write a standard workgroup
+scan — subgroup ops (`subgroupExclusiveAdd`) are available via `Features::SUBGROUPS`, which we do **not**
+currently request. **Recommendation: atomics, no scan.**
+
+**Three-pass compute** (replaces the single cull dispatch; three separate `begin_compute_pass` calls — wgpu
+auto-inserts the storage barriers between them, as the terrain/sky computes rely on):
+
+- **Scratch buffers** (per frame; `clear_buffer` the counters before pass A):
+  - `sec_count[s]: atomic<u32>` — surviving instances drawing global section `s` (sized `sections.len()`).
+  - `sec_fill[s]: atomic<u32>` — fill cursor within `s`'s run (pass C); seeded to the run base in pass B.
+  - `inst_lod[i]: u32` — chosen LOD level, or `CULLED` sentinel (sized instances). Written pass A, read pass
+    C — avoids recomputing the cull/LOD test.
+  - `records_cursor: atomic<u32>` — bump allocator over `out_records`.
+  - `arg_counter[variant]: atomic<u32>` — per-variant arg append cursor (unchanged; doubles as the count
+    buffer for the `MULTI_DRAW_INDIRECT_COUNT` trim).
+- **Pass A — count** (1 thread / instance): distance+frustum+sub-pixel cull → if culled `inst_lod[i]=CULLED;
+  return`. LOD select → `lod`; `inst_lod[i]=lod`. For each section `s` of the chosen LOD: `atomicAdd(sec_count[s], 1)`.
+- **Pass B — allocate + emit args** (1 thread / global section `s`): `c = sec_count[s]; if c==0 return`.
+  `base = atomicAdd(records_cursor, c); sec_fill[s] = base`. `v = sections[s].variant;
+  slot = atomicAdd(arg_counter[v], 1); if slot >= cap { return }` (overflow → detected via the counter
+  readback, as today). `out_args[v*cap + slot] = DrawArgs{ index_count, instance_count = c, first_index,
+  base_vertex, first_instance = base }`. (All geometry fields come from `sections[s]` — no instance needed.)
+- **Pass C — scatter** (1 thread / instance): `lod = inst_lod[i]; if CULLED return`. For each section `s` of the
+  LOD: `slot = atomicAdd(sec_fill[s], 1); out_records[slot] = Record{ instance: i, section: s }`.
+
+**VS / FS / draw: UNCHANGED.** A sub-draw's `@builtin(instance_index) = first_instance + i = base + i`
+(`INDIRECT_FIRST_INSTANCE`), which indexes `out_records[base+i] = {instance, section}` exactly as today.
+`vs_gpu`/`fs_gpu`/`fs_gpu_prepass` already read `records[instance_index]` — nothing to change. Only the
+compaction differs. The `multi_draw_indexed_indirect_count` fast path is unchanged and now trims a *much*
+smaller arg list; the Metal conservative-cap fallback also shrinks (cap covers # sections, not # pairs).
+
+**Sizing / clears:** `out_args` capacity can drop to `sections.len()` (exact upper bound) from the current
+`CULL_VARIANT_COUNT · 64K`; `out_records` unchanged. Instance order within a run is arbitrary (atomic race) —
+fine; instancing is order-independent, no sort.
+
+**Verification:** extend the headless end-to-end test — K instances at one distance (same LOD) ⇒ **one** arg
+per section with `instance_count = K` + K contiguous records; instances spread across distances ⇒ separate
+args per LOD. Effort: ~medium (2 extra dispatches + scratch buffers + split `main` into count/scatter entries +
+a per-section pass B; VS/FS/C++ untouched).
 
 ---
 
-## 4. Indirect draw plumbing — portable, Metal must work (no Metal-specific code)
+## 4. Indirect draw plumbing — portable, no Metal-specific code
 
-**Design principle: the GPU cull + compaction is identical on every backend; only the final *submission
-call* degrades by a runtime feature check.** Metal does not expose `MULTI_DRAW_INDIRECT` through wgpu, and
-we are **not** writing Metal-specific code now — so the whole design must run there, accepting a modestly
-higher draw-call count. This is cheap to guarantee because of one fact:
+**Design principle: the GPU cull + compaction is identical on every backend, and so is the submission
+call.** Verified against wgpu 29.0.1 source (correcting the earlier assumption that multi-draw is
+Metal-gated):
 
-- **Single `draw_indexed_indirect` is core wgpu and works on Metal**; only `multi_draw_indexed_indirect`
-  (N sub-draws in one call) needs the `MULTI_DRAW_INDIRECT` feature. The compute writes the *same*
-  `DrawIndexedIndirect` args buffer either way — the two paths differ only in how they're consumed:
-  - **Feature present** (Vulkan/DX12): one `multi_draw_indexed_indirect(args, count)` per pipeline
-    variant (with `MULTI_DRAW_INDIRECT_COUNT`, the GPU count buffer skips empty draws).
-  - **Feature absent** (Metal): a **CPU loop of single `draw_indexed_indirect(args, offset_i)`** up to a
-    conservative per-variant **cap**. Draw slots the compaction left with `instance_count == 0` are
-    **no-op draws**, so the CPU need not know the live count — no read-back, no latency, no Metal code.
-    The cost is extra draw-call submissions (fine — "slightly less efficient on Metal" is acceptable).
-- Gate `Features::MULTI_DRAW_INDIRECT` (+ `INDIRECT_FIRST_INSTANCE` — `first_instance` must come from the
-  args; else encode the instance-list base per-batch) + optional `MULTI_DRAW_INDIRECT_COUNT`, adapter-
-  gated exactly like `partially_bound` ([lib.rs:159](../rust/src/lib.rs#L159)); add `BufferUsages::INDIRECT`
-  to the args buffer. It is a **runtime branch**, not a `cfg!(metal)` — the same portable pattern already
-  used for the optional bindless feature.
-- **Last-resort fallback:** if an adapter lacks even the compute/storage prerequisites, fall back to the
-  CPU `plan_3d` path entirely. That path stays as the correctness/A-B reference and the GL33-parity route
-  regardless.
-- **Derisk order:** first build a **CPU-produced indirect** path (replay today's `plan_3d` buckets via
-  the same submission split above — proves the indirect plumbing, geometry pool, bindless textures, *and*
-  the Metal loop on real hardware without the compute), *then* swap in the compute-produced args (§3).
+- **`multi_draw_indexed_indirect(args, offset, count)` is a plain `RenderPass` method requiring only
+  `DownlevelFlags::INDIRECT_EXECUTION`** — a downlevel capability present on every native desktop backend
+  (Vulkan/DX12/Metal/GL), **not** a `Features` gate. On backends without native multi-draw (Metal, GL) wgpu
+  **emulates it internally as a loop of single draws**. So there is **no `MULTI_DRAW_INDIRECT` feature and
+  no hand-written Metal loop** — one `multi_draw_indexed_indirect` per pipeline variant is portable as-is.
+- **`multi_draw_indexed_indirect_count`** (the GPU **count buffer** that skips empty draws) is the separate
+  feature, gated on **`Features::MULTI_DRAW_INDIRECT_COUNT`**, which **Metal lacks**. This is the only
+  count-related portability split. Without it, pass `count` = a CPU/conservative upper bound and leave the
+  compaction's unused slots as `instance_count == 0` **no-op draws** (still one `multi_draw` call, wgpu
+  emulates the loop on Metal). With it (Vulkan/DX12), the GPU count trims the emitted-but-empty tail.
+- **`first_instance` from the args still needs `Features::INDIRECT_FIRST_INSTANCE`** (verified present as a
+  real feature; this is the actual gate our base_instance model depends on). Absent → encode the
+  instance-list base another way (per-batch offset uniform / a base baked into the instance list), or fall
+  back to the direct path. Add `BufferUsages::INDIRECT` to the args buffer. Adapter-gated exactly like
+  `partially_bound` ([lib.rs](../rust/src/lib.rs)).
+- **Last-resort fallback:** if an adapter lacks the compute/storage prerequisites, fall back to the CPU
+  `plan_3d` path entirely — it stays as the correctness/A-B reference and the GL33-parity route regardless.
+- **Derisk order:** first build a **CPU-produced indirect** path (replay today's `plan_3d` buckets — proves
+  the indirect plumbing, geometry pool, bindless textures on real hardware without the compute), *then*
+  swap in the compute-produced args (§3). **DONE (Stage 2, 2026-07-09):** implemented with single
+  `draw_indexed_indirect` per bucket (simplest proof of the args path); multi-draw grouping deferred to
+  Stage 3, where the GPU emits one contiguous per-variant arg array → one `multi_draw_indexed_indirect` per
+  variant, portably, no backend branch.
 
 ## 5. Hi-Z occlusion (prepass-based)
 - **Reduce the depth prepass into a Hi-Z pyramid.** The depth prepass is unconditional and lands first
@@ -272,17 +356,23 @@ higher draw-call count. This is cheap to guarantee because of one fact:
 
 ## 7. Staging (buildable increments)
 
-Each stage ships and is measurable; the CPU path stays as the A/B reference until Stage 3.
+Each stage ships and is measurable; the CPU path stays as the A/B reference until Stage 3. (See the
+Implementation status block at the top for how this maps to the sub-stages actually built + what remains.)
 
-- **Stage 1 — Retained data model (no compute yet).** Geometry pool (merged vbuf/ibuf + section
-  descriptors), bindless object textures, unified instance buffer, model/LOD table, patch stream +
-  free-list, eager destroyed variants. The **CPU still builds draws** by reading this model (via the
-  existing `plan_3d`/`draw_one`), so it derisks the big data-model change independently of compute/indirect.
-- **Stage 2 — CPU-built indirect.** Replay the `plan_3d` buckets as `multi_draw_indexed_indirect` over
-  the pool. Proves indirect + pool + bindless with no compute. Feature-gated + CPU fallback.
-- **Stage 3 — GPU cull + LOD compute → compute-built indirect (opaque set).** §3 in full: frustum +
-  distance + LOD select + compaction. The CPU stops walking opaque objects. Occlusion **off** (frustum+
-  distance+LOD only). This is the headline win.
+- **Stage 1 — Retained data model (no compute yet).** *(Built as: the geometry pool only. The rest —
+  model/LOD table, unified instance buffer — was folded into Stage 3's `CullState` instead of a CPU-draw
+  intermediary, since the doc's "CPU still builds draws from this model" step had no consumer once the
+  cull compute existed. Patch-stream free-list = the instance free-list; eager destroyed variants = NOT
+  yet done.)* Geometry pool (merged vbuf/ibuf + section descriptors), bindless object textures, unified
+  instance buffer, model/LOD table, patch stream + free-list, eager destroyed variants. The **CPU still
+  builds draws** by reading this model (via the existing `plan_3d`/`draw_one`).
+- **Stage 2 — CPU-built indirect. ✅ DONE + verified in-game.** Replay the `plan_3d` buckets as (single)
+  `draw_indexed_indirect` over the pool. Proves indirect + pool + bindless with no compute. Feature-gated
+  (`WGR_INDIRECT`) + CPU fallback.
+- **Stage 3 — GPU cull + LOD compute → compute-built indirect (opaque set). ✅ Rust DONE (`WGR_GPU_DRIVEN`,
+  inert); ⛔ C++ feed + count-trim remain.** §3 in full: frustum + distance + LOD select + compaction. The
+  CPU stops walking opaque objects. Occlusion **off**. This is the headline win — but only observable once
+  the C++ retained-scene feed lands (see Implementation status).
 - **Stage 4 — Hi-Z + occlusion.** §5: prepass → Hi-Z (`min`) → occlusion test in the color-pass cull.
 - **Stage 5 — Multi-view.** §6: route CSM cascades and (Phase 5) reflections through the same pass.
 - **Stage 6 — Skinned + transparent integration.** Fold skinned via the compute-skin-bake pool
@@ -339,10 +429,10 @@ Each stage ships and is measurable; the CPU path stays as the A/B reference unti
   per-variant batching are mandatory, not optional.
 - **`first_instance` from the indirect buffer** needs `INDIRECT_FIRST_INSTANCE`; without it, encode the
   instance-list base another way (per-batch offset uniform / a base in the instance list).
-- **Instance-list / indirect-args overflow** — size for a worst case and `log()` truncation; never
-  silently drop draws. The Metal single-`draw_indexed_indirect` loop caps at a fixed per-variant draw
-  count (§4); size the cap for the worst case and `log()` if a frame would exceed it (excess sections
-  would otherwise silently not draw on Metal only — a backend-divergent bug).
+- **Instance-list / indirect-args overflow** — size the args + instance-list buffers for a worst case and
+  `log()` if a frame would exceed the per-variant `count` cap; never silently drop draws. (This is a
+  uniform hazard on every backend now, not a Metal-only one — `multi_draw_indexed_indirect` is core with
+  internal Metal emulation, §4.)
 - **Destroyed-variant union bounds** (§2.4) — cull against `union(intact, destroyed)` or a morphing
   object culls out mid-destruction.
 - **Camera-relative precision** — instances store absolute transforms; subtract `cam_pos` in the shader
@@ -356,5 +446,63 @@ Each stage ships and is measurable; the CPU path stays as the A/B reference unti
 - [gpu-object-rendering-plan.md](gpu-object-rendering-plan.md) — destruction/keyframe morph (Stage 1) + the per-instance record (§5) this plan realizes; its Stage 3 delegates here.
 - [forward-plus-plan.md](forward-plus-plan.md) — shares the depth prepass and the reversed-Z hazards; clustered lighting shades the drawn set.
 - [water-rendering-plan.md](water-rendering-plan.md) — planar reflections (Stage 4b) reuse the multi-view cull path + a clip plane.
+- [gpu-terrain-water-cull-plan.md](gpu-terrain-water-cull-plan.md) — the terrain/water half of the §6 multi-view cull: moving CDLOD selection (a static quadtree, currently CPU) onto the GPU via a wavefront compute; ROI is multi-view (prepass + N CSM cascades + reflection), marginal for the main view alone.
 - [compute-skin-bake-plan.md](compute-skin-bake-plan.md) — bakes skinned meshes into the pool so they instance (Stage 6).
 - [rendering-performance-plan.md](rendering-performance-plan.md) — this is Stage 4 of the umbrella perf roadmap made concrete.
+
+## 11. Terrain-conforming objects on the GPU-driven path (priority — expands coverage)
+
+**Motivation:** the GPU-driven set is *static opaque-rigid clutter only*. `RegisterGpuModel` explicitly rejects
+any shape with a `ClipLandKeep | ClipLandOn` hint (`EngineWgpu.cpp:1701`), so **all terrain-conforming
+vegetation + fences stay on the CPU per-draw path** — a large, high-count slice of the world. Bringing them
+onto the GPU-driven path is higher value than optimizing terrain rendering. Good news: the per-draw wgpu path
+*already conforms in the vertex shader* (it doesn't rewrite meshes on the CPU), so this is a **shader/data
+port, not a new algorithm**.
+
+### 11.1 How conform works today (per-draw path)
+`shader3d.wgsl vs_main` conforms per instance, driven by `objects[i].conform0/1/2` (published by the CPU in
+`EngineWgpu.cpp:1495-1511`) + a per-vertex `@location(5) conform_sel` (baked into the mesh at byte 32):
+- **Mode 2 — individual ClipLand veg/fences** (the excluded set): purely per-vertex. `abs_xz = world_pos.xz +
+  cam_pos`; `sy = surface_y(abs_xz)` (the shared `conform` module, group(4) heightmap). `conform_sel`: `1`
+  ClipLandKeep → `y = sy + world_pos.y − bcSurfaceY`; `2` ClipLandOn → `y = sy − cam.y`; `0` rigid. Normals
+  tilt by `surface_grad`. **Per-instance data = just `bcSurfaceY` (= `conform0.x`) + the mode flag**; the
+  plane fields are unused.
+- **Mode 1 — ForestPlain** (per-object bilinear plane): whole object conforms to a published plane
+  (`conform0/1/2` = 10 floats). No per-vertex selector, no heightmap sample. *Separate, smaller follow-up.*
+
+The heightmap group(4) is `self.conform.bind` in `mod.rs` (already bound by `draw_one`/`draw_indirect`/shadow).
+The shadow pass conforms ClipLand independently (`shadow_depth.wgsl`), and shadow casters are unaffected by the
+`GpuDrivenObject` colour suppression — so **shadows already work for these objects and stay correct**.
+
+### 11.2 Plan — mode 2 (ClipLand) first
+1. **Shader (`gpu_driven.wgsl`):** `#import conform::{surface_y, surface_grad}`; add the group(4) heightmap
+   binding; add `@location(5) conform_sel: u32` to `vs_gpu`; port `vs_main`'s mode-2 block (read the mode +
+   `bcSurfaceY` from the instance). VS-only ⇒ **both `fs_gpu` and `fs_gpu_prepass` inherit it for free**, so
+   the prepass depth/normals stay consistent (the prepass shares `vs_gpu`).
+2. **Instance data (`InstanceGpu`):** carry the mode + `bcSurfaceY` without growing the struct — set a
+   `CONFORM_CLIPLAND` bit in the existing `flags`, store `bcSurfaceY` in a currently-`_pad` word (bitcast f32).
+   No layout-size change; FFI `WgrInstance` mirrors it.
+3. **Pipelines:** add group(4) to the GPU-driven colour + prepass pipeline layouts (`build_gpu_pipeline`); bind
+   `self.conform.bind` at group 4 in `draw_gpu_driven_impl` (covers both draws).
+4. **C++ (`RegisterGpuModel` / `BuildGpuInstance`):** drop the `ClipLandKeep|ClipLandOn` rejection; keep the
+   opaque/cutout + non-transparent gate (cutout foliage = variant 1, already handled). In `BuildGpuInstance`
+   set the conform flag when the shape is ClipLand and fill `bcSurfaceY`. **Decision: store the CPU-computed
+   `bcSurfaceY`** (`GLandscape->SurfaceY(objectPos)`, matching `GCurrentConformPlane.bcSurfaceY`) once at
+   add/update — it's static per static object and guarantees exact parity with the per-draw path; computing it
+   in-shader from the instance origin is a possible later simplification but risks an xz-reference mismatch.
+5. **Verify:** fences/individual trees conform to slopes identically to the CPU path; no cracks vs the terrain;
+   prepass depth matches (no z-fight halo); the CPU per-draw path no longer draws them (double-draw check).
+
+### 11.3 Open items / sequencing
+- **ForestPlain (mode 1) — CONFIRMED latent bug, now EXCLUDED (2026-07-09).** ForestPlain (forests + shrub
+  groups; `ObjectClasses.cpp`) conforms via a mode-1 bilinear plane published in its `Draw` override — it was
+  never gated (the old gate was only ClipLand *shape hints*), so Static ForestPlain objects were registered and
+  drawn **rigid → floating** since the GPU path first ran (this is what the user saw: trees/shrubs floating
+  "too high"). Quick fix landed: `SceneObjectCreated` skips `dyn_cast<ForestPlain>(obj)` → stays on the correct
+  CPU path. **Follow-up = port mode 1 to the GPU** (feed the 10-float plane per instance; needs a bigger
+  per-instance conform block than mode 2's single `bcSurfaceY`, so InstanceGpu grows or a parallel conform
+  buffer; skewed forest squares bake conform into the transform and need no plane). Copy `vs_main`'s mode-1
+  block into `vs_gpu`.
+- **Interaction with instancing collapse (§3.6):** conform is per-vertex/per-instance and rides the instance
+  record, so it composes with the collapse unchanged (the record already carries the instance id).
+- Scope call: land **mode 2** (the big count) first; then decide ForestPlain (fix-or-port) as a follow-up.

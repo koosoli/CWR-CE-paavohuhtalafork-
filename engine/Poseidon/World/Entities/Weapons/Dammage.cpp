@@ -4,6 +4,7 @@
 #include <Poseidon/World/Entities/Weapons/Shots.hpp>
 #include <Poseidon/Core/Global.hpp>
 #include <Poseidon/Core/Config/UserConfig.hpp>
+#include <Poseidon/Graphics/Core/Engine.hpp> // GEngine (GPU-driven retained-scene drop on destruction)
 #include <Random/randomGen.hpp>
 #include <Poseidon/World/World.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
@@ -489,6 +490,14 @@ void Object::SetDestroyed(float anim)
     _isDestroyed = phase > 0;
     if (_isDestroyed && !wasDestroyed)
     {
+        // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b): the GPU path
+        // holds only the intact geometry, so once an object starts being destroyed drop it
+        // from the retained scene — the CPU path then draws its destroyed/animated geometry.
+        // No-op unless WGR_GPU_DRIVEN is on and the object was handed over.
+        if (GEngine)
+        {
+            GEngine->SceneObjectRemoved(this);
+        }
         if (GetType() == Primary)
         {
             int xLand = toIntFloor(Position().X() * InvLandGrid);

@@ -40,6 +40,9 @@ pub fn build_composer() -> Composer {
         (include_str!("conform.wgsl"), "conform.wgsl"),
         (include_str!("lighting.wgsl"), "lighting.wgsl"),
         (include_str!("shadow.wgsl"), "shadow.wgsl"),
+        // Shared object fragment shading, imported by both the per-draw (shader3d) and the
+        // GPU-driven (gpu_driven) paths; depends on frame/shadow/lighting/color above.
+        (include_str!("shading.wgsl"), "shading.wgsl"),
     ] {
         if let Err(e) = composer.add_composable_module(ComposableModuleDescriptor {
             source,
@@ -116,6 +119,10 @@ mod tests {
         compose(
             include_str!("../gfx3d/skin_bake.wgsl"),
             "gfx3d/skin_bake.wgsl",
+        );
+        compose(
+            include_str!("../gfx3d/gpu_driven.wgsl"),
+            "gfx3d/gpu_driven.wgsl",
         );
         compose(
             include_str!("../terrain/terrain.wgsl"),

@@ -190,6 +190,68 @@ pub struct WgrLight {
     pub dir: WgrVec4,     // xyz = beam direction (spot), w = isSpot (1) else 0
 }
 
+// --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) ---
+//
+// C++ registers each opaque-rigid LODShapeWithShadow once (its LODs + per-section geometry
+// and material), then streams instances (spawns as slots, moves/destruction as updates,
+// despawns as removes). The GPU cull compute walks the retained instances each frame and
+// emits indirect draws; the CPU stops walking these objects per frame. Mirrored in
+// wgpu_renderer.hpp (size-asserted there and below).
+
+// One drawable section of a model LOD, for wgr_model_register. `mesh` + the index range
+// address the shared geometry pool (resolved to base_vertex/first_index at registration);
+// `variant` selects the pipeline-variant partition (0 = solid, 1 = alpha-cutout).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrModelSection {
+    pub mesh: u64,
+    pub index_begin: u32,
+    pub index_count: u32,
+    pub variant: u32,
+    pub _pad: u32,
+}
+
+// Per-section shading, parallel to a model's sections (one per section). The raw material is
+// folded with the frame sun in the GPU-driven fragment shader (matching the per-draw path);
+// `texture_id` is a wgr_texture_create handle, resolved to a bindless slot at registration.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrModelMaterial {
+    pub emissive: WgrVec4,
+    pub ambient: WgrVec4,
+    pub diffuse: WgrVec4,
+    pub specular: WgrVec4, // w = specular power
+    pub texture_id: u64,
+    pub sampler: u32,
+    pub alpha_ref: f32,
+}
+
+// One drawable LOD level of a model: its FindSqrtLevel resolution threshold (`_resolutions[i]`)
+// + the range of sections it draws (`section_base` is RELATIVE to this model's sections).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrModelLod {
+    pub resolution: f32,
+    pub section_base: u32,
+    pub section_count: u32,
+    pub is_decal: u32,
+}
+
+// One retained instance. Layout matches the GPU-side InstanceGpu (gfx3d/cull.rs) exactly, so
+// C++ fills it directly: `world` is the ABSOLUTE model->world transform (the GPU-driven VS
+// subtracts cam_pos), `center.xyz` the world bounding-sphere center + `center.w` the uniform
+// scale (both read by the cull compute), `model` the wgr_model_register id.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrInstance {
+    pub world: WgrMat4,
+    pub center: WgrVec4,
+    pub model: u32,
+    pub flags: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+}
+
 // Live tonemap/look parameters, pushed from the ImGui Tonemap tab via
 // wgr_set_tonemap. The Hable curve is fixed in the shader; these are exposure + the
 // colour-grade block. Layout matches the `Params` uniform in tonemap.wgsl and the
@@ -583,6 +645,10 @@ const _: () = assert!(std::mem::size_of::<WgrDraw2DBatch>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrMeshVertex>() == 36);
 const _: () = assert!(std::mem::size_of::<WgrDraw3D>() == 264);
 const _: () = assert!(std::mem::size_of::<WgrLight>() == 64);
+const _: () = assert!(std::mem::size_of::<WgrModelSection>() == 24);
+const _: () = assert!(std::mem::size_of::<WgrModelMaterial>() == 80);
+const _: () = assert!(std::mem::size_of::<WgrModelLod>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrInstance>() == 96);
 const _: () = assert!(std::mem::size_of::<WgrTonemap>() == 48);
 const _: () = assert!(std::mem::size_of::<WgrSky>() == 176);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
@@ -817,6 +883,142 @@ pub unsafe extern "C" fn wgr_mesh_destroy(renderer: *mut WgrRenderer, id: u64) {
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         unsafe { &mut *renderer }.mesh_destroy(id);
+    }));
+}
+
+// --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) ---
+
+/// Sentinel returned by `wgr_model_register` on failure.
+pub const WGR_INVALID_MODEL: u32 = u32::MAX;
+
+/// Register one opaque-rigid model for GPU-driven rendering. `lods`, `sections`, and
+/// `materials` describe a single LODShapeWithShadow: `sections` and `materials` are parallel
+/// (one material per section) and each `lods[i].section_base` indexes `sections` relative to
+/// this model. Section mesh handles are resolved to the shared geometry pool. Returns the
+/// model id (for `wgr_instance_add`) or `WGR_INVALID_MODEL` on error. Call once per shape.
+///
+/// # Safety
+/// `renderer` must be live; `lods`/`sections`/`materials` must each be a valid slice (data
+/// valid for its length, or null with length 0). Section mesh handles and material texture
+/// handles must be live `wgr_mesh_create` / `wgr_texture_create` handles.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_model_register(
+    renderer: *mut WgrRenderer,
+    bounding_sphere: f32,
+    lods: WgrSlice<WgrModelLod>,
+    sections: WgrSlice<WgrModelSection>,
+    materials: WgrSlice<WgrModelMaterial>,
+) -> u32 {
+    if renderer.is_null() {
+        return WGR_INVALID_MODEL;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let lods = unsafe { lods.as_slice() };
+        let sections = unsafe { sections.as_slice() };
+        let materials = unsafe { materials.as_slice() };
+        renderer.model_register(bounding_sphere, lods, sections, materials)
+    }))
+    .unwrap_or(WGR_INVALID_MODEL)
+}
+
+/// Add a static retained instance; returns its stable slot (recycled from removed slots).
+///
+/// # Safety
+/// `renderer` must be live; `inst` must point to a valid `WgrInstance`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_instance_add(
+    renderer: *mut WgrRenderer,
+    inst: *const WgrInstance,
+) -> u32 {
+    if renderer.is_null() || inst.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        renderer.instance_add(unsafe { &*inst })
+    }))
+    .unwrap_or(0)
+}
+
+/// Update a static instance in place (a move, or a destruction-phase change).
+///
+/// # Safety
+/// `renderer` must be live; `inst` must point to a valid `WgrInstance`; `slot` must be a
+/// slot returned by `wgr_instance_add` (stale slots are ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_instance_update(
+    renderer: *mut WgrRenderer,
+    slot: u32,
+    inst: *const WgrInstance,
+) {
+    if renderer.is_null() || inst.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        renderer.instance_update(slot, unsafe { &*inst });
+    }));
+}
+
+/// Remove a static instance (recycles its slot).
+///
+/// # Safety
+/// `renderer` must be live; `slot` must be a `wgr_instance_add` slot (stale slots ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_instance_remove(renderer: *mut WgrRenderer, slot: u32) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &mut *renderer }.instance_remove(slot);
+    }));
+}
+
+/// Replace the whole dynamic instance set for this frame (the churny set the CPU already
+/// walks for simulation: vehicles, units, ...). Re-copied wholesale each frame.
+///
+/// # Safety
+/// `renderer` must be live; `instances` must be a valid slice (data valid for its length, or
+/// null with length 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_dynamic(
+    renderer: *mut WgrRenderer,
+    instances: WgrSlice<WgrInstance>,
+) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let instances = unsafe { instances.as_slice() };
+        renderer.set_dynamic(instances);
+    }));
+}
+
+/// Push this frame's engine-derived GPU-driven cull + LOD inputs (the real
+/// Scene::LevelFromDistance2 values): `objects_z` = ENGINE_CONFIG.objectsZ draw distance,
+/// `lod_scale` = Camera::Left() (projection tan(halfFovX)), `lod_inv_width` =
+/// Scene::GetLodInvWidth() (≈ lodCoef*2/screenWidth), `pixel_limit` = the legacy 0.125 sub-pixel
+/// threshold. No-op unless GPU-driven rendering is enabled. Call once per frame for the main
+/// scene camera (e.g. from PushSceneCamera).
+///
+/// # Safety
+/// `renderer` must be live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_cull_params(
+    renderer: *mut WgrRenderer,
+    objects_z: f32,
+    lod_scale: f32,
+    lod_inv_width: f32,
+    pixel_limit: f32,
+) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        renderer.set_cull_inputs(objects_z, lod_scale, lod_inv_width, pixel_limit);
     }));
 }
 

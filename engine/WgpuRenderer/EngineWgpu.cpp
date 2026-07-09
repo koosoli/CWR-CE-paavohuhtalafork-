@@ -18,8 +18,12 @@
 #include <Poseidon/Graphics/Rendering/Primitives/Poly.hpp>
 #include <Poseidon/Graphics/Rendering/Lighting/Lights.hpp>
 #include <Poseidon/Graphics/Rendering/RenderFlags.hpp>
+#include <Poseidon/Graphics/Rendering/Lighting/Material.hpp> // TexMaterial::Combine (GPU-driven material extract)
 #include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
+#include <Poseidon/World/Scene/Object.hpp> // Object accessors (GPU-driven retained scene)
+#include <Poseidon/World/Scene/ObjectClasses.hpp> // ForestPlain (mode-1 conform exclusion)
+#include <Poseidon/World/Terrain/Landscape.hpp> // GLandscape->SurfaceY (GPU-driven conform bcSurfaceY)
 #include <Poseidon/Graphics/Shared/PNGWriter.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/World/Simulation/Animation/RtAnimation.hpp>
@@ -535,6 +539,15 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
         _smTuning.enabled = std::strtol(sm, nullptr, 10) != 0;
     }
 
+    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b). Must mirror the
+    // Rust-side WGR_GPU_DRIVEN gate exactly (== "1"): when on, the landscape/world hooks
+    // register shapes + stream retained instances and the CPU colour draw of handed-over
+    // objects is suppressed; when off, every hook is a no-op and the CPU path is unchanged.
+    if (const char* gd = std::getenv("WGR_GPU_DRIVEN"))
+    {
+        _gpuDriven = std::strcmp(gd, "1") == 0;
+    }
+
     // Mirror the renderer's WGR_HDR gate so the ImGui Tonemap tab knows the HDR
     // resolve pass is live (the renderer owns the real gate; this is UI-only). The
     // grade is driven by the per-ToD presets by default; a WGR_* tonemap env override
@@ -582,6 +595,12 @@ EngineWgpu::~EngineWgpu()
     }
     if (_renderer)
     {
+        // Release the retained scene's owned pool meshes before tearing down the renderer.
+        for (uint64_t mesh : _gpuMeshes)
+        {
+            wgr_mesh_destroy(_renderer, mesh);
+        }
+        _gpuMeshes.clear();
         wgr_destroy(_renderer);
         _renderer = nullptr;
     }
@@ -1277,6 +1296,17 @@ void EngineWgpu::PushSceneCamera()
         entry.dir[0] = dir.X();
         entry.dir[1] = dir.Y();
         entry.dir[2] = dir.Z();
+
+        // Feed the GPU-driven cull compute the SAME LOD/distance inputs the CPU path uses
+        // (Scene::LevelFromDistance2): draw distance, the projection scale Camera::Left(), and
+        // the per-frame _lodInvWidth (≈ lodCoef*2/screenWidth). Without these the cull ran with
+        // lod_scale/lod_inv_width = 1, making resol2 ~1e6× too large (every model snapped to its
+        // coarsest LOD within metres). pixel_limit mirrors LevelFromDistance2's 0.125.
+        if (_gpuDriven && _renderer)
+        {
+            wgr_set_cull_params(_renderer, static_cast<float>(OBJECT_Z), static_cast<float>(camera->Left()),
+                                GScene->GetLodInvWidth(), 0.125f);
+        }
     }
 
     _cameras.push_back(entry);
@@ -1544,6 +1574,305 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
 
     _draws3d.push_back(d);
     _cmds.push_back(WgrCmd{WGR_CMD_DRAW_3D, U32(_draws3d.size() - 1)});
+}
+
+// --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) ---
+
+namespace
+{
+
+// Classify one section of a graphical LOD for the GPU-driven path: fill its geometry range
+// (resolved to the shared pool by the Rust side) + RAW material + variant (0 = solid, 1 =
+// alpha-cutout), returning false if the section is NOT eligible (transparent, additive,
+// on-surface decal, or empty) — which makes the whole shape stay on the CPU path. Mirrors
+// DrawSectionTL's texture/sampler/alpha/material derivation, minus the sun fold (done
+// in-shader) and the per-object/mesh spec (registration is per-shape, object spec ~0 for
+// static clutter).
+bool ClassifyGpuSection(const Shape& s, uint64_t mesh, const AutoArray<render::mesh::MeshSection>& secs,
+                        int i, WgrModelSection& secOut, WgrModelMaterial& matOut)
+{
+    if (i >= secs.Size())
+    {
+        return false;
+    }
+    const ShapeSection& sec = s.GetSection(i);
+    const int spec = sec.properties.Special();
+    const render::LegacySpec split = render::SplitLegacy(spec);
+    render::BuildContext ctx;
+    ctx.isIn3DPass = true;
+    ctx.shadowAlphaRef = 0;
+    const render::RenderPassDescriptor desc = render::BuildRenderPassDescriptor(split, ctx);
+    // First cut: plain opaque surfaces only. Transparent/additive/shadow blends and
+    // on-surface decals (roads/footprints, which need a polygon-offset) stay on the CPU path.
+    if (desc.blend != render::BlendMode::Opaque || desc.surface != render::SurfaceMode::Default)
+    {
+        return false;
+    }
+
+    const render::mesh::MeshSection& ms = secs[i];
+    const int indexCount = ms.end - ms.beg;
+    if (indexCount <= 0)
+    {
+        return false;
+    }
+    secOut.mesh = mesh;
+    secOut.index_begin = U32(ms.beg);
+    secOut.index_count = U32(indexCount);
+    const float alphaRef = AlphaRefFromDesc(desc);
+    secOut.variant = alphaRef > 0.0f ? 1u : 0u;
+    secOut._pad = 0;
+
+    uint64_t tex = 0;
+    if (auto* t = static_cast<TextureWgpu*>(sec.properties.GetTexture()))
+    {
+        tex = t->EnsureUploaded();
+    }
+    // Raw per-section material (folded with the sun in the GPU-driven FS). Base = the
+    // shading-type material at neutral accommodation (HDR auto-exposure handles adaptation),
+    // then modulated by the section surface material. forcedDiffuse is dropped (the FS has no
+    // term for it; ~always black on static clutter).
+    TLMaterial m;
+    CreateMaterial(m, HWhite, sec.material);
+    if (sec.surfMat)
+    {
+        TLMaterial mod;
+        sec.surfMat->Combine(mod, m);
+        m = mod;
+    }
+    matOut.emissive = {m.emmisive.R(), m.emmisive.G(), m.emmisive.B(), m.emmisive.A()};
+    matOut.ambient = {m.ambient.R(), m.ambient.G(), m.ambient.B(), m.ambient.A()};
+    matOut.diffuse = {m.diffuse.R(), m.diffuse.G(), m.diffuse.B(), m.diffuse.A()};
+    matOut.specular = {m.specular.R(), m.specular.G(), m.specular.B(), float(m.specularPower)};
+    matOut.texture_id = tex;
+    matOut.sampler = U32(SamplerForSpec(spec));
+    matOut.alpha_ref = alphaRef;
+    return true;
+}
+
+// Build a retained instance from an object: absolute world transform (the GPU-driven VS
+// subtracts cam_pos), world bounding-sphere center + uniform scale (both read by the cull).
+// `conform`/`bcSurfaceY`: terrain-conform (ClipLand, mode 2) — sets the CONFORM_CLIPLAND flag +
+// carries bcSurfaceY so the GPU-driven VS conforms this instance to SurfaceY per vertex.
+constexpr uint32_t WGR_INSTANCE_CONFORM_CLIPLAND = 1u; // must match gpu_driven.wgsl CONFORM_CLIPLAND
+WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, bool conform, float bcSurfaceY)
+{
+    WgrInstance inst{};
+    GfxMatrix g;
+    ConvertMatrix(g, obj.Transform()); // absolute model->world (NOT camera-relative here)
+    std::memcpy(inst.world.m, &g, sizeof(inst.world.m));
+    // Cull-sphere center = the object ORIGIN (Transform.Position()), NOT Transform*BoundingCenter.
+    // LODShape::CalculateBoundingSphere physically re-centers the stored vertices around the
+    // vertex-space origin (ShapeLOD.cpp: `pos -= changeBoundingCenter`), and `_boundingSphere` is
+    // the radius about THAT origin — which the VS draws at Transform.Position(). BoundingCenter is
+    // only the offset back to pre-recenter coords; using it here displaces the sphere from the
+    // drawn geometry and culls offset-origin objects too early. Matches the legacy cull
+    // (SceneDraw.cpp: center = trans.Position(), radius = BoundingSphere()*Scale).
+    const Vector3 center = obj.Transform().Position();
+    inst.center = {center.X(), center.Y(), center.Z(), obj.Scale()};
+    inst.model = model;
+    inst.flags = conform ? WGR_INSTANCE_CONFORM_CLIPLAND : 0u;
+    if (conform)
+    {
+        std::memcpy(&inst._pad0, &bcSurfaceY, sizeof(float)); // bcSurfaceY as f32 bits
+    }
+    return inst;
+}
+
+// bcSurfaceY for a conform (ClipLand) instance: the surface height at the object's ground
+// reference, matching Object::PublishConformPlane (mode 2). 0 for non-conform / no landscape.
+static float GpuConformBcSurfaceY(const Object& obj, const LODShapeWithShadow& shape)
+{
+    if (!GLandscape)
+    {
+        return 0.0f;
+    }
+    Matrix4Val toWorld = obj.Transform();
+    Vector3 bc(VFastTransform, toWorld, -shape.BoundingCenter());
+    return GLandscape->SurfaceY(bc[0], bc[2]);
+}
+
+} // namespace
+
+uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
+{
+    if (auto found = _gpuModels.find(shape); found != _gpuModels.end())
+    {
+        return found->second; // already scanned (WGR_INVALID_MODEL if it was ineligible)
+    }
+
+    std::vector<WgrModelLod> lods;
+    std::vector<WgrModelSection> sections;
+    std::vector<WgrModelMaterial> materials;
+    bool eligible = true;
+    bool isConform = false;
+
+    for (int level = 0; level < shape->NLevels() && eligible; level++)
+    {
+        if (!shape->IsNormalLevel(level)) // skip special (>=900) non-graphical levels
+        {
+            continue;
+        }
+        Shape* s = shape->LevelOpaque(level);
+        if (!s || s->NVertex() <= 0 || s->NSections() <= 0)
+        {
+            continue;
+        }
+        // Terrain-conformed shapes (ClipLand fences / individual vegetation): the GPU-driven
+        // vertex shader now conforms them to SurfaceY per vertex (mode 2, matching the per-draw
+        // path), so they're eligible. Mark the shape conform — its instances carry the
+        // CONFORM_CLIPLAND flag + bcSurfaceY. Mirrors Object::PublishConformPlane's ClipLand gate.
+        if (s->GetOrHints() & (ClipLandKeep | ClipLandOn))
+        {
+            isConform = true;
+        }
+        // OWN the geometry: create a DEDICATED pool mesh from the shape's data rather than
+        // borrowing the shape's transient `_buffer`. ShapeBank::OptimizeAll releases every
+        // shape vertex buffer during world load (after object placement, i.e. after we
+        // register), which would leave a borrowed handle stale (destroyed) — the geometry
+        // would then read freed/reused pool bytes (soup) or nothing. A mesh we create here is
+        // owned by the retained scene (`_gpuMeshes`) and untouched by that release.
+        const int nv = s->NVertex();
+        const int ni = render::mesh::CountIndices(*s);
+        if (ni <= 0)
+        {
+            continue;
+        }
+        std::vector<SVertex> verts(static_cast<size_t>(nv));
+        render::mesh::BuildVertices(*s, verts.data());
+        std::vector<VertexIndex> indices(static_cast<size_t>(ni));
+        render::mesh::BuildIndices(*s, indices.data());
+        const uint64_t mesh = wgr_mesh_create(
+            _renderer, AsMeshVerts(verts),
+            WgrSlice<uint16_t>{reinterpret_cast<const uint16_t*>(indices.data()), U32(ni)});
+        if (!mesh)
+        {
+            eligible = false;
+            break;
+        }
+        _gpuMeshes.push_back(mesh);
+        AutoArray<render::mesh::MeshSection> secs;
+        render::mesh::BuildSections(*s, secs);
+
+        const uint32_t base = U32(sections.size());
+        uint32_t count = 0;
+        for (int i = 0; i < s->NSections(); i++)
+        {
+            WgrModelSection sec{};
+            WgrModelMaterial mat{};
+            if (!ClassifyGpuSection(*s, mesh, secs, i, sec, mat))
+            {
+                eligible = false;
+                break;
+            }
+            sections.push_back(sec);
+            materials.push_back(mat);
+            count++;
+        }
+        if (eligible)
+        {
+            lods.push_back(WgrModelLod{shape->Resolution(level), base, count, 0});
+        }
+    }
+
+    uint32_t model = WGR_INVALID_MODEL;
+    if (eligible && !lods.empty() && !sections.empty())
+    {
+        model = wgr_model_register(_renderer, shape->BoundingSphere(),
+                                   WgrSlice<WgrModelLod>{lods.data(), U32(lods.size())},
+                                   WgrSlice<WgrModelSection>{sections.data(), U32(sections.size())},
+                                   WgrSlice<WgrModelMaterial>{materials.data(), U32(materials.size())});
+    }
+    _gpuModels[shape] = model;
+    if (model != WGR_INVALID_MODEL && isConform)
+    {
+        _gpuConformShapes.insert(shape);
+    }
+    return model;
+}
+
+void EngineWgpu::SceneObjectCreated(Object* obj)
+{
+    if (!_gpuDriven || !_renderer || !obj)
+    {
+        return;
+    }
+    // First cut: static, intact, opaque-rigid objects only. Non-static (dynamics), already
+    // handed over, and destroyed / mid-destruction objects stay on the CPU path (the GPU path
+    // has no destroyed-variant geometry yet).
+    if (!obj->Static() || obj->IsDestroyed() || _gpuInstances.count(obj) != 0)
+    {
+        return;
+    }
+    // ForestPlain (forests + shrub groups) conforms to the terrain via a MODE-1 bilinear plane
+    // published in its Draw override (ObjectClasses.cpp). The GPU-driven VS only implements
+    // mode-2 (per-vertex ClipLand) conform, so a ForestPlain drawn here would be rigid and
+    // float off the ground. Keep it on the CPU path until mode-1 is ported to the GPU.
+    if (dyn_cast<ForestPlain>(obj))
+    {
+        return;
+    }
+    LODShapeWithShadow* shape = obj->GetShape();
+    if (!shape)
+    {
+        return;
+    }
+    const uint32_t model = RegisterGpuModel(shape);
+    if (model == WGR_INVALID_MODEL)
+    {
+        return; // ineligible shape -> object drawn by the CPU path
+    }
+    const bool conform = _gpuConformShapes.count(shape) != 0;
+    const float bcSurfaceY = conform ? GpuConformBcSurfaceY(*obj, *shape) : 0.0f;
+    const WgrInstance inst = BuildGpuInstance(*obj, model, conform, bcSurfaceY);
+    const uint32_t slot = wgr_instance_add(_renderer, &inst);
+    _gpuInstances[obj] = GpuInstance{model, slot};
+}
+
+void EngineWgpu::SceneObjectRemoved(Object* obj)
+{
+    if (!_renderer)
+    {
+        return;
+    }
+    auto it = _gpuInstances.find(obj);
+    if (it == _gpuInstances.end())
+    {
+        return;
+    }
+    wgr_instance_remove(_renderer, it->second.slot);
+    _gpuInstances.erase(it);
+}
+
+void EngineWgpu::SceneObjectMoved(Object* obj)
+{
+    if (!_renderer)
+    {
+        return;
+    }
+    auto it = _gpuInstances.find(obj);
+    if (it == _gpuInstances.end())
+    {
+        return;
+    }
+    LODShapeWithShadow* shape = obj->GetShape();
+    // A destroyed object (or a shape swap) can no longer ride the intact GPU model: drop it
+    // back to the CPU path, which draws the destroyed/animated geometry.
+    if (!shape || obj->IsDestroyed())
+    {
+        wgr_instance_remove(_renderer, it->second.slot);
+        _gpuInstances.erase(it);
+        return;
+    }
+    // Conform bcSurfaceY depends on position, so recompute it on move.
+    const bool conform = _gpuConformShapes.count(shape) != 0;
+    const float bcSurfaceY = conform ? GpuConformBcSurfaceY(*obj, *shape) : 0.0f;
+    const WgrInstance inst = BuildGpuInstance(*obj, it->second.model, conform, bcSurfaceY);
+    wgr_instance_update(_renderer, it->second.slot, &inst);
+}
+
+bool EngineWgpu::GpuDrivenObject(const Object* obj) const
+{
+    return _gpuDriven && _gpuInstances.count(obj) != 0;
 }
 
 void EngineWgpu::SetShadowCascades(const shadow::CascadeSet& cascades, int resolution)

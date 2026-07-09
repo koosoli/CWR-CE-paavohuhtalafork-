@@ -267,6 +267,72 @@ struct WgrLight
     WgrVec4 dir;     /* xyz = beam direction (spot), w = isSpot (1) else 0 */
 };
 
+/* --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) ---
+ *
+ * C++ registers each opaque-rigid LODShapeWithShadow once (its LODs + per-section
+ * geometry and material) via wgr_model_register, then streams instances: static
+ * clutter as add/update/remove slots, dynamics re-copied each frame via
+ * wgr_set_dynamic. The GPU cull compute walks the retained instances each frame and
+ * emits indirect draws, so the CPU stops walking these objects per frame. Layouts
+ * mirror the Rust #[repr(C)] structs in rust/src/ffi.rs (size-asserted both sides). */
+
+/* One drawable section of a model LOD. `mesh` + the index range address the shared
+ * geometry pool (resolved to base_vertex/first_index at registration); `variant`
+ * selects the pipeline-variant partition (0 = solid, 1 = alpha-cutout). */
+struct WgrModelSection
+{
+    WgrMesh mesh;
+    uint32_t index_begin;
+    uint32_t index_count;
+    uint32_t variant;
+    uint32_t _pad;
+};
+
+/* Per-section shading, parallel to a model's sections (one per section). The RAW
+ * material is folded with the frame sun in the GPU-driven fragment shader (matching
+ * the per-draw path); `texture_id` is a wgr_texture_create handle, resolved to a
+ * bindless slot at registration. */
+struct WgrModelMaterial
+{
+    WgrVec4 emissive;
+    WgrVec4 ambient;
+    WgrVec4 diffuse;
+    WgrVec4 specular; /* w = specular power */
+    WgrTexture texture_id;
+    uint32_t sampler;
+    float alpha_ref;
+};
+
+/* One drawable LOD level: its FindSqrtLevel resolution threshold (_resolutions[i]) +
+ * the range of sections it draws (`section_base` is RELATIVE to this model's
+ * sections). */
+struct WgrModelLod
+{
+    float resolution;
+    uint32_t section_base;
+    uint32_t section_count;
+    uint32_t is_decal;
+};
+
+/* One retained instance. Layout matches the GPU-side InstanceGpu exactly: `world` is
+ * the ABSOLUTE model->world transform (the GPU-driven VS subtracts cam_pos),
+ * `center.xyz` the world bounding-sphere center + `center.w` the uniform scale (both
+ * read by the cull compute), `model` the wgr_model_register id. */
+struct WgrInstance
+{
+    WgrMat4 world;
+    WgrVec4 center;
+    uint32_t model;
+    uint32_t flags;
+    uint32_t _pad0;
+    uint32_t _pad1;
+};
+
+static_assert(sizeof(WgrModelSection) == 24, "WgrModelSection must match Rust");
+static_assert(sizeof(WgrModelMaterial) == 80, "WgrModelMaterial must match Rust");
+static_assert(sizeof(WgrModelLod) == 16, "WgrModelLod must match Rust");
+static_assert(sizeof(WgrInstance) == 96, "WgrInstance must match Rust");
+
 /* Live tonemap/look parameters, pushed via wgr_set_tonemap (from the ImGui Tonemap
  * tab). The Hable curve is fixed in the shader; these are exposure + the colour-grade
  * block. Layout matches the Rust WgrTonemap #[repr(C)] and the tonemap.wgsl uniform. */
@@ -665,6 +731,40 @@ extern "C"
                                    WgrSlice<uint8_t> weights);
 
     WGR_API void wgr_mesh_destroy(WgrRenderer* renderer, WgrMesh id);
+
+    /* --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) --- */
+
+    /* Sentinel returned by wgr_model_register on failure. */
+    constexpr uint32_t WGR_INVALID_MODEL = 0xFFFFFFFFu;
+
+    /* Register one opaque-rigid model for GPU-driven rendering. `lods`, `sections`, and
+     * `materials` describe a single LODShapeWithShadow: `sections` and `materials` are
+     * parallel (one material per section) and each lods[i].section_base indexes
+     * `sections` relative to this model. Section mesh handles are resolved to the
+     * shared geometry pool. Returns the model id (for wgr_instance_add) or
+     * WGR_INVALID_MODEL on error. Call once per shape. */
+    WGR_API uint32_t wgr_model_register(WgrRenderer* renderer, float bounding_sphere, WgrSlice<WgrModelLod> lods,
+                                        WgrSlice<WgrModelSection> sections, WgrSlice<WgrModelMaterial> materials);
+
+    /* Add a static retained instance; returns its stable slot (recycled from removed
+     * slots). Update it in place with wgr_instance_update (a move, or a destruction-
+     * phase change), remove it with wgr_instance_remove. */
+    WGR_API uint32_t wgr_instance_add(WgrRenderer* renderer, const WgrInstance* inst);
+    WGR_API void wgr_instance_update(WgrRenderer* renderer, uint32_t slot, const WgrInstance* inst);
+    WGR_API void wgr_instance_remove(WgrRenderer* renderer, uint32_t slot);
+
+    /* Replace the whole dynamic instance set for this frame (the churny set the CPU
+     * already walks for simulation: vehicles, units, ...). Re-copied wholesale each
+     * frame. */
+    WGR_API void wgr_set_dynamic(WgrRenderer* renderer, WgrSlice<WgrInstance> instances);
+
+    /* Push this frame's engine-derived cull + LOD inputs (the real Scene::LevelFromDistance2
+     * values): `objects_z` = ENGINE_CONFIG.objectsZ draw distance, `lod_scale` = Camera::Left()
+     * (projection tan(halfFovX)), `lod_inv_width` = Scene::GetLodInvWidth()
+     * (~ lodCoef*2/screenWidth), `pixel_limit` = the legacy 0.125 sub-pixel threshold. No-op
+     * unless GPU-driven rendering is enabled. Call once per frame for the main scene camera. */
+    WGR_API void wgr_set_cull_params(WgrRenderer* renderer, float objects_z, float lod_scale,
+                                     float lod_inv_width, float pixel_limit);
 
     /* Upload (or replace) the terrain heightmap: `heights` is
      * params->hm_width * params->hm_height row-major world-height floats (row 0 =

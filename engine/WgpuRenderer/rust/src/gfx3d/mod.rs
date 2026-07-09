@@ -2,10 +2,20 @@ use rustc_hash::FxHashMap;
 use slotmap::{Key, KeyData, SlotMap};
 use wgpu::util::DeviceExt;
 
+mod pool;
+use pool::{GeometryPool, MeshAlloc};
+
+// GPU cull + LOD + indirect-arg compaction (docs/gpu-culling-and-depth-plan.md Stage 3).
+// Stage 3a builds the data model + compute + frustum math; the live data source (C++
+// retained-scene FFI) and dispatch/submission land in Stage 3b, so the items are unused
+// for now.
+#[allow(dead_code)]
+mod cull;
+
 use crate::ffi::{
     DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE, WgrBlend, WgrCamera,
-    WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrMat4, WgrMeshVertex, WgrLight, WgrShadowCaster,
-    WgrShadowPass, WgrVec4,
+    WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrInstance, WgrLight, WgrMat4, WgrMeshVertex,
+    WgrModelLod, WgrModelMaterial, WgrModelSection, WgrShadowCaster, WgrShadowPass, WgrVec4,
 };
 use crate::textures::SharedTextures;
 
@@ -169,6 +179,26 @@ struct MaterialUbo {
     specular: [f32; 4],
 }
 
+// One indexed indirect draw command, the layout every backend's
+// draw_indexed_indirect / multi_draw_indexed_indirect consumes (Vulkan/DX/Metal all
+// agree, 20 bytes). Stage 2 (docs/gpu-culling-and-depth-plan.md) builds these on the
+// CPU from the instancing plan; Stage 3's cull compute writes the same layout. Under
+// indirect the pool buffers are bound WHOLE, so `base_vertex` = the mesh's vbase and
+// `first_index` = its ibase + the section start; `first_instance` = the bucket's
+// base_instance (needs the INDIRECT_FIRST_INSTANCE feature), selecting each instance's
+// world/material slot exactly as the direct path's base_instance range does.
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+struct DrawIndexedIndirectArgs {
+    index_count: u32,
+    instance_count: u32,
+    first_index: u32,
+    base_vertex: i32,
+    first_instance: u32,
+}
+
+const INDIRECT_ARG_SIZE: u64 = std::mem::size_of::<DrawIndexedIndirectArgs>() as u64;
+
 // Column-major identity, packed into the per-instance world SSBO / ShadowCasterGpu for
 // a baked skinned draw: the compute bake already folded the camera-relative world into
 // the palette (palette[i] = world * bone[i]), so the rigid pipeline must NOT re-apply it.
@@ -190,6 +220,9 @@ struct BakeGroup {
     out_base_vertex: u32,
     instance_count: u32,
     vert_count: u32,
+    // The mesh's first vertex in the shared geometry pool: the bake reads its rest-pose
+    // source from `pool.vbuf` starting here (docs/gpu-culling-and-depth-plan.md §2.1).
+    in_base_vertex: u32,
 }
 
 // Per-dispatch uniform for the skin bake, mirrored by `BakeParams` in skin_bake.wgsl.
@@ -200,6 +233,11 @@ struct BakeParamsGpu {
     instance_count: u32,
     palette_base: u32,
     out_base_vertex: u32,
+    // First source vertex of this mesh in the shared pool vbuf (the bake now reads its
+    // rest pose from the pool, not a per-mesh buffer). Padded to a 16-byte multiple so
+    // the dynamic-offset UBO stride stays aligned.
+    in_base_vertex: u32,
+    _pad: [u32; 3],
 }
 
 // Bytes per baked vertex = one WgrMeshVertex (pos+norm+uv+conform, 9 words).
@@ -278,13 +316,27 @@ slotmap::new_key_type! {
 }
 
 struct Mesh {
-    vbuf: wgpu::Buffer,
-    ibuf: wgpu::Buffer,
+    // Where this mesh's geometry lives in the shared GeometryPool (docs/
+    // gpu-culling-and-depth-plan.md §2.1). `vbase`/`ibase` are the mesh's first vertex
+    // / first index in the pool; indices are stored 0-based mesh-local (Uint32).
+    alloc: MeshAlloc,
     index_count: u32,
     vert_count: u32,
     // Per-vertex skin data (4 bone indices + 4 weights, 8 bytes/vertex); present
-    // only for skinned meshes.
+    // only for skinned meshes. Standalone (0-based), bound at vertex slot 1 with
+    // base_vertex = 0 alongside the pool vbuf sliced to `vbase`.
     skin: Option<wgpu::Buffer>,
+}
+
+// One GPU-driven section's registration source: the mesh handle it lives in, its mesh-local
+// index range, and its pipeline variant. Kept so base_vertex / first_index can be re-resolved
+// from the current mesh alloc each frame (the pool can move a mesh on VB recreate).
+#[derive(Clone, Copy)]
+struct GpuSectionSrc {
+    mesh: u64,
+    index_begin: u32,
+    index_count: u32,
+    variant: u32,
 }
 
 struct ShadowTarget {
@@ -985,16 +1037,67 @@ pub struct Gfx3d {
     // per-frame "one vkUpdateDescriptorSets per skinned mesh" into zero on steady frames.
     bake_bind_cache: FxHashMap<MeshKey, wgpu::BindGroup>,
 
+    // Merged geometry pool: one shared vertex buffer + one shared Uint32 index buffer
+    // that every mesh suballocates into (docs/gpu-culling-and-depth-plan.md §2.1). Each
+    // Mesh holds only pool offsets; draws address the pool via slice + ibase.
+    pool: GeometryPool,
+
+    // GPU-driven indirect draw (docs/gpu-culling-and-depth-plan.md Stage 2). When on, the
+    // instancing plan's opaque-rigid buckets submit from a CPU-built indirect args buffer
+    // instead of direct draw_indexed; off (flag or missing INDIRECT_FIRST_INSTANCE) keeps
+    // the whole opaque set on the direct draw_one path.
+    indirect_enabled: bool,
+    // This frame's DrawIndexedIndirectArgs, one per indirect bucket, packed by
+    // build_indirect in plan-op order (grow-only; INDIRECT for the draw + STORAGE for the
+    // Stage-3 compute writer).
+    indirect_args: Option<wgpu::Buffer>,
+    indirect_args_cap: u64,
+
+    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3): the cull compute +
+    // retained scene, the GPU-driven opaque draw pipeline, and its group-1 bind group
+    // (instances/records/materials, rebuilt when the cull buffers grow). Gated by
+    // WGR_GPU_DRIVEN; inert until C++ registers models/instances (Stage 3b-3).
+    gpu_driven_enabled: bool,
+    // Per-section registration source (mesh handle + mesh-local range + variant), parallel to
+    // the cull's sections table and in the same append order. The pool can relocate a mesh's
+    // vertices (VB release + recreate on LOD optimisation / shape reload changes its vbase), so
+    // base_vertex / first_index are RE-RESOLVED from the current mesh alloc every frame in
+    // prepare_cull — exactly as the CPU indirect + shadow paths do — instead of being captured
+    // once at registration (which would leave a stale vbase pointing at freed/reused pool bytes).
+    gpu_section_src: Vec<GpuSectionSrc>,
+    // Diagnostic: last-reported count of sections whose mesh handle resolved to nothing
+    // (stale/destroyed). u32::MAX = never reported. Logged under WGR_GPU_DEBUG when it changes.
+    gpu_dbg_stale: u32,
+    // MULTI_DRAW_INDIRECT_COUNT is available (desktop Vulkan/DX12; Metal lacks it). When set,
+    // draw_gpu_driven trims the no-op tail via the GPU count buffer instead of dispatching the
+    // full conservative capacity (3b-4).
+    multi_draw_count_enabled: bool,
+    // Engine-derived cull + LOD inputs (objectsZ / Camera::Left() / Scene::_lodInvWidth /
+    // pixel_limit), pushed each frame from C++ (wgr_set_cull_params). Default is inert-safe
+    // (draw everything at finest LOD within objects_z) until the first push.
+    cull_inputs: cull::CullInputs,
+    cull: cull::CullState,
+    gpu_pipeline: wgpu::RenderPipeline,
+    // Depth+normal prepass variant of gpu_pipeline (vs_gpu / fs_gpu_prepass): writes depth +
+    // the view-space normal G-buffer so the GPU-driven set participates in the prepass.
+    gpu_prepass_pipeline: wgpu::RenderPipeline,
+    gpu_group1_layout: wgpu::BindGroupLayout,
+    gpu_group1_bind: Option<wgpu::BindGroup>,
+
     meshes: SlotMap<MeshKey, Mesh>,
 }
 
 impl Gfx3d {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         textures: &SharedTextures,
         surface_format: wgpu::TextureFormat,
         composer: &mut naga_oil::compose::Composer,
         skin_bake_enabled: bool,
+        indirect_enabled: bool,
+        gpu_driven_enabled: bool,
+        multi_draw_count_enabled: bool,
     ) -> Self {
         let shader = crate::shaders::make_module(
             device,
@@ -1250,6 +1353,22 @@ impl Gfx3d {
             cache: None,
         });
 
+        // GPU-driven rendering (Stage 3): retained scene + cull compute + the opaque draw
+        // pipeline. Groups 0/2/3 (camera, bindless textures, samplers) are shared with the
+        // per-draw path; group 1 is instances/records/materials.
+        let cull = cull::CullState::new(device);
+        let gpu_group1_layout = cull::gpu_group1_layout(device);
+        let (gpu_pipeline, gpu_prepass_pipeline) = cull::build_gpu_pipeline(
+            device,
+            composer,
+            &cameras.layout,
+            &gpu_group1_layout,
+            &textures.bindless_layout,
+            &textures.sampler_array_layout,
+            &conform.layout,
+            surface_format,
+        );
+
         Gfx3d {
             cameras,
             conform,
@@ -1293,6 +1412,20 @@ impl Gfx3d {
             bake_groups: Vec::new(),
             skin_base_vertex: FxHashMap::default(),
             bake_bind_cache: FxHashMap::default(),
+            pool: GeometryPool::new(device),
+            indirect_enabled,
+            indirect_args: None,
+            indirect_args_cap: 0,
+            gpu_driven_enabled,
+            gpu_section_src: Vec::new(),
+            gpu_dbg_stale: u32::MAX,
+            multi_draw_count_enabled,
+            cull_inputs: cull::CullInputs::default(),
+            cull,
+            gpu_pipeline,
+            gpu_prepass_pipeline,
+            gpu_group1_layout,
+            gpu_group1_bind: None,
             meshes: SlotMap::with_key(),
         }
     }
@@ -1584,29 +1717,23 @@ impl Gfx3d {
     pub fn mesh_create(
         &mut self,
         device: &wgpu::Device,
+        queue: &wgpu::Queue,
         verts: &[WgrMeshVertex],
         indices: &[u16],
     ) -> u64 {
-        if verts.is_empty() || indices.is_empty() {
+        // Suballocate into the shared geometry pool (indices widened u16 -> Uint32).
+        // Returns None (=> the 0 handle) for an empty mesh, matching the old behaviour.
+        let gen_before = self.pool.generation();
+        let Some(alloc) = self.pool.alloc(device, queue, verts, indices) else {
             return 0;
+        };
+        // A pool growth reallocates the vbuf that every cached skin-bake bind references
+        // (binding 0), so drop the cache when the pool moved.
+        if self.pool.generation() != gen_before {
+            self.bake_bind_cache.clear();
         }
-        let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wgr_3d_vbuf"),
-            contents: bytemuck::cast_slice(verts),
-            // STORAGE so the compute skin bake can read it as the rest-pose source
-            // (docs/compute-skin-bake-plan.md); non-skinned meshes never bind it there.
-            usage: wgpu::BufferUsages::VERTEX
-                | wgpu::BufferUsages::STORAGE
-                | wgpu::BufferUsages::COPY_DST,
-        });
-        let ibuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wgr_3d_ibuf"),
-            contents: bytemuck::cast_slice(indices),
-            usage: wgpu::BufferUsages::INDEX,
-        });
         let key = self.meshes.insert(Mesh {
-            vbuf,
-            ibuf,
+            alloc,
             index_count: indices.len() as u32,
             vert_count: verts.len() as u32,
             skin: None,
@@ -1659,14 +1786,18 @@ impl Gfx3d {
         if verts.is_empty() || verts.len() as u32 > mesh.vert_count {
             return;
         }
-        queue.write_buffer(&mesh.vbuf, 0, bytemuck::cast_slice(verts));
+        let vbase = mesh.alloc.vbase;
+        self.pool.update_verts(queue, vbase, verts);
     }
 
     pub fn mesh_destroy(&mut self, handle: u64) {
         if handle != 0 {
             let key: MeshKey = KeyData::from_ffi(handle).into();
-            self.meshes.remove(key);
-            // Drop any cached skin-bake bind that referenced this mesh's buffers.
+            // Return the mesh's pool ranges to the free-list so a later load reuses them.
+            if let Some(mesh) = self.meshes.remove(key) {
+                self.pool.free(&mesh.alloc, mesh.vert_count, mesh.index_count);
+            }
+            // Drop any cached skin-bake bind that referenced this mesh's skin buffer.
             self.bake_bind_cache.remove(&key);
         }
     }
@@ -1727,6 +1858,7 @@ impl Gfx3d {
                 out_base_vertex: out_base,
                 instance_count: 1,
                 vert_count: mesh.vert_count,
+                in_base_vertex: mesh.alloc.vbase,
             });
             out_base += mesh.vert_count;
         };
@@ -1790,6 +1922,8 @@ impl Gfx3d {
                 instance_count: g.instance_count,
                 palette_base: g.palette_base,
                 out_base_vertex: g.out_base_vertex,
+                in_base_vertex: g.in_base_vertex,
+                _pad: [0; 3],
             };
             let off = i * stride;
             scratch[off..off + std::mem::size_of::<BakeParamsGpu>()]
@@ -1808,6 +1942,10 @@ impl Gfx3d {
             self.skin_base_vertex.clear();
             return;
         };
+        // The bake reads every mesh's rest pose from the shared pool vbuf (binding 0),
+        // offset per-group by in_base_vertex; only the per-mesh skin buffer (binding 1)
+        // differs between meshes. Whole-buffer, so the bind is stable frame-to-frame.
+        let pool_vbuf = self.pool.vbuf();
         let mut new_binds: Vec<(MeshKey, wgpu::BindGroup)> = Vec::new();
         for g in &self.bake_groups {
             if self.bake_bind_cache.contains_key(&g.mesh)
@@ -1827,7 +1965,7 @@ impl Gfx3d {
                 entries: &[
                     wgpu::BindGroupEntry {
                         binding: 0,
-                        resource: mesh.vbuf.as_entire_binding(),
+                        resource: pool_vbuf.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
@@ -2321,19 +2459,24 @@ impl Gfx3d {
                 );
                 rp.set_bind_group(3, textures.sampler_bind(caster.sampler.index()), &[]);
                 rp.set_bind_group(4, conform_bind, &[]);
-                // Baked casters pull rest-of-space verts from the shared skinned buffer at
-                // base_vertex; rigid/VS-skinned from the mesh's own. Index buffer unchanged.
-                let (vbuf, base_vertex) = match baked {
-                    Some(bv) if self.skinned_vbuf.is_some() => {
-                        (self.skinned_vbuf.as_ref().unwrap(), bv as i32)
-                    }
-                    _ => (&mesh.vbuf, 0),
+                // Baked casters pull baked verts from the shared skinned buffer at the
+                // baked slice offset; rigid/VS-skinned pull from the geometry pool at the
+                // mesh's vbase. Sliced to that byte offset with base_vertex 0 (as in
+                // draw_one); the index buffer is always the pool's Uint32 ibuf, its range
+                // offset by the mesh's ibase.
+                let (vbuf, vert_off) = match baked {
+                    Some(bv) if self.skinned_vbuf.is_some() => (
+                        self.skinned_vbuf.as_ref().unwrap(),
+                        bv as u64 * BAKED_VERT_SIZE,
+                    ),
+                    _ => (self.pool.vbuf(), mesh.alloc.vbase as u64 * BAKED_VERT_SIZE),
                 };
-                rp.set_vertex_buffer(0, vbuf.slice(..));
-                rp.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint16);
+                rp.set_vertex_buffer(0, vbuf.slice(vert_off..));
+                rp.set_index_buffer(self.pool.ibuf().slice(..), wgpu::IndexFormat::Uint32);
+                let first = mesh.alloc.ibase + caster.index_begin;
                 rp.draw_indexed(
-                    caster.index_begin..(caster.index_begin + caster.index_count),
-                    base_vertex,
+                    first..(first + caster.index_count),
+                    0,
                     bucket.base..(bucket.base + bucket.count),
                 );
             }
@@ -2751,6 +2894,9 @@ impl Gfx3d {
                     draw: repr,
                     base,
                     count,
+                    // Every bucket is instanceable opaque-rigid (the only path that
+                    // buckets), so it is a candidate for the indirect draw path.
+                    kind: DrawKind::IndirectEligible,
                 });
             }
             bucket_index.clear();
@@ -2802,6 +2948,9 @@ impl Gfx3d {
                         draw: cmd.arg,
                         base,
                         count: 1,
+                        // Barrier draw (transparent / decal / skinned / non-standard
+                        // depth): always submitted directly via draw_one.
+                        kind: DrawKind::Direct,
                     });
                 }
             } else if cmd.kind == WgrCmdKind::Draw2D as u32 {
@@ -2823,6 +2972,79 @@ impl Gfx3d {
         }
         flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
         Plan3d { order, ops }
+    }
+
+    // Build this frame's indirect draw args from the instancing plan (docs/
+    // gpu-culling-and-depth-plan.md Stage 2). For each instanceable opaque-rigid bucket
+    // (DrawKind::IndirectEligible) it writes one DrawIndexedIndirectArgs addressing the
+    // shared pool — base_vertex = the mesh's vbase, first_index = its ibase + the section
+    // start, first_instance = the bucket's base_instance — and upgrades the op to
+    // Indirect(byte_offset). No-op (leaving buckets on the direct draw_one path) when
+    // indirect is disabled. Mutates `ops` in place; call after plan_3d, before the replay.
+    pub fn build_indirect(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        draws: &[WgrDraw3D],
+        ops: &mut [Plan3dOp],
+    ) {
+        if !self.indirect_enabled {
+            return;
+        }
+        let mut args: Vec<DrawIndexedIndirectArgs> = Vec::new();
+        for op in ops.iter_mut() {
+            let Plan3dOp::Draw3D {
+                draw, base, count, kind,
+            } = op
+            else {
+                continue;
+            };
+            if !matches!(kind, DrawKind::IndirectEligible) {
+                continue;
+            }
+            let d = &draws[*draw as usize];
+            // The bucket exists only because plan_3d validated the mesh + range; re-guard
+            // (drop back to the direct path) rather than panic if the mesh is gone.
+            let Some(mesh) = self.meshes.get(KeyData::from_ffi(d.mesh).into()) else {
+                *kind = DrawKind::Direct;
+                continue;
+            };
+            let offset = args.len() as u64 * INDIRECT_ARG_SIZE;
+            args.push(DrawIndexedIndirectArgs {
+                index_count: d.index_count,
+                instance_count: *count,
+                first_index: mesh.alloc.ibase + d.index_begin,
+                base_vertex: mesh.alloc.vbase as i32,
+                first_instance: *base,
+            });
+            *kind = DrawKind::Indirect(offset as u32);
+        }
+        if args.is_empty() {
+            return;
+        }
+        let bytes = args.len() as u64 * INDIRECT_ARG_SIZE;
+        self.ensure_indirect_args(device, bytes);
+        queue.write_buffer(
+            self.indirect_args.as_ref().unwrap(),
+            0,
+            bytemuck::cast_slice(&args),
+        );
+    }
+
+    fn ensure_indirect_args(&mut self, device: &wgpu::Device, bytes: u64) {
+        if self.indirect_args_cap >= bytes && self.indirect_args.is_some() {
+            return;
+        }
+        let cap = bytes.next_power_of_two().max(4096);
+        self.indirect_args = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_indirect_args"),
+            size: cap,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        self.indirect_args_cap = cap;
     }
 
     // Issue one (possibly instanced) indexed draw. `d` supplies the mesh, section,
@@ -2965,30 +3187,471 @@ impl Gfx3d {
             st.conform = true;
         }
 
-        // Vertex buffer at slot 0: baked draws pull from the shared skinned output buffer
-        // at `base_vertex`; rigid/VS-skinned draws pull from the mesh's own buffer. The
-        // index buffer is always the mesh's (indices are unchanged by the bake). Skip
-        // re-binding when the same source buffer repeats back-to-back.
-        let (vertex_buf, base_vertex) = match baked {
-            Some(bv) => (self.skinned_vbuf.as_ref().unwrap(), bv as i32),
-            None => (&mesh.vbuf, 0),
+        // Vertex source at slot 0: baked draws pull from the shared skinned output buffer
+        // at the baked slice offset; rigid/VS-skinned draws pull from the geometry pool
+        // at the mesh's vbase. Either way the buffer is SLICED to that byte offset and
+        // base_vertex is 0, so @builtin(vertex_index) stays mesh-local — attributes fetch
+        // exactly as with the old per-mesh buffers, and a slot-1 skin buffer (VS-skinning
+        // fallback) stays aligned at base_vertex 0. The index buffer is always the pool's
+        // Uint32 ibuf (bound once per run); the draw range is offset by the mesh's ibase.
+        let (vertex_buf, vert_off) = match baked {
+            Some(bv) => (
+                self.skinned_vbuf.as_ref().unwrap(),
+                bv as u64 * BAKED_VERT_SIZE,
+            ),
+            None => (self.pool.vbuf(), mesh.alloc.vbase as u64 * BAKED_VERT_SIZE),
         };
-        let vbuf_id = vertex_buf as *const wgpu::Buffer as usize;
+        let vbuf_id = (vertex_buf as *const wgpu::Buffer as usize, vert_off);
         if st.vbuf != Some(vbuf_id) {
-            pass.set_vertex_buffer(0, vertex_buf.slice(..));
+            pass.set_vertex_buffer(0, vertex_buf.slice(vert_off..));
             st.vbuf = Some(vbuf_id);
         }
-        let ibuf_id = &mesh.ibuf as *const wgpu::Buffer as usize;
+        let ibuf = self.pool.ibuf();
+        let ibuf_id = ibuf as *const wgpu::Buffer as usize;
         if st.ibuf != Some(ibuf_id) {
-            pass.set_index_buffer(mesh.ibuf.slice(..), wgpu::IndexFormat::Uint16);
+            pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
             st.ibuf = Some(ibuf_id);
         }
 
-        pass.draw_indexed(
-            d.index_begin..(d.index_begin + d.index_count),
-            base_vertex,
-            base..(base + count),
-        );
+        let first = mesh.alloc.ibase + d.index_begin;
+        pass.draw_indexed(first..(first + d.index_count), 0, base..(base + count));
+    }
+
+    // Submit one instanceable opaque-rigid bucket via the indirect args buffer (docs/
+    // gpu-culling-and-depth-plan.md Stage 2). Mirrors draw_one's PLAIN path — the same
+    // pipeline selection by pass mode plus the same frame-constant binds and Pass3dState
+    // tracking, so it interleaves correctly with direct draw_one calls sharing that state
+    // — but binds the pool buffers WHOLE (indirect can't slice per sub-draw; base_vertex /
+    // first_index / first_instance all ride the args) and ends in draw_indexed_indirect.
+    // `arg_offset` is the bucket's byte offset in `indirect_args` (DrawKind::Indirect).
+    #[allow(clippy::too_many_arguments)]
+    pub fn draw_indirect(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        textures: &SharedTextures,
+        d: &WgrDraw3D,
+        arg_offset: u32,
+        st: &mut Pass3dState,
+        mode: Pass3dMode,
+    ) {
+        let (Some(camera_bind), Some(conform_bind), Some(args), Some(group1_plain)) = (
+            self.cameras.bind.as_ref(),
+            self.conform.bind.as_ref(),
+            self.indirect_args.as_ref(),
+            self.group1_plain_bind.as_ref(),
+        ) else {
+            return;
+        };
+        // Eligible buckets are always plain opaque-rigid (see plan_3d): never skinned,
+        // never baked, so pipeline + bind selection is the plain, non-skinned path.
+        let base_key = PipelineKey::from_draw(d, false);
+        let pipeline = match mode {
+            Pass3dMode::Prepass => {
+                if !base_key.prepassed() {
+                    return;
+                }
+                let Some(p) = self.prepass_pipelines.get(&PrepassKey {
+                    skinned: false,
+                    alpha_ref_bits: base_key.alpha_ref_bits,
+                }) else {
+                    return;
+                };
+                p
+            }
+            Pass3dMode::Color { depth_write_off } => {
+                let key = if depth_write_off && base_key.prepassed() {
+                    base_key.with_write_off()
+                } else {
+                    base_key
+                };
+                let Some(p) = self.pipelines.get(&key) else {
+                    return;
+                };
+                p
+            }
+        };
+
+        // A skinned->plain switch invalidated bind groups 1..=4 (different group-1 pipeline
+        // layout); mirror draw_one so the shared Pass3dState stays coherent across paths.
+        if st.last_skinned.is_some() && st.last_skinned != Some(false) {
+            st.group1_plain = false;
+            st.skinned_off = None;
+            st.bindless = false;
+            st.conform = false;
+        }
+        st.last_skinned = Some(false);
+
+        let pipe_id = pipeline as *const wgpu::RenderPipeline as usize;
+        if st.pipeline != Some(pipe_id) {
+            pass.set_pipeline(pipeline);
+            st.pipeline = Some(pipe_id);
+        }
+
+        let cam_off = (d.camera as u64 * self.cameras.stride) as u32;
+        if st.cam_off != Some(cam_off) {
+            pass.set_bind_group(0, camera_bind, &[cam_off]);
+            st.cam_off = Some(cam_off);
+        }
+        if !st.group1_plain {
+            pass.set_bind_group(1, group1_plain, &[]);
+            st.group1_plain = true;
+            st.skinned_off = None;
+        }
+        if !st.bindless {
+            pass.set_bind_group(2, textures.bindless_bind(), &[]);
+            pass.set_bind_group(3, textures.sampler_array_bind(), &[]);
+            st.bindless = true;
+        }
+        if !st.conform {
+            pass.set_bind_group(4, conform_bind, &[]);
+            st.conform = true;
+        }
+
+        // Pool buffers bound WHOLE (offset 0): the args' base_vertex/first_index address
+        // the mesh's slice, so slicing per sub-draw is neither possible nor needed.
+        let vbuf = self.pool.vbuf();
+        let vbuf_id = (vbuf as *const wgpu::Buffer as usize, 0u64);
+        if st.vbuf != Some(vbuf_id) {
+            pass.set_vertex_buffer(0, vbuf.slice(..));
+            st.vbuf = Some(vbuf_id);
+        }
+        let ibuf = self.pool.ibuf();
+        let ibuf_id = ibuf as *const wgpu::Buffer as usize;
+        if st.ibuf != Some(ibuf_id) {
+            pass.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
+            st.ibuf = Some(ibuf_id);
+        }
+
+        pass.draw_indexed_indirect(args, arg_offset as u64);
+    }
+
+    // --- GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3) ---
+
+    // Mutable access to the retained scene for the FFI registration path (Stage 3b-3).
+    #[allow(dead_code)] // wired to the model/instance FFI in Stage 3b-3
+    pub fn cull_scene(&mut self) -> &mut cull::CullState {
+        &mut self.cull
+    }
+
+    // Resolve one section's pool addressing from the CURRENT mesh alloc (the pool can relocate
+    // a mesh's geometry, so this is done fresh — at registration and again every frame). An
+    // unknown mesh handle draws nothing (index_count = 0), keeping the tables parallel.
+    fn resolve_section(&self, src: &GpuSectionSrc) -> cull::SectionGpu {
+        let key: MeshKey = KeyData::from_ffi(src.mesh).into();
+        match self.meshes.get(key) {
+            // Bound WHOLE under indirect: base_vertex = the mesh's pool vbase, first_index =
+            // its ibase + the section's mesh-local start (indices are 0-based mesh-local).
+            Some(mesh) => cull::SectionGpu {
+                first_index: mesh.alloc.ibase + src.index_begin,
+                index_count: src.index_count,
+                base_vertex: mesh.alloc.vbase,
+                variant: src.variant,
+            },
+            None => cull::SectionGpu {
+                first_index: 0,
+                index_count: 0,
+                base_vertex: 0,
+                variant: src.variant,
+            },
+        }
+    }
+
+    // Re-resolve every registered section's pool addressing from the current mesh allocs and
+    // push it into the cull's sections table. The pool relocates a mesh's geometry when its VB
+    // is released + recreated (LOD optimisation / shape reload), which changes its vbase — the
+    // CPU indirect + shadow paths avoid a stale base_vertex by resolving fresh each frame, and
+    // this does the same for the GPU-driven set. No-op when nothing is registered.
+    fn refresh_cull_sections(&mut self) {
+        if self.gpu_section_src.is_empty() {
+            return;
+        }
+        let mut stale = 0u32;
+        let resolved: Vec<cull::SectionGpu> = self
+            .gpu_section_src
+            .iter()
+            .map(|s| {
+                let r = self.resolve_section(s);
+                // A non-empty section that resolves to 0 indices => its mesh handle is gone.
+                if s.index_count != 0 && r.index_count == 0 {
+                    stale += 1;
+                }
+                r
+            })
+            .collect();
+        if stale != self.gpu_dbg_stale {
+            eprintln!(
+                "[wgr] refresh_cull_sections: {}/{} sections have a STALE/destroyed mesh handle \
+                 (resolve -> 0 indices); those draw nothing",
+                stale,
+                self.gpu_section_src.len(),
+            );
+            self.gpu_dbg_stale = stale;
+        }
+        self.cull.set_sections(&resolved);
+    }
+
+    // Register a GPU-driven model from the FFI descriptors (docs/gpu-culling-and-depth-plan.md
+    // Stage 3b-3). Resolves each section's mesh handle to its shared-pool base_vertex/first_index
+    // and each material's texture handle to a bindless slot, then appends to the retained tables.
+    // A section whose mesh handle is unknown draws nothing (index_count = 0), keeping the
+    // section/material/LOD arrays parallel. Returns the model id.
+    pub fn register_model(
+        &mut self,
+        bounding_sphere: f32,
+        lods: &[WgrModelLod],
+        sections: &[WgrModelSection],
+        materials: &[WgrModelMaterial],
+        textures: &SharedTextures,
+    ) -> u32 {
+        let gpu_lods: Vec<cull::LodGpu> = lods
+            .iter()
+            .map(|l| cull::LodGpu {
+                resolution: l.resolution,
+                section_base: l.section_base,
+                section_count: l.section_count,
+                is_decal: l.is_decal,
+            })
+            .collect();
+        let debug = std::env::var_os("WGR_GPU_DEBUG").is_some();
+        let srcs: Vec<GpuSectionSrc> = sections
+            .iter()
+            .map(|s| GpuSectionSrc {
+                mesh: s.mesh,
+                index_begin: s.index_begin,
+                index_count: s.index_count,
+                variant: s.variant,
+            })
+            .collect();
+        // Validate + optionally dump the registration-time resolution (diagnostics only; the
+        // authoritative resolution happens each frame in refresh_cull_sections).
+        for (k, s) in srcs.iter().enumerate() {
+            let key: MeshKey = KeyData::from_ffi(s.mesh).into();
+            match self.meshes.get(key) {
+                Some(mesh) => {
+                    let end = s.index_begin.saturating_add(s.index_count);
+                    if end > mesh.index_count {
+                        eprintln!(
+                            "[wgr] SECTION OVERFLOW sec {k}: mesh {:#x} index_count={} but \
+                             section wants [{}, {}) (vbase={} ibase={} vert_count={})",
+                            s.mesh, mesh.index_count, s.index_begin, end,
+                            mesh.alloc.vbase, mesh.alloc.ibase, mesh.vert_count,
+                        );
+                    }
+                    if debug && k < 8 {
+                        eprintln!(
+                            "[wgr] sec {k}: mesh {:#x} vbase={} first_index={} idx_count={} \
+                             variant={} | mesh vert_count={} index_count={} local_begin={}",
+                            s.mesh, mesh.alloc.vbase, mesh.alloc.ibase + s.index_begin,
+                            s.index_count, s.variant, mesh.vert_count, mesh.index_count,
+                            s.index_begin,
+                        );
+                    }
+                }
+                None => eprintln!("[wgr] section mesh {:#x} NOT FOUND (draws nothing)", s.mesh),
+            }
+        }
+        let gpu_sections: Vec<cull::SectionGpu> =
+            srcs.iter().map(|s| self.resolve_section(s)).collect();
+        self.gpu_section_src.extend_from_slice(&srcs);
+        let gpu_materials: Vec<cull::SectionMaterialGpu> = materials
+            .iter()
+            .map(|m| cull::SectionMaterialGpu {
+                emissive: m.emissive,
+                ambient: m.ambient,
+                diffuse: m.diffuse,
+                specular: m.specular,
+                texture_slot: textures.texture_slot(m.texture_id),
+                sampler: m.sampler,
+                alpha_ref: m.alpha_ref,
+                _pad: 0,
+            })
+            .collect();
+        self.cull
+            .register_model(bounding_sphere, &gpu_lods, &gpu_sections, &gpu_materials)
+    }
+
+    pub fn instance_add(&mut self, inst: &WgrInstance) -> u32 {
+        self.cull.instance_add(instance_to_gpu(inst))
+    }
+
+    pub fn instance_update(&mut self, slot: u32, inst: &WgrInstance) {
+        self.cull.instance_update(slot, instance_to_gpu(inst));
+    }
+
+    pub fn instance_remove(&mut self, slot: u32) {
+        self.cull.instance_remove(slot);
+    }
+
+    pub fn set_dynamic(&mut self, instances: &[WgrInstance]) {
+        // WgrInstance and InstanceGpu share a layout, but convert explicitly rather than
+        // transmuting the slice (keeps the two decoupled + fills the GPU pad words).
+        let gpu: Vec<cull::InstanceGpu> = instances.iter().map(instance_to_gpu).collect();
+        self.cull.set_dynamic(&gpu);
+    }
+
+    // Upload the retained buffers + this frame's cull params, rebuilding the GPU-driven
+    // group-1 bind if a buffer grew. No-op when GPU-driven rendering is off.
+    // Store the engine's per-frame cull + LOD inputs (objectsZ / Camera::Left() /
+    // Scene::_lodInvWidth / pixel_limit) for the next prepare_cull. Cheap; called once/frame.
+    pub fn set_cull_inputs(&mut self, objects_z: f32, lod_scale: f32, lod_inv_width: f32, pixel_limit: f32) {
+        self.cull_inputs = cull::CullInputs {
+            objects_z,
+            lod_scale,
+            lod_inv_width,
+            pixel_limit,
+        };
+    }
+
+    pub fn prepare_cull(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        cam: &WgrCamera,
+    ) {
+        if !self.gpu_driven_enabled {
+            return;
+        }
+        // Re-resolve section pool addressing from the current mesh allocs (a mesh's vbase can
+        // move when its VB is recreated), so the cull emits correct base_vertex/first_index.
+        self.refresh_cull_sections();
+        let view = glam::Mat4::from_cols_array(&cam.view);
+        let proj = glam::Mat4::from_cols_array(&cam.proj);
+        let cam_pos = glam::Vec3::new(cam.cam_pos[0], cam.cam_pos[1], cam.cam_pos[2]);
+        self.cull
+            .set_params(cull::params_from_camera(view, proj, cam_pos, self.cull_inputs));
+        let grew = self.cull.prepare(device, queue);
+        if grew || self.gpu_group1_bind.is_none() {
+            self.rebuild_gpu_group1(device);
+        }
+    }
+
+    fn rebuild_gpu_group1(&mut self, device: &wgpu::Device) {
+        let (Some(inst), Some(rec), Some(mat)) = (
+            self.cull.instance_buf(),
+            self.cull.out_records(),
+            self.cull.section_material_buf(),
+        ) else {
+            self.gpu_group1_bind = None;
+            return;
+        };
+        self.gpu_group1_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_gpu_driven_group1_bind"),
+            layout: &self.gpu_group1_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: inst.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: rec.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: mat.as_entire_binding(),
+                },
+            ],
+        }));
+    }
+
+    // Record the cull compute dispatch (before the render passes that read its args). No-op
+    // when GPU-driven rendering is off or nothing is registered.
+    pub fn cull_dispatch(&self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.gpu_driven_enabled {
+            return;
+        }
+        self.cull.dispatch(encoder);
+    }
+
+    // Draw the GPU-driven opaque set into the colour pass: one multi_draw per pipeline-
+    // variant partition over the compute-produced indirect args. `cam_off` selects the
+    // camera UBO slot (as in draw_one). Bound once; the pool buffers are shared. No-op until
+    // the retained scene has data (empty args are instance_count = 0 no-op draws).
+    // GPU-driven opaque COLOUR draw (fs_gpu). See draw_gpu_driven_impl.
+    pub fn draw_gpu_driven(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        textures: &SharedTextures,
+        cam_off: u32,
+    ) {
+        self.draw_gpu_driven_impl(pass, textures, cam_off, &self.gpu_pipeline);
+    }
+
+    // GPU-driven depth+normal PREPASS draw (fs_gpu_prepass): same cull args, writes depth + the
+    // view-space normal G-buffer so the GPU-driven set participates in the prepass (SSAO
+    // normals, early-Z) instead of being colour-pass only. Recorded in the prepass render pass.
+    pub fn draw_gpu_driven_prepass(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        textures: &SharedTextures,
+        cam_off: u32,
+    ) {
+        self.draw_gpu_driven_impl(pass, textures, cam_off, &self.gpu_prepass_pipeline);
+    }
+
+    fn draw_gpu_driven_impl(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        textures: &SharedTextures,
+        cam_off: u32,
+        pipeline: &wgpu::RenderPipeline,
+    ) {
+        if !self.gpu_driven_enabled {
+            return;
+        }
+        let (Some(camera_bind), Some(group1), Some(args)) = (
+            self.cameras.bind.as_ref(),
+            self.gpu_group1_bind.as_ref(),
+            self.cull.out_args(),
+        ) else {
+            return;
+        };
+        pass.set_pipeline(pipeline);
+        pass.set_bind_group(0, camera_bind, &[cam_off]);
+        pass.set_bind_group(1, group1, &[]);
+        pass.set_bind_group(2, textures.bindless_bind(), &[]);
+        pass.set_bind_group(3, textures.sampler_array_bind(), &[]);
+        // Group 4: terrain-conform heightmap — vs_gpu conforms ClipLand instances to SurfaceY.
+        if let Some(conform_bind) = self.conform.bind.as_ref() {
+            pass.set_bind_group(4, conform_bind, &[]);
+        }
+        pass.set_vertex_buffer(0, self.pool.vbuf().slice(..));
+        pass.set_index_buffer(self.pool.ibuf().slice(..), wgpu::IndexFormat::Uint32);
+        let cap = self.cull.variant_capacity();
+        if self.multi_draw_count_enabled {
+            // Trim the no-op tail: draw min(counter[v], cap) sub-draws per variant, the GPU
+            // count buffer supplying the actual survivor count (3b-4). Avoids dispatching the
+            // full conservative capacity of instance_count = 0 no-ops each frame.
+            let counters = self.cull.counter_buf();
+            for v in 0..cull::CULL_VARIANT_COUNT {
+                let offset = v as u64 * cap as u64 * INDIRECT_ARG_SIZE;
+                pass.multi_draw_indexed_indirect_count(args, offset, counters, v as u64 * 4, cap);
+            }
+        } else {
+            // Conservative fallback (e.g. Metal, no MULTI_DRAW_INDIRECT_COUNT): one multi_draw
+            // of `capacity` sub-draws per variant, the unfilled tail being instance_count = 0
+            // no-ops.
+            for v in 0..cull::CULL_VARIANT_COUNT {
+                let offset = v as u64 * cap as u64 * INDIRECT_ARG_SIZE;
+                pass.multi_draw_indexed_indirect(args, offset, cap);
+            }
+        }
+    }
+}
+
+// Convert an FFI retained instance to the GPU layout. The two structs are field-identical
+// (matching layouts asserted on both sides), but convert explicitly to fill the GPU pad words
+// and keep the FFI + GPU structs decoupled.
+fn instance_to_gpu(inst: &WgrInstance) -> cull::InstanceGpu {
+    cull::InstanceGpu {
+        world: inst.world,
+        center: inst.center,
+        model: inst.model,
+        flags: inst.flags,
+        // Carries bcSurfaceY (bitcast f32) for terrain-conform instances (flags bit 0); the
+        // GPU-driven VS reads it. Zero for non-conform instances.
+        _pad0: inst._pad0,
+        _pad1: 0,
     }
 }
 
@@ -3006,6 +3669,19 @@ struct BucketKey {
     pipeline: PipelineKey,
 }
 
+// How a Draw3D op is submitted (docs/gpu-culling-and-depth-plan.md Stage 2).
+// `IndirectEligible` marks an instanceable opaque-rigid bucket at plan_3d time;
+// build_indirect then either upgrades it to `Indirect(byte_offset)` into the indirect
+// args buffer (when GPU-driven indirect is on) or leaves it eligible (falls back to the
+// direct draw_one path in the replay). `Direct` is a barrier draw (transparent, decal,
+// skinned/baked, non-standard depth) that always goes through draw_one.
+#[derive(Clone, Copy)]
+pub enum DrawKind {
+    Direct,
+    IndirectEligible,
+    Indirect(u32),
+}
+
 // One replayable step in the instancing plan (see plan_3d). Draw3D carries the repr
 // draw (mesh/section/texture/pipeline) plus the base_instance range of its instances.
 pub enum Plan3dOp {
@@ -3013,7 +3689,12 @@ pub enum Plan3dOp {
     Draw2D(u32),  // batch index
     Terrain(u32), // terrain batch index
     Water(u32),   // water batch index
-    Draw3D { draw: u32, base: u32, count: u32 },
+    Draw3D {
+        draw: u32,
+        base: u32,
+        count: u32,
+        kind: DrawKind,
+    },
     // Scene->UI seam: tonemap the HDR target to the swapchain; ops after this are
     // display-referred UI (drawn straight to the swapchain).
     Resolve,
@@ -3051,6 +3732,6 @@ pub struct Pass3dState {
     skinned_off: Option<u32>,  // skinned group-1 palette offset currently bound
     bindless: bool,            // groups 2/3 (bindless textures + sampler array) bound
     conform: bool,             // group-4 conform heightmap currently bound
-    vbuf: Option<usize>,       // vertex buffer at slot 0 (pointer identity)
-    ibuf: Option<usize>,       // index buffer (pointer identity)
+    vbuf: Option<(usize, u64)>, // vertex buffer at slot 0 (pointer identity + slice byte offset)
+    ibuf: Option<usize>,        // index buffer (pointer identity)
 }

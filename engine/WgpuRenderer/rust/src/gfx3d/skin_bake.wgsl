@@ -28,6 +28,11 @@ struct BakeParams {
     instance_count: u32,  // baked instances of this mesh (Phase 1: always 1)
     palette_base: u32,    // absolute block index of instance 0 (== palette_slot in Phase 1)
     out_base_vertex: u32, // first output vertex of this group in the mega buffer
+    in_base_vertex: u32,  // first SOURCE vertex of this mesh in the shared pool vbuf
+    // Tail padding to a 16-byte multiple, mirroring BakeParamsGpu's `_pad: [u32; 3]`.
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
 };
 @group(1) @binding(0) var<uniform> gp: BakeParams;
 
@@ -40,7 +45,9 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let inst = gid.x / gp.vert_count;
     let v = gid.x % gp.vert_count;
 
-    let i = v * WORDS_PER_VERT;
+    // Source verts live in the shared geometry pool at in_base_vertex; skin data (in_s)
+    // stays a per-mesh standalone buffer, so it is indexed mesh-local by `v`.
+    let i = (gp.in_base_vertex + v) * WORDS_PER_VERT;
     let pos = vec3<f32>(bitcast<f32>(in_v[i]), bitcast<f32>(in_v[i + 1u]), bitcast<f32>(in_v[i + 2u]));
     let norm = vec3<f32>(bitcast<f32>(in_v[i + 3u]), bitcast<f32>(in_v[i + 4u]), bitcast<f32>(in_v[i + 5u]));
 
