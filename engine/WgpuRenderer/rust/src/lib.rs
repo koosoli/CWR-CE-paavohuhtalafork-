@@ -94,6 +94,14 @@ pub struct Renderer {
     // not a shipped runtime flag. When on, the first (world) depth segment gets a
     // depth+normal prepass and its opaque colour draws early-Z with depth-write off.
     prepass_enabled: bool,
+    // Per-frame gate for the retained GPU-driven world set (objects + their prepass).
+    // The set is GPU-resident and would otherwise draw every frame regardless of the
+    // per-frame 3D lists; C++ raises this (wgr_set_suppress_world_objects) while the
+    // world must not be shown (mission editor, loading, shutdown) so the sides letterbox
+    // to black instead of leaking clutter. Set explicitly by C++ each frame.
+    suppress_world_objects: bool,
+    // Debug: draw the GPU-driven frustum-cull spheres (ImGui Culling tab). Off by default.
+    cull_debug_draw: bool,
 }
 
 impl Renderer {
@@ -370,6 +378,8 @@ impl Renderer {
             sky_debug: std::env::var("WGR_SKY_DEBUG").is_ok(),
             sky_dbg_last: (usize::MAX, usize::MAX),
             prepass_enabled,
+            suppress_world_objects: false,
+            cull_debug_draw: false,
         })
     }
 
@@ -1029,9 +1039,11 @@ impl Renderer {
                 // GPU-driven opaque set into the SAME depth+normal prepass (reuses this
                 // frame's cull out_args — the cull dispatch already ran before the passes).
                 // Writes depth + view-space normals so the set gets early-Z + SSAO normals.
-                let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
-                self.gfx3d
-                    .draw_gpu_driven_prepass(&mut pp, &self.textures, cam_off);
+                if !self.suppress_world_objects {
+                    let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
+                    self.gfx3d
+                        .draw_gpu_driven_prepass(&mut pp, &self.textures, cam_off);
+                }
                 drop(pp);
                 encoder.pop_debug_group();
             }
@@ -1078,12 +1090,24 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                render_ops(&mut pass, seg_ops, display_2d, false, prepassed);
                 // GPU-driven opaque world objects (Stage 3), in the world segment only
-                // (start == 0). Depth-tested opaque, so order vs the CPU set is irrelevant.
-                if start == 0 {
+                // (start == 0). Drawn BEFORE the CPU ops: it is depth-tested opaque so its order
+                // vs the CPU OPAQUE set is irrelevant, but the CPU set also contains alpha-BLENDED
+                // draws (fences, glass) that read the framebuffer colour — those must blend
+                // against the GPU-driven objects behind them, not the background, so the
+                // GPU-driven colour has to be present first (else the sky shows through).
+                if start == 0 && !self.suppress_world_objects {
                     let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
                     self.gfx3d.draw_gpu_driven(&mut pass, &self.textures, cam_off);
+                }
+                render_ops(&mut pass, seg_ops, display_2d, false, prepassed);
+                // Debug cull-sphere wireframes (ImGui Culling tab) LAST in the sub-pass: their
+                // depth test is Always, but anything drawn after them (terrain in render_ops)
+                // would still overwrite their colour — so they must follow every world draw to
+                // actually show on top.
+                if start == 0 && !self.suppress_world_objects && self.cull_debug_draw {
+                    let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
+                    self.gfx3d.draw_cull_spheres(&mut pass, cam_off);
                 }
                 drop(pass);
             }
@@ -1258,6 +1282,20 @@ impl Renderer {
     fn set_cull_inputs(&mut self, objects_z: f32, lod_scale: f32, lod_inv_width: f32, pixel_limit: f32) {
         self.gfx3d
             .set_cull_inputs(objects_z, lod_scale, lod_inv_width, pixel_limit);
+    }
+
+    // Per-frame: suppress the retained GPU-driven world set (objects + prepass) so the
+    // editor/loading/shutdown frames don't leak clutter behind the 2D UI. Resources stay
+    // resident; only this frame's draw submission is skipped. C++ sets it every frame.
+    fn set_suppress_world_objects(&mut self, suppress: bool) {
+        self.suppress_world_objects = suppress;
+    }
+
+    // ImGui Culling tab (wgr_set_cull_debug): draw the cull-sphere wireframes + skip the GPU
+    // frustum test. Diagnostics for the GPU-driven "objects vanish / float" investigation.
+    fn set_cull_debug(&mut self, draw_spheres: bool, no_frustum: bool) {
+        self.cull_debug_draw = draw_spheres;
+        self.gfx3d.set_cull_no_frustum(no_frustum);
     }
 
     fn terrain_set_heightmap(&mut self, heights: &[f32], params: WgrTerrainParams) {

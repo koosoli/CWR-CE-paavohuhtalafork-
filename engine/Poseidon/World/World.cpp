@@ -1347,6 +1347,9 @@ void World::Simulate(float deltaT, bool& enableDraw)
     // rendering behind the UI and leaks through the letterboxed sides (HUD aspect limit).
     const bool suppressWorld =
         _editor || !IsDisplayEnabled() || Glob.exit || (GApp && GApp->m_closeRequest);
+    // The GPU-driven backend keeps a GPU-resident world set that draws every frame regardless
+    // of the per-frame 3D lists we skip below, so it needs the suppression signalled explicitly.
+    GEngine->SuppressWorldObjects(suppressWorld);
     if (enableDraw)
     {
         PackedColor color(GEngine->FogColor());

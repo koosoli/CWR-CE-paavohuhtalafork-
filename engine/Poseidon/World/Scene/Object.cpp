@@ -451,9 +451,18 @@ bool Object::PublishConformPlane(const Shape* sShape, ConformPlane& saved)
     cp.mode = 2;
     if (GLandscape)
     {
-        Matrix4Val toWorld = Transform();
-        Vector3 bc(VFastTransform, toWorld, -_shape->BoundingCenter());
-        cp.bcSurfaceY = GLandscape->SurfaceY(bc[0], bc[2]);
+        // bcSurfaceY is static for a static object (terrain immutable, no movement), yet this
+        // is called every frame from Object::Draw AND SceneShadowPass. Sample SurfaceY once
+        // and cache it (invalidated on Move), mirroring the _animBBox cache — SurfaceY was
+        // ~250ms of the profiled Object::Draw hot path.
+        if (!_bcSurfaceYValid)
+        {
+            Matrix4Val toWorld = Transform();
+            Vector3 bc(VFastTransform, toWorld, -_shape->BoundingCenter());
+            _bcSurfaceY = GLandscape->SurfaceY(bc[0], bc[2]);
+            _bcSurfaceYValid = true;
+        }
+        cp.bcSurfaceY = _bcSurfaceY;
     }
     GCurrentConformPlane = cp;
     return true;
@@ -667,13 +676,15 @@ void Object::DeanimateLandContact()
 
 void Object::Move(Matrix4Par transform)
 {
-    _animBBoxLevel = -1; // moved: the cached conform bbox no longer applies
+    _animBBoxLevel = -1;         // moved: the cached conform bbox no longer applies
+    _bcSurfaceYValid = false;    // and the cached conform surface height
     GLOB_LAND->MoveObject(this, transform);
 }
 
 void Object::Move(Vector3Par position)
 {
-    _animBBoxLevel = -1; // moved: the cached conform bbox no longer applies
+    _animBBoxLevel = -1;         // moved: the cached conform bbox no longer applies
+    _bcSurfaceYValid = false;    // and the cached conform surface height
     GLOB_LAND->MoveObject(this, position);
 }
 

@@ -199,6 +199,12 @@ class ForestPlain: public Object
 
 	void Draw( int forceLOD, ClipFlags clipFlags, const FrameBase &pos ) override;
 
+	// wgpu GPU-driven retained scene: expose the (static, cached) terrain-conform plane so
+	// the backend can pack it once per instance instead of publishing it per-frame in Draw.
+	// Returns false for skewed squares (t1/t2), whose conform is baked into the object matrix
+	// (Transform()) -> they register as plain rigid; otherwise fills `out` (mode 1).
+	bool GpuConformPlane( ConformPlane &out );
+
 	#if !FOREST_PROXY_ENABLE
 	// disabled proxies
 	void DrawProxies

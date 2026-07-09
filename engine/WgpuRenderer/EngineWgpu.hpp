@@ -105,6 +105,7 @@ class EngineWgpu : public EngineDummy
     void SceneObjectRemoved(Object* obj) override;
     void SceneObjectMoved(Object* obj) override;
     bool GpuDrivenObject(const Object* obj) const override;
+    void SuppressWorldObjects(bool suppress) override;
 
     // Software-T&L path: 3D-in-UI objects (e.g. the menu laptop) arrive here with
     // CPU-projected screen-space vertices, drawn depth-tested like 2D-with-depth.
@@ -149,6 +150,11 @@ class EngineWgpu : public EngineDummy
     void SetWaterSettings(const WaterSettings& s) override { _waterLook = s; }
     // Live look, read by WaterWgpu::DrawWater when building the per-frame water UBO.
     const WaterSettings& WaterLook() const { return _waterLook; }
+
+    // GPU-driven cull DEBUG (ImGui Culling tab): only meaningful when GPU-driven is on.
+    bool SupportsCullDebug() const override { return _renderer != nullptr && _gpuDriven; }
+    CullDebugSettings GetCullDebugSettings() const override { return _cullDebug; }
+    void SetCullDebugSettings(const CullDebugSettings& s) override;
 
     // Cascaded shadow maps, GPU-driven caster submission (SceneShadowPass).
     void SetShadowMapsEnabled(bool enabled) override { _smTuning.enabled = enabled; }
@@ -280,6 +286,8 @@ class EngineWgpu : public EngineDummy
     // On when WGR_GPU_DRIVEN=1 at construction (mirrors the Rust-side gate); the hooks and
     // GpuDrivenObject are inert otherwise, so every other path keeps the CPU draw.
     bool _gpuDriven = false;
+    // Cull debug toggles (ImGui Culling tab), pushed to the renderer on change.
+    CullDebugSettings _cullDebug;
     // Registered shapes -> model id. WGR_INVALID_MODEL marks a shape scanned and found
     // ineligible (transparent/decal/etc.), so an object using it never re-scans and stays
     // on the CPU path.
@@ -291,6 +299,11 @@ class EngineWgpu : public EngineDummy
     {
         uint32_t model;
         uint32_t slot;
+        // Debug bookkeeping for the Culling tab's nearby-instance dump: the position + conform
+        // mode CAPTURED AT REGISTRATION (what the retained buffer holds), compared against the
+        // object's live Position() to expose stale transforms.
+        Vector3 pos = VZero;
+        int mode = 0;
     };
     // Objects handed to the GPU path -> their model + retained instance slot.
     std::unordered_map<const Object*, GpuInstance> _gpuInstances;

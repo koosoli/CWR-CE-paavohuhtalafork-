@@ -324,14 +324,21 @@ struct WgrInstance
     WgrVec4 center;
     uint32_t model;
     uint32_t flags;
+    /* Inflated frustum-cull radius (float bits) for terrain-conform instances, whose displaced
+     * geometry escapes the flat model sphere; 0 = rigid (cull uses model bounding sphere). */
     uint32_t _pad0;
     uint32_t _pad1;
+    /* Terrain-conform plane (mirrors WgrDraw3D::conform*). conform2.z = mode: 0 rigid,
+     * 1 = ForestPlain bilinear plane, 2 = per-vertex ClipLand SurfaceY (conform0.x = bcSurfaceY). */
+    WgrVec4 conform0;
+    WgrVec4 conform1;
+    WgrVec4 conform2;
 };
 
 static_assert(sizeof(WgrModelSection) == 24, "WgrModelSection must match Rust");
 static_assert(sizeof(WgrModelMaterial) == 80, "WgrModelMaterial must match Rust");
 static_assert(sizeof(WgrModelLod) == 16, "WgrModelLod must match Rust");
-static_assert(sizeof(WgrInstance) == 96, "WgrInstance must match Rust");
+static_assert(sizeof(WgrInstance) == 144, "WgrInstance must match Rust");
 
 /* Live tonemap/look parameters, pushed via wgr_set_tonemap (from the ImGui Tonemap
  * tab). The Hable curve is fixed in the shader; these are exposure + the colour-grade
@@ -765,6 +772,19 @@ extern "C"
      * unless GPU-driven rendering is enabled. Call once per frame for the main scene camera. */
     WGR_API void wgr_set_cull_params(WgrRenderer* renderer, float objects_z, float lod_scale,
                                      float lod_inv_width, float pixel_limit);
+
+    /* Per-frame gate for the retained GPU-driven world set. When `suppress` is true the
+     * renderer skips the GPU-driven object draws (colour + prepass) for the frame, so the
+     * editor / loading / shutdown frames letterbox to black instead of leaking clutter behind
+     * the 2D UI. Resources stay resident; only the draw submission is skipped. No-op unless
+     * GPU-driven rendering is enabled. Call every frame with the current state. */
+    WGR_API void wgr_set_suppress_world_objects(WgrRenderer* renderer, bool suppress);
+
+    /* Debug toggles for the GPU-driven cull (ImGui Culling tab): `draw_spheres` renders the
+     * per-instance frustum-cull sphere wireframes on top of the scene; `no_frustum` skips the
+     * GPU frustum test entirely (a "is the cull dropping it?" discriminator). No-op unless
+     * GPU-driven rendering is enabled. */
+    WGR_API void wgr_set_cull_debug(WgrRenderer* renderer, bool draw_spheres, bool no_frustum);
 
     /* Upload (or replace) the terrain heightmap: `heights` is
      * params->hm_width * params->hm_height row-major world-height floats (row 0 =

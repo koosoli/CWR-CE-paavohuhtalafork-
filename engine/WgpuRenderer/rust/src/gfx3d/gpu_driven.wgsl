@@ -17,16 +17,13 @@
 // vertex, matching the per-draw path — so these objects no longer have to stay on the CPU.
 #import conform::{surface_y, surface_grad}
 
-// Per-instance conform: flags bit 0 set = this instance is terrain-conformed (ClipLand,
-// mode 2); instance._pad0 then carries bcSurfaceY (bitcast f32) — the surface height at the
-// object's ground reference, matching Object::PublishConformPlane.
-const CONFORM_CLIPLAND: u32 = 1u;
-
 // Pipeline-overridable constants (kept out of a per-draw binding), same as shader3d.
 override linear: f32 = 0.0;
 override foliage_shadow_ao: f32 = 0.35;
 
-// Mirrors InstanceGpu / RecordGpu / SectionMaterialGpu (cull.rs).
+// Mirrors InstanceGpu / RecordGpu / SectionMaterialGpu (cull.rs). conform0/1/2 is the
+// terrain-conform plane (WgrDraw3D::conform* parity); conform2.z = mode (0 rigid, 1
+// ForestPlain plane, 2 per-vertex ClipLand SurfaceY with conform0.x = bcSurfaceY).
 struct Instance {
     world: mat4x4<f32>,
     center: vec4<f32>,
@@ -34,6 +31,9 @@ struct Instance {
     flags: u32,
     _pad0: u32,
     _pad1: u32,
+    conform0: vec4<f32>,
+    conform1: vec4<f32>,
+    conform2: vec4<f32>,
 };
 struct Record {
     instance: u32,
@@ -84,26 +84,48 @@ fn vs_gpu(
     // as-is, matching vs_main / GL33.
     let rot = mat3x3<f32>(world[0].xyz, world[1].xyz, world[2].xyz);
     var normal_ws = rot * norm;
-    // Terrain conform (mode 2 / individual ClipLand veg + fences): conform each vertex to
-    // SurfaceY, matching shader3d::vs_main (Object::Animate). Absolute world xz is
-    // world_pos_abs.xz; heights are written back camera-relative. conform_sel: 1 = ClipLandKeep
-    // (keep the vertex's height above the surface), 2 = ClipLandOn (pin onto it), 0 = rigid.
-    if ((inst.flags & CONFORM_CLIPLAND) != 0u) {
+    // Terrain conform: the shared base mesh is uploaded undeformed and conformed here per
+    // instance, exactly like shader3d::vs_main. Heights are evaluated in ABSOLUTE world xz
+    // (world_pos_abs.xz) and written back camera-relative. conform2.z = mode.
+    let mode = inst.conform2.z;
+    if (mode > 1.5) {
+        // Mode 2: individual ClipLand vegetation, conformed per vertex to SurfaceY (matching
+        // Object::Animate). conform_sel: 1 = ClipLandKeep (keep height above the surface),
+        // 2 = ClipLandOn (pin onto it), 0 = rigid. conform0.x = bcSurfaceY.
         let sy = surface_y(world_pos_abs.xz);
         if (conform_sel == 1u) {
             // world.y_abs = SurfaceY + undeformedWorldY - bcSurfaceY; the cam.y offset cancels
             // between the two camera-relative terms.
-            world_pos.y = sy + world_pos.y - bitcast<f32>(inst._pad0);
+            world_pos.y = sy + world_pos.y - inst.conform0.x;
         } else if (conform_sel == 2u) {
             world_pos.y = sy - frame.cam_pos.y;
         }
         // Tilt the conformed vertex's normal by the terrain slope so lighting follows the
-        // ground (same shear as shader3d). Rigid verts (sel 0) keep theirs.
+        // ground (same shear as mode 1). Rigid verts (sel 0) keep theirs.
         if (conform_sel != 0u) {
             let g = surface_grad(world_pos_abs.xz);
             normal_ws = vec3<f32>(normal_ws.x - g.x * normal_ws.y, normal_ws.y,
                                   normal_ws.z - g.y * normal_ws.y);
         }
+    } else if (mode > 0.5) {
+        // Mode 1: ForestPlain bilinear plane fit (ObjectClasses.cpp ComputeConformPlane).
+        let s = inst.conform0.x;                     // inv_land_grid
+        let xIn = world_pos_abs.x * s + inst.conform0.y;  // *invLand - xf
+        let zIn = world_pos_abs.z * s + inst.conform0.z;  // *invLand - zf
+        let y00 = inst.conform1.x; let y10 = inst.conform1.y;
+        let d1000 = inst.conform1.z; let d0100 = inst.conform1.w;
+        let d1011 = inst.conform2.x; let d0111 = inst.conform2.y;
+        let triA = xIn <= 1.0 - zIn;
+        let py = select(y10 + d0111 - d1011 * xIn - zIn * d0111,
+                        y00 + d1000 * zIn + d0100 * xIn, triA);
+        // Camera-relative conformed height: absolute plane height + the vertex's own model
+        // height above surface (conform0.w = BoundingCenter().y), minus cam.y.
+        world_pos.y = py - frame.cam_pos.y + pos.y + inst.conform0.w;
+        // Tilt the undeformed normal by the plane gradient (inverse-transpose of the affine
+        // y-shear) so lighting matches the CPU's post-deform InvalidateNormals.
+        let gx = select(-d1011, d0100, triA) * s;
+        let gz = select(-d0111, d1000, triA) * s;
+        normal_ws = vec3<f32>(normal_ws.x - gx * normal_ws.y, normal_ws.y, normal_ws.z - gz * normal_ws.y);
     }
     var out: VsOut;
     out.clip = reverse_z(frame.proj * frame.view * vec4<f32>(world_pos, 1.0));

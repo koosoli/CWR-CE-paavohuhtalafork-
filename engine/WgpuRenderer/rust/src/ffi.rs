@@ -250,6 +250,11 @@ pub struct WgrInstance {
     pub flags: u32,
     pub _pad0: u32,
     pub _pad1: u32,
+    // Terrain-conform plane (mirrors WgrDraw3D::conform*). conform2.z = mode: 0 rigid,
+    // 1 ForestPlain bilinear plane, 2 per-vertex ClipLand SurfaceY (conform0.x = bcSurfaceY).
+    pub conform0: WgrVec4,
+    pub conform1: WgrVec4,
+    pub conform2: WgrVec4,
 }
 
 // Live tonemap/look parameters, pushed from the ImGui Tonemap tab via
@@ -648,7 +653,7 @@ const _: () = assert!(std::mem::size_of::<WgrLight>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrModelSection>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrModelMaterial>() == 80);
 const _: () = assert!(std::mem::size_of::<WgrModelLod>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrInstance>() == 96);
+const _: () = assert!(std::mem::size_of::<WgrInstance>() == 144);
 const _: () = assert!(std::mem::size_of::<WgrTonemap>() == 48);
 const _: () = assert!(std::mem::size_of::<WgrSky>() == 176);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
@@ -1019,6 +1024,45 @@ pub unsafe extern "C" fn wgr_set_cull_params(
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let renderer = unsafe { &mut *renderer };
         renderer.set_cull_inputs(objects_z, lod_scale, lod_inv_width, pixel_limit);
+    }));
+}
+
+/// Per-frame gate for the retained GPU-driven world set. When `suppress` is nonzero the
+/// renderer skips the GPU-driven object draws (colour + prepass) for the frame, so the
+/// editor/loading/shutdown frames letterbox to black instead of leaking clutter behind the
+/// 2D UI. Resources stay resident; only the draw submission is skipped. No-op unless
+/// GPU-driven rendering is enabled. Call every frame (C++ sets the current state).
+///
+/// # Safety
+/// `renderer` must be live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_suppress_world_objects(renderer: *mut WgrRenderer, suppress: bool) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        renderer.set_suppress_world_objects(suppress);
+    }));
+}
+
+/// Debug toggles for the GPU-driven cull (ImGui Culling tab): draw the per-instance cull-sphere
+/// wireframes, and/or skip the GPU frustum test. No-op unless GPU-driven rendering is enabled.
+///
+/// # Safety
+/// `renderer` must be live.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_cull_debug(
+    renderer: *mut WgrRenderer,
+    draw_spheres: bool,
+    no_frustum: bool,
+) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        renderer.set_cull_debug(draw_spheres, no_frustum);
     }));
 }
 

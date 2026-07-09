@@ -38,13 +38,18 @@ pub struct InstanceGpu {
     pub world: [f32; 16],
     pub center: [f32; 4],
     pub model: u32,
-    // Bit 0 (CONFORM_CLIPLAND) = terrain-conformed instance; the GPU-driven VS then conforms it
-    // to SurfaceY per vertex (mode 2). Other bits reserved.
-    pub flags: u32,
-    // For a conform instance, bcSurfaceY (bitcast f32) — the surface height at the object's
-    // ground reference (Object::PublishConformPlane). Unused (0) otherwise.
+    pub flags: u32, // reserved
+    // Inflated frustum-cull radius (f32 bits) for terrain-conform instances, whose displaced
+    // geometry escapes the flat model sphere; 0 = rigid (use model.bounding_sphere * scale).
     pub _pad0: u32,
     pub _pad1: u32,
+    // Terrain-conform plane (mirrors WgrDraw3D::conform*), evaluated per vertex by the
+    // GPU-driven VS so one shared undeformed mesh conforms to the ground. conform2.z = mode:
+    // 0 = rigid (all-zero), 1 = ForestPlain bilinear land-grid plane (conform0/1/2 fields),
+    // 2 = individual ClipLand vegetation (per-vertex SurfaceY; conform0.x = bcSurfaceY).
+    pub conform0: [f32; 4],
+    pub conform1: [f32; 4],
+    pub conform2: [f32; 4],
 }
 
 // One model = a range of drawable LOD levels + its bounding radius at scale 1.
@@ -159,8 +164,12 @@ pub const CULL_VARIANT_COUNT: u32 = 2;
 pub const INVALID_MODEL: u32 = u32::MAX;
 
 // Default per-variant arg capacity. out_args holds CULL_VARIANT_COUNT * this DrawArgs;
-// overflow past it is dropped and logged (never a silent partial draw), and it can grow.
-const DEFAULT_VARIANT_CAPACITY: u32 = 1 << 16; // 64K sections/variant
+// overflow past it is dropped (compute skips the append), never wrapped. Sized generously:
+// past the cap the DROPPED SET depends on the atomic-append order, which varies frame to
+// frame, so an overflowing frame flickers random objects (observed with the frustum test
+// disabled: the whole retained set appends and 64K overflowed). 256K * 20 B * 2 variants
+// = 10 MB — cheap insurance against that failure mode ever appearing in normal play.
+const DEFAULT_VARIANT_CAPACITY: u32 = 1 << 18; // 256K sections/variant
 
 // u32 words per DrawIndexedIndirectArgs (20 B / 4).
 const ARG_WORDS: u64 = super::INDIRECT_ARG_SIZE / 4;
@@ -206,6 +215,9 @@ pub struct CullState {
 
     variant_capacity: u32,
     params: CullParamsGpu,
+    // Debug flags OR'd into CullParamsGpu._pad each frame (cull.wgsl reads them). bit 0 =
+    // WGR_CULL_NO_FRUSTUM (skip the frustum test — discriminates "culled" from "not drawn").
+    debug_flags: u32,
     bind: Option<wgpu::BindGroup>,
 }
 
@@ -309,6 +321,7 @@ impl CullState {
             params_buf,
             variant_capacity: DEFAULT_VARIANT_CAPACITY,
             params: CullParamsGpu::zeroed(),
+            debug_flags: if std::env::var("WGR_CULL_NO_FRUSTUM").is_ok() { 1 } else { 0 },
             bind: None,
         }
     }
@@ -395,7 +408,8 @@ impl CullState {
 
     // Set this frame's cull params (frustum/cam/objectsZ/lod knobs). instance_count and the
     // variant fields are filled by prepare().
-    pub fn set_params(&mut self, params: CullParamsGpu) {
+    pub fn set_params(&mut self, mut params: CullParamsGpu) {
+        params._pad = self.debug_flags;
         self.params = params;
     }
 
@@ -589,6 +603,29 @@ impl CullState {
 
     pub fn section_material_buf(&self) -> Option<&wgpu::Buffer> {
         self.section_mat_buf.buf.as_ref()
+    }
+
+    // The per-model table (lod range + bounding_sphere). Read by the cull-sphere debug pass to
+    // recover each instance's radius (models[inst.model].bounding_sphere * scale).
+    pub fn model_buf(&self) -> Option<&wgpu::Buffer> {
+        self.model_buf.buf.as_ref()
+    }
+
+    // Total retained instances (static slots incl. free-list holes + dynamic), = the value the
+    // compute dispatches over. The cull-sphere debug pass draws this many instances (holes are
+    // skipped in-shader by the INVALID_MODEL guard).
+    pub fn instance_count(&self) -> u32 {
+        self.params.instance_count
+    }
+
+    // Runtime toggle for the ImGui Culling tab: OR/clear bit 0 of the debug flags (skip the
+    // frustum test). Takes effect on the next set_params (called every frame in prepare_cull).
+    pub fn set_no_frustum(&mut self, no_frustum: bool) {
+        if no_frustum {
+            self.debug_flags |= 1;
+        } else {
+            self.debug_flags &= !1;
+        }
     }
 
     pub fn variant_capacity(&self) -> u32 {
@@ -786,6 +823,86 @@ pub fn build_gpu_pipeline(
         cache: None,
     });
     (color, prepass)
+}
+
+// Group-1 layout for the cull-sphere DEBUG pass: the retained instance buffer + the model
+// table, both read-only storage in the vertex stage (the VS recovers centre + radius).
+pub fn cull_debug_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    let storage = |binding: u32| wgpu::BindGroupLayoutEntry {
+        binding,
+        visibility: wgpu::ShaderStages::VERTEX,
+        ty: wgpu::BindingType::Buffer {
+            ty: wgpu::BufferBindingType::Storage { read_only: true },
+            has_dynamic_offset: false,
+            min_binding_size: None,
+        },
+        count: None,
+    };
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("wgr_cull_debug_group1"),
+        entries: &[storage(0), storage(1)],
+    })
+}
+
+// Build the cull-sphere debug pipeline (cull_debug.wgsl): an instanced LINE-LIST wireframe over
+// the retained instances. Group 0 = camera (dynamic offset), group 1 = instances + models.
+// Depth: test ALWAYS + no write, so the spheres draw on top of the scene (visible even where the
+// object itself vanished) without disturbing the depth buffer.
+pub fn build_cull_debug_pipeline(
+    device: &wgpu::Device,
+    composer: &mut naga_oil::compose::Composer,
+    camera_layout: &wgpu::BindGroupLayout,
+    group1_layout: &wgpu::BindGroupLayout,
+    surface_format: wgpu::TextureFormat,
+) -> wgpu::RenderPipeline {
+    let module = crate::shaders::make_module(
+        device,
+        composer,
+        "wgr_cull_debug",
+        include_str!("cull_debug.wgsl"),
+        "gfx3d/cull_debug.wgsl",
+    );
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("wgr_cull_debug_pipeline_layout"),
+        bind_group_layouts: &[Some(camera_layout), Some(group1_layout)],
+        immediate_size: 0,
+    });
+    let depth_stencil = wgpu::DepthStencilState {
+        format: super::DEPTH_FORMAT,
+        depth_write_enabled: Some(false),
+        depth_compare: Some(wgpu::CompareFunction::Always), // debug: always on top
+        stencil: wgpu::StencilState::default(),
+        bias: wgpu::DepthBiasState::default(),
+    };
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("wgr_cull_debug_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_sphere"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &[],
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::LineList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(depth_stencil),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_sphere"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: surface_format,
+                blend: None,
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
 }
 
 // Upload a whole CPU slice into a StorageArray, growing it if needed. Returns whether the
@@ -1007,6 +1124,9 @@ mod tests {
             flags: 0,
             _pad0: 0,
             _pad1: 0,
+            conform0: [0.0; 4],
+            conform1: [0.0; 4],
+            conform2: [0.0; 4],
         };
         let front = cull.instance_add(mk(0.0)); // 10 units ahead: visible
         let _behind = cull.instance_add(mk(20.0)); // behind the camera at z=10

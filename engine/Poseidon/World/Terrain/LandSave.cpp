@@ -485,6 +485,15 @@ void Landscape::MakeObjectsTerrainAbsolute()
                     pos[1] += surfY;
                     obj->SetPosition(pos);
                     // note: we will need to recalc. bbox - see StaticChanged()
+                    // GPU-driven retained scene: this terrain-relative re-seat is the ONE mover
+                    // of static objects that bypasses MoveObject (every heightfield change —
+                    // subdivide/resample/subdiv-cache — funnels through here), so sync the
+                    // retained instance now that the FINAL position is set. Relative's
+                    // intermediate Y is deliberately not synced.
+                    if (GEngine)
+                    {
+                        GEngine->SceneObjectMoved(obj);
+                    }
                 }
                 list.GetList()->StaticChanged();
             }

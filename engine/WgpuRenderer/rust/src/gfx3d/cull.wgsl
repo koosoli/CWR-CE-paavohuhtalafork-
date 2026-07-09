@@ -36,6 +36,11 @@ struct Instance {
     flags: u32,
     _pad0: u32,
     _pad1: u32,
+    // Terrain-conform plane — read only by the GPU-driven VS, not the cull; present here so
+    // the storage-buffer stride matches InstanceGpu (cull.rs).
+    conform0: vec4<f32>,
+    conform1: vec4<f32>,
+    conform2: vec4<f32>,
 };
 
 struct Model {
@@ -113,6 +118,12 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let scale = inst.center.w;
     let model = models[inst.model];
     let radius = model.bounding_sphere * scale;
+    // Terrain-conformed instances draw their geometry displaced onto the terrain, so the flat,
+    // surface-relative model sphere no longer contains it (it spreads with the slope across the
+    // footprint). C++ stores an inflated FRUSTUM-cull radius in _pad0 for these; use it only for
+    // the frustum test, keeping the model radius for the distance near-clamp + sub-pixel size.
+    // 0 = rigid instance -> use the model radius.
+    let cull_radius = select(radius, bitcast<f32>(inst._pad0), inst._pad0 != 0u);
 
     // Distance (camera-relative) with the legacy near-clamp: a sphere large relative to its
     // distance is measured from its near surface so big near objects don't drop to a coarse
@@ -131,7 +142,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // view — the engine's geometry is camera-relative), so test the camera-relative center
     // `rel`, not the absolute `center`. Testing the absolute center here shifts the frustum
     // by cam_pos (kilometres on a real map) and culls erratically.
-    if (outside_frustum(rel, radius)) {
+    // _pad bit 0 = WGR_CULL_NO_FRUSTUM: skip the frustum test entirely. A debug discriminator
+    // — if objects that vanish at certain pitches STOP vanishing with this set, the frustum
+    // cull is the cause; if they still vanish, the cull is innocent (chase the draw/LOD).
+    if ((cull._pad & 1u) == 0u && outside_frustum(rel, cull_radius)) {
         return;
     }
 

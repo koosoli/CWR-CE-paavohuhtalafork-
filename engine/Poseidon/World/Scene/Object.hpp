@@ -254,6 +254,13 @@ class Object: public NetworkObject, public FrameBase, public IAnimator
 	Vector3 _animBBoxMin;
 	Vector3 _animBBoxMax;
 
+	// Cached mode-2 conform surface height (bcSurfaceY = terrain SurfaceY at the object's
+	// ground reference). Static for a static object (immutable terrain, no movement), so
+	// PublishConformPlane samples SurfaceY once instead of every frame from BOTH the colour
+	// and shadow passes. Invalidated on Move, like _animBBox above.
+	float _bcSurfaceY = 0.0f;
+	bool _bcSurfaceYValid = false;
+
 	SRef<DammageRegions> _dammage; // dammage information
 
 	// optimizes inserting/deleting from the list of objects drawn during Scene rendering

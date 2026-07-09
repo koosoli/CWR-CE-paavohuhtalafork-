@@ -1651,10 +1651,9 @@ bool ClassifyGpuSection(const Shape& s, uint64_t mesh, const AutoArray<render::m
 
 // Build a retained instance from an object: absolute world transform (the GPU-driven VS
 // subtracts cam_pos), world bounding-sphere center + uniform scale (both read by the cull).
-// `conform`/`bcSurfaceY`: terrain-conform (ClipLand, mode 2) — sets the CONFORM_CLIPLAND flag +
-// carries bcSurfaceY so the GPU-driven VS conforms this instance to SurfaceY per vertex.
-constexpr uint32_t WGR_INSTANCE_CONFORM_CLIPLAND = 1u; // must match gpu_driven.wgsl CONFORM_CLIPLAND
-WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, bool conform, float bcSurfaceY)
+// `cp` is the terrain-conform plane (cp.mode: 0 rigid, 1 ForestPlain bilinear plane, 2 ClipLand
+// per-vertex SurfaceY); packed into conform0/1/2 exactly like the per-draw path (WgrDraw3D).
+WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, const ConformPlane& cp)
 {
     WgrInstance inst{};
     GfxMatrix g;
@@ -1667,13 +1666,45 @@ WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, bool conform, fl
     // only the offset back to pre-recenter coords; using it here displaces the sphere from the
     // drawn geometry and culls offset-origin objects too early. Matches the legacy cull
     // (SceneDraw.cpp: center = trans.Position(), radius = BoundingSphere()*Scale).
-    const Vector3 center = obj.Transform().Position();
-    inst.center = {center.X(), center.Y(), center.Z(), obj.Scale()};
+    Vector3 center = obj.Transform().Position();
     inst.model = model;
-    inst.flags = conform ? WGR_INSTANCE_CONFORM_CLIPLAND : 0u;
-    if (conform)
+    // Terrain-conform plane -> conform0/1/2, matching DrawSectionTL's per-draw fold.
+    if (cp.mode == 1)
     {
-        std::memcpy(&inst._pad0, &bcSurfaceY, sizeof(float)); // bcSurfaceY as f32 bits
+        inst.conform0 = {cp.invLandGrid, -cp.xf, -cp.zf, cp.bias};
+        inst.conform1 = {cp.y00, cp.y10, cp.d1000, cp.d0100};
+        inst.conform2 = {cp.d1011, cp.d0111, 1.0f, 0.0f};
+    }
+    else if (cp.mode == 2)
+    {
+        inst.conform0 = {cp.bcSurfaceY, 0.0f, 0.0f, 0.0f};
+        inst.conform2 = {0.0f, 0.0f, 2.0f, 0.0f};
+    }
+    // else rigid: conform2.z stays 0 (zero-initialised).
+
+    // Cull sphere == the CPU's exactly: raw Transform.Position() + the model bounding sphere
+    // (Scene.cpp:801). No conforming, no snapping, no inflation — CULLDUMP proved every
+    // "disappears at horizon pitch" object was a STALE registration (the object moved 4-17 m
+    // down after SceneObjectCreated captured it; the live Position is correct), which the
+    // GpuDrivenObject drift check now self-heals. Inflating the radius to reach the terrain was
+    // the wrong tool: it just blurs the cull, and a stale centre + stale registration-time
+    // SurfaceY inflate to a sphere that misses the real ground anyway.
+    inst.center = {center.X(), center.Y(), center.Z(), obj.Scale()};
+
+    // WGR_CONFORM_DEBUG: dump each retained instance's conform mode + how far its origin
+    // floats above the terrain, so a "floating tree" can be identified by shape name and its
+    // mode (0 rigid / 1 forest / 2 clipland) checked against whether the CPU would conform it.
+    static const bool dbg = std::getenv("WGR_CONFORM_DEBUG") != nullptr;
+    if (dbg)
+    {
+        static int dbgCount = 0; // registration is single-threaded (world load)
+        if (dbgCount++ < 60)
+        {
+            const float surf = GLandscape ? GLandscape->SurfaceY(center.X(), center.Z()) : 0.0f;
+            const LODShapeWithShadow* s = obj.GetShape();
+            LOG_INFO(Graphics, "CONFORM name={} mode={} posY={} surfY={} above={} scale={}",
+                     s ? s->Name() : "?", cp.mode, center.Y(), surf, center.Y() - surf, obj.Scale());
+        }
     }
     return inst;
 }
@@ -1689,6 +1720,33 @@ static float GpuConformBcSurfaceY(const Object& obj, const LODShapeWithShadow& s
     Matrix4Val toWorld = obj.Transform();
     Vector3 bc(VFastTransform, toWorld, -shape.BoundingCenter());
     return GLandscape->SurfaceY(bc[0], bc[2]);
+}
+
+// Terrain-conform plane for a retained instance. ForestPlain (forests + shrub groups) uses a
+// MODE-1 bilinear land-grid plane (its cached ConformPlane; skewed t1/t2 squares bake conform
+// into the transform and report rigid). Individual ClipLand vegetation/fences use MODE 2
+// (per-vertex SurfaceY). `clipLandConform` = the shape carries ClipLand hints (RegisterGpuModel
+// recorded it in _gpuConformShapes). Anything else is rigid (mode 0).
+static ConformPlane GpuConformFor(Object& obj, const LODShapeWithShadow& shape, bool clipLandConform)
+{
+    ConformPlane cp{};
+    cp.active = false;
+    cp.mode = 0; // rigid by default (struct default is mode 1)
+    if (ForestPlain* fp = dyn_cast<ForestPlain>(&obj))
+    {
+        ConformPlane fpc;
+        if (fp->GpuConformPlane(fpc)) // false for skewed squares -> stays rigid
+        {
+            cp = fpc; // mode 1
+        }
+        return cp;
+    }
+    if (clipLandConform)
+    {
+        cp.mode = 2;
+        cp.bcSurfaceY = GpuConformBcSurfaceY(obj, shape);
+    }
+    return cp;
 }
 
 } // namespace
@@ -1717,13 +1775,33 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
         {
             continue;
         }
+        // Proxy-bearing shapes (buildings with interior furniture proxies) must stay wholly on
+        // the CPU path. The real furniture is created at shape-load into the parent's _proxy[]
+        // and drawn INLINE by Object::DrawProxies (called from Object::Draw) — which the GPU-
+        // driven CPU-colour suppression (DrawSortObject) would skip, so the furniture would
+        // vanish. The parent shape also carries hidden, texture-nulled proxy-MARKER sections;
+        // the GPU path has no per-proxy hook. Reject the whole model -> CPU (furniture draws,
+        // markers stay hidden). Mirrors the instanced-run predicate (SceneDraw.cpp NProxies()==0).
+        if (s->NProxies() > 0)
+        {
+            eligible = false;
+            break;
+        }
         // Terrain-conformed shapes (ClipLand fences / individual vegetation): the GPU-driven
-        // vertex shader now conforms them to SurfaceY per vertex (mode 2, matching the per-draw
-        // path), so they're eligible. Mark the shape conform — its instances carry the
-        // CONFORM_CLIPLAND flag + bcSurfaceY. Mirrors Object::PublishConformPlane's ClipLand gate.
-        if (s->GetOrHints() & (ClipLandKeep | ClipLandOn))
+        // vertex shader conforms them to SurfaceY per vertex (mode 2, matching the per-draw
+        // path), so they're eligible. Mark the shape conform — its instances carry conform2.z=2
+        // + bcSurfaceY. Mirrors Object::PublishConformPlane's ClipLand gate.
+        const bool levelConform = (s->GetOrHints() & (ClipLandKeep | ClipLandOn)) != 0;
+        if (levelConform)
         {
             isConform = true;
+            // The mode-2 conform selector is baked from OrigClip, and the shader deforms the
+            // ORIGINAL (undeformed) geometry — so OrigPos/OrigClip must be valid. Object::Animate
+            // saves them, but that runs at DRAW time, AFTER this load-time registration, so
+            // OriginalPosValid() is still false here and BuildOrigVertices would fall back to the
+            // non-conform BuildVertices (conform_sel=0 -> the instance floats rigid). Save them
+            // now from the current (undeformed, ClipLand-clips-intact) geometry. Idempotent.
+            s->SaveOriginalPos();
         }
         // OWN the geometry: create a DEDICATED pool mesh from the shape's data rather than
         // borrowing the shape's transient `_buffer`. ShapeBank::OptimizeAll releases every
@@ -1738,7 +1816,18 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
             continue;
         }
         std::vector<SVertex> verts(static_cast<size_t>(nv));
-        render::mesh::BuildVertices(*s, verts.data());
+        // Conform (ClipLand mode-2) shapes: bake the per-vertex conform selector from OrigClip
+        // AND upload the UNDEFORMED original geometry, exactly like the per-draw conform path
+        // (BuildOrigVertices). Plain BuildVertices hardcodes conform=0, so mode-2 instances
+        // never conform (they float rigid). OriginalPosValid guards shapes without orig data.
+        if (levelConform && s->OriginalPosValid())
+        {
+            render::mesh::BuildOrigVertices(*s, verts.data());
+        }
+        else
+        {
+            render::mesh::BuildVertices(*s, verts.data());
+        }
         std::vector<VertexIndex> indices(static_cast<size_t>(ni));
         render::mesh::BuildIndices(*s, indices.data());
         const uint64_t mesh = wgr_mesh_create(
@@ -1757,6 +1846,13 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
         uint32_t count = 0;
         for (int i = 0; i < s->NSections(); i++)
         {
+            // Hidden sections (e.g. texture-nulled proxy markers) are skipped by the CPU path
+            // (Shape::Draw) and the wgpu shadow/per-object paths (skipMask); baking them would
+            // draw untextured white geometry. Skip — not ineligible, just not drawn.
+            if (s->GetSection(i).properties.Special() & (IsHidden | IsHiddenProxy))
+            {
+                continue;
+            }
             WgrModelSection sec{};
             WgrModelMaterial mat{};
             if (!ClassifyGpuSection(*s, mesh, secs, i, sec, mat))
@@ -1803,14 +1899,6 @@ void EngineWgpu::SceneObjectCreated(Object* obj)
     {
         return;
     }
-    // ForestPlain (forests + shrub groups) conforms to the terrain via a MODE-1 bilinear plane
-    // published in its Draw override (ObjectClasses.cpp). The GPU-driven VS only implements
-    // mode-2 (per-vertex ClipLand) conform, so a ForestPlain drawn here would be rigid and
-    // float off the ground. Keep it on the CPU path until mode-1 is ported to the GPU.
-    if (dyn_cast<ForestPlain>(obj))
-    {
-        return;
-    }
     LODShapeWithShadow* shape = obj->GetShape();
     if (!shape)
     {
@@ -1821,11 +1909,11 @@ void EngineWgpu::SceneObjectCreated(Object* obj)
     {
         return; // ineligible shape -> object drawn by the CPU path
     }
-    const bool conform = _gpuConformShapes.count(shape) != 0;
-    const float bcSurfaceY = conform ? GpuConformBcSurfaceY(*obj, *shape) : 0.0f;
-    const WgrInstance inst = BuildGpuInstance(*obj, model, conform, bcSurfaceY);
+    // Terrain conform: ForestPlain -> mode-1 plane, ClipLand veg/fences -> mode-2, else rigid.
+    const ConformPlane cp = GpuConformFor(*obj, *shape, _gpuConformShapes.count(shape) != 0);
+    const WgrInstance inst = BuildGpuInstance(*obj, model, cp);
     const uint32_t slot = wgr_instance_add(_renderer, &inst);
-    _gpuInstances[obj] = GpuInstance{model, slot};
+    _gpuInstances[obj] = GpuInstance{model, slot, obj->Transform().Position(), cp.mode};
 }
 
 void EngineWgpu::SceneObjectRemoved(Object* obj)
@@ -1863,16 +1951,103 @@ void EngineWgpu::SceneObjectMoved(Object* obj)
         _gpuInstances.erase(it);
         return;
     }
-    // Conform bcSurfaceY depends on position, so recompute it on move.
-    const bool conform = _gpuConformShapes.count(shape) != 0;
-    const float bcSurfaceY = conform ? GpuConformBcSurfaceY(*obj, *shape) : 0.0f;
-    const WgrInstance inst = BuildGpuInstance(*obj, it->second.model, conform, bcSurfaceY);
+    // The conform plane depends on position (mode-1 land cell, mode-2 bcSurfaceY), so recompute
+    // it on move. ForestPlain's cached plane is keyed to Position(); a moved forest would need
+    // reinvalidation, but static clutter effectively never moves — recompute defensively.
+    const ConformPlane cp = GpuConformFor(*obj, *shape, _gpuConformShapes.count(shape) != 0);
+    const WgrInstance inst = BuildGpuInstance(*obj, it->second.model, cp);
     wgr_instance_update(_renderer, it->second.slot, &inst);
+    it->second.pos = obj->Transform().Position();
+    it->second.mode = cp.mode;
 }
 
 bool EngineWgpu::GpuDrivenObject(const Object* obj) const
 {
-    return _gpuDriven && _gpuInstances.count(obj) != 0;
+    if (!_gpuDriven)
+    {
+        return false;
+    }
+    auto it = _gpuInstances.find(obj);
+    if (it == _gpuInstances.end())
+    {
+        return false;
+    }
+    // Drift TRIPWIRE. Every known mover of a static object's transform now fires
+    // SceneObjectMoved (Landscape::MoveObject, and the terrain-relative re-seat in
+    // Landscape::MakeObjectsTerrainAbsolute that every heightfield change funnels through), so
+    // the retained transform should NEVER drift from the live one. If it does, an unhooked
+    // mover exists: warn (so it's found and hooked — the retained scene must stay correct by
+    // events, not by this per-frame CPU walk, which GPU-driven rendering will eliminate) and
+    // refresh so rendering stays correct meanwhile.
+    const Vector3 live = obj->Transform().Position();
+    if (live.Distance2(it->second.pos) > Square(0.01f))
+    {
+        static int warned = 0;
+        if (warned < 8)
+        {
+            warned++;
+            const LODShapeWithShadow* shape = obj->GetShape();
+            LOG_WARN(Graphics, "GPU-driven instance drifted without a Moved hook (unhooked mover?): {} stored=({},{},{}) live=({},{},{})",
+                        shape ? shape->Name() : "?", it->second.pos.X(), it->second.pos.Y(), it->second.pos.Z(),
+                        live.X(), live.Y(), live.Z());
+        }
+        EngineWgpu* self = const_cast<EngineWgpu*>(this);
+        self->SceneObjectMoved(const_cast<Object*>(obj));
+        // SceneObjectMoved can DROP the object (destroyed / shape gone): then it must draw on
+        // the CPU this frame.
+        return self->_gpuInstances.count(obj) != 0;
+    }
+    return true;
+}
+
+void EngineWgpu::SuppressWorldObjects(bool suppress)
+{
+    // Only the GPU-driven path retains a GPU-resident world set that draws independently of
+    // the per-frame 3D lists; the CPU path already stops when World skips its 3D block.
+    if (_gpuDriven && _renderer)
+    {
+        wgr_set_suppress_world_objects(_renderer, suppress);
+    }
+}
+
+void EngineWgpu::SetCullDebugSettings(const CullDebugSettings& s)
+{
+    _cullDebug = s;
+    _cullDebug.dumpNearby = false; // momentary button, never stored
+    if (_gpuDriven && _renderer)
+    {
+        wgr_set_cull_debug(_renderer, s.drawSpheres, s.disableFrustum);
+    }
+    if (s.dumpNearby && _gpuDriven)
+    {
+        // Log the retained instances near the camera: what the GPU cull buffer holds
+        // (registration-time pos/mode) vs the object's LIVE Position() vs the terrain surface.
+        // liveY-surf >> 0 on a mode-2 bush = a floating placement the conform hides (the
+        // disappearing-object cause); stored != live = a stale registration (SetTransform after
+        // AddObject without a Moved hook) — the floating-tree suspect.
+        const Camera* cam = GScene ? GScene->GetCamera() : nullptr;
+        if (cam && GLandscape)
+        {
+            const Vector3 camPos = cam->Position();
+            int logged = 0;
+            for (const auto& [obj, gi] : _gpuInstances)
+            {
+                const Vector3 live = obj->Transform().Position();
+                if (live.Distance2(camPos) > Square(60.0f) || logged >= 48)
+                {
+                    continue;
+                }
+                logged++;
+                const float surf = GLandscape->SurfaceY(live.X(), live.Z());
+                const LODShapeWithShadow* shape = obj->GetShape();
+                LOG_INFO(Graphics,
+                         "CULLDUMP name={} mode={} dist={} liveY={} storedY={} surf={} above={} stale={} r={}",
+                         shape ? shape->Name() : "?", gi.mode, live.Distance(camPos), live.Y(), gi.pos.Y(),
+                         surf, live.Y() - surf, live.Distance(gi.pos), obj->GetRadius());
+            }
+            LOG_INFO(Graphics, "CULLDUMP done: {} instances within 60m (cap 48)", logged);
+        }
+    }
 }
 
 void EngineWgpu::SetShadowCascades(const shadow::CascadeSet& cascades, int resolution)

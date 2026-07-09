@@ -1796,6 +1796,48 @@ void DrawSkyTab()
     if (ImGui::Button("Copy preset to clipboard"))
         ImGui::SetClipboardText(preset);
 }
+void DrawCullingTab()
+{
+    if (!GEngine)
+    {
+        ImGui::TextDisabled("engine not up");
+        return;
+    }
+    if (!GEngine->SupportsCullDebug())
+    {
+        ImGui::TextDisabled("GPU-driven rendering off (run the wgpu backend with WGR_GPU_DRIVEN=1)");
+        return;
+    }
+
+    auto s = GEngine->GetCullDebugSettings();
+    bool changed = false;
+
+    changed |= ImGui::Checkbox("Draw cull spheres", &s.drawSpheres);
+    ImGui::SetItemTooltip("Green wireframe of each retained instance's frustum-cull sphere "
+                          "(centre = Object Position, radius = GetRadius), drawn on top of the "
+                          "scene. Shows whether a sphere sits on its object and how high it floats.");
+    changed |= ImGui::Checkbox("Disable frustum cull", &s.disableFrustum);
+    ImGui::SetItemTooltip("Skip the GPU frustum test entirely. If objects that vanish at certain "
+                          "pitches stop vanishing with this on, the frustum cull is the cause; if "
+                          "they still vanish, the cull is innocent and it's the draw/LOD path.");
+
+    ImGui::Separator();
+    if (ImGui::Button("Dump nearby instances to log"))
+    {
+        s.dumpNearby = true;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Log every GPU-driven instance within 60 m: live Position vs the "
+                          "position captured at registration vs the terrain surface. Stand next "
+                          "to a misbehaving object first. above >> 0 = floating placement; "
+                          "stale > 0 = the retained buffer holds an outdated transform.");
+
+    if (changed)
+    {
+        GEngine->SetCullDebugSettings(s);
+    }
+}
+
 void DrawWaterTab()
 {
     if (!GEngine)
@@ -2059,6 +2101,11 @@ void DrawMainWindow()
         if (ImGui::BeginTabItem("Water"))
         {
             DrawWaterTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Culling"))
+        {
+            DrawCullingTab();
             ImGui::EndTabItem();
         }
         ImGuiTabItemFlags shadowFlags = 0;

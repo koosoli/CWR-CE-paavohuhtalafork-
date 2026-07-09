@@ -437,6 +437,24 @@ void ForestPlain::ComputeConformPlane()
     _conformPlane.bias = _shape->BoundingCenter().Y();
 }
 
+bool ForestPlain::GpuConformPlane(ConformPlane& out)
+{
+    // Skewed squares (t1/t2) bake their conform into the object matrix (InitSkew ->
+    // SetTransform), so the GPU-driven path draws them rigid with world = Transform().
+    if (_singleMatrixT1 || _singleMatrixT2)
+    {
+        return false;
+    }
+    if (!_conformValid)
+    {
+        ComputeConformPlane();
+    }
+    out = _conformPlane;
+    out.mode = 1;
+    out.active = true;
+    return true;
+}
+
 void ForestPlain::Draw(int forceLOD, ClipFlags clipFlags, const FrameBase& pos)
 {
     // Skewed forest squares (t1/t2) bake their conform into the object matrix already,

@@ -1084,6 +1084,13 @@ pub struct Gfx3d {
     gpu_group1_layout: wgpu::BindGroupLayout,
     gpu_group1_bind: Option<wgpu::BindGroup>,
 
+    // Cull-sphere DEBUG pass (ImGui Culling tab): instanced line-list wireframe of every
+    // retained instance's frustum-cull sphere. Bind = instances + models; rebuilt with
+    // gpu_group1_bind when a buffer grows.
+    cull_debug_pipeline: wgpu::RenderPipeline,
+    cull_debug_layout: wgpu::BindGroupLayout,
+    cull_debug_bind: Option<wgpu::BindGroup>,
+
     meshes: SlotMap<MeshKey, Mesh>,
 }
 
@@ -1368,6 +1375,14 @@ impl Gfx3d {
             &conform.layout,
             surface_format,
         );
+        let cull_debug_layout = cull::cull_debug_layout(device);
+        let cull_debug_pipeline = cull::build_cull_debug_pipeline(
+            device,
+            composer,
+            &cameras.layout,
+            &cull_debug_layout,
+            surface_format,
+        );
 
         Gfx3d {
             cameras,
@@ -1426,6 +1441,9 @@ impl Gfx3d {
             gpu_prepass_pipeline,
             gpu_group1_layout,
             gpu_group1_bind: None,
+            cull_debug_pipeline,
+            cull_debug_layout,
+            cull_debug_bind: None,
             meshes: SlotMap::with_key(),
         }
     }
@@ -3532,6 +3550,7 @@ impl Gfx3d {
             self.cull.section_material_buf(),
         ) else {
             self.gpu_group1_bind = None;
+            self.cull_debug_bind = None;
             return;
         };
         self.gpu_group1_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3552,6 +3571,52 @@ impl Gfx3d {
                 },
             ],
         }));
+        // Cull-sphere debug bind (instances + models) — rebuilt on the same buffer-growth signal.
+        self.cull_debug_bind = self.cull.model_buf().map(|models| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wgr_cull_debug_bind"),
+                layout: &self.cull_debug_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: inst.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: models.as_entire_binding(),
+                    },
+                ],
+            })
+        });
+    }
+
+    // Runtime toggle from the ImGui Culling tab: skip the GPU frustum test.
+    pub fn set_cull_no_frustum(&mut self, no_frustum: bool) {
+        self.cull.set_no_frustum(no_frustum);
+    }
+
+    // Cull-sphere debug pass: one instanced line-list wireframe sphere per retained instance at
+    // the exact centre + radius the cull tests. Draws on top (depth compare Always, no write).
+    // No-op when GPU-driven is off or the scene is empty.
+    pub fn draw_cull_spheres(&self, pass: &mut wgpu::RenderPass<'_>, cam_off: u32) {
+        if !self.gpu_driven_enabled {
+            return;
+        }
+        let (Some(camera_bind), Some(bind)) =
+            (self.cameras.bind.as_ref(), self.cull_debug_bind.as_ref())
+        else {
+            return;
+        };
+        let instances = self.cull.instance_count();
+        if instances == 0 {
+            return;
+        }
+        // 3 rings * SEG(32) segments * 2 endpoints = 192 line vertices per instance.
+        const VERTS_PER_SPHERE: u32 = 3 * 32 * 2;
+        pass.set_pipeline(&self.cull_debug_pipeline);
+        pass.set_bind_group(0, camera_bind, &[cam_off]);
+        pass.set_bind_group(1, bind, &[]);
+        pass.draw(0..VERTS_PER_SPHERE, 0..instances);
     }
 
     // Record the cull compute dispatch (before the render passes that read its args). No-op
@@ -3648,10 +3713,12 @@ fn instance_to_gpu(inst: &WgrInstance) -> cull::InstanceGpu {
         center: inst.center,
         model: inst.model,
         flags: inst.flags,
-        // Carries bcSurfaceY (bitcast f32) for terrain-conform instances (flags bit 0); the
-        // GPU-driven VS reads it. Zero for non-conform instances.
         _pad0: inst._pad0,
-        _pad1: 0,
+        _pad1: inst._pad1,
+        // Terrain-conform plane (conform2.z = mode); the GPU-driven VS conforms per vertex.
+        conform0: inst.conform0,
+        conform1: inst.conform1,
+        conform2: inst.conform2,
     }
 }
 

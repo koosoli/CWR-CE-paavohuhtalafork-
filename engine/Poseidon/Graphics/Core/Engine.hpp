@@ -1111,6 +1111,30 @@ class Engine : public IGraphicsEngine
     virtual WaterSettings GetWaterSettings() const { return {}; }
     virtual void SetWaterSettings(const WaterSettings& /*s*/) {}
 
+    // GPU-driven cull DEBUG toggles (ImGui Culling tab). drawSpheres = render each retained
+    // instance's frustum-cull sphere as a wireframe; disableFrustum = skip the GPU frustum
+    // test (discriminator for the "objects vanish at certain pitches" bug).
+    struct CullDebugSettings
+    {
+        bool drawSpheres = false;
+        bool disableFrustum = false;
+        // Momentary (a button, not a state): log every retained instance near the camera —
+        // registration-time position vs the object's LIVE Position() vs the terrain surface.
+        // Consumed by SetCullDebugSettings; never stored true.
+        bool dumpNearby = false;
+    };
+    // True on the wgpu backend with GPU-driven rendering enabled; gates the Culling tab.
+    virtual bool SupportsCullDebug() const { return false; }
+    virtual CullDebugSettings GetCullDebugSettings() const { return {}; }
+    virtual void SetCullDebugSettings(const CullDebugSettings& /*s*/) {}
+
+    // Per-frame: suppress drawing the retained GPU-driven world set (its objects live in a
+    // GPU-resident scene and otherwise draw every frame regardless of the per-frame 3D lists
+    // World::Simulate skips). Raised while the world must not be shown (mission editor,
+    // loading, shutdown) so those frames clear to black with no clutter leaking behind the 2D
+    // UI. Default no-op. NOTE: appended at the class end on purpose (see the vtable-slot note).
+    virtual void SuppressWorldObjects(bool /*suppress*/) {}
+
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy
     // when the viewport changes.
