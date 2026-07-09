@@ -1355,6 +1355,9 @@ void DrawShadowsTab()
     changed |= ImGui::SliderFloat("Distance coef", &t.distanceCoef, 0.05f, 1.0f, "%.3f");
     ImGui::TextDisabled("  frustum-tier far distance as a fraction of view distance (1.0 = full VD)");
 
+    changed |= ImGui::SliderFloat("Shadow distance (m)", &t.shadowDistance, 0.0f, 1500.0f, "%.0f");
+    ImGui::TextDisabled("  explicit cascade reach, decoupled from the 250 m clamp (0 = use game slider)");
+
     changed |= ImGui::SliderFloat("Split coef", &t.splitCoef, 0.0f, 1.0f, "%.2f");
     ImGui::TextDisabled("  PSSM blend: 0 = uniform splits, 1 = logarithmic (FP 0.95)");
 
@@ -1428,11 +1431,12 @@ void DrawShadowsTab()
     ImGui::TextDisabled("Current tuning (copy back to share):");
     char summary[512];
     snprintf(summary, sizeof(summary),
-             "shadows: enabled=%s darkness=%.3f cascades=%d omni=%d/%.3f/%.3f dist=%.3f split=%.2f bias=%.6f "
-             "normOfs=%.2f pcf=%.2f lodBias=%.1f fade=%.1f res=%d | terrain: on=%s str=%.2f scale=%d steps=%d pen=%.2f",
+             "shadows: enabled=%s darkness=%.3f cascades=%d omni=%d/%.3f/%.3f dist=%.3f shadowDist=%.0f split=%.2f "
+             "bias=%.6f normOfs=%.2f pcf=%.2f lodBias=%.1f fade=%.1f res=%d | terrain: on=%s str=%.2f scale=%d "
+             "steps=%d pen=%.2f",
              t.enabled ? "true" : "false", t.darkness, t.cascadeCount, t.omniCount, t.omniCoef0, t.omniCoef1,
-             t.distanceCoef, t.splitCoef, t.biasBase, t.normalOffset, t.pcf, t.casterLodBias, t.fadeRange,
-             t.resolution, t.terrainShadowEnabled ? "true" : "false", t.terrainShadowStrength,
+             t.distanceCoef, t.shadowDistance, t.splitCoef, t.biasBase, t.normalOffset, t.pcf, t.casterLodBias,
+             t.fadeRange, t.resolution, t.terrainShadowEnabled ? "true" : "false", t.terrainShadowStrength,
              t.terrainShadowScale, t.terrainShadowSteps, t.terrainShadowPenumbra);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##shadowSummary", summary, sizeof(summary), ImGuiInputTextFlags_ReadOnly);

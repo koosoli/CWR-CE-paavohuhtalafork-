@@ -148,6 +148,7 @@ GameValue TriShadowSetDarkness(const GameState*, GameValuePar);
 GameValue TriShadowSetBias(const GameState*, GameValuePar);
 GameValue TriShadowSetCascades(const GameState*, GameValuePar);
 GameValue TriShadowSetDistance(const GameState*, GameValuePar);
+GameValue TriShadowSetShadowDistance(const GameState*, GameValuePar);
 GameValue TriShadowSetSplit(const GameState*, GameValuePar);
 GameValue TriShadowSetOmni(const GameState*, GameValuePar);
 GameValue TriShadowSetOmniR0(const GameState*, GameValuePar);
@@ -2274,6 +2275,8 @@ INIT_MODULE(GameStateExtTest, 3)
     GGameState.NewFunction(GameFunction(GameString, "triShadowSetBias", TriShadowSetBias, GameScalar));
     GGameState.NewFunction(GameFunction(GameString, "triShadowSetCascades", TriShadowSetCascades, GameScalar));
     GGameState.NewFunction(GameFunction(GameString, "triShadowSetDistance", TriShadowSetDistance, GameScalar));
+    GGameState.NewFunction(
+        GameFunction(GameString, "triShadowSetShadowDistance", TriShadowSetShadowDistance, GameScalar));
     GGameState.NewFunction(GameFunction(GameString, "triShadowSetSplit", TriShadowSetSplit, GameScalar));
     GGameState.NewFunction(GameFunction(GameString, "triShadowSetOmni", TriShadowSetOmni, GameScalar));
     GGameState.NewFunction(GameFunction(GameString, "triShadowSetOmniR0", TriShadowSetOmniR0, GameScalar));

@@ -784,7 +784,9 @@ class Engine : public IGraphicsEngine
     /// each maps 1:1 to a kernel input. `darkness` multiplies the lit colour
     /// where shadowed (lower = darker). `cascadeCount` is the number of view-
     /// frustum slices (1..4). `distanceCoef` sets the shadow far distance as a
-    /// fraction of the view distance (shadowFar = near + coef·(far−near)).
+    /// fraction of the view distance (shadowFar = near + coef·(far−near));
+    /// `shadowDistance` overrides that `far` with an explicit metre reach
+    /// decoupled from the 250 m `shadowsZ` clamp (0 = use `shadowsZ`).
     /// `splitCoef` is the PSSM log/uniform blend (0 = uniform, 1 = logarithmic).
     /// `biasBase` is the per-cascade depth bias base (applied base·(i+1)²).
     /// `fadeRange` is the far-edge fade width in metres (distant shadows dissolve
@@ -795,7 +797,15 @@ class Engine : public IGraphicsEngine
         float darkness = 0.35f;
         int cascadeCount = 4;
         float distanceCoef = 1.00f; // shadows reach the full view distance (frustum tiers)
-        float splitCoef = 0.90f;
+        // Explicit cascade far distance in metres, decoupled from the 1..250 m
+        // `shadowsZ` serialize clamp (the legacy view-distance ceiling). 0 = fall
+        // back to `ENGINE_CONFIG.shadowsZ` (legacy behaviour); > 0 overrides it so
+        // the shadow path can push object shadows past 250 m without touching the
+        // saved game menu slider. Default 400 m — a moderate reach for the current
+        // 4 cascades; the 8-cascade rework is what makes ~1 km affordable.
+        // `distanceCoef` still scales this reach.
+        float shadowDistance = 400.0f;
+        float splitCoef = 0.80f;
         float biasBase = 0.00002f; // small — front-face culling does the acne work
         float fadeRange = 40.0f;
         int resolution = 2048;

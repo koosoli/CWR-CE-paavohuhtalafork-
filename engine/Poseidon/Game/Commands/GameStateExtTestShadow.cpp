@@ -82,6 +82,20 @@ GameValue TriShadowSetDistance(const GameState* /*state*/, GameValuePar arg)
     return GameValue(buf);
 }
 
+/// triShadowSetShadowDistance <metres> — explicit cascade reach, decoupled from the
+/// 250 m shadowsZ clamp (0 = use the game shadow slider). Returns "OK:<v>".
+GameValue TriShadowSetShadowDistance(const GameState* /*state*/, GameValuePar arg)
+{
+    if (!GEngine)
+        return GameValue("FAIL:no engine");
+    Engine::ShadowMapTuning t = GEngine->GetShadowMapTuning();
+    t.shadowDistance = static_cast<float>(static_cast<GameScalarType>(arg));
+    GEngine->SetShadowMapTuning(t);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "OK:%.1f", t.shadowDistance);
+    return GameValue(buf);
+}
+
 /// triShadowSetSplit <coef> — PSSM split blend 0=uniform..1=log. Returns "OK:<v>".
 GameValue TriShadowSetSplit(const GameState* /*state*/, GameValuePar arg)
 {
@@ -174,9 +188,10 @@ GameValue TriShadowTuning(const GameState* /*state*/)
     Engine::ShadowMapTuning t = GEngine->GetShadowMapTuning();
     char buf[200];
     snprintf(buf, sizeof(buf),
-             "enabled=%s darkness=%.3f cascades=%d omni=%d/%.3f/%.3f dist=%.3f split=%.2f bias=%.6f fade=%.1f res=%d",
+             "enabled=%s darkness=%.3f cascades=%d omni=%d/%.3f/%.3f dist=%.3f shadowDist=%.1f split=%.2f bias=%.6f "
+             "fade=%.1f res=%d",
              t.enabled ? "true" : "false", t.darkness, t.cascadeCount, t.omniCount, t.omniCoef0, t.omniCoef1,
-             t.distanceCoef, t.splitCoef, t.biasBase, t.fadeRange, t.resolution);
+             t.distanceCoef, t.shadowDistance, t.splitCoef, t.biasBase, t.fadeRange, t.resolution);
     return GameValue(buf);
 }
 

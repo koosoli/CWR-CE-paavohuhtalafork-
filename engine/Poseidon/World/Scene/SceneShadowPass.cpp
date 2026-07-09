@@ -92,8 +92,10 @@ shadow::CascadeSet BuildCascadeSet(const Camera* cam, Vector3Val sunDir, const E
     bp.nearD = cam->ClipNear();
     // Pair the cascade reach with the shadow visibility distance (Game-menu Shadows
     // slider, clamped to the object distance), not the camera far-clip: the frustum
-    // tiers cover exactly as far as shadows are meant to render.
-    bp.farD = ENGINE_CONFIG.shadowsZ;
+    // tiers cover exactly as far as shadows are meant to render. A non-zero
+    // `shadowDistance` tuning knob overrides the 1..250 m `shadowsZ` clamp so the
+    // wgpu path can reach further without touching the saved slider.
+    bp.farD = tune.shadowDistance > 0.0f ? tune.shadowDistance : ENGINE_CONFIG.shadowsZ;
     bp.sunDir = {sunDir.X(), sunDir.Y(), sunDir.Z()};
     bp.count = tune.cascadeCount;
     bp.distanceCoef = tune.distanceCoef;
@@ -147,12 +149,13 @@ void Scene::RenderShadowMapDepthPass(int nDraw)
     const Vector3 camPos = GetCamera()->Position(); // camera-relative render (PrepareMeshTLImpl)
     // Only collect casters within the shadow-map far distance (= distanceCoef *
     // SHADOW visibility distance); nothing beyond it samples them, so distanceCoef
-    // doubles as the caster-collection budget. Pair the reach with
-    // ENGINE_CONFIG.shadowsZ — the Game-menu Shadows slider, already clamped to the
-    // object distance (no casters live past where objects draw).
+    // doubles as the caster-collection budget. Pair the reach with the shadow range
+    // — the shadowDistance override if set, else ENGINE_CONFIG.shadowsZ (the
+    // Game-menu Shadows slider, clamped to the object distance) — so the collection
+    // budget tracks the cascades when the range is pushed past 250 m.
     const Engine::ShadowMapTuning smCap = GEngine->GetShadowMapTuning();
     const float smCamNear = GetCamera()->ClipNear();
-    const float smShadowsZ = ENGINE_CONFIG.shadowsZ;
+    const float smShadowsZ = smCap.shadowDistance > 0.0f ? smCap.shadowDistance : ENGINE_CONFIG.shadowsZ;
     const float smShadowFar = smCamNear + smCap.distanceCoef * (smShadowsZ - smCamNear);
     const float smCasterMaxDist2 = Square(smShadowFar);
 
@@ -471,7 +474,11 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
 
     const Vector3 camPos = cam->Position();
     const float camNear = cam->ClipNear();
-    const float shadowFar = camNear + tune.distanceCoef * (ENGINE_CONFIG.shadowsZ - camNear);
+    // Cull casters against the same reach the cascades cover (shadowDistance
+    // override, else the legacy shadowsZ clamp) so distant casters still feed
+    // the far cascades when the range is pushed past 250 m.
+    const float shadowRange = tune.shadowDistance > 0.0f ? tune.shadowDistance : ENGINE_CONFIG.shadowsZ;
+    const float shadowFar = camNear + tune.distanceCoef * (shadowRange - camNear);
     const float casterMaxDist2 = Square(shadowFar);
 
     for (int i = 0; i < nDraw; i++)
