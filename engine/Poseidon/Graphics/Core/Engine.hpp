@@ -1125,8 +1125,8 @@ class Engine : public IGraphicsEngine
         float fadeStart = 589.0f;
         float fadeEnd = 865.0f;
         float warpAmp = 2.52f;       // low-frequency domain warp (m) that de-tiles the field
-        float specPower = 110.0f;    // sun-glint sharpness
-        float specIntensity = 0.52f; // sun-glint brightness (HDR, blooms)
+        float specPower = 11.0f;     // sun-glint sharpness
+        float specIntensity = 3.82f; // sun-glint brightness (HDR, blooms)
         float alpha = 0.65f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
         // Sun shadow: terrain heightfield + CSM occlusion removes the sun glint and
         // direct-sun sheen where the water is shadowed; shadowDim additionally darkens

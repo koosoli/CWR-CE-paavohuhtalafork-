@@ -385,8 +385,15 @@ fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
             let sun_t = sample_transmittance(pos, sun);
             let edge = clamp((cos_sun - cos_radius) / (1.0 - cos_radius), 0.0, 1.0);
             let limb = 0.4 + 0.6 * sqrt(edge);
-            let radiance = sky.sun_dir.w * sky.params.y;
-            color = color + radiance * sun_t * limb;
+            // sun_dir.w * params.y is the solar IRRADIANCE (the scale that drives the sky
+            // scattering integral). The disc's RADIANCE is that divided by the sun's solid
+            // angle Omega = 2*pi*(1 - cos(radius)) — ~1e4x larger, which is what makes the
+            // disc eye-searingly bright (HDR + bloom) instead of matching the surrounding
+            // haze. Dividing by the ACTUAL drawn radius keeps it energy-conserving: inflating
+            // the disc for visibility lowers its radiance so total power stays fixed.
+            let solid_angle = 2.0 * PI * (1.0 - cos_radius);
+            let disc = (sky.sun_dir.w * sky.params.y) / solid_angle;
+            color = color + disc * sun_t * limb;
         }
     }
 

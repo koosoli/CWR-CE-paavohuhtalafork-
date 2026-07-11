@@ -14,6 +14,8 @@
 #import shadow::shadow_strength
 #import color::srgb_to_linear
 
+const PI: f32 = 3.14159265359;
+
 struct WaterParams {
     world_origin: vec2<f32>,
     terrain_grid: f32,
@@ -339,10 +341,19 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     }
     rgb = mix(rgb, refl, fresnel);
 
-    // Sharp HDR sun glint (Blinn-Phong); un-clamped so the bloom pass catches it. The
-    // sun is occluded in shadow, so the glint vanishes there.
+    // Sharp HDR sun glint — the reflected sun disc, on the same physical scale as the sky's now
+    // eye-searing sun. sun_diffuse is the solar IRRADIANCE (the scale that drives the sky); an
+    // ENERGY-NORMALISED Blinn-Phong lobe spreads it over the highlight, so a tighter lobe (higher
+    // spec_power) concentrates the same energy into a brighter, searing core instead of the old
+    // flat irradiance-scale smear. Fresnel-weighted (microfacet v.h): a specular reflection of the
+    // sun is Fresnel-modulated — water barely glints at normal incidence and hard along the grazing
+    // glitter path. spec_intensity is now an artist trim (was the raw peak scale). Un-clamped so the
+    // bloom pass catches it; the sun is occluded in shadow, so the glint vanishes there.
     let h = normalize(l + v);
-    let spec = pow(max(dot(n, h), 0.0), wp.spec_power) * wp.spec_intensity * sun_vis;
+    let ndh = max(dot(n, h), 0.0);
+    let spec_fresnel = f0 + (1.0 - f0) * pow(max(1.0 - dot(v, h), 0.0), 5.0);
+    let spec_norm = (wp.spec_power + 2.0) / (8.0 * PI);
+    let spec = pow(ndh, wp.spec_power) * spec_norm * spec_fresnel * wp.spec_intensity * sun_vis;
     rgb = rgb + sun_diffuse * spec;
 
     // Artistic darkening of shadowed water for readability (dims the ambient/sky term
