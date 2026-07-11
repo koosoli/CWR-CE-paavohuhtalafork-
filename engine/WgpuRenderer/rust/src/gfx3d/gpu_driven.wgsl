@@ -21,16 +21,16 @@
 override linear: f32 = 0.0;
 override foliage_shadow_ao: f32 = 0.35;
 
-// Mirrors InstanceGpu / RecordGpu / SectionMaterialGpu (cull.rs). conform0/1/2 is the
-// terrain-conform plane (WgrDraw3D::conform* parity); conform2.z = mode (0 rigid, 1
-// ForestPlain plane, 2 per-vertex ClipLand SurfaceY with conform0.x = bcSurfaceY).
+// InstanceGpu / RecordGpu / SectionMaterialGpu (cull.rs). conform0/1/2 is the terrain-conform
+// plane (WgrDraw3D::conform* parity); conform2.z = mode (0 rigid, 1 ForestPlain plane, 2
+// per-vertex ClipLand SurfaceY with conform0.x = bcSurfaceY).
 struct Instance {
     world: mat4x4<f32>,
     center: vec4<f32>,
     model: u32,
     flags: u32,
-    _pad0: u32,
-    _pad1: u32,
+    cull_radius: u32, // used by the cull compute only, not this VS
+    _pad: u32,
     conform0: vec4<f32>,
     conform1: vec4<f32>,
     conform2: vec4<f32>,

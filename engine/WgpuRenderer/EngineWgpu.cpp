@@ -1935,6 +1935,12 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
     // the scene loop whether to suppress the whole CPU draw or only the GPU-owned sections.
     _gpuModelCoverage[shape] =
         (hasProxies || hasComplement) ? GpuDrawCoverage::Partial : GpuDrawCoverage::Full;
+    // §12d-full: remember complement-bearing shapes so a proxies-only Partial can be upgraded to
+    // Full once its proxies are all GPU-driven, but a complement-bearing one never is.
+    if (hasComplement)
+    {
+        _gpuModelComplement.insert(shape);
+    }
     if (model != WGR_INVALID_MODEL && isConform)
     {
         _gpuConformShapes.insert(shape);
@@ -1947,7 +1953,7 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
 // static parent it is a static instance. Only Full-coverage proxy shapes (self-contained: no
 // transparent/decal sections, no nested proxies of their own) are taken — the rest keep drawing
 // on the CPU via Object::DrawProxies, which skips the ones registered here.
-void EngineWgpu::EmitGpuProxies(Object* parent, LODShapeWithShadow* shape)
+bool EngineWgpu::EmitGpuProxies(Object* parent, LODShapeWithShadow* shape)
 {
     // Reference LOD = the finest graphical level that actually carries proxies (furniture lives
     // on the detailed interior LOD; coarser LODs usually have none). We register only this LOD's
@@ -1969,36 +1975,29 @@ void EngineWgpu::EmitGpuProxies(Object* parent, LODShapeWithShadow* shape)
     }
     if (refLevel < 0)
     {
-        return; // no proxies to move
+        return true; // no proxies -> nothing keeps the parent off Full
     }
     Shape* s = shape->LevelOpaque(refLevel);
     GpuProxySet set;
     set.refLevel = refLevel;
     const Matrix4 parentT = parent->Transform();
+    bool allEligible = true; // every proxy moved to the GPU? (gates the parent's Full-downgrade)
     for (int i = 0; i < s->NProxies(); i++)
     {
         const ProxyObject& proxy = s->Proxy(i);
-        if (!proxy.obj)
-        {
-            continue;
-        }
-        LODShapeWithShadow* pshape = proxy.obj->GetShape();
-        if (!pshape)
-        {
-            continue;
-        }
-        const uint32_t pmodel = RegisterGpuModel(pshape);
-        if (pmodel == WGR_INVALID_MODEL)
-        {
-            continue; // ineligible furniture -> stays on the CPU
-        }
+        LODShapeWithShadow* pshape = proxy.obj ? proxy.obj->GetShape() : nullptr;
         // Full coverage == the proxy shape has no CPU complement and no nested proxies, so the
-        // GPU can draw it whole; anything Partial would need its own complement/proxy handling
-        // (not done for nested proxies) -> keep it on the CPU.
-        const auto covIt = _gpuModelCoverage.find(pshape);
-        if (covIt == _gpuModelCoverage.end() || covIt->second != GpuDrawCoverage::Full)
+        // GPU can draw it whole; anything Partial/ineligible would need its own complement/proxy
+        // handling (not done for nested proxies) -> that proxy stays on the CPU, and the parent
+        // therefore keeps its CPU draw (not eligible for the §12d-full Full-downgrade).
+        const uint32_t pmodel = pshape ? RegisterGpuModel(pshape) : WGR_INVALID_MODEL;
+        const auto covIt = pshape ? _gpuModelCoverage.find(pshape) : _gpuModelCoverage.end();
+        const bool eligible = pmodel != WGR_INVALID_MODEL && covIt != _gpuModelCoverage.end() &&
+                              covIt->second == GpuDrawCoverage::Full;
+        if (!eligible)
         {
-            continue;
+            allEligible = false;
+            continue; // this proxy stays on the CPU (Object::DrawProxies draws it)
         }
         const Matrix4 world = parentT * proxy.obj->Transform();
         const WgrInstance inst = BuildGpuProxyInstance(world, pmodel);
@@ -2009,6 +2008,7 @@ void EngineWgpu::EmitGpuProxies(Object* parent, LODShapeWithShadow* shape)
     {
         _gpuProxies[parent] = std::move(set);
     }
+    return allEligible;
 }
 
 void EngineWgpu::RemoveGpuProxies(const Object* parent)
@@ -2053,16 +2053,23 @@ void EngineWgpu::SceneObjectCreated(Object* obj)
     const WgrInstance inst = BuildGpuInstance(*obj, model, cp);
     const uint32_t slot = wgr_instance_add(_renderer, &inst);
     // Full (whole object on the GPU) vs Partial (GPU owns the opaque geometry; the CPU still
-    // draws proxies + blend/decal sections) — decided per shape in RegisterGpuModel.
+    // draws proxies + blend/decal sections) — base decision per shape in RegisterGpuModel.
     const auto covIt = _gpuModelCoverage.find(shape);
-    const GpuDrawCoverage cov = covIt != _gpuModelCoverage.end() ? covIt->second : GpuDrawCoverage::Full;
-    _gpuInstances[obj] = GpuInstance{model, slot, obj->Transform().Position(), cp.mode, cov};
+    GpuDrawCoverage cov = covIt != _gpuModelCoverage.end() ? covIt->second : GpuDrawCoverage::Full;
     // §12d: a Partial object may carry interior furniture proxies — move the eligible ones onto
     // the GPU as child instances (only Partial objects have proxies; Full ones never do).
     if (cov == GpuDrawCoverage::Partial)
     {
-        EmitGpuProxies(obj, shape);
+        const bool allProxiesGpu = EmitGpuProxies(obj, shape);
+        // §12d-full: if the ONLY reason this was Partial is proxies (no CPU complement) and every
+        // proxy moved to the GPU, the whole object is now GPU-drawn -> Full, so DrawSortObject
+        // skips its CPU Object::Draw entirely (the last per-building CPU walk goes away).
+        if (allProxiesGpu && _gpuModelComplement.count(shape) == 0)
+        {
+            cov = GpuDrawCoverage::Full;
+        }
     }
+    _gpuInstances[obj] = GpuInstance{model, slot, obj->Transform().Position(), cp.mode, cov};
 }
 
 void EngineWgpu::SceneObjectRemoved(Object* obj)
@@ -2336,6 +2343,15 @@ void EngineWgpu::AddShadowCaster(const Shape& sMesh, const Matrix4& modelToWorld
         const auto& props = sMesh.GetSection(i).properties;
         const shadow::CasterMode mode = shadow::ClassifyShadowCaster(props.Special(), skipMask, alphaMask);
         if (mode == shadow::CasterMode::Skip)
+        {
+            flush();
+            continue;
+        }
+        // Partial GPU-driven object (SceneShadowPass sets GSkipGpuOwnedSections): the GPU-owned
+        // opaque sections are cast by the retained shadow set (draw_gpu_driven_shadow), so drop
+        // them here — the SAME predicate ClassifyGpuSection / Shape::Draw use, so CPU + GPU
+        // casters never overlap or leave a hole.
+        if (GSkipGpuOwnedSections && render::IsGpuOwnedSectionSpec(props.Special()))
         {
             flush();
             continue;

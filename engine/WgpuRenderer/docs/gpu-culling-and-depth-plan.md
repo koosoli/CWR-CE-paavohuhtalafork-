@@ -5,10 +5,11 @@
 **Status:** IN PROGRESS (2026-07-09). Stages 1–3 are LIVE and user-verified in-game under
 `WGR_GPU_DRIVEN=1`: static opaque rigid clutter + ForestPlain forests (mode-1 conform) + individual
 ClipLand vegetation/fences (mode-2 conform) are culled, LOD-selected and drawn entirely on the GPU,
-participate in the depth+normal prepass, and the retained scene is kept correct event-driven (hooks at
-every transform mover, incl. the terrain-subdivision re-seat). Remaining before the CPU-render divert:
-GPU-path shadow casting, Hi-Z occlusion (§5), instancing collapse (§3.6), then dynamics/skinned/
-transparent/multi-view. Everything is on branch `new-renderer-infrastructure`, gated, A/B-toggleable.
+participate in the depth+normal prepass, cast their own **GPU-driven cascade shadows** (§6 multi-view,
+2026-07-11), and the retained scene is kept correct event-driven (hooks at every transform mover, incl.
+the terrain-subdivision re-seat). Remaining before the CPU-render divert: Hi-Z occlusion (§5), instancing
+collapse (§3.6), then dynamics/skinned/transparent/multi-view (reflections). Everything is on branch
+`new-renderer-infrastructure`, gated, A/B-toggleable.
 **Roadmap slot:** Phase 4 — see [implementation-roadmap.md](implementation-roadmap.md).
 
 ### Implementation status (2026-07-09)
@@ -32,7 +33,8 @@ The coarse Stage 1–6 below was sub-divided in practice. What's **DONE** (Rust-
 - ~~**Terrain-conforming objects (§11) — BOTH modes**~~ **✅ DONE + user-verified in-game (2026-07-09).** Final architecture: `WgrInstance`/`InstanceGpu` grew 96→144 B with `conform0/1/2` vec4s mirroring the per-draw `WgrDraw3D` conform exactly; `conform2.z` = mode (0 rigid / 1 ForestPlain bilinear land-grid plane / 2 per-vertex ClipLand SurfaceY with `conform0.x = bcSurfaceY`). `gpu_driven.wgsl` `vs_gpu` conform block is a near-verbatim copy of `shader3d.wgsl` `vs_main` (group(4) heightmap `surface_y`/`surface_grad`, `@location(5) conform_sel`, normal tilt); VS-only so the prepass inherits it. Mode 1 reads `ForestPlain::GpuConformPlane()` (cached `_conformPlane`; skewed t1/t2 squares bake conform into the transform → register rigid). Mode-2 baking requires **`s->SaveOriginalPos()` in `RegisterGpuModel`** (`BuildOrigVertices` bakes `conform_sel` from `OrigClip`; `Object::Animate` only saves origs at draw time, and plain `BuildVertices` hardcodes `conform_sel=0` → rigid float). `ConformPlane{}` defaults `mode=1` — rigid must set `mode=0` explicitly.
 - **Retained-scene correctness = event-driven hooks at EVERY transform mover — ✅ DONE + user-verified (2026-07-09).** The load-bearing find: **`Landscape::MakeObjectsTerrainRelative/Absolute`** re-seats every non-ForestPlain static by `SurfaceY_new − SurfaceY_old` via direct `SetPosition` (no `MoveObject`) around every heightfield change (`SubdivideTerrain`/`ResampleTerrain`/`LoadSubdivCache`, all via `World::AdjustSubdivision` — which fires at world load AFTER `LoadObjects`, at mission start, `setTerrainGrid`, options, MP join). Stale registrations presented as BOTH "mode-2 bushes vanish at horizon pitch" (cull sphere 4–17 m above the conformed draw) and "rigid trees float". Fix: `MakeObjectsTerrainAbsolute` fires `SceneObjectMoved` per re-seated object (final positions only; `Relative`'s intermediate Y is never synced). A drift **tripwire** in `GpuDrivenObject` (live vs stored position) LOG_WARNs + refreshes if any future mover is unhooked — should never fire; it rides the CPU visible-set walk and is deleted with the divert. Cull sphere = raw `Transform.Position()` + `BoundingSphere()·Scale()`, exactly the CPU's — no conforming, no inflation (both tried, both wrong). The wgpu heightmap tracks subdivision (range change trips `UploadIfNeeded`); a same-range in-place height edit would go stale silently (no content check) — future terrain-deform work must version it.
 - **Debug tooling — ImGui dev-panel "Culling" tab (permanent, `WGR_GPU_DRIVEN=1`):** *Draw cull spheres* (instanced line-list wireframe per retained instance from the REAL instance/model buffers — `cull_debug.wgsl`; colour by mode; depth Always, drawn last in the sub-pass), *Disable frustum cull* (CullParams flag; also `WGR_CULL_NO_FRUSTUM`), *Dump nearby instances* (≤48 within 60 m: live vs registration-time position vs surface — the `stale` column is what cracked the settle bug). Per-bool FFI setters (`wgr_set_cull_debug`) + `CullDebugSettings` Engine virtuals mirror the Water-tab pattern. Also: `DEFAULT_VARIANT_CAPACITY` raised to 256K/variant — arg overflow drops follow per-frame atomic order, so overflow = random every-other-frame flicker (that signature means capacity).
-- **Destroyed variants (§2.4), GPU-path shadow casting, occlusion (§5), multi-view (§6), dynamics feed, skinned/transparent (§6)** — all still ahead (static objects still feed CPU shadow casters; destruction currently drops the object to the CPU path).
+- **GPU-path shadow casting (§6 multi-view, first slice) — ✅ IMPLEMENTED + verified (2026-07-11, RenderDoc + in-game, uncommitted).** The retained set now casts its OWN cascade shadows on the GPU; the matching CPU casters are suppressed, so a GPU-driven object is out of the CPU shadow loop too. **Rust:** `CullState` grew per-cascade **`ShadowCullView`s** (own params/out_args/out_records/counters/bind, all referencing the SHARED instance+table buffers — `cull.wgsl` is view-agnostic, so **no compute change**; multi-view is "the same cull with a different frustum"). Each cascade's params come from `params_from_shadow_cascade(light_vp[c], shadow.cam_pos, main_cull_inputs)` — frustum extracted from the camera-relative light-VP via the existing `frustum_planes` (ortho ⇒ 4 working side planes + degenerate near/far no-ops, correct because casters outside the cascade depth range are NDC-z-clipped in the depth pass), LOD from the **main** view (a caster's shadow uses the same LOD its colour draw does), and the radial **distance cull disabled** (`objects_z2 = 1e30`) so the far cascades aren't clipped by the main draw distance. New depth-only pipeline (`build_gpu_shadow_pipeline`) + shader **`gpu_driven_shadow.wgsl`**: VS reads records→instance→world, conforms per vertex (mode 1/2 verbatim from `vs_gpu`), `clip = light_vp·(world_abs − cam_pos)`; FS discards cutout foliage below the per-section `alpha_ref` (one pipeline serves both variants; solids never sample). Forward-Z / SHADOW_FORMAT / CW / no-cull / same depth bias as the CPU caster pipeline. Frame: one extra cull dispatch per cascade (`cull_dispatch_shadows`) after the main cull; the GPU set is drawn into each cascade's existing depth pass inside `render_shadow_passes` (which no longer early-returns on empty CPU casters — `prepare_shadows` sets up the target + pass-UBO whenever `gpu_driven` is on). **C++ suppression** (mirrors the §12 colour path, gated by `WGR_GPU_DRIVEN`): in `Scene::RenderShadowMapDepthPassGpu`, a **`Full`** object (+ its GPU proxy children, which are resident instances the cascade cull casts on its own) skips its CPU caster entirely; a **`Partial`** object casts only its complement via `AddShadowCaster` under `GSkipGpuOwnedSections` (which now drops `render::IsGpuOwnedSectionSpec` sections — the SAME predicate `ClassifyGpuSection`/`Shape::Draw` use, so CPU + GPU never overlap or leave a hole); GPU-handed proxies are skipped in the proxy loop via `GpuDrivenProxy`. Headless multi-view test (`shadow_cull_view_end_to_end`) + shader-compose test added; clippy + 16 lib tests green. **Ahead:** Hi-Z occlusion is per-view so shadow views stay frustum+distance+LOD only (correct — §6); the shadow cull inherits §3.6 (per-(instance,section) sub-draws, no instancing collapse yet) and the shadow LOD's coarser `casterLodBias`/`shadowFar` distance-bound nuances are not yet ported (parity gap: distant tiny casters lean on the shared sub-pixel cull instead).
+- **Destroyed variants (§2.4), occlusion (§5), multi-view reflections (§6), dynamics feed, skinned/transparent (§6)** — all still ahead (destruction currently drops the object to the CPU path).
 
 > Moves the whole opaque object path onto the GPU: the level is a **GPU-resident retained scene**, and a
 > compute pass does **distance + frustum + occlusion culling *and* LOD selection** per instance each
@@ -352,6 +354,10 @@ Metal-gated):
   phase remains the fallback if a scene's prepass-vs-color divergence ever matters.)
 
 ## 6. Multi-view (shadows + reflections)
+> **Status: CSM cascades ✅ LANDED (2026-07-11)** — the retained set casts GPU-driven cascade shadows
+> via per-cascade `ShadowCullView`s (see the Implementation-status block). The pass is parameterized by
+> the cascade's light-VP (frustum) with main-view LOD + distance-cull-off; occlusion stays off for shadow
+> views (per-view Hi-Z, below). Reflections (Phase 5) reuse the same machinery + a clip plane, not yet built.
 - Parameterize the cull+LOD+indirect pass by an **arbitrary camera + optional clip plane**. The same
   machinery then serves: the **depth prepass** (main camera, no occlusion), the **color pass** (main
   camera + occlusion), **CSM cascades** (each cascade's frustum — replaces the CPU `prepare_shadows`
@@ -514,9 +520,21 @@ The shadow pass conforms ClipLand independently (`shadow_depth.wgsl`), and shado
 ## 12. Partial suppression: buildings (proxy-bearing + mixed transparent/decal shapes) — priority, expands coverage
 
 **Status:** 12a + 12d-core IMPLEMENTED + user-verified in-game (2026-07-11): 12a "no render problems"; 12d-core
-"furniture renders as expected." No new GPU features. 12b (mixed transparent/decal — comes largely for free
-via the same per-section ownership, verify §12.5 LOD mismatch) and 12d-full (Full-downgrade for proxies-only
-buildings, §12.7) still ahead.
+"furniture renders as expected." 12d-full IMPLEMENTED (2026-07-11, uncommitted, pending in-game verify) —
+proxies-only-no-complement buildings with all proxies GPU-eligible now downgrade to `Full` (CPU `Object::Draw`
+skipped entirely). **12b is COMPLETE (2026-07-11) with no new code** — the mixed transparent/decal *admission*
+already landed in 12a's per-section ownership (opaque sections → GPU, blend/decal complement → CPU passes),
+and the §12.5 LOD-parity concern is resolved inherently (the GPU cull runs the same `FindSqrtLevel` formula on
+the CPU's own per-frame LOD params, so owned + complement pick the same LOD — no forced_lod, no CPU coupling;
+see §12.5). **All §12 coverage now landed.** No new GPU features used anywhere in §12.
+
+**12d-full landed (`EngineWgpu.*`):** `RegisterGpuModel` records complement-bearing shapes in
+`_gpuModelComplement`; `EmitGpuProxies` now returns whether **every** proxy moved to the GPU;
+`SceneObjectCreated` upgrades a `Partial` instance to `Full` iff `allProxiesGpu && shape has no complement`.
+A `Full` building's `Object::Draw` is skipped by `DrawSortObject` — output is identical to 12d-core (its CPU
+draw already rendered nothing visible), this just removes the per-building `Animate`/lights/clip/DrawProxies
+overhead. The complement guard is load-bearing: a glass building (or any complement-only shape) stays
+`Partial` so its CPU-drawn glass/decals never vanish.
 
 **⚠️ vtable regression (fixed 2026-07-11):** the first 12a/12d cut broke 3D UI — `GpuDrivenObject` was made
 non-virtual and `GpuDrivenCoverage`/`GpuDrivenProxy` inserted mid-class, shifting every later `Engine` vtable
@@ -626,20 +644,27 @@ z-fight for the decal/blend cases). This helper is the correctness anchor of the
   Verify a Partial object never routes through `DrawWholeShapeInPass` (which can't section-split) — if one
   does, treat it as CPU-only (don't register), since the whole-shape draw can't drop GPU-owned faces.
 
-### 12.5 The real open question — LOD mismatch on a Partial object
+### 12.5 LOD parity on a Partial object — RESOLVED (already inherent, 2026-07-11)
 
-The GPU cull+LOD compute picks the LOD for the **owned** geometry; the CPU picks `oi->drawLOD` for the
-**complement**. For a Partial object these can differ (GPU pushes LODs further, §Implementation-status "no
-exact-parity requirement") ⇒ glass from one LOD floating over walls from another, or z-fighting where the
-complement's faces coincide with a coarser owned LOD. For the whole-shape set this was a non-issue (one
-owner). For Partial objects it must be resolved:
-- **(a) Accept it.** Buildings have few LODs; glass/decals are small. Evaluate visually first — may be fine.
-- **(b) Force the GPU to the CPU-chosen LOD for Partial instances.** Carry a `forced_lod` in the instance
-  record (sentinel = "cull-select"); the cull shader honours it when set. Partial objects are a minority and
-  the CPU already walks them (for proxies/complement), so feeding a forced LOD costs ~nothing and guarantees
-  the two halves agree. **Recommended** if (a) shows artifacts.
-- **(c)** Draw the complement at the GPU's LOD — needs reading back the GPU LOD choice CPU-side; rejected
-  (breaks the CPU-out-of-loop model for no gain over (b)).
+Concern: the GPU cull+LOD compute picks the LOD for the **owned** geometry; the CPU picks `oi->drawLOD` for
+the **complement**. If they differ ⇒ glass from one LOD over walls from another, or z-fight.
+
+**Resolution: they already agree, by pure GPU-side computation — no fix needed, no CPU coupling.** The GPU
+cull's LOD select ([cull.wgsl:160-177](../rust/src/gfx3d/cull.wgsl#L160)) is the SAME `FindSqrtLevel` /
+`LevelFromDistance2` formula the CPU runs (`resol2 = dist²·lod_inv_width²·lod_scale²`, same near-clamp, same
+sub-pixel cull, same ascending-resolution walk), and it is fed the CPU's own LOD params — `lod_scale =
+Camera::Left()`, `lod_inv_width = _lodInvWidth` — pushed **once globally per frame** (`wgr_set_cull_params`),
+not per object. So each side independently computes the same LOD from the same distance + same params and
+lands on the same level. This is exactly the design constraint (per the user): *same LOD via pure GPU-side
+logic, no per-frame per-object CPU communication, no added cull cost.*
+
+- **(a) forced_lod (rejected).** Carrying a per-instance `forced_lod` pushed each frame from `oi->drawLOD`
+  would add exactly the per-frame CPU↔instance coupling the GPU-driven epic exists to remove — and buys
+  nothing over the shared-formula parity above. **Do not build it.**
+- **Residual:** float-precision could flip the LOD by one at a transition boundary (rare, transient). If it
+  ever visibly manifests, the fix stays pure GPU-side — bit-match the GPU formula to the CPU's — never CPU
+  coupling. The `_lodInvWidth` adaptive feedback is fixed on the GPU (memory: fed per frame, not looped), a
+  possible ≤1-frame lag; invisible in practice.
 
 ### 12.6 Staging
 
@@ -648,9 +673,10 @@ owner). For Partial objects it must be resolved:
   `NProxies` rejection. Complement here = *proxies only* (own geometry fully owned ⇒ parent draws nothing,
   furniture draws). Proves partial suppression + DrawProxies coexistence with the smallest surface. Biggest
   single win (proxy buildings are common).
-- **12b — Mixed transparent/decal shapes.** Turn the per-section reject into per-section CPU-ownership so
-  glass/decal buildings register their opaque sections; the complement now includes real blend/decal sections
-  drawing in their own passes. Resolve §12.5 (start with (a), fall to (b)).
+- **12b — Mixed transparent/decal shapes. ✅ DONE (2026-07-11, no new code).** The per-section CPU-ownership
+  this needed already landed in 12a (`RegisterGpuModel` registers owned sections + tallies `hasComplement`),
+  so glass/decal buildings already draw opaque→GPU, blend→sorted blend pass (CPU), decal→on-surface pass
+  (CPU). §12.5 LOD parity is inherent (shared-input cull formula), forced_lod rejected. Nothing to build.
 - **12c (follow-on, not this plan):** GPU-path shadow casting for Partial objects' owned geometry, once
   GPU-path shadows land generally — until then Partial buildings cast full CPU shadows (correct, just not yet
   GPU-driven).
@@ -707,10 +733,13 @@ exactly `BuildGpuInstance`'s input. Shared furniture shapes instance for free.
 - **Drift safety:** proxy children ride the parent's `SceneObjectMoved` (re-composed there) and the parent's
   drift tripwire in `GpuDrivenCoverage` (which calls `SceneObjectMoved`), so an unhooked parent mover
   refreshes furniture too. There is no separate per-proxy tripwire.
-- **12d-full (next):** downgrade a proxies-only building (owned geometry fully GPU + every proxy GPU-eligible
-  + no complement) to `Full` so its `Object::Draw` is skipped entirely — removing the last per-building CPU
-  walk. Needs tracking "Partial was proxies-only" and confirming all proxies registered; deferred so 12d-core
-  can be verified first.
+- **12d-full — IMPLEMENTED (2026-07-11).** Downgrade a proxies-only building (owned geometry fully GPU +
+  every proxy GPU-eligible + no complement) to `Full` so its `Object::Draw` is skipped entirely. Realized via
+  `_gpuModelComplement` (tracks "Partial had a complement" → never downgrade) + `EmitGpuProxies` returning
+  `allProxiesGpu`; downgrade iff `allProxiesGpu && !hasComplement`. Removes the per-building
+  `Animate`/lights/clip/DrawProxies overhead (NOT the Pass1 `SortObject` walk — that's the separate CPU-render
+  divert). Note this also sidesteps the reference-LOD double-draw window (a `Full` building never CPU-draws
+  proxies at all).
 
 **Verify:** furniture still draws inside proxy buildings; no double-draw halo/z-fight on building walls
 (prepass + colour); glass/decals still composite correctly; the `DrawSortObject` drift tripwire stays quiet;

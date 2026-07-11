@@ -10,7 +10,7 @@
 use bytemuck::Zeroable;
 use glam::{Mat4, Vec3, Vec4};
 
-// --- GPU buffer layouts (mirror the structs in cull.wgsl exactly) ---
+// --- GPU buffer layouts (the CPU side of the structs in cull.wgsl) ---
 
 // Per-frame cull parameters (one uniform). 144 bytes, 16-aligned.
 #[repr(C)]
@@ -26,7 +26,8 @@ pub struct CullParamsGpu {
     pub instance_count: u32,
     pub variant_capacity: u32,
     pub variant_count: u32,
-    pub _pad: u32,
+    // Debug flags (bit 0 = skip the frustum test, WGR_CULL_NO_FRUSTUM); read by cull.wgsl.
+    pub debug_flags: u32,
 }
 
 // One retained instance. `world` is the ABSOLUTE model->world transform (the GPU-driven VS
@@ -41,8 +42,8 @@ pub struct InstanceGpu {
     pub flags: u32, // reserved
     // Inflated frustum-cull radius (f32 bits) for terrain-conform instances, whose displaced
     // geometry escapes the flat model sphere; 0 = rigid (use model.bounding_sphere * scale).
-    pub _pad0: u32,
-    pub _pad1: u32,
+    pub cull_radius: u32,
+    pub _pad: u32,
     // Terrain-conform plane (mirrors WgrDraw3D::conform*), evaluated per vertex by the
     // GPU-driven VS so one shared undeformed mesh conforms to the ground. conform2.z = mode:
     // 0 = rigid (all-zero), 1 = ForestPlain bilinear land-grid plane (conform0/1/2 fields),
@@ -174,6 +175,49 @@ const DEFAULT_VARIANT_CAPACITY: u32 = 1 << 18; // 256K sections/variant
 // u32 words per DrawIndexedIndirectArgs (20 B / 4).
 const ARG_WORDS: u64 = super::INDIRECT_ARG_SIZE / 4;
 
+// One extra cull VIEW for a shadow cascade (docs/gpu-culling-and-depth-plan.md §6, multi-view).
+// The retained tables + instance buffer are SHARED with the main view (owned by CullState);
+// only the per-view cull params (this cascade's light frustum) and the compute outputs (args,
+// records, counters) + the bind group over them are per-cascade. Runs the SAME cull.wgsl
+// dispatch, so a cascade is just "the same cull with a different frustum + no distance cull".
+struct ShadowCullView {
+    params_buf: wgpu::Buffer,
+    counter_buf: wgpu::Buffer,
+    out_args: Option<wgpu::Buffer>,
+    out_records: Option<wgpu::Buffer>,
+    out_args_cap: u64,
+    bind: Option<wgpu::BindGroup>,
+    params: CullParamsGpu,
+}
+
+impl ShadowCullView {
+    fn new(device: &wgpu::Device) -> Self {
+        let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_cull_shadow_params"),
+            size: std::mem::size_of::<CullParamsGpu>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let counter_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_cull_shadow_counters"),
+            size: CULL_VARIANT_COUNT as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            params_buf,
+            counter_buf,
+            out_args: None,
+            out_records: None,
+            out_args_cap: 0,
+            bind: None,
+            params: CullParamsGpu::zeroed(),
+        }
+    }
+}
+
 pub struct CullState {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
@@ -215,10 +259,14 @@ pub struct CullState {
 
     variant_capacity: u32,
     params: CullParamsGpu,
-    // Debug flags OR'd into CullParamsGpu._pad each frame (cull.wgsl reads them). bit 0 =
-    // WGR_CULL_NO_FRUSTUM (skip the frustum test — discriminates "culled" from "not drawn").
+    // Debug flags written into CullParamsGpu.debug_flags each frame (cull.wgsl reads them). bit 0
+    // = WGR_CULL_NO_FRUSTUM (skip the frustum test — discriminates "culled" from "not drawn").
     debug_flags: u32,
     bind: Option<wgpu::BindGroup>,
+
+    // Per-cascade shadow views (§6 multi-view). Length = active cascade count this frame
+    // (set by set_shadow_view_count); each shares the tables/instances above.
+    shadow_views: Vec<ShadowCullView>,
 }
 
 impl CullState {
@@ -323,6 +371,7 @@ impl CullState {
             params: CullParamsGpu::zeroed(),
             debug_flags: if std::env::var("WGR_CULL_NO_FRUSTUM").is_ok() { 1 } else { 0 },
             bind: None,
+            shadow_views: Vec::new(),
         }
     }
 
@@ -409,8 +458,31 @@ impl CullState {
     // Set this frame's cull params (frustum/cam/objectsZ/lod knobs). instance_count and the
     // variant fields are filled by prepare().
     pub fn set_params(&mut self, mut params: CullParamsGpu) {
-        params._pad = self.debug_flags;
+        params.debug_flags = self.debug_flags;
         self.params = params;
+    }
+
+    // Grow/shrink the shadow-cascade view set to `n` (0 = no GPU shadow culling this frame).
+    // Cheap: each view lazily allocates its output buffers in prepare(); shrinking drops the
+    // tail views (their buffers free with them).
+    pub fn set_shadow_view_count(&mut self, device: &wgpu::Device, n: usize) {
+        while self.shadow_views.len() < n {
+            self.shadow_views.push(ShadowCullView::new(device));
+        }
+        self.shadow_views.truncate(n);
+    }
+
+    pub fn shadow_view_count(&self) -> usize {
+        self.shadow_views.len()
+    }
+
+    // Set cascade `i`'s cull params (frustum from its light-VP; typically objects_z2 disabled).
+    // No-op if `i` is out of range (view count not yet set).
+    pub fn set_shadow_params(&mut self, i: usize, mut params: CullParamsGpu) {
+        if let Some(v) = self.shadow_views.get_mut(i) {
+            params.debug_flags = self.debug_flags;
+            v.params = params;
+        }
     }
 
     fn mark_static_dirty(&mut self, slot: u32) {
@@ -463,96 +535,75 @@ impl CullState {
         self.static_dirty = None;
         self.uploaded_static_len = static_len;
 
-        // out_args (variant_count * capacity); counters are a fixed buffer allocated up front.
-        let args_bytes =
-            CULL_VARIANT_COUNT as u64 * self.variant_capacity as u64 * super::INDIRECT_ARG_SIZE;
-        if self.out_args_cap < args_bytes || self.out_args.is_none() {
-            self.out_args = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("wgr_cull_out_args"),
-                size: args_bytes,
-                usage: wgpu::BufferUsages::INDIRECT
-                    | wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            }));
-            // Records: one per arg slot (same variant partitioning), 8 B each.
-            let slots = CULL_VARIANT_COUNT as u64 * self.variant_capacity as u64;
-            self.out_records = Some(device.create_buffer(&wgpu::BufferDescriptor {
-                label: Some("wgr_cull_out_records"),
-                size: slots * std::mem::size_of::<RecordGpu>() as u64,
-                usage: wgpu::BufferUsages::STORAGE
-                    | wgpu::BufferUsages::COPY_DST
-                    | wgpu::BufferUsages::COPY_SRC,
-                mapped_at_creation: false,
-            }));
-            self.out_args_cap = args_bytes;
-            grew = true;
-        }
+        // Shared-buffer growth (tables + instances) forces a rebuild of EVERY view's bind
+        // group (all views reference these read-only buffers); a per-view output realloc only
+        // rebuilds that view's bind.
+        let shared_grew = grew;
 
-        // Finalize + upload params.
-        self.params.instance_count = total as u32;
-        self.params.variant_capacity = self.variant_capacity;
-        self.params.variant_count = CULL_VARIANT_COUNT;
+        // Main-view outputs (out_args = variant_count * capacity; records 1:1; counters fixed).
+        let args_grew = ensure_view_outputs(
+            device,
+            self.variant_capacity,
+            &mut self.out_args,
+            &mut self.out_records,
+            &mut self.out_args_cap,
+        );
+        grew |= args_grew;
+
+        // Finalize the per-frame variant + count fields shared by every view, then upload each
+        // view's params (frustum/cam differ; instance_count/variant_* are identical). Captured
+        // as locals so the closure doesn't borrow self (rebuild_bind below needs &mut self).
+        let variant_capacity = self.variant_capacity;
+        let finalize = |p: &mut CullParamsGpu| {
+            p.instance_count = total as u32;
+            p.variant_capacity = variant_capacity;
+            p.variant_count = CULL_VARIANT_COUNT;
+        };
+        finalize(&mut self.params);
         queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(&self.params));
 
-        if grew || self.bind.is_none() {
+        if shared_grew || args_grew || self.bind.is_none() {
             self.rebuild_bind(device);
+        }
+
+        // Shadow-cascade views: same outputs + params machinery, this cascade's frustum.
+        for i in 0..self.shadow_views.len() {
+            let view_grew = {
+                let v = &mut self.shadow_views[i];
+                let g = ensure_view_outputs(
+                    device,
+                    self.variant_capacity,
+                    &mut v.out_args,
+                    &mut v.out_records,
+                    &mut v.out_args_cap,
+                );
+                finalize(&mut v.params);
+                queue.write_buffer(&v.params_buf, 0, bytemuck::bytes_of(&v.params));
+                g
+            };
+            grew |= view_grew;
+            if shared_grew || view_grew || self.shadow_views[i].bind.is_none() {
+                let bind = {
+                    let v = &self.shadow_views[i];
+                    match (v.out_args.as_ref(), v.out_records.as_ref()) {
+                        (Some(a), Some(r)) => {
+                            self.build_view_bind(device, &v.params_buf, a, &v.counter_buf, r)
+                        }
+                        _ => None,
+                    }
+                };
+                self.shadow_views[i].bind = bind;
+            }
         }
         grew
     }
 
     fn rebuild_bind(&mut self, device: &wgpu::Device) {
-        let (Some(inst), Some(models), Some(lods), Some(sections), Some(args), Some(records)) = (
-            self.instance_buf.buf.as_ref(),
-            self.model_buf.buf.as_ref(),
-            self.lod_buf.buf.as_ref(),
-            self.section_buf.buf.as_ref(),
-            self.out_args.as_ref(),
-            self.out_records.as_ref(),
-        )
-        else {
+        let (Some(args), Some(records)) = (self.out_args.as_ref(), self.out_records.as_ref()) else {
             self.bind = None;
             return;
         };
-        self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wgr_cull_bind"),
-            layout: &self.layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: self.params_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: inst.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: models.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: lods.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 4,
-                    resource: sections.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 5,
-                    resource: args.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 6,
-                    resource: self.counter_buf.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 7,
-                    resource: records.as_entire_binding(),
-                },
-            ],
-        }));
+        self.bind = self.build_view_bind(device, &self.params_buf, args, &self.counter_buf, records);
     }
 
     // Record the cull dispatch: zero the counters + out_args (so unfilled arg slots stay
@@ -576,6 +627,80 @@ impl CullState {
         cp.set_pipeline(&self.pipeline);
         cp.set_bind_group(0, bind, &[]);
         cp.dispatch_workgroups(self.params.instance_count.div_ceil(64), 1, 1);
+    }
+
+    // Record cascade `i`'s cull dispatch into the same encoder. Shares the retained instance +
+    // table buffers with the main dispatch; writes this cascade's own args/records/counters.
+    // wgpu barriers the compute writes -> the depth pass's indirect reads. No-op until prepare()
+    // has run with instances present.
+    pub fn dispatch_shadow(&self, encoder: &mut wgpu::CommandEncoder, i: usize) {
+        if self.params.instance_count == 0 {
+            return;
+        }
+        let Some(view) = self.shadow_views.get(i) else {
+            return;
+        };
+        let (Some(bind), Some(args)) = (view.bind.as_ref(), view.out_args.as_ref()) else {
+            return;
+        };
+        encoder.clear_buffer(&view.counter_buf, 0, None);
+        encoder.clear_buffer(args, 0, None);
+        let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("wgr_cull_shadow"),
+            timestamp_writes: None,
+        });
+        cp.set_pipeline(&self.pipeline);
+        cp.set_bind_group(0, bind, &[]);
+        cp.dispatch_workgroups(self.params.instance_count.div_ceil(64), 1, 1);
+    }
+
+    // Cascade `i`'s compute outputs, consumed by the GPU-driven shadow depth draw
+    // (draw_gpu_driven_shadow). None until prepare() allocated them.
+    pub fn shadow_out_args(&self, i: usize) -> Option<&wgpu::Buffer> {
+        self.shadow_views.get(i).and_then(|v| v.out_args.as_ref())
+    }
+
+    pub fn shadow_out_records(&self, i: usize) -> Option<&wgpu::Buffer> {
+        self.shadow_views.get(i).and_then(|v| v.out_records.as_ref())
+    }
+
+    pub fn shadow_counter_buf(&self, i: usize) -> Option<&wgpu::Buffer> {
+        self.shadow_views.get(i).map(|v| &v.counter_buf)
+    }
+
+    // Build a cull bind group for one VIEW: its own params/args/counters/records, but the
+    // SHARED retained tables (instances/models/lods/sections). Factored out of rebuild_bind so
+    // the main view and every shadow-cascade view bind identically over the same read-only data.
+    fn build_view_bind(
+        &self,
+        device: &wgpu::Device,
+        params_buf: &wgpu::Buffer,
+        out_args: &wgpu::Buffer,
+        counter_buf: &wgpu::Buffer,
+        out_records: &wgpu::Buffer,
+    ) -> Option<wgpu::BindGroup> {
+        let (Some(inst), Some(models), Some(lods), Some(sections)) = (
+            self.instance_buf.buf.as_ref(),
+            self.model_buf.buf.as_ref(),
+            self.lod_buf.buf.as_ref(),
+            self.section_buf.buf.as_ref(),
+        ) else {
+            return None;
+        };
+        Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_cull_bind"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: inst.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: models.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: lods.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: sections.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: out_args.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: counter_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: out_records.as_entire_binding() },
+            ],
+        }))
     }
 
     // The GPU-produced indirect args + per-variant counters (consumed by the Stage-3b
@@ -672,6 +797,27 @@ pub fn params_from_camera(view: Mat4, proj: Mat4, cam_pos: Vec3, inputs: CullInp
     p.frustum = frustum_planes(proj * view);
     p.cam_pos = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
     p.objects_z2 = inputs.objects_z * inputs.objects_z;
+    p.lod_scale = inputs.lod_scale;
+    p.lod_inv_width = inputs.lod_inv_width;
+    p.pixel_limit = inputs.pixel_limit;
+    p
+}
+
+// Build one shadow CASCADE's cull params (§6 multi-view). The frustum is extracted from the
+// cascade's CAMERA-RELATIVE light view-projection `light_vp` (Gribb–Hartmann, exactly as the
+// main view does from proj*view) — an orthographic light matrix yields the 4 working side
+// planes + degenerate near/far no-ops, which is correct: casters outside the cascade's depth
+// range are clipped by NDC z in the depth pass, so only the lateral side planes need to cull.
+// `cam_pos` MUST be the origin `light_vp` is relative to (the shadow pass camera). The LOD
+// knobs come from the main view (so a caster's shadow uses the same LOD its colour draw does),
+// but the radial DISTANCE cull is disabled (objects_z2 = +inf): the cascade side planes bound
+// the set laterally and the shared sub-pixel cull drops tiny far casters, so the main camera's
+// draw distance must not clip casters the far cascades still cover.
+pub fn params_from_shadow_cascade(light_vp: Mat4, cam_pos: Vec3, inputs: CullInputs) -> CullParamsGpu {
+    let mut p = CullParamsGpu::zeroed();
+    p.frustum = frustum_planes(light_vp);
+    p.cam_pos = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
+    p.objects_z2 = 1.0e30; // distance cull disabled for shadow views (finite, fast-math-safe)
     p.lod_scale = inputs.lod_scale;
     p.lod_inv_width = inputs.lod_inv_width;
     p.pixel_limit = inputs.pixel_limit;
@@ -825,6 +971,89 @@ pub fn build_gpu_pipeline(
     (color, prepass)
 }
 
+// Build the GPU-driven SHADOW depth pipeline (gpu_driven_shadow.wgsl): the retained set cast
+// into a cascade's depth map, consuming that cascade's cull args. Depth-only, forward-Z (clear
+// 1.0 / LessEqual / no reversed-Z — mirrors the CPU shadow_depth pipeline), CW winding + NO
+// back-face cull (single-sided walls/roofs must still cast), and the SAME depth bias as the CPU
+// caster pipeline so GPU + CPU casters land at the same offset. One pipeline serves both opaque
+// variants: the FS discards cutout foliage below the per-section alpha_ref (solid sections carry
+// alpha_ref = 0 and never discard). Groups: 0 = the shadow pass UBO (light-VP, dynamic offset
+// per cascade), 1 = instances/records/materials (shared with the colour path), 2/3 = bindless
+// textures + sampler array, 4 = the terrain-conform heightmap.
+#[allow(clippy::too_many_arguments)]
+pub fn build_gpu_shadow_pipeline(
+    device: &wgpu::Device,
+    composer: &mut naga_oil::compose::Composer,
+    shadow_pass_layout: &wgpu::BindGroupLayout,
+    group1_layout: &wgpu::BindGroupLayout,
+    bindless_layout: &wgpu::BindGroupLayout,
+    sampler_layout: &wgpu::BindGroupLayout,
+    conform_layout: &wgpu::BindGroupLayout,
+) -> wgpu::RenderPipeline {
+    let module = crate::shaders::make_module(
+        device,
+        composer,
+        "wgr_gpu_driven_shadow",
+        include_str!("gpu_driven_shadow.wgsl"),
+        "gfx3d/gpu_driven_shadow.wgsl",
+    );
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("wgr_gpu_driven_shadow_pipeline_layout"),
+        bind_group_layouts: &[
+            Some(shadow_pass_layout),
+            Some(group1_layout),
+            Some(bindless_layout),
+            Some(sampler_layout),
+            Some(conform_layout),
+        ],
+        immediate_size: 0,
+    });
+    let vbuf_attrs =
+        wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x2, 5 => Uint32];
+    let vbuf_layout = wgpu::VertexBufferLayout {
+        array_stride: super::BAKED_VERT_SIZE,
+        step_mode: wgpu::VertexStepMode::Vertex,
+        attributes: &vbuf_attrs,
+    };
+    let vbuffers = [vbuf_layout];
+    device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("wgr_gpu_driven_shadow_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &module,
+            entry_point: Some("vs_gpu_shadow"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            buffers: &vbuffers,
+        },
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Cw,
+            cull_mode: None, // single-sided walls/roofs must still cast
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: super::SHADOW_FORMAT,
+            depth_write_enabled: Some(true),
+            depth_compare: Some(wgpu::CompareFunction::LessEqual),
+            stencil: wgpu::StencilState::default(),
+            bias: wgpu::DepthBiasState {
+                constant: 4,
+                slope_scale: 2.5,
+                clamp: 0.0,
+            },
+        }),
+        multisample: wgpu::MultisampleState::default(),
+        fragment: Some(wgpu::FragmentState {
+            module: &module,
+            entry_point: Some("fs_gpu_shadow"),
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+            targets: &[],
+        }),
+        multiview_mask: None,
+        cache: None,
+    })
+}
+
 // Group-1 layout for the cull-sphere DEBUG pass: the retained instance buffer + the model
 // table, both read-only storage in the vertex stage (the VS recovers centre + radius).
 pub fn cull_debug_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
@@ -903,6 +1132,43 @@ pub fn build_cull_debug_pipeline(
         multiview_mask: None,
         cache: None,
     })
+}
+
+// Ensure one view's compute-output buffers (indirect args + parallel per-draw records) hold
+// CULL_VARIANT_COUNT * variant_capacity slots. Reallocates (and reports true) when the current
+// capacity is short or the buffers are unallocated; the main view and every shadow cascade use
+// this so their output layout is identical. Counters are a fixed buffer allocated per view up
+// front (not here).
+fn ensure_view_outputs(
+    device: &wgpu::Device,
+    variant_capacity: u32,
+    out_args: &mut Option<wgpu::Buffer>,
+    out_records: &mut Option<wgpu::Buffer>,
+    out_args_cap: &mut u64,
+) -> bool {
+    let args_bytes = CULL_VARIANT_COUNT as u64 * variant_capacity as u64 * super::INDIRECT_ARG_SIZE;
+    if *out_args_cap >= args_bytes && out_args.is_some() {
+        return false;
+    }
+    *out_args = Some(device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgr_cull_out_args"),
+        size: args_bytes,
+        usage: wgpu::BufferUsages::INDIRECT
+            | wgpu::BufferUsages::STORAGE
+            | wgpu::BufferUsages::COPY_DST
+            | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    }));
+    // Records: one per arg slot (same variant partitioning), 8 B each.
+    let slots = CULL_VARIANT_COUNT as u64 * variant_capacity as u64;
+    *out_records = Some(device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgr_cull_out_records"),
+        size: slots * std::mem::size_of::<RecordGpu>() as u64,
+        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
+        mapped_at_creation: false,
+    }));
+    *out_args_cap = args_bytes;
+    true
 }
 
 // Upload a whole CPU slice into a StorageArray, growing it if needed. Returns whether the
@@ -1122,8 +1388,8 @@ mod tests {
             center: [0.0, 0.0, z, 1.0],
             model,
             flags: 0,
-            _pad0: 0,
-            _pad1: 0,
+            cull_radius: 0,
+            _pad: 0,
             conform0: [0.0; 4],
             conform1: [0.0; 4],
             conform2: [0.0; 4],
@@ -1171,5 +1437,92 @@ mod tests {
         let recs = read_u32s(&device, &queue, cull.out_records().unwrap(), slots * 2);
         assert_eq!(recs[rec_slot as usize * 2], front, "record.instance == visible slot");
         assert_eq!(recs[rec_slot as usize * 2 + 1], 1, "record.section == LOD1 section id");
+    }
+
+    // Multi-view (§6): a shadow-cascade view culls the SAME retained scene against its own
+    // frustum into its OWN args/records, independent of the main view. Here the cascade frustum
+    // = the main camera's (a stand-in for a light-VP that frames the instance), so the visible
+    // instance must produce exactly one draw in the shadow view's args — proving the per-view
+    // params/outputs/bind + dispatch_shadow wire up correctly.
+    #[test]
+    #[allow(deprecated)] // glam look_at_rh / perspective_infinite_reverse_rh, test-only
+    fn shadow_cull_view_end_to_end() {
+        let Some((device, queue)) = headless() else {
+            return;
+        };
+        let mut cull = CullState::new(&device);
+
+        let sections = [
+            SectionGpu { first_index: 0, index_count: 3, base_vertex: 0, variant: 0 },
+            SectionGpu { first_index: 3, index_count: 3, base_vertex: 0, variant: 0 },
+        ];
+        let lods = [
+            LodGpu { resolution: 0.0, section_base: 0, section_count: 1, is_decal: 0 },
+            LodGpu { resolution: 10.0, section_base: 1, section_count: 1, is_decal: 0 },
+        ];
+        let materials = [SectionMaterialGpu::zeroed(); 2];
+        let model = cull.register_model(1.0, &lods, &sections, &materials);
+
+        let mk = |z: f32| InstanceGpu {
+            world: Mat4::IDENTITY.to_cols_array(),
+            center: [0.0, 0.0, z, 1.0],
+            model,
+            flags: 0,
+            cull_radius: 0,
+            _pad: 0,
+            conform0: [0.0; 4],
+            conform1: [0.0; 4],
+            conform2: [0.0; 4],
+        };
+        let front = cull.instance_add(mk(0.0)); // in front of the camera
+        let _behind = cull.instance_add(mk(20.0)); // behind (culled by the near plane)
+
+        let eye = Vec3::new(0.0, 0.0, 10.0);
+        let mut view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
+        view.w_axis = Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let proj = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), 1.0, 0.1);
+        let mut params = CullParamsGpu::zeroed();
+        params.frustum = frustum_planes(proj * view);
+        params.cam_pos = [eye.x, eye.y, eye.z, 0.0];
+        params.objects_z2 = 100.0 * 100.0;
+        params.lod_scale = 1.0;
+        params.lod_inv_width = 1.0;
+        params.pixel_limit = 0.0;
+        cull.set_params(params);
+
+        // One shadow cascade view: light_vp = the main proj*view stand-in, distance cull off.
+        cull.set_shadow_view_count(&device, 1);
+        let inputs = CullInputs {
+            objects_z: 900.0,
+            lod_scale: 1.0,
+            lod_inv_width: 1.0,
+            pixel_limit: 0.0,
+        };
+        cull.set_shadow_params(0, params_from_shadow_cascade(proj * view, eye, inputs));
+
+        cull.prepare(&device, &queue);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        cull.dispatch(&mut enc);
+        cull.dispatch_shadow(&mut enc, 0);
+        queue.submit(std::iter::once(enc.finish()));
+
+        // The shadow view's own args: exactly the front instance drew (LOD 1's section).
+        let words_per_arg = super::ARG_WORDS;
+        let total = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64 * words_per_arg;
+        let raw = read_u32s(&device, &queue, cull.shadow_out_args(0).unwrap(), total);
+        let live: Vec<&[u32]> = raw
+            .chunks_exact(words_per_arg as usize)
+            .filter(|a| a[1] != 0)
+            .collect();
+        assert_eq!(live.len(), 1, "exactly one instance casts into the cascade");
+        assert_eq!(live[0][0], 3, "index_count of the chosen LOD's section");
+        assert_eq!(live[0][1], 1, "instance_count == 1");
+        assert_eq!(live[0][2], 3, "first_index of section 1");
+        // The shadow record resolves to the front instance + LOD 1's section.
+        let rec_slot = live[0][4] as u64;
+        let slots = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64;
+        let recs = read_u32s(&device, &queue, cull.shadow_out_records(0).unwrap(), slots * 2);
+        assert_eq!(recs[rec_slot as usize * 2], front, "shadow record.instance == front slot");
+        assert_eq!(recs[rec_slot as usize * 2 + 1], 1, "shadow record.section == LOD1 section id");
     }
 }

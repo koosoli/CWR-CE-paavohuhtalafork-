@@ -624,7 +624,7 @@ impl Renderer {
             .or_else(|| draws3d.first().map(|d| d.camera as usize))
             .unwrap_or(0);
         if let Some(cam) = cameras.get(gpu_main_cam) {
-            self.gfx3d.prepare_cull(&self.device, &self.queue, cam);
+            self.gfx3d.prepare_cull(&self.device, &self.queue, cam, shadow);
         }
         self.ensure_hdr(self.config.width, self.config.height);
 
@@ -676,6 +676,10 @@ impl Renderer {
         // indirect args the colour pass consumes. Recorded before the render passes so
         // wgpu barriers its storage writes -> the indirect reads. No-op when disabled.
         self.gfx3d.cull_dispatch(&mut encoder);
+        // One extra cull dispatch per shadow cascade (§6 multi-view): each produces that
+        // cascade's depth-pass indirect args, consumed by the GPU-driven shadow draw inside
+        // render_shadow_passes. No-op when GPU-driven / shadows are off.
+        self.gfx3d.cull_dispatch_shadows(&mut encoder);
 
         // Cascade shadow depth passes run first so every segment's draws can
         // sample the completed map, regardless of submission order. Debug groups

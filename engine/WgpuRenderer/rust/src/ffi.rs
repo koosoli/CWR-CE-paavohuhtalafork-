@@ -237,10 +237,10 @@ pub struct WgrModelLod {
     pub is_decal: u32,
 }
 
-// One retained instance. Layout matches the GPU-side InstanceGpu (gfx3d/cull.rs) exactly, so
-// C++ fills it directly: `world` is the ABSOLUTE model->world transform (the GPU-driven VS
-// subtracts cam_pos), `center.xyz` the world bounding-sphere center + `center.w` the uniform
-// scale (both read by the cull compute), `model` the wgr_model_register id.
+// One retained instance, filled directly by C++ and converted to InstanceGpu (gfx3d/cull.rs).
+// `world` is the ABSOLUTE model->world transform (the GPU-driven VS subtracts cam_pos),
+// `center.xyz` the world bounding-sphere center + `center.w` the uniform scale (both read by the
+// cull compute), `model` the wgr_model_register id.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WgrInstance {
@@ -248,8 +248,9 @@ pub struct WgrInstance {
     pub center: WgrVec4,
     pub model: u32,
     pub flags: u32,
-    pub _pad0: u32,
-    pub _pad1: u32,
+    // Inflated frustum-cull radius (f32 bits) for terrain-conform instances; 0 = rigid.
+    pub cull_radius: u32,
+    pub _pad: u32,
     // Terrain-conform plane (mirrors WgrDraw3D::conform*). conform2.z = mode: 0 rigid,
     // 1 ForestPlain bilinear plane, 2 per-vertex ClipLand SurfaceY (conform0.x = bcSurfaceY).
     pub conform0: WgrVec4,

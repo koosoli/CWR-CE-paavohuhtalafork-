@@ -26,7 +26,7 @@ struct CullParams {
     instance_count: u32,
     variant_capacity: u32,   // max args per pipeline variant (partition stride into out_args)
     variant_count: u32,
-    _pad: u32,
+    debug_flags: u32,        // bit 0 = skip the frustum test (WGR_CULL_NO_FRUSTUM)
 };
 
 struct Instance {
@@ -34,8 +34,8 @@ struct Instance {
     center: vec4<f32>,       // world bounding-sphere center (xyz), w = uniform scale
     model: u32,              // index into models[]
     flags: u32,
-    _pad0: u32,
-    _pad1: u32,
+    cull_radius: u32,        // inflated frustum-cull radius (f32 bits); 0 = rigid (use model sphere)
+    _pad: u32,
     // Terrain-conform plane — read only by the GPU-driven VS, not the cull; present here so
     // the storage-buffer stride matches InstanceGpu (cull.rs).
     conform0: vec4<f32>,
@@ -64,8 +64,7 @@ struct Section {
     variant: u32,            // pipeline-variant bucket (0..variant_count)
 };
 
-// Byte-identical to the renderer's DrawIndexedIndirectArgs (20 B) and the layout every
-// backend's multi_draw_indexed_indirect consumes.
+// The DrawIndexedIndirectArgs layout every backend's multi_draw_indexed_indirect consumes.
 struct DrawArgs {
     index_count: u32,
     instance_count: u32,
@@ -120,10 +119,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let radius = model.bounding_sphere * scale;
     // Terrain-conformed instances draw their geometry displaced onto the terrain, so the flat,
     // surface-relative model sphere no longer contains it (it spreads with the slope across the
-    // footprint). C++ stores an inflated FRUSTUM-cull radius in _pad0 for these; use it only for
-    // the frustum test, keeping the model radius for the distance near-clamp + sub-pixel size.
+    // footprint). C++ stores an inflated FRUSTUM-cull radius in cull_radius for these; use it only
+    // for the frustum test, keeping the model radius for the distance near-clamp + sub-pixel size.
     // 0 = rigid instance -> use the model radius.
-    let cull_radius = select(radius, bitcast<f32>(inst._pad0), inst._pad0 != 0u);
+    let cull_radius = select(radius, bitcast<f32>(inst.cull_radius), inst.cull_radius != 0u);
 
     // Distance (camera-relative) with the legacy near-clamp: a sphere large relative to its
     // distance is measured from its near surface so big near objects don't drop to a coarse
@@ -142,10 +141,10 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // view — the engine's geometry is camera-relative), so test the camera-relative center
     // `rel`, not the absolute `center`. Testing the absolute center here shifts the frustum
     // by cam_pos (kilometres on a real map) and culls erratically.
-    // _pad bit 0 = WGR_CULL_NO_FRUSTUM: skip the frustum test entirely. A debug discriminator
-    // — if objects that vanish at certain pitches STOP vanishing with this set, the frustum
-    // cull is the cause; if they still vanish, the cull is innocent (chase the draw/LOD).
-    if ((cull._pad & 1u) == 0u && outside_frustum(rel, cull_radius)) {
+    // debug_flags bit 0 = WGR_CULL_NO_FRUSTUM: skip the frustum test entirely. A debug
+    // discriminator — if objects that vanish at certain pitches STOP vanishing with this set, the
+    // frustum cull is the cause; if they still vanish, the cull is innocent (chase the draw/LOD).
+    if ((cull.debug_flags & 1u) == 0u && outside_frustum(rel, cull_radius)) {
         return;
     }
 

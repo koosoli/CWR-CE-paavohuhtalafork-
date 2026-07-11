@@ -496,6 +496,19 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
         {
             continue;
         }
+        // GPU-driven shadow casting (docs/gpu-culling-and-depth-plan.md §6, multi-view): the
+        // retained scene casts its own shadows on the GPU (draw_gpu_driven_shadow), so drop the
+        // matching CPU casters to avoid a redundant depth draw. Full-coverage objects (+ their
+        // GPU-driven proxy children, which are resident instances the cascade cull casts on its
+        // own) are cast entirely on the GPU; Partial objects cast their GPU-owned opaque sections
+        // on the GPU and only their complement (blend/decal sections + non-GPU proxies) here,
+        // gated by GSkipGpuOwnedSections in AddShadowCaster below. No-op unless WGR_GPU_DRIVEN is
+        // on and the object is registered (cov == None everywhere else).
+        const GpuDrawCoverage cov = GEngine->GpuDrivenCoverage(oi->object);
+        if (cov == GpuDrawCoverage::Full)
+        {
+            continue;
+        }
         int geomLOD = (oi->drawLOD != LOD_INVISIBLE) ? oi->drawLOD : oi->shadowLOD;
         if (geomLOD == LOD_INVISIBLE)
         {
@@ -540,7 +553,12 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
         {
             obj->Animate(geomLOD);
         }
+        // Partial GPU-driven object: AddShadowCaster drops the GPU-owned opaque sections (the
+        // same IsGpuOwnedSection predicate the colour path uses), casting only the complement.
+        const bool prevSkip = GSkipGpuOwnedSections;
+        GSkipGpuOwnedSections = (cov == GpuDrawCoverage::Partial);
         GEngine->AddShadowCaster(*s, obj->Transform());
+        GSkipGpuOwnedSections = prevSkip;
         if (animate)
         {
             obj->Deanimate(geomLOD);
@@ -556,6 +574,13 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
         for (int pi = 0; pi < proxyCount; pi++)
         {
             if (!obj->CastProxyShadow(geomLOD, pi))
+            {
+                continue;
+            }
+            // Proxy handed to the GPU (a resident child instance, §12d): the cascade cull casts
+            // it on its own, so skip the CPU caster. False for non-GPU proxies and outside the
+            // registration reference LOD, which cast here as before.
+            if (GEngine->GpuDrivenProxy(obj, geomLOD, pi))
             {
                 continue;
             }

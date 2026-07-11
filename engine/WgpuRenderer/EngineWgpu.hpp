@@ -297,6 +297,11 @@ class EngineWgpu : public EngineDummy
     // draw); Partial = the shape has proxies and/or non-owned (blend/decal) sections, so the CPU
     // still draws the complement with GSkipGpuOwnedSections set. Keyed by shape like _gpuModels.
     std::unordered_map<const LODShapeWithShadow*, GpuDrawCoverage> _gpuModelCoverage;
+    // §12d-full: shapes that have a CPU complement (some visible section is NOT GPU-owned —
+    // blend/decal), so the object can NEVER be Full even if all its proxies move to the GPU. A
+    // shape that is Partial ONLY because of proxies is absent here and becomes Full once every
+    // proxy is GPU-driven (SceneObjectCreated). Populated by RegisterGpuModel.
+    std::unordered_set<const LODShapeWithShadow*> _gpuModelComplement;
     // Shapes registered as terrain-conform (ClipLand, mode 2): their instances carry the
     // CONFORM_CLIPLAND flag + bcSurfaceY so the GPU-driven VS conforms them to SurfaceY.
     std::unordered_set<const LODShapeWithShadow*> _gpuConformShapes;
@@ -334,8 +339,10 @@ class EngineWgpu : public EngineDummy
     };
     std::unordered_map<const Object*, GpuProxySet> _gpuProxies;
     // Register the parent's eligible interior proxies as GPU child instances (§12d); records them
-    // in _gpuProxies so DrawProxies skips them and Moved/Removed maintain them.
-    void EmitGpuProxies(Object* parent, LODShapeWithShadow* shape);
+    // in _gpuProxies so DrawProxies skips them and Moved/Removed maintain them. Returns true iff
+    // EVERY proxy was moved onto the GPU (or there are none) — i.e. no proxy remains for the CPU,
+    // which (with no complement) lets the parent become Full (§12d-full).
+    bool EmitGpuProxies(Object* parent, LODShapeWithShadow* shape);
     // Drop a parent's proxy child instances (on remove / destruction / shape swap).
     void RemoveGpuProxies(const Object* parent);
     // Dedicated pool meshes the retained scene OWNS (one per registered model LOD), created

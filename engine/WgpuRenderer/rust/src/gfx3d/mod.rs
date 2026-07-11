@@ -1081,8 +1081,14 @@ pub struct Gfx3d {
     // Depth+normal prepass variant of gpu_pipeline (vs_gpu / fs_gpu_prepass): writes depth +
     // the view-space normal G-buffer so the GPU-driven set participates in the prepass.
     gpu_prepass_pipeline: wgpu::RenderPipeline,
+    // GPU-driven cascade shadow depth pipeline (§6 multi-view, vs_gpu_shadow / fs_gpu_shadow):
+    // the retained set cast into each cascade's depth map. Group 0 = the shadow pass UBO.
+    gpu_shadow_pipeline: wgpu::RenderPipeline,
     gpu_group1_layout: wgpu::BindGroupLayout,
     gpu_group1_bind: Option<wgpu::BindGroup>,
+    // Per-cascade group-1 draw binds (instances + THAT cascade's records + materials). Parallel
+    // to the cull's shadow views; rebuilt with gpu_group1_bind when a shared buffer grows.
+    gpu_shadow_group1: Vec<Option<wgpu::BindGroup>>,
 
     // Cull-sphere DEBUG pass (ImGui Culling tab): instanced line-list wireframe of every
     // retained instance's frustum-cull sphere. Bind = instances + models; rebuilt with
@@ -1375,6 +1381,18 @@ impl Gfx3d {
             &conform.layout,
             surface_format,
         );
+        // GPU-driven cascade shadow depth pipeline (§6 multi-view): the retained set cast into
+        // each cascade's depth map. Group 0 is the shadow pass UBO (light-VP), so it shares the
+        // gpu_group1/bindless/conform layouts with the colour path.
+        let gpu_shadow_pipeline = cull::build_gpu_shadow_pipeline(
+            device,
+            composer,
+            &shadow_pass_ubo.layout,
+            &gpu_group1_layout,
+            &textures.bindless_layout,
+            &textures.sampler_array_layout,
+            &conform.layout,
+        );
         let cull_debug_layout = cull::cull_debug_layout(device);
         let cull_debug_pipeline = cull::build_cull_debug_pipeline(
             device,
@@ -1439,8 +1457,10 @@ impl Gfx3d {
             cull,
             gpu_pipeline,
             gpu_prepass_pipeline,
+            gpu_shadow_pipeline,
             gpu_group1_layout,
             gpu_group1_bind: None,
+            gpu_shadow_group1: Vec::new(),
             cull_debug_pipeline,
             cull_debug_layout,
             cull_debug_bind: None,
@@ -2247,7 +2267,12 @@ impl Gfx3d {
         casters: &[WgrShadowCaster],
     ) {
         let count = pass.count.min(MAX_CASCADES);
-        if count == 0 || casters.is_empty() || pass.resolution == 0 {
+        // The GPU-driven set casts its own shadows (draw_gpu_driven_shadow), so the target +
+        // pass UBO must be set up even when there are no CPU casters this frame; only the CPU
+        // caster bucketing below is skipped when `casters` is empty.
+        let gpu_shadows = self.gpu_driven_enabled;
+        if count == 0 || pass.resolution == 0 || (casters.is_empty() && !gpu_shadows) {
+            self.shadow_plan.clear();
             return;
         }
         self.ensure_shadow_target(device, pass.resolution, count);
@@ -2267,6 +2292,13 @@ impl Gfx3d {
             );
         }
 
+        // No CPU casters (GPU-driven set casts on its own): the target + pass UBO above are all
+        // the GPU shadow draw needs, so skip the CPU bucketing entirely.
+        self.shadow_plan.clear();
+        if casters.is_empty() {
+            return;
+        }
+
         // Bucket casters per cascade into instanced draws (mirrors plan_3d for the color
         // pass). Depth-only casters are all order-independent, so within a cascade we
         // coalesce non-skinned casters by (mesh, section, alpha, texture, sampler) and
@@ -2276,7 +2308,6 @@ impl Gfx3d {
         // bucket); a caster in several cascades is packed once per cascade (its data is
         // cascade-independent, but its bucket position isn't).
         let mut caster_gpu: Vec<ShadowCasterGpu> = Vec::with_capacity(casters.len());
-        self.shadow_plan.clear();
         let mut bucket_index: FxHashMap<ShadowBucketKey, usize> = FxHashMap::default();
         for c in 0..count as usize {
             // Buckets in first-seen order + their member caster indices.
@@ -2398,23 +2429,21 @@ impl Gfx3d {
         casters: &[WgrShadowCaster],
     ) {
         let count = pass.count.min(MAX_CASCADES);
-        if count == 0 || casters.is_empty() {
+        // The GPU-driven set casts on its own, so render even with no CPU casters (as long as
+        // the target + pass UBO exist). Nothing to do only when both sources are empty.
+        let gpu_shadows = self.gpu_driven_enabled;
+        if count == 0 || (casters.is_empty() && !gpu_shadows) {
             return;
         }
-        let (Some(target), Some(pipes), Some(pass_bind), Some(caster_bind), Some(conform_bind)) = (
-            self.shadow_target.as_ref(),
-            self.shadow_pipelines.as_ref(),
-            self.shadow_pass_ubo.bind.as_ref(),
-            self.shadow_caster_bind.as_ref(),
-            self.conform.bind.as_ref(),
-        ) else {
+        let (Some(target), Some(pass_bind)) =
+            (self.shadow_target.as_ref(), self.shadow_pass_ubo.bind.as_ref())
+        else {
             return;
         };
+        // CPU caster resources (absent when this frame has no CPU casters).
+        let cpu = self.shadow_pipelines.as_ref().zip(self.shadow_caster_bind.as_ref());
 
         for c in 0..count.min(target.layers) as usize {
-            let Some(plan) = self.shadow_plan.get(c) else {
-                continue;
-            };
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("wgr_shadow_cascade"),
                 color_attachments: &[],
@@ -2434,9 +2463,15 @@ impl Gfx3d {
             // Group 0 (pass UBO, this cascade's light-VP) shares one layout across every
             // shadow pipeline and is bound first, so a later pipeline switch never
             // invalidates it — set it once per cascade instead of per draw.
-            rp.set_bind_group(0, pass_bind, &[(c as u64 * self.shadow_pass_ubo.stride) as u32]);
+            let pass_ubo_off = (c as u64 * self.shadow_pass_ubo.stride) as u32;
+            rp.set_bind_group(0, pass_bind, &[pass_ubo_off]);
 
-            for bucket in plan {
+            // CPU casters for this cascade (the retained GPU set is drawn below; a section
+            // owned by the GPU is suppressed CPU-side in AddShadowCaster, so no double-draw).
+            if let (Some((pipes, caster_bind)), Some(conform_bind), Some(plan)) =
+                (cpu, self.conform.bind.as_ref(), self.shadow_plan.get(c))
+            {
+                for bucket in plan {
                 let caster = &casters[bucket.repr as usize];
                 let Some(mesh) = self.meshes.get(KeyData::from_ffi(caster.mesh).into()) else {
                     continue;
@@ -2497,7 +2532,12 @@ impl Gfx3d {
                     0,
                     bucket.base..(bucket.base + bucket.count),
                 );
+                }
             }
+
+            // GPU-driven retained set casts into this cascade (no-op when GPU-driven is off,
+            // or when the cascade has no survivors). Drawn last into the same depth attachment.
+            self.draw_gpu_driven_shadow(&mut rp, textures, pass_ubo_off, c);
         }
     }
 
@@ -3501,8 +3541,8 @@ impl Gfx3d {
     }
 
     pub fn set_dynamic(&mut self, instances: &[WgrInstance]) {
-        // WgrInstance and InstanceGpu share a layout, but convert explicitly rather than
-        // transmuting the slice (keeps the two decoupled + fills the GPU pad words).
+        // Convert explicitly rather than transmuting the slice (keeps the FFI + GPU structs
+        // decoupled).
         let gpu: Vec<cull::InstanceGpu> = instances.iter().map(instance_to_gpu).collect();
         self.cull.set_dynamic(&gpu);
     }
@@ -3525,6 +3565,7 @@ impl Gfx3d {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         cam: &WgrCamera,
+        shadow: &WgrShadowPass,
     ) {
         if !self.gpu_driven_enabled {
             return;
@@ -3537,8 +3578,20 @@ impl Gfx3d {
         let cam_pos = glam::Vec3::new(cam.cam_pos[0], cam.cam_pos[1], cam.cam_pos[2]);
         self.cull
             .set_params(cull::params_from_camera(view, proj, cam_pos, self.cull_inputs));
+        // Shadow-cascade cull views (§6 multi-view): one per active cascade, each culling the
+        // retained scene against that cascade's light frustum (LOD from the main view). The GPU
+        // then casts survivors into the cascade depth map (draw_gpu_driven_shadow). count = 0
+        // (shadows off) clears the views so no shadow dispatch runs.
+        let n_cascades = (shadow.count as usize).min(MAX_CASCADES as usize);
+        self.cull.set_shadow_view_count(device, n_cascades);
+        let scam = glam::Vec3::new(shadow.cam_pos[0], shadow.cam_pos[1], shadow.cam_pos[2]);
+        for c in 0..n_cascades {
+            let lvp = glam::Mat4::from_cols_array(&shadow.light_vp[c]);
+            self.cull
+                .set_shadow_params(c, cull::params_from_shadow_cascade(lvp, scam, self.cull_inputs));
+        }
         let grew = self.cull.prepare(device, queue);
-        if grew || self.gpu_group1_bind.is_none() {
+        if grew || self.gpu_group1_bind.is_none() || self.gpu_shadow_group1.len() != n_cascades {
             self.rebuild_gpu_group1(device);
         }
     }
@@ -3588,6 +3641,24 @@ impl Gfx3d {
                 ],
             })
         });
+        // Per-cascade shadow group-1 draw binds: instances + THAT cascade's records + the shared
+        // materials. Same layout as the colour group-1, only the records differ per cascade.
+        let n = self.cull.shadow_view_count();
+        self.gpu_shadow_group1.clear();
+        for c in 0..n {
+            let bind = self.cull.shadow_out_records(c).map(|rec| {
+                device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("wgr_gpu_driven_shadow_group1_bind"),
+                    layout: &self.gpu_group1_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry { binding: 0, resource: inst.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 1, resource: rec.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 2, resource: mat.as_entire_binding() },
+                    ],
+                })
+            });
+            self.gpu_shadow_group1.push(bind);
+        }
     }
 
     // Runtime toggle from the ImGui Culling tab: skip the GPU frustum test.
@@ -3626,6 +3697,67 @@ impl Gfx3d {
             return;
         }
         self.cull.dispatch(encoder);
+    }
+
+    // Record one cull dispatch per active shadow cascade (§6 multi-view), producing each
+    // cascade's depth-pass indirect args. Recorded before render_shadow_passes so wgpu barriers
+    // the compute writes -> the depth pass's indirect reads. No-op when GPU-driven is off.
+    pub fn cull_dispatch_shadows(&self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.gpu_driven_enabled {
+            return;
+        }
+        for c in 0..self.cull.shadow_view_count() {
+            self.cull.dispatch_shadow(encoder, c);
+        }
+    }
+
+    // Draw the GPU-driven retained set into cascade `c`'s depth map, INSIDE that cascade's
+    // already-open depth render pass (see render_shadow_passes). One multi_draw per pipeline
+    // variant over the cascade's cull args; the shadow pass UBO (group 0) supplies this
+    // cascade's light-VP via the dynamic offset. No-op when GPU-driven is off or the cascade
+    // has no bind/args yet.
+    fn draw_gpu_driven_shadow(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        textures: &SharedTextures,
+        pass_ubo_off: u32,
+        c: usize,
+    ) {
+        if !self.gpu_driven_enabled {
+            return;
+        }
+        let (Some(pass_bind), Some(group1), Some(args)) = (
+            self.shadow_pass_ubo.bind.as_ref(),
+            self.gpu_shadow_group1.get(c).and_then(|b| b.as_ref()),
+            self.cull.shadow_out_args(c),
+        ) else {
+            return;
+        };
+        pass.set_pipeline(&self.gpu_shadow_pipeline);
+        pass.set_bind_group(0, pass_bind, &[pass_ubo_off]);
+        pass.set_bind_group(1, group1, &[]);
+        pass.set_bind_group(2, textures.bindless_bind(), &[]);
+        pass.set_bind_group(3, textures.sampler_array_bind(), &[]);
+        if let Some(conform_bind) = self.conform.bind.as_ref() {
+            pass.set_bind_group(4, conform_bind, &[]);
+        }
+        pass.set_vertex_buffer(0, self.pool.vbuf().slice(..));
+        pass.set_index_buffer(self.pool.ibuf().slice(..), wgpu::IndexFormat::Uint32);
+        let cap = self.cull.variant_capacity();
+        if self.multi_draw_count_enabled {
+            let Some(counters) = self.cull.shadow_counter_buf(c) else {
+                return;
+            };
+            for v in 0..cull::CULL_VARIANT_COUNT {
+                let offset = v as u64 * cap as u64 * INDIRECT_ARG_SIZE;
+                pass.multi_draw_indexed_indirect_count(args, offset, counters, v as u64 * 4, cap);
+            }
+        } else {
+            for v in 0..cull::CULL_VARIANT_COUNT {
+                let offset = v as u64 * cap as u64 * INDIRECT_ARG_SIZE;
+                pass.multi_draw_indexed_indirect(args, offset, cap);
+            }
+        }
     }
 
     // Draw the GPU-driven opaque set into the colour pass: one multi_draw per pipeline-
@@ -3704,17 +3836,16 @@ impl Gfx3d {
     }
 }
 
-// Convert an FFI retained instance to the GPU layout. The two structs are field-identical
-// (matching layouts asserted on both sides), but convert explicitly to fill the GPU pad words
-// and keep the FFI + GPU structs decoupled.
+// Convert an FFI retained instance to the GPU layout. Converted field-by-field (rather than
+// transmuted) to keep the FFI + GPU structs decoupled.
 fn instance_to_gpu(inst: &WgrInstance) -> cull::InstanceGpu {
     cull::InstanceGpu {
         world: inst.world,
         center: inst.center,
         model: inst.model,
         flags: inst.flags,
-        _pad0: inst._pad0,
-        _pad1: inst._pad1,
+        cull_radius: inst.cull_radius,
+        _pad: inst._pad,
         // Terrain-conform plane (conform2.z = mode); the GPU-driven VS conforms per vertex.
         conform0: inst.conform0,
         conform1: inst.conform1,

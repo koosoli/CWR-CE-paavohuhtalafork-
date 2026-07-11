@@ -326,8 +326,8 @@ struct WgrInstance
     uint32_t flags;
     /* Inflated frustum-cull radius (float bits) for terrain-conform instances, whose displaced
      * geometry escapes the flat model sphere; 0 = rigid (cull uses model bounding sphere). */
-    uint32_t _pad0;
-    uint32_t _pad1;
+    uint32_t cull_radius;
+    uint32_t _pad;
     /* Terrain-conform plane (mirrors WgrDraw3D::conform*). conform2.z = mode: 0 rigid,
      * 1 = ForestPlain bilinear plane, 2 = per-vertex ClipLand SurfaceY (conform0.x = bcSurfaceY). */
     WgrVec4 conform0;

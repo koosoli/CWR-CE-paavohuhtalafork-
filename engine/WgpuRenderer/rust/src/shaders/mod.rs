@@ -125,6 +125,10 @@ mod tests {
             "gfx3d/gpu_driven.wgsl",
         );
         compose(
+            include_str!("../gfx3d/gpu_driven_shadow.wgsl"),
+            "gfx3d/gpu_driven_shadow.wgsl",
+        );
+        compose(
             include_str!("../gfx3d/cull_debug.wgsl"),
             "gfx3d/cull_debug.wgsl",
         );
