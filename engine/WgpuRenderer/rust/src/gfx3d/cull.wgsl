@@ -1,11 +1,17 @@
-// GPU cull + LOD + indirect-arg compaction (docs/gpu-culling-and-depth-plan.md Stage 3).
+// GPU cull + LOD + indirect-arg compaction (docs/gpu-culling-and-depth-plan.md Stage 3 + §3.6).
 //
-// One thread per retained instance: frustum + distance + sub-pixel cull, pick a LOD, and
-// atomic-append one DrawIndexedIndirect command per section of the chosen LOD into the
-// per-pipeline-variant args buffer. This replaces the CPU per-object walk + LODShape draw
-// (Scene::ObjectForDrawing / AdjustComplexity / Object::Draw) — the whole point being that
-// with the CPU out of the per-object loop we can push draw distance + LOD detail well past
-// what the CPU triangle budget allowed.
+// Frustum + distance + sub-pixel cull, pick a LOD, and emit one INSTANCED DrawIndexedIndirect
+// per surviving GLOBAL section (instance_count = # instances that chose a LOD containing it),
+// their per-draw records laid out contiguously. This replaces the CPU per-object walk + LODShape
+// draw (Scene::ObjectForDrawing / AdjustComplexity / Object::Draw) — the whole point being that
+// with the CPU out of the per-object loop we can push draw distance + LOD detail well past what
+// the CPU triangle budget allowed.
+//
+// Instancing collapse (§3.6) is a THREE-PASS dispatch (COUNT -> EMIT -> SCATTER, see the entries
+// at the bottom). The old scheme emitted one instance_count=1 sub-draw per (instance, section);
+// this collapses N identical models into one instanced draw, so the arg count drops from
+// (# surviving pairs) to (# surviving sections). No prefix sum — a single atomic bump per section
+// carves the contiguous record runs.
 //
 // LOD selection is seeded from the legacy FindSqrtLevel / LevelFromDistance2 SHAPE
 // (dist² -> detail² -> resol² vs each level's resolution²), but EXACT parity is a non-goal:
@@ -86,9 +92,11 @@ struct DrawArgs {
 @group(0) @binding(3) var<storage, read> lods: array<Lod>;
 @group(0) @binding(4) var<storage, read> sections: array<Section>;
 @group(0) @binding(5) var<storage, read_write> out_args: array<DrawArgs>;
-// One atomic append cursor per pipeline variant.
+// Append cursors: one per pipeline variant (0..variant_count) for the arg compaction, PLUS
+// one extra word at index variant_count = the global out_records bump allocator (the "records
+// cursor" the instancing-collapse passes carve per-section runs from). Sized variant_count + 1.
 @group(0) @binding(6) var<storage, read_write> counters: array<atomic<u32>>;
-// Per-draw record parallel to out_args: which instance + which section this sub-draw is.
+// Per-draw record parallel to out_records slots: which instance + which section this sub-draw is.
 // A multi_draw sub-draw's first_instance indexes THIS (not the instance buffer directly),
 // so the VS/FS can recover both the instance transform AND the per-section material —
 // material is per-section, and the shader can't derive the section from the instance alone.
@@ -100,6 +108,11 @@ struct Record {
 // Hi-Z depth pyramid (main_occlude only — main's layout omits this binding). Full mip
 // chain; the occlusion test textureLoads the mip whose texels cover the instance's screen rect.
 @group(0) @binding(8) var hiz: texture_2d<f32>;
+// Per-global-section scratch for the instancing-collapse three-pass (docs §3.6). Sized
+// sections.len(); reused across the passes: pass COUNT atomicAdds the surviving-instance count
+// into it, pass EMIT reads that count and overwrites the slot with the section's out_records run
+// base, pass SCATTER bumps it to fill the run. Cleared to 0 each frame before COUNT.
+@group(0) @binding(9) var<storage, read_write> sec_count: array<atomic<u32>>;
 
 fn outside_frustum(center: vec3<f32>, radius: f32) -> bool {
     for (var i = 0u; i < 6u; i++) {
@@ -203,28 +216,36 @@ fn classify(idx: u32) -> CullResult {
     return res;
 }
 
-// Compaction: one DrawArgs per section of the chosen LOD, appended to its pipeline variant's
-// partition. first_instance = the record slot; the VS reads out_records[record] to recover the
-// instance transform + the global section id for its material. instance_count = 1 (per-section
-// instancing collapse is a later optimization). No Hi-Z reference — shared by both entries.
-fn emit(idx: u32, level: u32) {
+// Instancing collapse (docs §3.6): three passes replace the old one-sub-draw-per-(instance,
+// section) emit. Instead we emit ONE instanced DrawArgs per surviving GLOBAL section, with
+// instance_count = the number of instances that selected a LOD containing it and their records
+// laid out contiguously. The section id already encodes (model, LOD, section), so grouping by it
+// is automatic: instances at different distances pick different LODs -> different sections ->
+// separate draws. No prefix sum — a single atomic bump per section carves the contiguous runs.
+
+// Pass COUNT (1 thread / surviving instance): tally this instance into each section of its LOD.
+fn count_sections(idx: u32, level: u32) {
     let lod_base = models[instances[idx].model].lod_base;
     let lod = lods[lod_base + level];
     for (var s = 0u; s < lod.section_count; s++) {
-        let sec = sections[lod.section_base + s];
-        let v = sec.variant;
-        if (v >= cull.variant_count) {
-            continue;
+        atomicAdd(&sec_count[lod.section_base + s], 1u);
+    }
+}
+
+// Pass SCATTER (1 thread / surviving instance): append this instance's record into each of its
+// sections' runs. sec_count[s] holds the run's fill cursor (seeded to the run base by EMIT).
+fn scatter_sections(idx: u32, level: u32) {
+    let lod_base = models[instances[idx].model].lod_base;
+    let lod = lods[lod_base + level];
+    let n_rec = arrayLength(&out_records);
+    for (var s = 0u; s < lod.section_count; s++) {
+        let gsec = lod.section_base + s;
+        let slot = atomicAdd(&sec_count[gsec], 1u);
+        // In-bounds only: a section whose run overflowed out_records (EMIT emitted no arg for it)
+        // still bumps here, but its writes past the end are dropped — nothing draws them anyway.
+        if (slot < n_rec) {
+            out_records[slot] = Record(idx, gsec);
         }
-        let slot = atomicAdd(&counters[v], 1u);
-        // Overflow past the per-variant cap is dropped, never wrapped; the CPU reads the
-        // counter and logs if a frame exceeded the cap (never a silent partial draw).
-        if (slot >= cull.variant_capacity) {
-            continue;
-        }
-        let out_i = v * cull.variant_capacity + slot;
-        out_args[out_i] = DrawArgs(sec.index_count, 1u, sec.first_index, i32(sec.base_vertex), out_i);
-        out_records[out_i] = Record(idx, lod.section_base + s);
     }
 }
 
@@ -296,9 +317,15 @@ fn occluded(center: vec3<f32>, radius: f32) -> bool {
     return depth_near < far;
 }
 
+// --- Three-pass instancing-collapse entries (docs §3.6) ---
+// The single-dispatch cull is split into COUNT -> EMIT -> SCATTER, one dispatch each (wgpu
+// auto-barriers the storage writes between passes). COUNT/SCATTER run 1 thread / instance; EMIT
+// runs 1 thread / global section. classify() (and occluded()) are pure, so COUNT and SCATTER
+// see the SAME survivors — an instance counted in a section is scattered into that same run.
+
 // Frustum + distance + LOD only (prepass / occluder set, and every shadow cascade). No Hi-Z.
 @compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn count(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if (idx >= cull.instance_count) {
         return;
@@ -307,13 +334,13 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (res.culled) {
         return;
     }
-    emit(idx, res.level);
+    count_sections(idx, res.level);
 }
 
-// Frustum + distance + LOD + Hi-Z occlusion (color pass only). Same compaction; the occlusion
-// test drops instances fully hidden by the depth-prepass occluders (terrain + drawn objects).
+// Frustum + distance + LOD + Hi-Z occlusion (color pass). COUNT half; must agree with the
+// occlusion-view SCATTER (classify + occluded are pure, so both passes see the same survivors).
 @compute @workgroup_size(64)
-fn main_occlude(@builtin(global_invocation_id) gid: vec3<u32>) {
+fn count_occlude(@builtin(global_invocation_id) gid: vec3<u32>) {
     let idx = gid.x;
     if (idx >= cull.instance_count) {
         return;
@@ -325,5 +352,74 @@ fn main_occlude(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (cull.occlusion != 0u && occluded(res.center, res.radius)) {
         return;
     }
-    emit(idx, res.level);
+    count_sections(idx, res.level);
+}
+
+// EMIT (1 thread / GLOBAL section): allocate the section's contiguous out_records run and emit
+// its one instanced DrawArgs. Layout-agnostic (no Hi-Z), so this single entry serves both the
+// main and the occlusion pipelines.
+@compute @workgroup_size(64)
+fn emit_args(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let s = gid.x;
+    if (s >= arrayLength(&sections)) {
+        return;
+    }
+    let c = atomicLoad(&sec_count[s]);
+    if (c == 0u) {
+        return;
+    }
+    // Reserve the run BEFORE any cap check, so an un-emitted section still gets a UNIQUE base and
+    // SCATTER never collides two sections at base 0. Repurpose sec_count[s] as the fill cursor.
+    let base = atomicAdd(&counters[cull.variant_count], c);
+    atomicStore(&sec_count[s], base);
+    // Records overflow: run reserved past out_records -> emit no arg (SCATTER's bound check drops
+    // the out-of-range writes). Never silently wrap; the counter readback surfaces it.
+    if (base + c > arrayLength(&out_records)) {
+        return;
+    }
+    let sec = sections[s];
+    let v = sec.variant;
+    if (v >= cull.variant_count) {
+        return;
+    }
+    // Arg compaction unchanged — but the arg count is now (# surviving sections) not (# pairs),
+    // so this per-variant cap is effectively unreachable (bounded by the registered section
+    // count). Overflow is still dropped, never wrapped.
+    let slot = atomicAdd(&counters[v], 1u);
+    if (slot >= cull.variant_capacity) {
+        return;
+    }
+    let out_i = v * cull.variant_capacity + slot;
+    out_args[out_i] = DrawArgs(sec.index_count, c, sec.first_index, i32(sec.base_vertex), base);
+}
+
+// SCATTER half (main / prepass / shadow views). No Hi-Z.
+@compute @workgroup_size(64)
+fn scatter(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= cull.instance_count) {
+        return;
+    }
+    let res = classify(idx);
+    if (res.culled) {
+        return;
+    }
+    scatter_sections(idx, res.level);
+}
+
+// SCATTER half (color pass, Hi-Z occlusion). Must apply the SAME tests as count_occlude.
+@compute @workgroup_size(64)
+fn scatter_occlude(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= cull.instance_count) {
+        return;
+    }
+    let res = classify(idx);
+    if (res.culled) {
+        return;
+    }
+    if (cull.occlusion != 0u && occluded(res.center, res.radius)) {
+        return;
+    }
+    scatter_sections(idx, res.level);
 }

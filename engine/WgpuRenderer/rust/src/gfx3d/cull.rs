@@ -183,6 +183,13 @@ const DEFAULT_VARIANT_CAPACITY: u32 = 1 << 18; // 256K sections/variant
 // u32 words per DrawIndexedIndirectArgs (20 B / 4).
 const ARG_WORDS: u64 = super::INDIRECT_ARG_SIZE / 4;
 
+// Counter buffer = one append cursor per pipeline variant (0..CULL_VARIANT_COUNT), read as the
+// count buffer by multi_draw_indexed_indirect_count, PLUS one trailing word (index
+// CULL_VARIANT_COUNT): the global out_records bump allocator (the "records cursor") the
+// instancing-collapse EMIT pass carves per-section runs from (docs §3.6). The count reads only
+// touch words 0..CULL_VARIANT_COUNT, so the extra word is invisible to them.
+const COUNTER_WORDS: u64 = CULL_VARIANT_COUNT as u64 + 1;
+
 // One extra cull VIEW for a shadow cascade (docs/gpu-culling-and-depth-plan.md §6, multi-view).
 // The retained tables + instance buffer are SHARED with the main view (owned by CullState);
 // only the per-view cull params (this cascade's light frustum) and the compute outputs (args,
@@ -194,6 +201,10 @@ struct ShadowCullView {
     out_args: Option<wgpu::Buffer>,
     out_records: Option<wgpu::Buffer>,
     out_args_cap: u64,
+    // Per-section instancing-collapse scratch (§3.6), sized sections.len(); reallocated when the
+    // section table grows (like out_args). Bound at binding 9 of this view's cull bind group.
+    sec_count: Option<wgpu::Buffer>,
+    sec_count_cap: u64,
     bind: Option<wgpu::BindGroup>,
     params: CullParamsGpu,
 }
@@ -208,7 +219,7 @@ impl ShadowCullView {
         });
         let counter_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_cull_shadow_counters"),
-            size: CULL_VARIANT_COUNT as u64 * 4,
+            size: COUNTER_WORDS * 4,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_DST,
@@ -220,6 +231,8 @@ impl ShadowCullView {
             out_args: None,
             out_records: None,
             out_args_cap: 0,
+            sec_count: None,
+            sec_count_cap: 0,
             bind: None,
             params: CullParamsGpu::zeroed(),
         }
@@ -227,7 +240,11 @@ impl ShadowCullView {
 }
 
 pub struct CullState {
-    pipeline: wgpu::ComputePipeline,
+    // Instancing-collapse three-pass pipelines (§3.6), all over `layout`: COUNT (1/instance) ->
+    // EMIT (1/section) -> SCATTER (1/instance). Shared by the main + every shadow view.
+    count_pipeline: wgpu::ComputePipeline,
+    emit_pipeline: wgpu::ComputePipeline,
+    scatter_pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
 
     // Retained tables — CPU mirrors + GPU buffers. Registered at load, rarely changed, so
@@ -260,9 +277,13 @@ pub struct CullState {
     // multi_draw_indexed_indirect_count (the 3b-4 tail trim) on adapters that support it.
     counter_buf: wgpu::Buffer,
     out_args: Option<wgpu::Buffer>,
-    // Per-draw records, allocated 1:1 with out_args (same slot count, 8 B each).
+    // Per-draw records — a flat global array carved into contiguous per-section runs by the
+    // instancing-collapse EMIT/SCATTER passes (§3.6), sized to hold every surviving pair.
     out_records: Option<wgpu::Buffer>,
     out_args_cap: u64,
+    // Main-view per-section instancing-collapse scratch (§3.6), sized sections.len().
+    sec_count: Option<wgpu::Buffer>,
+    sec_count_cap: u64,
     params_buf: wgpu::Buffer,
 
     variant_capacity: u32,
@@ -279,13 +300,18 @@ pub struct CullState {
     // Color-pass occlusion view (§5 Hi-Z). Same retained tables/instances, its own params
     // (occlusion tail) + args/records/counters, run by the `main_occlude` pipeline against the
     // Hi-Z. Its args feed the color draw; the main view's args stay the prepass/occluder set.
-    occlude_pipeline: wgpu::ComputePipeline,
+    occlude_count_pipeline: wgpu::ComputePipeline,
+    occlude_emit_pipeline: wgpu::ComputePipeline,
+    occlude_scatter_pipeline: wgpu::ComputePipeline,
     occlude_layout: wgpu::BindGroupLayout,
     color_params_buf: wgpu::Buffer,
     color_counter_buf: wgpu::Buffer,
     color_out_args: Option<wgpu::Buffer>,
     color_out_records: Option<wgpu::Buffer>,
     color_out_args_cap: u64,
+    // Color/occlusion-view per-section instancing-collapse scratch (§3.6).
+    color_sec_count: Option<wgpu::Buffer>,
+    color_sec_count_cap: u64,
     color_params: CullParamsGpu,
     color_bind: Option<wgpu::BindGroup>,
     // Full-chain Hi-Z view the color bind samples (cloned from Gfx3d's HiZ when it (re)allocs).
@@ -335,6 +361,9 @@ impl CullState {
                 storage(5, false),
                 storage(6, false),
                 storage(7, false),
+                // Binding 9 = the per-section instancing-collapse scratch (binding 8 is the
+                // Hi-Z, present only in the occlude layout; layouts may be sparse).
+                storage(9, false),
             ],
         });
 
@@ -343,14 +372,22 @@ impl CullState {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("wgr_cull_pipeline"),
-            layout: Some(&pipeline_layout),
-            module: &module,
-            entry_point: Some("main"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        // Instancing collapse (§3.6): the cull is three dispatches (COUNT -> EMIT -> SCATTER)
+        // sharing one bind group. `emit_args` is layout-agnostic (no Hi-Z) so both the main and
+        // occlude pipeline layouts reuse the same entry.
+        let make_pl = |label: &str, pl_layout: &wgpu::PipelineLayout, entry: &str| {
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some(label),
+                layout: Some(pl_layout),
+                module: &module,
+                entry_point: Some(entry),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
+        let count_pipeline = make_pl("wgr_cull_count", &pipeline_layout, "count");
+        let emit_pipeline = make_pl("wgr_cull_emit", &pipeline_layout, "emit_args");
+        let scatter_pipeline = make_pl("wgr_cull_scatter", &pipeline_layout, "scatter");
 
         // Color-occlusion layout = the main 0..=7 bindings + binding 8 = the Hi-Z pyramid
         // (non-filterable float, sampled by textureLoad). Only main_occlude references it.
@@ -384,6 +421,7 @@ impl CullState {
                     },
                     count: None,
                 },
+                storage(9, false), // instancing-collapse scratch (see main layout)
             ],
         });
         let occlude_pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
@@ -391,14 +429,10 @@ impl CullState {
             bind_group_layouts: &[Some(&occlude_layout)],
             immediate_size: 0,
         });
-        let occlude_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("wgr_cull_occlude_pipeline"),
-            layout: Some(&occlude_pl_layout),
-            module: &module,
-            entry_point: Some("main_occlude"),
-            compilation_options: Default::default(),
-            cache: None,
-        });
+        let occlude_count_pipeline = make_pl("wgr_cull_occlude_count", &occlude_pl_layout, "count_occlude");
+        let occlude_emit_pipeline = make_pl("wgr_cull_occlude_emit", &occlude_pl_layout, "emit_args");
+        let occlude_scatter_pipeline =
+            make_pl("wgr_cull_occlude_scatter", &occlude_pl_layout, "scatter_occlude");
 
         let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_cull_params"),
@@ -409,7 +443,7 @@ impl CullState {
 
         let counter_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_cull_counters"),
-            size: CULL_VARIANT_COUNT as u64 * 4,
+            size: COUNTER_WORDS * 4,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_DST,
@@ -423,7 +457,7 @@ impl CullState {
         });
         let color_counter_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_cull_color_counters"),
-            size: CULL_VARIANT_COUNT as u64 * 4,
+            size: COUNTER_WORDS * 4,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::INDIRECT
                 | wgpu::BufferUsages::COPY_DST,
@@ -431,7 +465,9 @@ impl CullState {
         });
 
         Self {
-            pipeline,
+            count_pipeline,
+            emit_pipeline,
+            scatter_pipeline,
             layout,
             models: Vec::new(),
             lods: Vec::new(),
@@ -452,19 +488,25 @@ impl CullState {
             out_args: None,
             out_records: None,
             out_args_cap: 0,
+            sec_count: None,
+            sec_count_cap: 0,
             params_buf,
             variant_capacity: DEFAULT_VARIANT_CAPACITY,
             params: CullParamsGpu::zeroed(),
             debug_flags: if std::env::var("WGR_CULL_NO_FRUSTUM").is_ok() { 1 } else { 0 },
             bind: None,
             shadow_views: Vec::new(),
-            occlude_pipeline,
+            occlude_count_pipeline,
+            occlude_emit_pipeline,
+            occlude_scatter_pipeline,
             occlude_layout,
             color_params_buf,
             color_counter_buf,
             color_out_args: None,
             color_out_records: None,
             color_out_args_cap: 0,
+            color_sec_count: None,
+            color_sec_count_cap: 0,
             color_params: CullParamsGpu::zeroed(),
             color_bind: None,
             hiz_view: None,
@@ -651,13 +693,18 @@ impl CullState {
         // rebuilds that view's bind.
         let shared_grew = grew;
 
-        // Main-view outputs (out_args = variant_count * capacity; records 1:1; counters fixed).
+        // Main-view outputs (out_args = variant_count * capacity; flat records; per-section
+        // scratch sized to the section table; counters fixed).
+        let sections_len = self.sections.len() as u64;
         let args_grew = ensure_view_outputs(
             device,
             self.variant_capacity,
+            sections_len,
             &mut self.out_args,
             &mut self.out_records,
             &mut self.out_args_cap,
+            &mut self.sec_count,
+            &mut self.sec_count_cap,
         );
         grew |= args_grew;
 
@@ -684,9 +731,12 @@ impl CullState {
                 let g = ensure_view_outputs(
                     device,
                     self.variant_capacity,
+                    sections_len,
                     &mut v.out_args,
                     &mut v.out_records,
                     &mut v.out_args_cap,
+                    &mut v.sec_count,
+                    &mut v.sec_count_cap,
                 );
                 finalize(&mut v.params);
                 queue.write_buffer(&v.params_buf, 0, bytemuck::bytes_of(&v.params));
@@ -696,9 +746,9 @@ impl CullState {
             if shared_grew || view_grew || self.shadow_views[i].bind.is_none() {
                 let bind = {
                     let v = &self.shadow_views[i];
-                    match (v.out_args.as_ref(), v.out_records.as_ref()) {
-                        (Some(a), Some(r)) => {
-                            self.build_view_bind(device, &v.params_buf, a, &v.counter_buf, r)
+                    match (v.out_args.as_ref(), v.out_records.as_ref(), v.sec_count.as_ref()) {
+                        (Some(a), Some(r), Some(sc)) => {
+                            self.build_view_bind(device, &v.params_buf, a, &v.counter_buf, r, sc)
                         }
                         _ => None,
                     }
@@ -713,9 +763,12 @@ impl CullState {
             let color_grew = ensure_view_outputs(
                 device,
                 self.variant_capacity,
+                sections_len,
                 &mut self.color_out_args,
                 &mut self.color_out_records,
                 &mut self.color_out_args_cap,
+                &mut self.color_sec_count,
+                &mut self.color_sec_count_cap,
             );
             grew |= color_grew;
             finalize(&mut self.color_params);
@@ -730,19 +783,31 @@ impl CullState {
     }
 
     fn rebuild_bind(&mut self, device: &wgpu::Device) {
-        let (Some(args), Some(records)) = (self.out_args.as_ref(), self.out_records.as_ref()) else {
+        let (Some(args), Some(records), Some(sec)) =
+            (self.out_args.as_ref(), self.out_records.as_ref(), self.sec_count.as_ref())
+        else {
             self.bind = None;
             return;
         };
-        self.bind = self.build_view_bind(device, &self.params_buf, args, &self.counter_buf, records);
+        self.bind = self.build_view_bind(device, &self.params_buf, args, &self.counter_buf, records, sec);
     }
 
     // Build the color-occlusion bind (occlude_layout): the color view's own params/args/
     // counters/records + the SHARED retained tables + the Hi-Z pyramid at binding 8.
     fn rebuild_color_bind(&mut self, device: &wgpu::Device) {
-        let (Some(args), Some(records), Some(hiz), Some(inst), Some(models), Some(lods), Some(sections)) = (
+        let (
+            Some(args),
+            Some(records),
+            Some(sec),
+            Some(hiz),
+            Some(inst),
+            Some(models),
+            Some(lods),
+            Some(sections),
+        ) = (
             self.color_out_args.as_ref(),
             self.color_out_records.as_ref(),
+            self.color_sec_count.as_ref(),
             self.hiz_view.as_ref(),
             self.instance_buf.buf.as_ref(),
             self.model_buf.buf.as_ref(),
@@ -765,35 +830,82 @@ impl CullState {
                 wgpu::BindGroupEntry { binding: 6, resource: self.color_counter_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: records.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(hiz) },
+                wgpu::BindGroupEntry { binding: 9, resource: sec.as_entire_binding() },
             ],
         }));
     }
 
-    // Record the cull dispatch: zero the counters + out_args (so unfilled arg slots stay
-    // instance_count = 0 no-op draws), then one thread per instance. No-op until prepare()
-    // has run with instances present.
+    // Record one view's instancing-collapse cull (§3.6): clear the scratch, then COUNT (1 thread/
+    // instance) -> EMIT (1 thread/section) -> SCATTER (1 thread/instance), each its own compute
+    // pass so wgpu barriers the storage writes between them. `count_pl`/`scatter_pl` differ per
+    // view flavour (plain vs Hi-Z occlusion); `emit_pl` is layout-agnostic. All three share the
+    // one `bind`. Assumes instance_count > 0.
+    #[allow(clippy::too_many_arguments)]
+    fn record_collapse(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        label: &str,
+        bind: &wgpu::BindGroup,
+        args: &wgpu::Buffer,
+        counters: &wgpu::Buffer,
+        sec_count: &wgpu::Buffer,
+        count_pl: &wgpu::ComputePipeline,
+        emit_pl: &wgpu::ComputePipeline,
+        scatter_pl: &wgpu::ComputePipeline,
+    ) {
+        // Counters (incl. the trailing records cursor) and the per-section scratch reset to 0;
+        // out_args zeroed so unfilled arg slots stay instance_count = 0 no-op draws. Records need
+        // no clear — only slots a live arg points at (filled by SCATTER) are ever read.
+        encoder.clear_buffer(counters, 0, None);
+        encoder.clear_buffer(args, 0, None);
+        encoder.clear_buffer(sec_count, 0, None);
+        let inst_groups = self.params.instance_count.div_ceil(64);
+        // EMIT is one thread per GLOBAL section; a scene with no registered sections skips it.
+        let sec_groups = (self.sections.len() as u32).div_ceil(64);
+        // Each pass is its OWN begin_compute_pass: wgpu auto-inserts the storage barrier BETWEEN
+        // compute passes (COUNT's sec_count writes -> EMIT reads; EMIT's writes -> SCATTER reads),
+        // but NOT between dispatches within one pass (they'd race). Same as the terrain/sky computes.
+        let mut pass = |pl: &wgpu::ComputePipeline, groups: u32, name: &str| {
+            let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(name),
+                timestamp_writes: None,
+            });
+            cp.set_pipeline(pl);
+            cp.set_bind_group(0, bind, &[]);
+            cp.dispatch_workgroups(groups, 1, 1);
+        };
+        pass(count_pl, inst_groups, label);
+        if sec_groups > 0 {
+            pass(emit_pl, sec_groups, label);
+        }
+        pass(scatter_pl, inst_groups, label);
+    }
+
+    // Record the main-view cull. No-op until prepare() has run with instances present.
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder) {
-        let (Some(bind), Some(args)) = (self.bind.as_ref(), self.out_args.as_ref()) else {
+        let (Some(bind), Some(args), Some(sec)) =
+            (self.bind.as_ref(), self.out_args.as_ref(), self.sec_count.as_ref())
+        else {
             return;
         };
         if self.params.instance_count == 0 {
             return;
         }
-        encoder.clear_buffer(&self.counter_buf, 0, None);
-        // Only the args need zeroing for the no-op-slot scheme; records are only ever read
-        // at slots the compute filled (their arg has instance_count > 0), so they don't.
-        encoder.clear_buffer(args, 0, None);
-        let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("wgr_cull"),
-            timestamp_writes: None,
-        });
-        cp.set_pipeline(&self.pipeline);
-        cp.set_bind_group(0, bind, &[]);
-        cp.dispatch_workgroups(self.params.instance_count.div_ceil(64), 1, 1);
+        self.record_collapse(
+            encoder,
+            "wgr_cull",
+            bind,
+            args,
+            &self.counter_buf,
+            sec,
+            &self.count_pipeline,
+            &self.emit_pipeline,
+            &self.scatter_pipeline,
+        );
     }
 
-    // Record cascade `i`'s cull dispatch into the same encoder. Shares the retained instance +
-    // table buffers with the main dispatch; writes this cascade's own args/records/counters.
+    // Record cascade `i`'s cull into the same encoder. Shares the retained instance + table
+    // buffers with the main dispatch; writes this cascade's own args/records/counters/scratch.
     // wgpu barriers the compute writes -> the depth pass's indirect reads. No-op until prepare()
     // has run with instances present.
     pub fn dispatch_shadow(&self, encoder: &mut wgpu::CommandEncoder, i: usize) {
@@ -803,21 +915,25 @@ impl CullState {
         let Some(view) = self.shadow_views.get(i) else {
             return;
         };
-        let (Some(bind), Some(args)) = (view.bind.as_ref(), view.out_args.as_ref()) else {
+        let (Some(bind), Some(args), Some(sec)) =
+            (view.bind.as_ref(), view.out_args.as_ref(), view.sec_count.as_ref())
+        else {
             return;
         };
-        encoder.clear_buffer(&view.counter_buf, 0, None);
-        encoder.clear_buffer(args, 0, None);
-        let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("wgr_cull_shadow"),
-            timestamp_writes: None,
-        });
-        cp.set_pipeline(&self.pipeline);
-        cp.set_bind_group(0, bind, &[]);
-        cp.dispatch_workgroups(self.params.instance_count.div_ceil(64), 1, 1);
+        self.record_collapse(
+            encoder,
+            "wgr_cull_shadow",
+            bind,
+            args,
+            &view.counter_buf,
+            sec,
+            &self.count_pipeline,
+            &self.emit_pipeline,
+            &self.scatter_pipeline,
+        );
     }
 
-    // Record the color-occlusion cull dispatch (main_occlude): frustum + distance + LOD + Hi-Z.
+    // Record the color-occlusion cull (Hi-Z): frustum + distance + LOD + occlusion, collapsed.
     // MUST be recorded AFTER the Hi-Z build (which reads this frame's prepass depth) and before
     // the color pass reads color_out_args. No-op unless prepare() set up the color bind (Hi-Z
     // present / occlusion active) and there are instances.
@@ -825,18 +941,24 @@ impl CullState {
         if self.params.instance_count == 0 {
             return;
         }
-        let (Some(bind), Some(args)) = (self.color_bind.as_ref(), self.color_out_args.as_ref()) else {
+        let (Some(bind), Some(args), Some(sec)) = (
+            self.color_bind.as_ref(),
+            self.color_out_args.as_ref(),
+            self.color_sec_count.as_ref(),
+        ) else {
             return;
         };
-        encoder.clear_buffer(&self.color_counter_buf, 0, None);
-        encoder.clear_buffer(args, 0, None);
-        let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("wgr_cull_color"),
-            timestamp_writes: None,
-        });
-        cp.set_pipeline(&self.occlude_pipeline);
-        cp.set_bind_group(0, bind, &[]);
-        cp.dispatch_workgroups(self.params.instance_count.div_ceil(64), 1, 1);
+        self.record_collapse(
+            encoder,
+            "wgr_cull_color",
+            bind,
+            args,
+            &self.color_counter_buf,
+            sec,
+            &self.occlude_count_pipeline,
+            &self.occlude_emit_pipeline,
+            &self.occlude_scatter_pipeline,
+        );
     }
 
     // Whether the color-occlusion view is live this frame (Hi-Z bound + params uploaded). The
@@ -874,6 +996,7 @@ impl CullState {
     // Build a cull bind group for one VIEW: its own params/args/counters/records, but the
     // SHARED retained tables (instances/models/lods/sections). Factored out of rebuild_bind so
     // the main view and every shadow-cascade view bind identically over the same read-only data.
+    #[allow(clippy::too_many_arguments)]
     fn build_view_bind(
         &self,
         device: &wgpu::Device,
@@ -881,6 +1004,7 @@ impl CullState {
         out_args: &wgpu::Buffer,
         counter_buf: &wgpu::Buffer,
         out_records: &wgpu::Buffer,
+        sec_count: &wgpu::Buffer,
     ) -> Option<wgpu::BindGroup> {
         let (Some(inst), Some(models), Some(lods), Some(sections)) = (
             self.instance_buf.buf.as_ref(),
@@ -902,6 +1026,7 @@ impl CullState {
                 wgpu::BindGroupEntry { binding: 5, resource: out_args.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 6, resource: counter_buf.as_entire_binding() },
                 wgpu::BindGroupEntry { binding: 7, resource: out_records.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 9, resource: sec_count.as_entire_binding() },
             ],
         }))
     }
@@ -1359,41 +1484,64 @@ pub fn build_cull_debug_pipeline(
     })
 }
 
-// Ensure one view's compute-output buffers (indirect args + parallel per-draw records) hold
-// CULL_VARIANT_COUNT * variant_capacity slots. Reallocates (and reports true) when the current
-// capacity is short or the buffers are unallocated; the main view and every shadow cascade use
-// this so their output layout is identical. Counters are a fixed buffer allocated per view up
-// front (not here).
+// Ensure one view's compute-output buffers hold enough for the current scene: the indirect args
+// (CULL_VARIANT_COUNT * variant_capacity slots), the flat per-draw records (same total slot count
+// — the upper bound on surviving pairs), and the per-section instancing-collapse scratch
+// (sections_len words). Reallocates (and reports true) when any is short or unallocated; the main
+// view and every shadow cascade use this so their output layout is identical. Counters are a
+// fixed buffer allocated per view up front (not here).
+#[allow(clippy::too_many_arguments)]
 fn ensure_view_outputs(
     device: &wgpu::Device,
     variant_capacity: u32,
+    sections_len: u64,
     out_args: &mut Option<wgpu::Buffer>,
     out_records: &mut Option<wgpu::Buffer>,
     out_args_cap: &mut u64,
+    sec_count: &mut Option<wgpu::Buffer>,
+    sec_count_cap: &mut u64,
 ) -> bool {
+    let mut grew = false;
+
     let args_bytes = CULL_VARIANT_COUNT as u64 * variant_capacity as u64 * super::INDIRECT_ARG_SIZE;
-    if *out_args_cap >= args_bytes && out_args.is_some() {
-        return false;
+    if *out_args_cap < args_bytes || out_args.is_none() {
+        *out_args = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_cull_out_args"),
+            size: args_bytes,
+            usage: wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+        // Records: the flat run-carved array, one slot per (arg-slot) upper bound, 8 B each.
+        let slots = CULL_VARIANT_COUNT as u64 * variant_capacity as u64;
+        *out_records = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_cull_out_records"),
+            size: slots * std::mem::size_of::<RecordGpu>() as u64,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::COPY_DST
+                | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        }));
+        *out_args_cap = args_bytes;
+        grew = true;
     }
-    *out_args = Some(device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgr_cull_out_args"),
-        size: args_bytes,
-        usage: wgpu::BufferUsages::INDIRECT
-            | wgpu::BufferUsages::STORAGE
-            | wgpu::BufferUsages::COPY_DST
-            | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    }));
-    // Records: one per arg slot (same variant partitioning), 8 B each.
-    let slots = CULL_VARIANT_COUNT as u64 * variant_capacity as u64;
-    *out_records = Some(device.create_buffer(&wgpu::BufferDescriptor {
-        label: Some("wgr_cull_out_records"),
-        size: slots * std::mem::size_of::<RecordGpu>() as u64,
-        usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::COPY_SRC,
-        mapped_at_creation: false,
-    }));
-    *out_args_cap = args_bytes;
-    true
+
+    // Per-section scratch, sized to the section table. COPY_DST so it can be cleared each frame.
+    let sec_bytes = sections_len.max(1) * 4;
+    if *sec_count_cap < sec_bytes || sec_count.is_none() {
+        *sec_count = Some(device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_cull_sec_count"),
+            size: sec_bytes,
+            usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+        *sec_count_cap = sec_bytes;
+        grew = true;
+    }
+
+    grew
 }
 
 // Upload a whole CPU slice into a StorageArray, growing it if needed. Returns whether the
@@ -1882,5 +2030,111 @@ mod tests {
         cull.dispatch_color(&mut enc);
         queue.submit(std::iter::once(enc.finish()));
         assert_eq!(live_color_count(&cull), 0, "a mid-depth occluder must hide the far instance (reverse_z)");
+    }
+
+    // Instancing collapse (§3.6): many instances that select the SAME LOD section must produce
+    // ONE instanced DrawArgs (instance_count = N) with N contiguous records, and instances that
+    // land on a DIFFERENT LOD must get a separate draw. Proves the three-pass count->emit->scatter
+    // carves per-section runs correctly.
+    #[test]
+    #[allow(deprecated)] // glam look_at_rh / perspective_infinite_reverse_rh, test-only
+    fn instancing_collapse_end_to_end() {
+        let Some((device, queue)) = headless() else {
+            return;
+        };
+        let mut cull = CullState::new(&device);
+
+        // 2 LODs: LOD0 -> section 0 (coarse, near), LOD1 -> section 1 (fine, farther). variant 0.
+        let sections = [
+            SectionGpu { first_index: 0, index_count: 3, base_vertex: 0, variant: 0 },
+            SectionGpu { first_index: 3, index_count: 3, base_vertex: 0, variant: 0 },
+        ];
+        let lods = [
+            LodGpu { resolution: 0.0, section_base: 0, section_count: 1, is_decal: 0 },
+            LodGpu { resolution: 10.0, section_base: 1, section_count: 1, is_decal: 0 },
+        ];
+        let materials = [SectionMaterialGpu::zeroed(); 2];
+        let model = cull.register_model(1.0, &lods, &sections, &materials);
+
+        let mk = |z: f32| InstanceGpu {
+            world: Mat4::IDENTITY.to_cols_array(),
+            center: [0.0, 0.0, z, 1.0],
+            model,
+            flags: 0,
+            cull_radius: 0,
+            _pad: 0,
+            conform0: [0.0; 4],
+            conform1: [0.0; 4],
+            conform2: [0.0; 4],
+        };
+        // Eye at z=10 looking down -Z. Batch FAR: 5 instances at dist 15 (z=-5) -> resol2=225 ->
+        // LOD1 -> global section 1. Batch NEAR: 3 at dist 5 (z=5) -> resol2=25 -> LOD0 -> section 0.
+        let mut far_slots = Vec::new();
+        for _ in 0..5 {
+            far_slots.push(cull.instance_add(mk(-5.0)));
+        }
+        let mut near_slots = Vec::new();
+        for _ in 0..3 {
+            near_slots.push(cull.instance_add(mk(5.0)));
+        }
+
+        let eye = Vec3::new(0.0, 0.0, 10.0);
+        let mut view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
+        view.w_axis = Vec4::new(0.0, 0.0, 0.0, 1.0);
+        let proj = Mat4::perspective_infinite_reverse_rh(60f32.to_radians(), 1.0, 0.1);
+        let mut params = CullParamsGpu::zeroed();
+        params.frustum = frustum_planes(proj * view);
+        params.cam_pos = [eye.x, eye.y, eye.z, 0.0];
+        params.objects_z2 = 1.0e6;
+        params.lod_scale = 1.0;
+        params.lod_inv_width = 1.0;
+        params.pixel_limit = 0.0;
+        cull.set_params(params);
+
+        cull.prepare(&device, &queue);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        cull.dispatch(&mut enc);
+        queue.submit(std::iter::once(enc.finish()));
+
+        let words = super::ARG_WORDS;
+        let total = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64 * words;
+        let raw = read_u32s(&device, &queue, cull.out_args().unwrap(), total);
+        let live: Vec<&[u32]> = raw.chunks_exact(words as usize).filter(|a| a[1] != 0).collect();
+        assert_eq!(live.len(), 2, "one instanced draw per surviving section (not per pair)");
+
+        let slots_cap = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64;
+        let recs = read_u32s(&device, &queue, cull.out_records().unwrap(), slots_cap * 2);
+        // (instance, section) at record slot `r`.
+        let rec = |r: usize| (recs[r * 2], recs[r * 2 + 1]);
+
+        // Assert one arg: instance_count `n`, its `n` contiguous records carry `section`, and the
+        // record instances match `want` (as a set — run order within a section is arbitrary).
+        let check = |arg: &[u32], n: u32, first_index: u32, section: u32, want: &[u32]| {
+            assert_eq!(arg[1], n, "instance_count collapsed");
+            assert_eq!(arg[2], first_index, "section's first_index");
+            let base = arg[4] as usize;
+            let mut got: Vec<u32> = (0..n as usize)
+                .map(|i| {
+                    let (inst, sec) = rec(base + i);
+                    assert_eq!(sec, section, "record tagged with its section");
+                    inst
+                })
+                .collect();
+            got.sort();
+            let mut want = want.to_vec();
+            want.sort();
+            assert_eq!(got, want, "records = the instances that chose this section");
+            base
+        };
+
+        let a_far = live.iter().find(|a| a[2] == 3).expect("section 1 arg (5 collapsed)");
+        let a_near = live.iter().find(|a| a[2] == 0).expect("section 0 arg (3 collapsed)");
+        let base_far = check(a_far, 5, 3, 1, &far_slots);
+        let base_near = check(a_near, 3, 0, 0, &near_slots);
+        // Runs are disjoint (contiguous carving, no overlap).
+        assert!(
+            base_far + 5 <= base_near || base_near + 3 <= base_far,
+            "per-section record runs must not overlap"
+        );
     }
 }
