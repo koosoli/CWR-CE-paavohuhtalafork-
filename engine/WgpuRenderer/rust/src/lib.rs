@@ -1055,6 +1055,17 @@ impl Renderer {
             // colour sub-pass LOADS it; otherwise it clears as before.
             let prepassed = do_prepass && normal.is_some();
 
+            // GPU Hi-Z occlusion (docs/gpu-culling-and-depth-plan.md §5): now that the prepass
+            // depth is complete (terrain + CPU objects + the GPU-driven set), reduce it to a Hi-Z
+            // pyramid and run the color-pass occlusion cull. Both no-op unless occlusion is active.
+            // Recorded between the prepass and colour passes so wgpu barriers depth-write -> Hi-Z
+            // read -> color-cull sample -> the colour draw's indirect read. The colour draw
+            // (draw_gpu_driven, below) then consumes the occlusion-culled args.
+            if prepassed {
+                self.gfx3d.build_hiz(&self.device, &mut encoder);
+                self.gfx3d.cull_dispatch_color(&mut encoder);
+            }
+
             // 3D sub-pass: all non-2D draws. Depth/stencil are cleared here only when the
             // prepass didn't already fill them (stencil to 0 so shadow draws EQUAL 0 /
             // INCR darken each pixel once); colour per the load.
@@ -1295,11 +1306,13 @@ impl Renderer {
         self.suppress_world_objects = suppress;
     }
 
-    // ImGui Culling tab (wgr_set_cull_debug): draw the cull-sphere wireframes + skip the GPU
-    // frustum test. Diagnostics for the GPU-driven "objects vanish / float" investigation.
-    fn set_cull_debug(&mut self, draw_spheres: bool, no_frustum: bool) {
+    // ImGui Culling tab (wgr_set_cull_debug): draw the cull-sphere wireframes, skip the GPU
+    // frustum test, and toggle GPU Hi-Z occlusion. First two are diagnostics for the GPU-driven
+    // "objects vanish / float" investigation; occlusion is the §5 Hi-Z cull.
+    fn set_cull_debug(&mut self, draw_spheres: bool, no_frustum: bool, occlusion: bool) {
         self.cull_debug_draw = draw_spheres;
         self.gfx3d.set_cull_no_frustum(no_frustum);
+        self.gfx3d.set_occlusion_enabled(occlusion);
     }
 
     fn terrain_set_heightmap(&mut self, heights: &[f32], params: WgrTerrainParams) {

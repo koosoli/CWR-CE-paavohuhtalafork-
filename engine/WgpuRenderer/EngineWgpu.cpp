@@ -43,6 +43,10 @@
 namespace Poseidon
 {
 
+// Engine's built-in software occlusion-buffer cull (Scene.cpp). GPU Hi-Z occlusion replaces it
+// for the retained set, so it is forced off while GPU occlusion is active (see PushSceneCamera).
+extern bool EnableObjOcc;
+
 namespace
 {
 
@@ -1306,6 +1310,11 @@ void EngineWgpu::PushSceneCamera()
         {
             wgr_set_cull_params(_renderer, static_cast<float>(OBJECT_Z), static_cast<float>(camera->Left()),
                                 GScene->GetLodInvWidth(), 0.125f);
+            // GPU Hi-Z occlusion replaces the engine's software occlusion buffer for the retained
+            // set; force the built-in off while it's on so the two don't both cull (and the CPU
+            // stops rasterizing the occlusion buffer). Driven per frame so the default (occlusion
+            // on) applies without opening the Culling tab; the checkbox flips _cullDebug.occlusion.
+            EnableObjOcc = !_cullDebug.occlusion;
         }
     }
 
@@ -2221,7 +2230,7 @@ void EngineWgpu::SetCullDebugSettings(const CullDebugSettings& s)
     _cullDebug.dumpNearby = false; // momentary button, never stored
     if (_gpuDriven && _renderer)
     {
-        wgr_set_cull_debug(_renderer, s.drawSpheres, s.disableFrustum);
+        wgr_set_cull_debug(_renderer, s.drawSpheres, s.disableFrustum, s.occlusion);
     }
     if (s.dumpNearby && _gpuDriven)
     {

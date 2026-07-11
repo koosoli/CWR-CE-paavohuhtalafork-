@@ -1145,6 +1145,11 @@ class Engine : public IGraphicsEngine
     {
         bool drawSpheres = false;
         bool disableFrustum = false;
+        // GPU Hi-Z occlusion culling (docs/gpu-culling-and-depth-plan.md §5): the color pass
+        // draws only the retained instances not hidden by the depth-prepass occluders (terrain +
+        // drawn objects). Default on (matches the WGR_GPU_OCCLUSION Rust default); when on, the
+        // engine's built-in software occlusion (EnableObjOcc) is forced off — GPU Hi-Z replaces it.
+        bool occlusion = true;
         // Momentary (a button, not a state): log every retained instance near the camera —
         // registration-time position vs the object's LIVE Position() vs the terrain surface.
         // Consumed by SetCullDebugSettings; never stored true.

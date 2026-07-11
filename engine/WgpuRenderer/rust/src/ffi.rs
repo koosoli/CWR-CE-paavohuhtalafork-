@@ -1047,8 +1047,9 @@ pub unsafe extern "C" fn wgr_set_suppress_world_objects(renderer: *mut WgrRender
     }));
 }
 
-/// Debug toggles for the GPU-driven cull (ImGui Culling tab): draw the per-instance cull-sphere
-/// wireframes, and/or skip the GPU frustum test. No-op unless GPU-driven rendering is enabled.
+/// Debug/feature toggles for the GPU-driven cull (ImGui Culling tab): draw the per-instance
+/// cull-sphere wireframes, skip the GPU frustum test, and enable GPU Hi-Z occlusion culling
+/// (§5). No-op unless GPU-driven rendering is enabled.
 ///
 /// # Safety
 /// `renderer` must be live.
@@ -1057,13 +1058,14 @@ pub unsafe extern "C" fn wgr_set_cull_debug(
     renderer: *mut WgrRenderer,
     draw_spheres: bool,
     no_frustum: bool,
+    occlusion: bool,
 ) {
     if renderer.is_null() {
         return;
     }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let renderer = unsafe { &mut *renderer };
-        renderer.set_cull_debug(draw_spheres, no_frustum);
+        renderer.set_cull_debug(draw_spheres, no_frustum, occlusion);
     }));
 }
 

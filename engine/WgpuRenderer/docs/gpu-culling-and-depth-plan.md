@@ -7,8 +7,10 @@
 ClipLand vegetation/fences (mode-2 conform) are culled, LOD-selected and drawn entirely on the GPU,
 participate in the depth+normal prepass, cast their own **GPU-driven cascade shadows** (§6 multi-view,
 2026-07-11), and the retained scene is kept correct event-driven (hooks at every transform mover, incl.
-the terrain-subdivision re-seat). Remaining before the CPU-render divert: Hi-Z occlusion (§5), instancing
-collapse (§3.6), then dynamics/skinned/transparent/multi-view (reflections). Everything is on branch
+the terrain-subdivision re-seat). **Hi-Z occlusion (§5) LANDED (2026-07-11)**: color-pass GPU Hi-Z
+occlusion, terrain-as-occluder, built-in CPU occlusion disabled while active, ImGui-toggleable. Remaining
+before the CPU-render divert: instancing collapse (§3.6), then dynamics/skinned/transparent/multi-view
+(reflections). Everything is on branch
 `new-renderer-infrastructure`, gated, A/B-toggleable.
 **Roadmap slot:** Phase 4 — see [implementation-roadmap.md](implementation-roadmap.md).
 
@@ -34,7 +36,11 @@ The coarse Stage 1–6 below was sub-divided in practice. What's **DONE** (Rust-
 - **Retained-scene correctness = event-driven hooks at EVERY transform mover — ✅ DONE + user-verified (2026-07-09).** The load-bearing find: **`Landscape::MakeObjectsTerrainRelative/Absolute`** re-seats every non-ForestPlain static by `SurfaceY_new − SurfaceY_old` via direct `SetPosition` (no `MoveObject`) around every heightfield change (`SubdivideTerrain`/`ResampleTerrain`/`LoadSubdivCache`, all via `World::AdjustSubdivision` — which fires at world load AFTER `LoadObjects`, at mission start, `setTerrainGrid`, options, MP join). Stale registrations presented as BOTH "mode-2 bushes vanish at horizon pitch" (cull sphere 4–17 m above the conformed draw) and "rigid trees float". Fix: `MakeObjectsTerrainAbsolute` fires `SceneObjectMoved` per re-seated object (final positions only; `Relative`'s intermediate Y is never synced). A drift **tripwire** in `GpuDrivenObject` (live vs stored position) LOG_WARNs + refreshes if any future mover is unhooked — should never fire; it rides the CPU visible-set walk and is deleted with the divert. Cull sphere = raw `Transform.Position()` + `BoundingSphere()·Scale()`, exactly the CPU's — no conforming, no inflation (both tried, both wrong). The wgpu heightmap tracks subdivision (range change trips `UploadIfNeeded`); a same-range in-place height edit would go stale silently (no content check) — future terrain-deform work must version it.
 - **Debug tooling — ImGui dev-panel "Culling" tab (permanent, `WGR_GPU_DRIVEN=1`):** *Draw cull spheres* (instanced line-list wireframe per retained instance from the REAL instance/model buffers — `cull_debug.wgsl`; colour by mode; depth Always, drawn last in the sub-pass), *Disable frustum cull* (CullParams flag; also `WGR_CULL_NO_FRUSTUM`), *Dump nearby instances* (≤48 within 60 m: live vs registration-time position vs surface — the `stale` column is what cracked the settle bug). Per-bool FFI setters (`wgr_set_cull_debug`) + `CullDebugSettings` Engine virtuals mirror the Water-tab pattern. Also: `DEFAULT_VARIANT_CAPACITY` raised to 256K/variant — arg overflow drops follow per-frame atomic order, so overflow = random every-other-frame flicker (that signature means capacity).
 - **GPU-path shadow casting (§6 multi-view, first slice) — ✅ IMPLEMENTED + verified (2026-07-11, RenderDoc + in-game, uncommitted).** The retained set now casts its OWN cascade shadows on the GPU; the matching CPU casters are suppressed, so a GPU-driven object is out of the CPU shadow loop too. **Rust:** `CullState` grew per-cascade **`ShadowCullView`s** (own params/out_args/out_records/counters/bind, all referencing the SHARED instance+table buffers — `cull.wgsl` is view-agnostic, so **no compute change**; multi-view is "the same cull with a different frustum"). Each cascade's params come from `params_from_shadow_cascade(light_vp[c], shadow.cam_pos, main_cull_inputs)` — frustum extracted from the camera-relative light-VP via the existing `frustum_planes` (ortho ⇒ 4 working side planes + degenerate near/far no-ops, correct because casters outside the cascade depth range are NDC-z-clipped in the depth pass), LOD from the **main** view (a caster's shadow uses the same LOD its colour draw does), and the radial **distance cull disabled** (`objects_z2 = 1e30`) so the far cascades aren't clipped by the main draw distance. New depth-only pipeline (`build_gpu_shadow_pipeline`) + shader **`gpu_driven_shadow.wgsl`**: VS reads records→instance→world, conforms per vertex (mode 1/2 verbatim from `vs_gpu`), `clip = light_vp·(world_abs − cam_pos)`; FS discards cutout foliage below the per-section `alpha_ref` (one pipeline serves both variants; solids never sample). Forward-Z / SHADOW_FORMAT / CW / no-cull / same depth bias as the CPU caster pipeline. Frame: one extra cull dispatch per cascade (`cull_dispatch_shadows`) after the main cull; the GPU set is drawn into each cascade's existing depth pass inside `render_shadow_passes` (which no longer early-returns on empty CPU casters — `prepare_shadows` sets up the target + pass-UBO whenever `gpu_driven` is on). **C++ suppression** (mirrors the §12 colour path, gated by `WGR_GPU_DRIVEN`): in `Scene::RenderShadowMapDepthPassGpu`, a **`Full`** object (+ its GPU proxy children, which are resident instances the cascade cull casts on its own) skips its CPU caster entirely; a **`Partial`** object casts only its complement via `AddShadowCaster` under `GSkipGpuOwnedSections` (which now drops `render::IsGpuOwnedSectionSpec` sections — the SAME predicate `ClassifyGpuSection`/`Shape::Draw` use, so CPU + GPU never overlap or leave a hole); GPU-handed proxies are skipped in the proxy loop via `GpuDrivenProxy`. Headless multi-view test (`shadow_cull_view_end_to_end`) + shader-compose test added; clippy + 16 lib tests green. **Ahead:** Hi-Z occlusion is per-view so shadow views stay frustum+distance+LOD only (correct — §6); the shadow cull inherits §3.6 (per-(instance,section) sub-draws, no instancing collapse yet) and the shadow LOD's coarser `casterLodBias`/`shadowFar` distance-bound nuances are not yet ported (parity gap: distant tiny casters lean on the shared sub-pixel cull instead).
-- **Destroyed variants (§2.4), occlusion (§5), multi-view reflections (§6), dynamics feed, skinned/transparent (§6)** — all still ahead (destruction currently drops the object to the CPU path).
+- **Hi-Z occlusion (§5) — ✅ IMPLEMENTED (2026-07-11).** See §5 for the full architecture. Prepass-based,
+  color-pass only, terrain-as-occluder free, `EnableObjOcc` (built-in CPU occlusion) forced off while
+  active, ImGui-toggleable (`WGR_GPU_OCCLUSION` / Culling tab). Real-GPU headless test pins the reversed-Z
+  min direction.
+- **Destroyed variants (§2.4), multi-view reflections (§6), dynamics feed, skinned/transparent (§6)** — all still ahead (destruction currently drops the object to the CPU path).
 
 > Moves the whole opaque object path onto the GPU: the level is a **GPU-resident retained scene**, and a
 > compute pass does **distance + frustum + occlusion culling *and* LOD selection** per instance each
@@ -340,6 +346,46 @@ Metal-gated):
   variant, portably, no backend branch.
 
 ## 5. Hi-Z occlusion (prepass-based)
+
+> **Status: ✅ IMPLEMENTED (2026-07-11, uncommitted, pending in-game verify).** Prepass-based Hi-Z
+> occlusion for the color pass, default **on** when GPU-driven is on (`WGR_GPU_OCCLUSION`, default 1;
+> live toggle in the ImGui **Culling** tab). Frame order (main view): main cull (frustum+dist+LOD, the
+> **occluder/prepass set**) → depth prepass (terrain + CPU objects + GPU-driven set all write the shared
+> depth, so **terrain is a first-class occluder for free**) → **Hi-Z build** → **color occlusion cull**
+> (`main_occlude`) → color pass draws the occlusion-culled subset. The **prepass draws the full in-frustum
+> set** (it generates the occluders — never occlusion-culled, or it'd be circular); only the **color pass**
+> gets the occluded subset. Shadow cascades stay frustum+dist+LOD (occlusion is per-view). **Built-in CPU
+> occlusion** (`EnableObjOcc`, the software 256² occlusion-buffer rasterizer, Scene.cpp) is **forced off**
+> per frame while GPU occlusion is active (driven from `PushSceneCamera`) — GPU Hi-Z replaces it for the
+> retained set.
+>
+> **Architecture (Rust):** a new `hiz` module (`hiz.rs`/`hiz.wgsl`) owns an **R32Float mip pyramid** (depth
+> is neither storage-writable nor, as Depth24PlusStencil8, copyable, so mip0 is a compute copy of the depth
+> aspect and each mip a 2×2 **min** of the previous, with odd-edge fold-in so no occluder is dropped). Depth
+> got `TEXTURE_BINDING` + a DepthOnly-aspect view. `CullState` grew a **color-occlusion view** (a second
+> `main_occlude` compute pipeline + layout with the Hi-Z at binding 8; its own params/args/records/counters/
+> bind), run by `dispatch_color` after the Hi-Z build; its args feed a dedicated color draw bind
+> (`gpu_color_group1_bind`). `CullParamsGpu` grew the occlusion tail (camera-relative `view_proj`, viewport,
+> mip count, enable). The color draw picks the occlusion args when `occlusion_active()`, else the main args
+> (identical pre-occlusion behaviour — clean A/B, and the toggle falls back live). FFI:
+> `wgr_set_cull_debug` gained an `occlusion` bool; `CullDebugSettings.occlusion` (default true) drives it.
+>
+> **The occlusion test** (`occluded()` in cull.wgsl): project the instance's world-space bounding-sphere
+> AABB (8 corners) to screen via `view_proj`, take the screen rect + the nearest reversed-Z (max over
+> corners), pick the mip whose texel spans the rect (`ceil(log2(max screen extent px))`), sample the 4 rect
+> corners at that mip and **min** them (the farthest occluder over the region), and cull when the sphere's
+> **nearest** point is still behind (smaller reversed-Z than) that farthest occluder — the conservative
+> Hi-Z test. **⚠️ reverse_z remap (bug fixed 2026-07-11):** `frame.proj` is a FORWARD projection and the
+> pipelines apply `reverse_z` (`z = w−z`) in-shader, so the depth buffer + Hi-Z are reversed-Z; `occluded()`
+> must compute `depth = (w−z)/w`, not raw `z/w` (the first cut compared forward depth against a reversed
+> Hi-Z → culled nothing; frustum cull never noticed since it only uses x/y/w). The headless test now uses a
+> forward proj + a mid-value Hi-Z case so it can't regress. **Bails (keeps visible)** whenever it can't test safely: a bound crossing the near plane
+> (clip.w ≤ 0), or a screen rect leaving the viewport (edge texels carry no coverage for the off-screen
+> part → would over-cull side-poking objects). **Reversed-Z ⇒ min** everywhere — the headline hazard,
+> pinned by a real-GPU headless test (`color_occlusion_end_to_end`: a constant-far pyramid must not occlude,
+> a constant-near pyramid must). Next: shadow-view Hi-Z is deliberately out (per-view, §6); instancing
+> collapse (§3.6) still applies to both cull sets.
+
 - **Reduce the depth prepass into a Hi-Z pyramid.** The depth prepass is unconditional and lands first
   ([depth-prepass-plan.md](depth-prepass-plan.md), Phase 2); it is itself GPU-driven here but with
   **frustum + distance + LOD only, no occlusion** (§3 minus the Hi-Z test). Reduce its depth to a mip
@@ -385,7 +431,8 @@ Implementation status block at the top for how this maps to the sub-stages actua
   inert); ⛔ C++ feed + count-trim remain.** §3 in full: frustum + distance + LOD select + compaction. The
   CPU stops walking opaque objects. Occlusion **off**. This is the headline win — but only observable once
   the C++ retained-scene feed lands (see Implementation status).
-- **Stage 4 — Hi-Z + occlusion.** §5: prepass → Hi-Z (`min`) → occlusion test in the color-pass cull.
+- **Stage 4 — Hi-Z + occlusion. ✅ DONE (2026-07-11).** §5: prepass → Hi-Z (`min`) → occlusion test in a
+  dedicated color-pass cull view; built-in CPU occlusion (`EnableObjOcc`) forced off while active.
 - **Stage 5 — Multi-view.** §6: route CSM cascades and (Phase 5) reflections through the same pass.
 - **Stage 6 — Skinned + transparent integration.** Fold skinned via the compute-skin-bake pool
   ([compute-skin-bake-plan.md](compute-skin-bake-plan.md)); keep transparents on the sorted CPU path or

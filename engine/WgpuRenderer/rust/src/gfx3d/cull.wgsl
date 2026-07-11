@@ -27,6 +27,13 @@ struct CullParams {
     variant_capacity: u32,   // max args per pipeline variant (partition stride into out_args)
     variant_count: u32,
     debug_flags: u32,        // bit 0 = skip the frustum test (WGR_CULL_NO_FRUSTUM)
+    // Occlusion (main_occlude only; ignored by main). view_proj is the CAMERA-RELATIVE
+    // proj*view (translation zeroed) that projects a camera-relative point to clip; the
+    // Hi-Z is sampled with the resulting screen rect + reversed-Z depth (see occluded()).
+    view_proj: mat4x4<f32>,
+    viewport: vec2<f32>,     // Hi-Z mip0 dimensions in texels (= render target size)
+    hiz_mips: u32,           // Hi-Z mip count (clamp the selected mip)
+    occlusion: u32,          // 1 = run the Hi-Z occlusion test (main_occlude)
 };
 
 struct Instance {
@@ -90,6 +97,9 @@ struct Record {
     section: u32,
 };
 @group(0) @binding(7) var<storage, read_write> out_records: array<Record>;
+// Hi-Z depth pyramid (main_occlude only — main's layout omits this binding). Full mip
+// chain; the occlusion test textureLoads the mip whose texels cover the instance's screen rect.
+@group(0) @binding(8) var hiz: texture_2d<f32>;
 
 fn outside_frustum(center: vec3<f32>, radius: f32) -> bool {
     for (var i = 0u; i < 6u; i++) {
@@ -101,17 +111,27 @@ fn outside_frustum(center: vec3<f32>, radius: f32) -> bool {
     return false;
 }
 
-@compute @workgroup_size(64)
-fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
-    let idx = gid.x;
-    if (idx >= cull.instance_count) {
-        return;
-    }
+// Per-instance cull + LOD result. `culled` short-circuits the caller; the geometry fields
+// feed the (optional) occlusion test. No Hi-Z reference here, so the plain `main` entry (whose
+// layout omits binding 8) can call this — only main_occlude touches `hiz`.
+struct CullResult {
+    culled: bool,
+    level: u32,
+    center: vec3<f32>, // world bounding-sphere center
+    radius: f32,       // model radius * scale (for the near-clamp + occlusion projection)
+};
+
+// Frustum + distance + sub-pixel cull and LOD select (replicating LevelFromDistance2 /
+// FindSqrtLevel). Occlusion is applied separately by the caller (Hi-Z, main_occlude only).
+fn classify(idx: u32) -> CullResult {
+    var res: CullResult;
+    res.culled = true;
+    res.level = 0u;
     let inst = instances[idx];
     // Removed static slots are marked model = 0xFFFFFFFF (a free-list hole); this also
     // guards any out-of-range model id.
     if (inst.model >= arrayLength(&models)) {
-        return;
+        return res;
     }
     let center = inst.center.xyz;
     let scale = inst.center.w;
@@ -134,7 +154,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         dist2 = dn * dn;
     }
     if (dist2 > cull.objects_z2) {
-        return;
+        return res;
     }
 
     // Frustum: the planes are CAMERA-RELATIVE (extracted from proj * a translation-zeroed
@@ -145,7 +165,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     // discriminator — if objects that vanish at certain pitches STOP vanishing with this set, the
     // frustum cull is the cause; if they still vanish, the cull is innocent (chase the draw/LOD).
     if ((cull.debug_flags & 1u) == 0u && outside_frustum(rel, cull_radius)) {
-        return;
+        return res;
     }
 
     // Sub-pixel: diameter² < (pixel_limit * lod_scale)² * detail²  -> too small to see.
@@ -153,7 +173,7 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let diameter = model.bounding_sphere * 2.0 * scale;
     let px = cull.pixel_limit * cull.lod_scale;
     if (diameter * diameter < px * px * detail2) {
-        return;
+        return res;
     }
 
     // LOD select (FindSqrtLevel-style; ShapeLOD.cpp:1592). Walk resolutions ascending,
@@ -176,11 +196,20 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
         level = i;
     }
 
-    // Compaction: one DrawArgs per section of the chosen LOD, appended to its pipeline
-    // variant's partition. first_instance = the retained instance index, so the VS reads
-    // this instance's world/material straight from the retained buffers (no gather).
-    // instance_count = 1 (per-section instancing collapse is a later optimization).
-    let lod = lods[model.lod_base + level];
+    res.culled = false;
+    res.level = level;
+    res.center = center;
+    res.radius = radius;
+    return res;
+}
+
+// Compaction: one DrawArgs per section of the chosen LOD, appended to its pipeline variant's
+// partition. first_instance = the record slot; the VS reads out_records[record] to recover the
+// instance transform + the global section id for its material. instance_count = 1 (per-section
+// instancing collapse is a later optimization). No Hi-Z reference — shared by both entries.
+fn emit(idx: u32, level: u32) {
+    let lod_base = models[instances[idx].model].lod_base;
+    let lod = lods[lod_base + level];
     for (var s = 0u; s < lod.section_count; s++) {
         let sec = sections[lod.section_base + s];
         let v = sec.variant;
@@ -194,9 +223,107 @@ fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
             continue;
         }
         let out_i = v * cull.variant_capacity + slot;
-        // first_instance = the record slot; the VS reads out_records[record] to get the
-        // instance transform + the global section id for its material.
         out_args[out_i] = DrawArgs(sec.index_count, 1u, sec.first_index, i32(sec.base_vertex), out_i);
         out_records[out_i] = Record(idx, lod.section_base + s);
     }
+}
+
+// Hi-Z occlusion test (main_occlude only). Projects the instance's world-space bounding-sphere
+// AABB to the screen, picks the mip whose texels cover the rect, samples the reversed-Z Hi-Z
+// (min over the region = the FARTHEST occluder), and reports occluded when even the sphere's
+// NEAREST point is behind that occluder — the conservative Hi-Z test. Bails (returns false =
+// visible) whenever it can't test safely: a bound crossing the near plane, or a screen rect that
+// leaves the viewport (edge texels carry no coverage info for the off-screen part).
+fn occluded(center: vec3<f32>, radius: f32) -> bool {
+    let rel = center - cull.cam_pos.xyz;
+    var uv_min = vec2<f32>(1.0e30, 1.0e30);
+    var uv_max = vec2<f32>(-1.0e30, -1.0e30);
+    var depth_near = 0.0; // max reversed-Z over the corners = the sphere's nearest point
+    for (var i = 0u; i < 8u; i++) {
+        let sx = select(-1.0, 1.0, (i & 1u) != 0u);
+        let sy = select(-1.0, 1.0, (i & 2u) != 0u);
+        let sz = select(-1.0, 1.0, (i & 4u) != 0u);
+        let corner = rel + vec3<f32>(sx, sy, sz) * radius;
+        let clip = cull.view_proj * vec4<f32>(corner, 1.0);
+        // clip.w = view-space forward distance; <= 0 means the bound straddles/behind the near
+        // plane, where the perspective projection is unreliable -> don't cull.
+        if (clip.w <= 1.0e-4) {
+            return false;
+        }
+        // view_proj is the FORWARD projection (near->0, far->1); the pipelines apply
+        // frame.wgsl reverse_z (z = w - z) before rasterizing, so the depth buffer + Hi-Z store
+        // reversed-Z. Match that exactly here (z/w would compare forward depth against a reversed
+        // Hi-Z — the whole scene reads "not occluded"). This is NOT visible to the frustum cull
+        // (which only uses x/y/w), so it must be applied specifically here.
+        let uv = vec2<f32>(clip.x / clip.w * 0.5 + 0.5, clip.y / clip.w * -0.5 + 0.5);
+        let depth = (clip.w - clip.z) / clip.w; // reverse_z, matching the depth buffer
+        uv_min = min(uv_min, uv);
+        uv_max = max(uv_max, uv);
+        depth_near = max(depth_near, depth);
+    }
+    // Clamp the screen rect to the viewport rather than bailing on any overhang: the off-screen
+    // part of the bound is frustum-clipped and never rasterized, so testing only the ON-screen
+    // extent is still correct — and it recovers the (large) set of edge-poking objects that a
+    // full-viewport view otherwise leaves undrawn-but-uncalled. depth_near stays computed from ALL
+    // 8 corners (incl. off-screen ones), which only makes culling MORE conservative (the nearest
+    // corner is the hardest to be behind an occluder), never over-culls. A clamped-edge texel that
+    // is a hole (sky) just keeps the object. (The near-plane bail above is still mandatory — a
+    // bound crossing the near plane can't be projected at all.)
+    uv_min = clamp(uv_min, vec2<f32>(0.0), vec2<f32>(1.0));
+    uv_max = clamp(uv_max, vec2<f32>(0.0), vec2<f32>(1.0));
+    // Mip whose texel spans the rect (rect <= ~1 texel wide at that level, so the 2x2 below
+    // covers it). ceil(log2(max screen extent in texels)).
+    let extent = (uv_max - uv_min) * cull.viewport;
+    let max_px = max(extent.x, extent.y);
+    var mip = 0;
+    if (max_px > 1.0) {
+        mip = i32(ceil(log2(max_px)));
+    }
+    mip = clamp(mip, 0, i32(cull.hiz_mips) - 1);
+    let mip_dims = vec2<f32>(max(cull.viewport / exp2(f32(mip)), vec2<f32>(1.0, 1.0)));
+    let maxc = vec2<i32>(mip_dims) - vec2<i32>(1, 1);
+    // Sample the four rect corners at this mip (up to a 2x2 block); min = farthest occluder.
+    let c0 = clamp(vec2<i32>(uv_min * mip_dims), vec2<i32>(0), maxc);
+    let c1 = clamp(vec2<i32>(vec2<f32>(uv_max.x, uv_min.y) * mip_dims), vec2<i32>(0), maxc);
+    let c2 = clamp(vec2<i32>(vec2<f32>(uv_min.x, uv_max.y) * mip_dims), vec2<i32>(0), maxc);
+    let c3 = clamp(vec2<i32>(uv_max * mip_dims), vec2<i32>(0), maxc);
+    var far = textureLoad(hiz, c0, mip).r;
+    far = min(far, textureLoad(hiz, c1, mip).r);
+    far = min(far, textureLoad(hiz, c2, mip).r);
+    far = min(far, textureLoad(hiz, c3, mip).r);
+    // Reversed-Z: occluded when the sphere's nearest point is still behind (smaller reversed-Z
+    // than) the farthest occluder covering the whole rect.
+    return depth_near < far;
+}
+
+// Frustum + distance + LOD only (prepass / occluder set, and every shadow cascade). No Hi-Z.
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= cull.instance_count) {
+        return;
+    }
+    let res = classify(idx);
+    if (res.culled) {
+        return;
+    }
+    emit(idx, res.level);
+}
+
+// Frustum + distance + LOD + Hi-Z occlusion (color pass only). Same compaction; the occlusion
+// test drops instances fully hidden by the depth-prepass occluders (terrain + drawn objects).
+@compute @workgroup_size(64)
+fn main_occlude(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let idx = gid.x;
+    if (idx >= cull.instance_count) {
+        return;
+    }
+    let res = classify(idx);
+    if (res.culled) {
+        return;
+    }
+    if (cull.occlusion != 0u && occluded(res.center, res.radius)) {
+        return;
+    }
+    emit(idx, res.level);
 }

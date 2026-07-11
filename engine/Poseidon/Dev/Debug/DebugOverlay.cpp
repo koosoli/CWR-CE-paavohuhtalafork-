@@ -1820,10 +1820,21 @@ void DrawCullingTab()
     ImGui::SetItemTooltip("Green wireframe of each retained instance's frustum-cull sphere "
                           "(centre = Object Position, radius = GetRadius), drawn on top of the "
                           "scene. Shows whether a sphere sits on its object and how high it floats.");
-    changed |= ImGui::Checkbox("Disable frustum cull", &s.disableFrustum);
-    ImGui::SetItemTooltip("Skip the GPU frustum test entirely. If objects that vanish at certain "
-                          "pitches stop vanishing with this on, the frustum cull is the cause; if "
-                          "they still vanish, the cull is innocent and it's the draw/LOD path.");
+    // Shown as "Enable" (checked = on, like the occlusion toggle below) for a coherent tab; the
+    // stored flag is still disableFrustum, so invert around the checkbox.
+    bool enableFrustum = !s.disableFrustum;
+    if (ImGui::Checkbox("Enable frustum culling", &enableFrustum))
+    {
+        s.disableFrustum = !enableFrustum;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("GPU frustum test. Turn OFF to draw everything in range: if objects that "
+                          "vanish at certain pitches reappear with this off, the frustum cull is the "
+                          "cause; if they still vanish, the cull is innocent and it's the draw/LOD path.");
+    changed |= ImGui::Checkbox("Enable occlusion culling", &s.occlusion);
+    ImGui::SetItemTooltip("Cull retained objects hidden behind the depth-prepass occluders "
+                          "(terrain + drawn objects) via a Hi-Z depth pyramid. When on, the "
+                          "engine's built-in software occlusion is disabled (GPU Hi-Z replaces it).");
 
     ImGui::Separator();
     if (ImGui::Button("Dump nearby instances to log"))

@@ -12,7 +12,9 @@ use glam::{Mat4, Vec3, Vec4};
 
 // --- GPU buffer layouts (the CPU side of the structs in cull.wgsl) ---
 
-// Per-frame cull parameters (one uniform). 144 bytes, 16-aligned.
+// Per-frame cull parameters (one uniform). 224 bytes, 16-aligned. The occlusion tail
+// (view_proj/viewport/hiz_mips/occlusion) is read only by main_occlude; the plain `main`
+// entry ignores it, so main/shadow views leave it zeroed.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct CullParamsGpu {
@@ -28,6 +30,12 @@ pub struct CullParamsGpu {
     pub variant_count: u32,
     // Debug flags (bit 0 = skip the frustum test, WGR_CULL_NO_FRUSTUM); read by cull.wgsl.
     pub debug_flags: u32,
+    // Occlusion (main_occlude only). Camera-relative proj*view projecting a camera-relative
+    // point to clip, plus the Hi-Z size/mip count and the enable flag.
+    pub view_proj: [[f32; 4]; 4],
+    pub viewport: [f32; 2],
+    pub hiz_mips: u32,
+    pub occlusion: u32,
 }
 
 // One retained instance. `world` is the ABSOLUTE model->world transform (the GPU-driven VS
@@ -267,6 +275,22 @@ pub struct CullState {
     // Per-cascade shadow views (§6 multi-view). Length = active cascade count this frame
     // (set by set_shadow_view_count); each shares the tables/instances above.
     shadow_views: Vec<ShadowCullView>,
+
+    // Color-pass occlusion view (§5 Hi-Z). Same retained tables/instances, its own params
+    // (occlusion tail) + args/records/counters, run by the `main_occlude` pipeline against the
+    // Hi-Z. Its args feed the color draw; the main view's args stay the prepass/occluder set.
+    occlude_pipeline: wgpu::ComputePipeline,
+    occlude_layout: wgpu::BindGroupLayout,
+    color_params_buf: wgpu::Buffer,
+    color_counter_buf: wgpu::Buffer,
+    color_out_args: Option<wgpu::Buffer>,
+    color_out_records: Option<wgpu::Buffer>,
+    color_out_args_cap: u64,
+    color_params: CullParamsGpu,
+    color_bind: Option<wgpu::BindGroup>,
+    // Full-chain Hi-Z view the color bind samples (cloned from Gfx3d's HiZ when it (re)allocs).
+    // The color view is only prepared when this is Some.
+    hiz_view: Option<wgpu::TextureView>,
 }
 
 impl CullState {
@@ -328,6 +352,54 @@ impl CullState {
             cache: None,
         });
 
+        // Color-occlusion layout = the main 0..=7 bindings + binding 8 = the Hi-Z pyramid
+        // (non-filterable float, sampled by textureLoad). Only main_occlude references it.
+        let occlude_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_cull_occlude_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                storage(1, true),
+                storage(2, true),
+                storage(3, true),
+                storage(4, true),
+                storage(5, false),
+                storage(6, false),
+                storage(7, false),
+                wgpu::BindGroupLayoutEntry {
+                    binding: 8,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let occlude_pl_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgr_cull_occlude_pipeline_layout"),
+            bind_group_layouts: &[Some(&occlude_layout)],
+            immediate_size: 0,
+        });
+        let occlude_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("wgr_cull_occlude_pipeline"),
+            layout: Some(&occlude_pl_layout),
+            module: &module,
+            entry_point: Some("main_occlude"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+
         let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_cull_params"),
             size: Self::PARAMS_SIZE,
@@ -337,6 +409,20 @@ impl CullState {
 
         let counter_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_cull_counters"),
+            size: CULL_VARIANT_COUNT as u64 * 4,
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::INDIRECT
+                | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let color_params_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_cull_color_params"),
+            size: Self::PARAMS_SIZE,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let color_counter_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_cull_color_counters"),
             size: CULL_VARIANT_COUNT as u64 * 4,
             usage: wgpu::BufferUsages::STORAGE
                 | wgpu::BufferUsages::INDIRECT
@@ -372,6 +458,16 @@ impl CullState {
             debug_flags: if std::env::var("WGR_CULL_NO_FRUSTUM").is_ok() { 1 } else { 0 },
             bind: None,
             shadow_views: Vec::new(),
+            occlude_pipeline,
+            occlude_layout,
+            color_params_buf,
+            color_counter_buf,
+            color_out_args: None,
+            color_out_records: None,
+            color_out_args_cap: 0,
+            color_params: CullParamsGpu::zeroed(),
+            color_bind: None,
+            hiz_view: None,
         }
     }
 
@@ -460,6 +556,21 @@ impl CullState {
     pub fn set_params(&mut self, mut params: CullParamsGpu) {
         params.debug_flags = self.debug_flags;
         self.params = params;
+    }
+
+    // Set the color-pass occlusion view's params (frustum/LOD + the occlusion tail). Only used
+    // when occlusion is active; instance_count/variant fields are filled by prepare().
+    pub fn set_color_params(&mut self, mut params: CullParamsGpu) {
+        params.debug_flags = self.debug_flags;
+        self.color_params = params;
+    }
+
+    // Point the color view's occlusion bind at the current Hi-Z pyramid (cloned full-chain
+    // view), or clear it (None) when occlusion is off / the pyramid is gone. Forces a color-bind
+    // rebuild on the next prepare().
+    pub fn set_hiz(&mut self, view: Option<wgpu::TextureView>) {
+        self.hiz_view = view;
+        self.color_bind = None;
     }
 
     // Grow/shrink the shadow-cascade view set to `n` (0 = no GPU shadow culling this frame).
@@ -595,6 +706,26 @@ impl CullState {
                 self.shadow_views[i].bind = bind;
             }
         }
+
+        // Color-occlusion view (§5): only prepared when a Hi-Z view is set (occlusion active).
+        // Its args feed the color draw; the main-view args stay the prepass/occluder set.
+        if self.hiz_view.is_some() {
+            let color_grew = ensure_view_outputs(
+                device,
+                self.variant_capacity,
+                &mut self.color_out_args,
+                &mut self.color_out_records,
+                &mut self.color_out_args_cap,
+            );
+            grew |= color_grew;
+            finalize(&mut self.color_params);
+            queue.write_buffer(&self.color_params_buf, 0, bytemuck::bytes_of(&self.color_params));
+            if shared_grew || color_grew || self.color_bind.is_none() {
+                self.rebuild_color_bind(device);
+            }
+        } else {
+            self.color_bind = None;
+        }
         grew
     }
 
@@ -604,6 +735,38 @@ impl CullState {
             return;
         };
         self.bind = self.build_view_bind(device, &self.params_buf, args, &self.counter_buf, records);
+    }
+
+    // Build the color-occlusion bind (occlude_layout): the color view's own params/args/
+    // counters/records + the SHARED retained tables + the Hi-Z pyramid at binding 8.
+    fn rebuild_color_bind(&mut self, device: &wgpu::Device) {
+        let (Some(args), Some(records), Some(hiz), Some(inst), Some(models), Some(lods), Some(sections)) = (
+            self.color_out_args.as_ref(),
+            self.color_out_records.as_ref(),
+            self.hiz_view.as_ref(),
+            self.instance_buf.buf.as_ref(),
+            self.model_buf.buf.as_ref(),
+            self.lod_buf.buf.as_ref(),
+            self.section_buf.buf.as_ref(),
+        ) else {
+            self.color_bind = None;
+            return;
+        };
+        self.color_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_cull_color_bind"),
+            layout: &self.occlude_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: self.color_params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 1, resource: inst.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 2, resource: models.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 3, resource: lods.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 4, resource: sections.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 5, resource: args.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 6, resource: self.color_counter_buf.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 7, resource: records.as_entire_binding() },
+                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(hiz) },
+            ],
+        }));
     }
 
     // Record the cull dispatch: zero the counters + out_args (so unfilled arg slots stay
@@ -652,6 +815,46 @@ impl CullState {
         cp.set_pipeline(&self.pipeline);
         cp.set_bind_group(0, bind, &[]);
         cp.dispatch_workgroups(self.params.instance_count.div_ceil(64), 1, 1);
+    }
+
+    // Record the color-occlusion cull dispatch (main_occlude): frustum + distance + LOD + Hi-Z.
+    // MUST be recorded AFTER the Hi-Z build (which reads this frame's prepass depth) and before
+    // the color pass reads color_out_args. No-op unless prepare() set up the color bind (Hi-Z
+    // present / occlusion active) and there are instances.
+    pub fn dispatch_color(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.params.instance_count == 0 {
+            return;
+        }
+        let (Some(bind), Some(args)) = (self.color_bind.as_ref(), self.color_out_args.as_ref()) else {
+            return;
+        };
+        encoder.clear_buffer(&self.color_counter_buf, 0, None);
+        encoder.clear_buffer(args, 0, None);
+        let mut cp = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("wgr_cull_color"),
+            timestamp_writes: None,
+        });
+        cp.set_pipeline(&self.occlude_pipeline);
+        cp.set_bind_group(0, bind, &[]);
+        cp.dispatch_workgroups(self.params.instance_count.div_ceil(64), 1, 1);
+    }
+
+    // Whether the color-occlusion view is live this frame (Hi-Z bound + params uploaded). The
+    // color draw reads color_out_args/records only when this holds; else it reuses the main view.
+    pub fn color_active(&self) -> bool {
+        self.color_bind.is_some()
+    }
+
+    pub fn color_out_args(&self) -> Option<&wgpu::Buffer> {
+        self.color_out_args.as_ref()
+    }
+
+    pub fn color_out_records(&self) -> Option<&wgpu::Buffer> {
+        self.color_out_records.as_ref()
+    }
+
+    pub fn color_counter_buf(&self) -> &wgpu::Buffer {
+        &self.color_counter_buf
     }
 
     // Cascade `i`'s compute outputs, consumed by the GPU-driven shadow depth draw
@@ -800,6 +1003,28 @@ pub fn params_from_camera(view: Mat4, proj: Mat4, cam_pos: Vec3, inputs: CullInp
     p.lod_scale = inputs.lod_scale;
     p.lod_inv_width = inputs.lod_inv_width;
     p.pixel_limit = inputs.pixel_limit;
+    p
+}
+
+// Build the COLOR-pass cull params: the same frustum/distance/LOD as the main view (so the
+// occluded set is a subset of the prepass set) plus the occlusion tail — the camera-relative
+// proj*view (projects a camera-relative bound to clip), the Hi-Z size/mip count, and the enable
+// flag. `viewport` is the Hi-Z mip0 size in texels (= render target size).
+#[allow(clippy::too_many_arguments)]
+pub fn params_from_camera_occlude(
+    view: Mat4,
+    proj: Mat4,
+    cam_pos: Vec3,
+    inputs: CullInputs,
+    viewport: [f32; 2],
+    hiz_mips: u32,
+    occlusion: bool,
+) -> CullParamsGpu {
+    let mut p = params_from_camera(view, proj, cam_pos, inputs);
+    p.view_proj = (proj * view).to_cols_array_2d();
+    p.viewport = viewport;
+    p.hiz_mips = hiz_mips;
+    p.occlusion = u32::from(occlusion);
     p
 }
 
@@ -1524,5 +1749,138 @@ mod tests {
         let recs = read_u32s(&device, &queue, cull.shadow_out_records(0).unwrap(), slots * 2);
         assert_eq!(recs[rec_slot as usize * 2], front, "shadow record.instance == front slot");
         assert_eq!(recs[rec_slot as usize * 2 + 1], 1, "shadow record.section == LOD1 section id");
+    }
+
+    #[test]
+    fn hiz_wgsl_validates() {
+        let module =
+            naga::front::wgsl::parse_str(include_str!("hiz.wgsl")).expect("hiz.wgsl parse");
+        naga::valid::Validator::new(
+            naga::valid::ValidationFlags::all(),
+            naga::valid::Capabilities::all(),
+        )
+        .validate(&module)
+        .expect("hiz.wgsl validate");
+    }
+
+    // A constant-value Hi-Z pyramid (all mips filled with `value`), so whichever mip the
+    // occlusion test picks reads the same depth — lets the test drive the reversed-Z comparison
+    // deterministically without a real depth reduction.
+    fn const_hiz(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, value: f32) -> wgpu::TextureView {
+        let mips = 32 - w.max(h).max(1).leading_zeros();
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("test_hiz"),
+            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            mip_level_count: mips,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::R32Float,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        for m in 0..mips {
+            let mw = (w >> m).max(1);
+            let mh = (h >> m).max(1);
+            let data = vec![value; (mw * mh) as usize];
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &tex,
+                    mip_level: m,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                bytemuck::cast_slice(&data),
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(mw * 4),
+                    rows_per_image: Some(mh),
+                },
+                wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: 1 },
+            );
+        }
+        tex.create_view(&wgpu::TextureViewDescriptor::default())
+    }
+
+    // End-to-end color-occlusion cull (main_occlude): one on-screen instance, run twice against a
+    // constant Hi-Z. A FAR pyramid (reversed-Z 0 = nothing in front) must NOT occlude it; a NEAR
+    // pyramid (reversed-Z 1 = a wall right in front, min-reduced) MUST. This pins the reversed-Z
+    // min-comparison direction — the headline hazard: swap it and it culls everything or nothing.
+    #[test]
+    #[allow(deprecated)] // glam look_at_rh / perspective_infinite_reverse_rh, test-only
+    fn color_occlusion_end_to_end() {
+        let Some((device, queue)) = headless() else {
+            return;
+        };
+        let mut cull = CullState::new(&device);
+
+        let sections = [SectionGpu { first_index: 0, index_count: 3, base_vertex: 0, variant: 0 }];
+        let lods = [LodGpu { resolution: 0.0, section_base: 0, section_count: 1, is_decal: 0 }];
+        let materials = [SectionMaterialGpu::zeroed(); 1];
+        let model = cull.register_model(1.0, &lods, &sections, &materials);
+        cull.instance_add(InstanceGpu {
+            world: Mat4::IDENTITY.to_cols_array(),
+            center: [0.0, 0.0, 0.0, 1.0], // at the look-at target: centred on screen
+            model,
+            flags: 0,
+            cull_radius: 0,
+            _pad: 0,
+            conform0: [0.0; 4],
+            conform1: [0.0; 4],
+            conform2: [0.0; 4],
+        });
+
+        let eye = Vec3::new(0.0, 0.0, 10.0);
+        let mut view = Mat4::look_at_rh(eye, Vec3::ZERO, Vec3::Y);
+        view.w_axis = Vec4::new(0.0, 0.0, 0.0, 1.0);
+        // FORWARD projection (near->0, far->1), matching the engine: the pipelines apply
+        // frame.wgsl reverse_z (z = w - z) in-shader, so occluded() must too. Using a reversed
+        // projection here would hide a missing reverse_z in the occlusion test (the original bug).
+        let proj = Mat4::perspective_rh(60f32.to_radians(), 1.0, 0.1, 1000.0);
+        let mut main = CullParamsGpu::zeroed();
+        main.frustum = frustum_planes(proj * view);
+        main.cam_pos = [eye.x, eye.y, eye.z, 0.0];
+        main.objects_z2 = 1.0e6;
+        main.lod_scale = 1.0;
+        main.lod_inv_width = 1.0;
+        main.pixel_limit = 0.0;
+        cull.set_params(main);
+        let inputs = CullInputs { objects_z: 1000.0, lod_scale: 1.0, lod_inv_width: 1.0, pixel_limit: 0.0 };
+
+        let live_color_count = |cull: &CullState| -> usize {
+            let words = super::ARG_WORDS;
+            let total = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64 * words;
+            let raw = read_u32s(&device, &queue, cull.color_out_args().unwrap(), total);
+            raw.chunks_exact(words as usize).filter(|a| a[1] != 0).count()
+        };
+
+        // FAR Hi-Z (reversed-Z 0 everywhere): nothing occludes -> the instance draws.
+        cull.set_hiz(Some(const_hiz(&device, &queue, 64, 64, 0.0)));
+        cull.set_color_params(params_from_camera_occlude(view, proj, eye, inputs, [64.0, 64.0], 7, true));
+        cull.prepare(&device, &queue);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        cull.dispatch_color(&mut enc);
+        queue.submit(std::iter::once(enc.finish()));
+        assert_eq!(live_color_count(&cull), 1, "FAR Hi-Z must not occlude the visible instance");
+
+        // NEAR Hi-Z (reversed-Z 1 everywhere): a wall right in front -> the instance is occluded.
+        cull.set_hiz(Some(const_hiz(&device, &queue, 64, 64, 1.0)));
+        cull.set_color_params(params_from_camera_occlude(view, proj, eye, inputs, [64.0, 64.0], 7, true));
+        cull.prepare(&device, &queue);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        cull.dispatch_color(&mut enc);
+        queue.submit(std::iter::once(enc.finish()));
+        assert_eq!(live_color_count(&cull), 0, "NEAR Hi-Z must occlude the instance");
+
+        // MID Hi-Z (reversed-Z 0.5 = a mid-depth wall). The instance sits near the far end
+        // (distance 10, near 0.1 -> reversed depth ~0.01), so a mid-depth occluder is IN FRONT of
+        // it -> occluded. This is the discriminating case for the reverse_z remap: without it the
+        // test would use the FORWARD depth (~0.99), read 0.99 < 0.5 = false, and wrongly draw.
+        cull.set_hiz(Some(const_hiz(&device, &queue, 64, 64, 0.5)));
+        cull.set_color_params(params_from_camera_occlude(view, proj, eye, inputs, [64.0, 64.0], 7, true));
+        cull.prepare(&device, &queue);
+        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        cull.dispatch_color(&mut enc);
+        queue.submit(std::iter::once(enc.finish()));
+        assert_eq!(live_color_count(&cull), 0, "a mid-depth occluder must hide the far instance (reverse_z)");
     }
 }

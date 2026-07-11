@@ -12,6 +12,9 @@ use pool::{GeometryPool, MeshAlloc};
 #[allow(dead_code)]
 mod cull;
 
+// Hi-Z depth pyramid for GPU-driven occlusion culling (docs/gpu-culling-and-depth-plan.md §5).
+mod hiz;
+
 use crate::ffi::{
     DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE, WgrBlend, WgrCamera,
     WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrInstance, WgrLight, WgrMat4, WgrMeshVertex,
@@ -988,6 +991,15 @@ pub struct Gfx3d {
     // target; the prepass' one colour attachment. Sampled by no consumer yet (Stage 1).
     normal: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_size: (u32, u32),
+    // Depth-aspect view of the depth target (Depth24PlusStencil8 needs an explicit DepthOnly
+    // aspect to sample), fed to the Hi-Z copy pass. Rebuilt with the depth target.
+    depth_sample_view: Option<wgpu::TextureView>,
+    // Hi-Z depth pyramid + GPU-driven occlusion cull toggle (docs §5). The pyramid is built
+    // from the post-prepass depth; the color-pass cull samples it. occlusion_enabled gates the
+    // whole path (env WGR_GPU_OCCLUSION + ImGui Culling tab); when off, the color pass reuses
+    // the main frustum-cull args (identical to the pre-occlusion behaviour).
+    hiz: hiz::HiZ,
+    occlusion_enabled: bool,
 
     shadow_pass_ubo: DynUbo, // one ShadowPassUbo per cascade
     // Per-caster data as one whole-buffer storage array (indexed by base_instance),
@@ -1086,6 +1098,10 @@ pub struct Gfx3d {
     gpu_shadow_pipeline: wgpu::RenderPipeline,
     gpu_group1_layout: wgpu::BindGroupLayout,
     gpu_group1_bind: Option<wgpu::BindGroup>,
+    // Color-pass draw bind (instances + the OCCLUSION view's records + materials). Same layout
+    // as gpu_group1_bind, only the records differ (the occlusion-culled color set vs the main
+    // prepass set). None when occlusion is off; then the color draw reuses gpu_group1_bind.
+    gpu_color_group1_bind: Option<wgpu::BindGroup>,
     // Per-cascade group-1 draw binds (instances + THAT cascade's records + materials). Parallel
     // to the cull's shadow views; rebuilt with gpu_group1_bind when a shared buffer grows.
     gpu_shadow_group1: Vec<Option<wgpu::BindGroup>>,
@@ -1423,6 +1439,13 @@ impl Gfx3d {
             depth: None,
             normal: None,
             depth_size: (0, 0),
+            gpu_color_group1_bind: None,
+            depth_sample_view: None,
+            hiz: hiz::HiZ::new(device),
+            // GPU Hi-Z occlusion: default on when GPU-driven is on (the point of this feature),
+            // opt-out via WGR_GPU_OCCLUSION=0; also toggleable live from the ImGui Culling tab.
+            occlusion_enabled: gpu_driven_enabled
+                && std::env::var("WGR_GPU_OCCLUSION").map(|v| v != "0").unwrap_or(true),
             shadow_pass_ubo,
             shadow_caster_ssbo,
             shadow_plan: Vec::new(),
@@ -2080,10 +2103,17 @@ impl Gfx3d {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+            // TEXTURE_BINDING so the Hi-Z copy pass can sample the depth aspect (occlusion §5).
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // Depth-aspect view for sampling (Depth24PlusStencil8 must pick an aspect explicitly).
+        self.depth_sample_view = Some(texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("wgr_3d_depth_sample"),
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        }));
         self.depth = Some((texture, view));
         // View-space normal G-buffer, matched to the depth size. TEXTURE_BINDING now
         // (harmless) so Stage 2 can expose it to SSAO without a realloc.
@@ -2104,6 +2134,8 @@ impl Gfx3d {
         let normal_view = normal.create_view(&wgpu::TextureViewDescriptor::default());
         self.normal = Some((normal, normal_view));
         self.depth_size = size;
+        // The Hi-Z pyramid tracks this size; (re)allocated in prepare_cull (gated on occlusion
+        // being active) so a live toggle picks up the current size without a resize.
     }
 
     pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
@@ -3578,6 +3610,25 @@ impl Gfx3d {
         let cam_pos = glam::Vec3::new(cam.cam_pos[0], cam.cam_pos[1], cam.cam_pos[2]);
         self.cull
             .set_params(cull::params_from_camera(view, proj, cam_pos, self.cull_inputs));
+        // Color-pass Hi-Z occlusion view (§5): (re)size the pyramid to the depth target and set
+        // the color params (same frustum/LOD as the main view + the occlusion tail). set_hiz(None)
+        // when off leaves color_active() false, so the color draw falls back to the main args.
+        if self.occlusion_enabled {
+            let (vw, vh) = self.depth_size;
+            self.hiz.ensure(device, vw, vh);
+            self.cull.set_hiz(self.hiz.view().cloned());
+            self.cull.set_color_params(cull::params_from_camera_occlude(
+                view,
+                proj,
+                cam_pos,
+                self.cull_inputs,
+                [vw as f32, vh as f32],
+                self.hiz.mips(),
+                true,
+            ));
+        } else {
+            self.cull.set_hiz(None);
+        }
         // Shadow-cascade cull views (§6 multi-view): one per active cascade, each culling the
         // retained scene against that cascade's light frustum (LOD from the main view). The GPU
         // then casts survivors into the cascade depth map (draw_gpu_driven_shadow). count = 0
@@ -3603,6 +3654,7 @@ impl Gfx3d {
             self.cull.section_material_buf(),
         ) else {
             self.gpu_group1_bind = None;
+            self.gpu_color_group1_bind = None;
             self.cull_debug_bind = None;
             return;
         };
@@ -3624,6 +3676,20 @@ impl Gfx3d {
                 },
             ],
         }));
+        // Color-pass draw bind: instances + the occlusion view's records + shared materials.
+        // Only when the color view is live (occlusion active); else the color draw reuses the
+        // main bind. Same layout as gpu_group1_bind.
+        self.gpu_color_group1_bind = self.cull.color_out_records().map(|crec| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wgr_gpu_driven_color_group1_bind"),
+                layout: &self.gpu_group1_layout,
+                entries: &[
+                    wgpu::BindGroupEntry { binding: 0, resource: inst.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 1, resource: crec.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 2, resource: mat.as_entire_binding() },
+                ],
+            })
+        });
         // Cull-sphere debug bind (instances + models) — rebuilt on the same buffer-growth signal.
         self.cull_debug_bind = self.cull.model_buf().map(|models| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -3699,6 +3765,40 @@ impl Gfx3d {
         self.cull.dispatch(encoder);
     }
 
+    // Whether the color-pass Hi-Z occlusion path is live this frame: GPU-driven on, occlusion
+    // enabled, and the color cull view prepared (Hi-Z bound). When false the color draw reuses
+    // the main frustum-cull args. Consulted by lib.rs to gate the Hi-Z build + color dispatch.
+    pub fn occlusion_active(&self) -> bool {
+        self.gpu_driven_enabled && self.occlusion_enabled && self.cull.color_active()
+    }
+
+    // Runtime toggle (ImGui Culling tab / WGR_GPU_OCCLUSION): enable/disable GPU Hi-Z occlusion.
+    // Takes effect next frame (prepare_cull (re)allocates or drops the color view).
+    pub fn set_occlusion_enabled(&mut self, enabled: bool) {
+        self.occlusion_enabled = enabled;
+    }
+
+    // Build this frame's Hi-Z pyramid from the post-prepass depth (§5). Recorded AFTER the depth
+    // prepass render pass closes and BEFORE cull_dispatch_color. No-op unless occlusion is active.
+    pub fn build_hiz(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder) {
+        if !self.occlusion_active() {
+            return;
+        }
+        let Some(depth) = self.depth_sample_view.as_ref() else {
+            return;
+        };
+        self.hiz.build(device, encoder, depth);
+    }
+
+    // Record the color-pass occlusion cull (main_occlude), reading this frame's Hi-Z. Recorded
+    // after build_hiz and before the color pass. No-op unless occlusion is active.
+    pub fn cull_dispatch_color(&self, encoder: &mut wgpu::CommandEncoder) {
+        if !self.occlusion_active() {
+            return;
+        }
+        self.cull.dispatch_color(encoder);
+    }
+
     // Record one cull dispatch per active shadow cascade (§6 multi-view), producing each
     // cascade's depth-pass indirect args. Recorded before render_shadow_passes so wgpu barriers
     // the compute writes -> the depth pass's indirect reads. No-op when GPU-driven is off.
@@ -3764,43 +3864,65 @@ impl Gfx3d {
     // variant partition over the compute-produced indirect args. `cam_off` selects the
     // camera UBO slot (as in draw_one). Bound once; the pool buffers are shared. No-op until
     // the retained scene has data (empty args are instance_count = 0 no-op draws).
-    // GPU-driven opaque COLOUR draw (fs_gpu). See draw_gpu_driven_impl.
+    // GPU-driven opaque COLOUR draw (fs_gpu). Uses the OCCLUSION-culled color args when the Hi-Z
+    // path is active this frame, else the main frustum-cull args (identical pre-occlusion
+    // behaviour). See draw_gpu_driven_impl.
     pub fn draw_gpu_driven(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         textures: &SharedTextures,
         cam_off: u32,
     ) {
-        self.draw_gpu_driven_impl(pass, textures, cam_off, &self.gpu_pipeline);
+        let (args, group1, counters) = if self.occlusion_active() {
+            (
+                self.cull.color_out_args(),
+                self.gpu_color_group1_bind.as_ref(),
+                self.cull.color_counter_buf(),
+            )
+        } else {
+            (self.cull.out_args(), self.gpu_group1_bind.as_ref(), self.cull.counter_buf())
+        };
+        self.draw_gpu_driven_impl(pass, textures, cam_off, &self.gpu_pipeline, args, group1, counters);
     }
 
-    // GPU-driven depth+normal PREPASS draw (fs_gpu_prepass): same cull args, writes depth + the
-    // view-space normal G-buffer so the GPU-driven set participates in the prepass (SSAO
-    // normals, early-Z) instead of being colour-pass only. Recorded in the prepass render pass.
+    // GPU-driven depth+normal PREPASS draw (fs_gpu_prepass): the MAIN (frustum-only, occluder)
+    // args — the prepass generates the depth the Hi-Z is built from, so it must draw the full
+    // in-frustum set, never the occlusion-culled subset. Writes depth + the view-space normal
+    // G-buffer so the GPU-driven set participates in the prepass (SSAO normals, early-Z).
     pub fn draw_gpu_driven_prepass(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         textures: &SharedTextures,
         cam_off: u32,
     ) {
-        self.draw_gpu_driven_impl(pass, textures, cam_off, &self.gpu_prepass_pipeline);
+        self.draw_gpu_driven_impl(
+            pass,
+            textures,
+            cam_off,
+            &self.gpu_prepass_pipeline,
+            self.cull.out_args(),
+            self.gpu_group1_bind.as_ref(),
+            self.cull.counter_buf(),
+        );
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn draw_gpu_driven_impl(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         textures: &SharedTextures,
         cam_off: u32,
         pipeline: &wgpu::RenderPipeline,
+        args: Option<&wgpu::Buffer>,
+        group1: Option<&wgpu::BindGroup>,
+        counters: &wgpu::Buffer,
     ) {
         if !self.gpu_driven_enabled {
             return;
         }
-        let (Some(camera_bind), Some(group1), Some(args)) = (
-            self.cameras.bind.as_ref(),
-            self.gpu_group1_bind.as_ref(),
-            self.cull.out_args(),
-        ) else {
+        let (Some(camera_bind), Some(group1), Some(args)) =
+            (self.cameras.bind.as_ref(), group1, args)
+        else {
             return;
         };
         pass.set_pipeline(pipeline);
@@ -3819,7 +3941,6 @@ impl Gfx3d {
             // Trim the no-op tail: draw min(counter[v], cap) sub-draws per variant, the GPU
             // count buffer supplying the actual survivor count (3b-4). Avoids dispatching the
             // full conservative capacity of instance_count = 0 no-ops each frame.
-            let counters = self.cull.counter_buf();
             for v in 0..cull::CULL_VARIANT_COUNT {
                 let offset = v as u64 * cap as u64 * INDIRECT_ARG_SIZE;
                 pass.multi_draw_indexed_indirect_count(args, offset, counters, v as u64 * 4, cap);

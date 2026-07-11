@@ -780,11 +780,13 @@ extern "C"
      * GPU-driven rendering is enabled. Call every frame with the current state. */
     WGR_API void wgr_set_suppress_world_objects(WgrRenderer* renderer, bool suppress);
 
-    /* Debug toggles for the GPU-driven cull (ImGui Culling tab): `draw_spheres` renders the
-     * per-instance frustum-cull sphere wireframes on top of the scene; `no_frustum` skips the
-     * GPU frustum test entirely (a "is the cull dropping it?" discriminator). No-op unless
-     * GPU-driven rendering is enabled. */
-    WGR_API void wgr_set_cull_debug(WgrRenderer* renderer, bool draw_spheres, bool no_frustum);
+    /* Debug/feature toggles for the GPU-driven cull (ImGui Culling tab): `draw_spheres` renders
+     * the per-instance frustum-cull sphere wireframes on top of the scene; `no_frustum` skips the
+     * GPU frustum test entirely (a "is the cull dropping it?" discriminator); `occlusion` enables
+     * GPU Hi-Z occlusion culling (docs/gpu-culling-and-depth-plan.md §5 — the color pass draws
+     * only the retained objects not hidden by the depth-prepass occluders). No-op unless GPU-driven
+     * rendering is enabled. */
+    WGR_API void wgr_set_cull_debug(WgrRenderer* renderer, bool draw_spheres, bool no_frustum, bool occlusion);
 
     /* Upload (or replace) the terrain heightmap: `heights` is
      * params->hm_width * params->hm_height row-major world-height floats (row 0 =
