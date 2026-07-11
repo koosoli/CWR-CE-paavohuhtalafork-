@@ -21,6 +21,17 @@ struct TerrainParams {
     hm_height: u32,
     land_range: u32,
     data_scale: f32,
+    // Coast wet band (Stage 2c). sea_level + time (+ swash) move the damp intertidal line with
+    // the water's edge; wet_height = m above the swash-moved sea level the band reaches;
+    // wet_darken = albedo multiplier in the band (1 = off).
+    sea_level: f32,
+    time: f32,
+    swash_speed: f32,
+    swash_amp: f32,
+    wet_height: f32,
+    wet_darken: f32,
+    _pad0: f32,
+    _pad1: f32,
 };
 
 // Must match GRID_N in terrain/mod.rs.
@@ -258,6 +269,16 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     let lit = smoothstep(sm.r - sm.g, sm.r + sm.g + 1e-3, world_y);
     let terrain_s = clamp(sm.b * (1.0 - lit), 0.0, 1.0) * in.fog;
     let shadow = max(csm_s, terrain_s);
+
+    // Coast wet band: near-flat terrain around the (swash-moved) sea level reads as damp sand —
+    // darker albedo — strongest at the waterline, fading out over wet_height metres. Keyed on
+    // the SAME sea level + swash the water uses, so the wet line registers with the water's edge.
+    // Slope-gated by n.y so cliffs/steep coast stay dry. Cosmetic; zero gameplay impact.
+    let sea_ref = tp.sea_level + sin(6.2831853 * tp.time * tp.swash_speed) * tp.swash_amp;
+    let above_sea = world_y - sea_ref;
+    let flat = smoothstep(0.55, 0.85, n.y);
+    let wet = flat * (1.0 - smoothstep(0.0, tp.wet_height, above_sea));
+    rgb *= mix(1.0, tp.wet_darken, wet);
 
     // A shadow removes the direct sun (the N.L diffuse term); sky ambient and the
     // local point/spot lamps survive, so shadowed terrain settles to the ambient

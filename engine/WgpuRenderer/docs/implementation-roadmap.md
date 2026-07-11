@@ -2,9 +2,17 @@
 
 **Repo:** `paavohuhtala/CWR-CE`, branch `new-renderer-infrastructure`
 **Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust) + C++ bridge (`EngineWgpu`)
-**Status:** LIVING DOC (2026-07-08). The single source of truth for **what order** the wgpu-renderer
-feature plans land in and **what depends on what**. Each plan owns its own design; this doc owns the
-edges between them.
+**Status:** LIVING DOC (updated 2026-07-11). The single source of truth for **what order** the
+wgpu-renderer feature plans land in and **what depends on what**. Each plan owns its own design; this doc
+owns the edges between them.
+
+> **2026-07-11 update.** Phase 2 (depth+normal prepass, MSAA-ready, with sampleable min-resolved depth)
+> and the multi-view GPU-driven cull half of Phase 4 have **LANDED**, unblocking Phase 3. The prepass
+> depth is allocated + resolved but not yet *exposed* to water (internal to Hi-Z); the cull is genuinely
+> multi-view but has **no clip plane** yet (the one gap for Phase 5's waterline clip). Phase 3 is
+> re-sequenced **coast-first**: the depth-fed soft shoreline + a coast stage (foam/swash + terrain wet
+> band) lead, ahead of refraction and reflection. See [water-rendering-plan.md](water-rendering-plan.md)
+> §0.2–0.3 for the exact per-prerequisite gaps.
 
 > Scope note: this is the *forward-looking feature* roadmap (water, GPU-driven rendering, reflections,
 > Forward+). The draw-call/upload-overhead work has its own umbrella,
@@ -101,16 +109,22 @@ edges between them.
   the prepass's sampleable depth becomes a `min`-resolve under MSAA (prepass plan §5); Forward+ shades
   per-pixel (forward-plus §6). None of it is built yet, but nothing here may foreclose it.
 
-### Phase 3 — Water depth-dependent rendering
-- Land [water-rendering-plan.md](water-rendering-plan.md) Stages 1–3, 4a, 5: transparency, depth-based
-  colour + Beer-Lambert clarity, screen-space refraction, **sky-only** reflection, per-map look + Water
-  ImGui tab (sky-coupled).
-- **Depth source is swappable.** Water's depth access is written as "sample an opaque-depth texture";
-  it consumes the Phase-2 prepass if present, else self-provides (a small `TEXTURE_BINDING` +
-  depth-aspect view). So Phase 3 is not *hard*-blocked on Phase 2 — scheduling insurance.
-- **Refraction** needs a **pre-water scene-colour copy** (a blit), independent of the prepass.
+### Phase 3 — Water depth-dependent rendering (UNBLOCKED; coast-first)
+- Land [water-rendering-plan.md](water-rendering-plan.md), re-sequenced **coast-first**: Stage 2
+  (expose depth → depth colour + **soft shoreline**) → Stage 2c (**coast: foam + swash + terrain wet
+  band**) → Stage 3 refraction → Stage 4a sky reflection → Stage 5 look/tab. Coast leads because it is the
+  cheapest (depth already resolved; +1 terrain uniform), most visible improvement and needs neither the
+  scene-colour copy nor the mirror pass.
+- **Depth already exists — just expose it.** Phase 2 shipped a sampleable opaque depth (min-resolved under
+  MSAA); it is consumed only by Hi-Z today. Stage 2 routes `depth_sample_view` into the water group(1). No
+  self-provided fallback needed anymore.
+- **Coast look is a joint water+terrain effect** keyed on the same `sea_level` + swash phase (terrain gains
+  `sea_level` in `TerrainParams`); wet high-water mark, foam line, and water's transparent edge register at
+  one moving waterline. Fully procedural, zero gameplay impact.
+- **Refraction** still needs a **pre-water scene-colour copy** (a mid-frame MSAA resolve) — does not exist
+  yet, owned by Stage 3.
 - **Sky-only reflection (4a)** needs `sky.wgsl` refactored into an importable module exposing
-  `sky_radiance(dir)` — no culling, no multi-view. This is why *some* reflection arrives in Phase 3.
+  `sky_radiance(dir)` — no culling, no multi-view.
 
 ### Phase 4 — GPU-driven object rendering + culling (multi-view first-class)
 - Land [gpu-culling-and-depth-plan.md](gpu-culling-and-depth-plan.md) — now the concrete, end-to-end
@@ -138,7 +152,9 @@ edges between them.
   re-upload.
 - Add the **water surface as an extra cull plane** so below-water instances are rejected at instance
   granularity; flip winding for the mirrored pass. Composite over the Phase-3 sky reflection where rays
-  miss geometry.
+  miss geometry. **Note (2026-07-11):** the multi-view cull landed but `CullParamsGpu` carries only the 6
+  frustum planes — **no clip/oblique-near plane yet**. Phase 5 must *add* that plane (or FS-clip below the
+  waterline in the reflected pass); the mirror camera itself reuses the existing cull path unchanged.
 - **Cost caveat:** GPU-driven removes the *submission* half, not the *raster* half — the reflected view
   still rasterizes/shades a scene. Mitigate with half-res, reduced draw distance, opaque-only.
 
@@ -149,7 +165,7 @@ edges between them.
 | Plan | Phase(s) | Role |
 |---|---|---|
 | [water-cdlod-geometry-plan.md](water-cdlod-geometry-plan.md) | 1 | Flat GPU water + shared CDLOD util. No infra deps. |
-| [water-rendering-plan.md](water-rendering-plan.md) | 1 (waves, opt.), 3 (depth/refract/4a/look), 5 (4b) | The water look; split across phases by dependency. |
+| [water-rendering-plan.md](water-rendering-plan.md) | 1 (waves — **DONE**), 3 (coast/depth/refract/4a/look), 5 (4b) | The water look; split across phases by dependency. Stage 1 landed; Phase 3 re-sequenced coast-first. |
 | [depth-prepass-plan.md](depth-prepass-plan.md) | 2 (keystone) | Opaque (incl. foliage) depth **+ view-space normal** prepass — early-Z today; sampleable depth for water/Hi-Z/Forward+, normal G-buffer for SSAO/GTAO/contact shadows. Unconditional (no flag), MSAA-ready. |
 | [forward-plus-plan.md](forward-plus-plan.md) | 2 (parallel) | Clustered lighting; consumes the prepass. Forward (not deferred) to keep MSAA/A2C. |
 | [gpu-object-rendering-plan.md](gpu-object-rendering-plan.md) | 4 (Stage 3) | Retained GPU objects + frustum cull + indirect = multi-view foundation. |

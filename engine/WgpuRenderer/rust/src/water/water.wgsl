@@ -32,12 +32,23 @@ struct WaterParams {
     spec_intensity: f32, // sun-specular brightness (HDR, blooms)
     alpha: f32,          // base opacity (Fresnel raises it toward 1 at grazing angles)
     shadow_dim: f32,     // extra darkening of shadowed water (0 = sun-only removal)
+    color_ext: f32,      // 1/m: body tint saturates shallow->deep over ~1/ext metres of depth
+    coast_fade: f32,     // m of column depth over which the shore ramps transparent->opaque
+    shallow_color: vec4<f32>, // rgb = shallow body tint (gamma-space; decoded to linear on HDR)
+    deep_color: vec4<f32>,    // rgb = deep body tint
+    foam_width: f32,     // m of column depth over which shoreline foam fades out
+    foam_intensity: f32, // foam brightness/coverage scale
+    swash_amp: f32,      // m the near-shore waterline oscillates in/out (cosmetic)
+    swash_speed: f32,    // swash cycles per second
 };
 
 // Must match GRID_N in water/mod.rs (and the terrain grid).
 const GRID_N: f32 = 32.0;
 
 @group(1) @binding(0) var<uniform> wp: WaterParams;
+// Opaque scene depth from the prepass (single-sample: 1x aspect or MSAA resolved). Used to
+// reconstruct the seabed and hence the water column depth for depth-based colour + soft shore.
+@group(1) @binding(1) var scene_depth: texture_depth_2d;
 
 // Hard-coded wave set (per-map authoring can come later). Each: dir.xy (un-normalised),
 // wavelength (m), amplitude (m). Gentle by design — the amplitudes sum to ~0.25 m, the
@@ -173,6 +184,60 @@ fn vs_water(
 // HDR path: 1 = decode tint/fog to linear, keep the glint un-clamped so it blooms.
 override linear: f32 = 0.0;
 
+// Water column depth (m) at this fragment: reconstruct the seabed's camera-relative position
+// from the opaque prepass depth and take the vertical gap to the water surface. In the fragment
+// shader `in.clip` is the framebuffer position (window pixels + depth), so its xy indexes the
+// depth texel directly (framebuffer-resolution). The seabed shares this fragment's view ray, so
+// its ndc.xy is the surface's ndc.xy (reproject world_pos); combine with the stored reversed-Z
+// depth (forward ndc.z = 1 - stored) and inv_view_proj to unproject. Clamp >= 0.
+const DEEP: f32 = 1000.0; // "no seabed behind" fallback column depth (metres)
+
+fn seabed_depth(frag_xy: vec2<f32>, surface_rel: vec3<f32>) -> f32 {
+    let d = textureLoad(scene_depth, vec2<i32>(frag_xy), 0);
+    // d ~ 0 is the reversed-Z far/cleared value: no opaque seabed was drawn behind this pixel
+    // (beyond the terrain/fog extent). Treat as maximally deep and skip the unproject, which
+    // would divide by a ~0 w there.
+    if (d <= 1e-6) {
+        return DEEP;
+    }
+    let clip_s = frame.proj * frame.view * vec4<f32>(surface_rel, 1.0);
+    let ndc_xy = clip_s.xy / clip_s.w;
+    let seabed_h = frame.inv_view_proj * vec4<f32>(ndc_xy, 1.0 - d, 1.0);
+    let seabed_rel = seabed_h.xyz / seabed_h.w;
+    return max(surface_rel.y - seabed_rel.y, 0.0);
+}
+
+// Cheap value noise for the shoreline foam (churning band, no texture).
+// Integer-cell bit hash → white-noise value in [0,1). A sin(dot())*large hash (the usual WGSL
+// one-liner) loses all precision once world coords reach the thousands — OFP islands are ~12 km —
+// and collapses into big axis-aligned blocks that read as a badly-tiled repeating texture. Hashing
+// the integer cell index with bit ops is exact at any magnitude. `cell` is already integer-valued
+// (vnoise floors before calling); the & 0xffff wrap only repeats every 65536 cells (far off-map).
+fn hash2(cell: vec2<f32>) -> f32 {
+    let c = vec2<u32>(vec2<i32>(cell) & vec2<i32>(0xffff));
+    var n = c.x * 1597334677u + c.y * 3812015801u;
+    n = (n ^ (n >> 15u)) * 2246822519u;
+    n = n ^ (n >> 13u);
+    return f32(n & 0xffffffu) / f32(0x1000000u);
+}
+fn vnoise(p: vec2<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let a = hash2(i);
+    let b = hash2(i + vec2<f32>(1.0, 0.0));
+    let c = hash2(i + vec2<f32>(0.0, 1.0));
+    let d = hash2(i + vec2<f32>(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+// Two octaves scrolling in different directions so the foam churns rather than sitting still.
+const FOAM_FREQ: f32 = 0.35; // spatial frequency (per metre)
+fn foam_noise(p_world: vec2<f32>, t: f32) -> f32 {
+    var v = 0.6 * vnoise(p_world * FOAM_FREQ + vec2<f32>(t * 0.6, t * 0.2));
+    v = v + 0.4 * vnoise(p_world * FOAM_FREQ * 2.1 - vec2<f32>(t * 0.3, t * 0.5));
+    return v;
+}
+
 @fragment
 fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Receiver-plane derivatives for the CSM bias must be taken in uniform control flow.
@@ -206,11 +271,19 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         fog_color = srgb_to_linear(fog_color);
     }
 
-    // Deep-water body colour (weakly diffuse — water mostly reflects/transmits).
-    var body = vec3<f32>(0.015, 0.075, 0.105);
+    // Depth-based body colour: turquoise shallows -> dark blue depths, saturating with the water
+    // column depth like Beer-Lambert extinction. Reconstructed from the opaque prepass depth.
+    // (Constants hard-coded for Stage 2 increment 1; move to WgrWaterParams/Water tab next.)
+    let water_depth = seabed_depth(in.clip.xy, in.world_pos);
+    var shallow = wp.shallow_color.rgb;
+    var deep = wp.deep_color.rgb;
     if (linear > 0.5) {
-        body = srgb_to_linear(body);
+        shallow = srgb_to_linear(shallow);
+        deep = srgb_to_linear(deep);
     }
+    let depth_tint = 1.0 - exp(-water_depth * wp.color_ext);
+    // Weakly diffuse — water mostly reflects/transmits — so this is the transmitted body tint.
+    let body = mix(shallow, deep, depth_tint);
     // Direct-sun diffuse sheen is removed in shadow; sky ambient survives.
     let ndl = max(dot(n, l), 0.0);
     var rgb = body * (sun_ambient + sun_diffuse * ndl * 0.15 * sun_vis);
@@ -244,8 +317,27 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         rgb = mix(fog_color, rgb, in.fog);
     }
 
+    // Swash: a gentle oscillation of the near-shore waterline (cosmetic — buoyancy stays flat).
+    // It raises/lowers the EFFECTIVE column depth so the transparent edge + foam breathe in and
+    // out over the wet beach. The body colour keeps the true depth so it doesn't flicker.
+    let swash = sin(TWO_PI * wp.time * wp.swash_speed);
+    let eff_depth = water_depth + swash * wp.swash_amp;
+
+    // Shoreline foam: churning procedural noise in a band along the (swash-moved) edge. The band
+    // fades IN from the waterline and OUT into deeper water (peak ~1/4 of foam_width in), so the
+    // LAND side dissolves softly instead of ending on a hard bright line where the water geometry
+    // is clipped by the beach — the deep side already faded. Foam also fades to 0 right at the
+    // edge, so the water there is transparent (soft wash over wet sand) rather than opaque white.
+    let ft = eff_depth / max(wp.foam_width, 1e-4);
+    let foam_band = smoothstep(0.0, 0.25, ft) * (1.0 - smoothstep(0.25, 1.0, ft));
+    let foam = clamp(foam_band * foam_noise(in.base_xz, wp.time) * wp.foam_intensity, 0.0, 1.0);
+    rgb = mix(rgb, vec3<f32>(1.0), foam);
+
     // Base opacity, Fresnel-opaque at grazing angles (where real water is a mirror) so
-    // the seabed only shows through looking down.
-    let alpha = mix(wp.alpha, 1.0, fresnel);
+    // the seabed only shows through looking down. A soft shoreline fade dissolves the water
+    // to transparent as the (swash-moved) column depth -> 0, so the hard coast cut becomes a
+    // gentle wash over the visible wet beach; foam forces opacity where it sits.
+    let shore = smoothstep(0.0, wp.coast_fade, eff_depth);
+    let alpha = max(mix(wp.alpha, 1.0, fresnel) * shore, foam);
     return vec4<f32>(rgb, alpha);
 }

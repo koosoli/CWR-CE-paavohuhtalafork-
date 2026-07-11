@@ -508,6 +508,19 @@ struct WgrTerrainParams
     uint32_t hm_height;
     uint32_t land_range; // land-cell count per axis
     float data_scale;
+    /* Coast wet band (Stage 2c), pushed per frame via wgr_terrain_set_params. sea_level + time
+     * (+ swash) move the damp intertidal line in lockstep with the water's edge; wet_height =
+     * metres above the (swash-moved) sea level the band reaches, wet_darken = albedo multiplier
+     * in the band (1 = off). Slope-gated in the shader; uses the SAME swash formula/params as
+     * the water shader so the two register. */
+    float sea_level;
+    float time;
+    float swash_speed;
+    float swash_amp;
+    float wet_height;
+    float wet_darken;
+    float _pad0;
+    float _pad1;
 };
 
 /* One terrain node instance: the shared grid mesh placed at world-xz `origin`,
@@ -560,8 +573,21 @@ struct WgrWaterParams
     float spec_intensity;
     float alpha;
     float shadow_dim;
-    float _pad1;
-    float _pad2;
+    /* Depth-based colour + soft shoreline (Stage 2). color_ext = 1/m extinction: how fast the
+     * body tint saturates shallow -> deep with the water column depth. coast_fade = metres of
+     * column depth over which the shoreline ramps transparent -> opaque. */
+    float color_ext;
+    float coast_fade;
+    /* rgb = shallow / deep body colour (gamma-space; decoded to linear on HDR). w unused. */
+    WgrVec4 shallow_color;
+    WgrVec4 deep_color;
+    /* Coast foam + swash (Stage 2c). foam_width = m of column depth over which shoreline foam
+     * fades out; foam_intensity scales it. swash_amp = m the near-shore waterline oscillates
+     * in/out; swash_speed = cycles/s. Cosmetic (buoyancy stays on the flat plane). */
+    float foam_width;
+    float foam_intensity;
+    float swash_amp;
+    float swash_speed;
 };
 
 /* One water node instance: byte-identical to WgrTerrainNode (the shared grid mesh
@@ -684,10 +710,10 @@ static_assert(sizeof(WgrShadowPass) == 288, "WgrShadowPass layout must match the
 static_assert(sizeof(WgrCmd) == 8, "WgrCmd layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrOverlayVertex) == 20, "WgrOverlayVertex layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrTerrainParams) == 32, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrTerrainParams) == 64, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrWaterParams) == 80, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterParams) == 128, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 24, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrame) == 560, "WgrFrame layout must match the Rust #[repr(C)] struct");
@@ -794,6 +820,10 @@ extern "C"
      * map load. */
     WGR_API void wgr_terrain_set_heightmap(WgrRenderer* renderer, const float* heights,
                                            const WgrTerrainParams* params);
+
+    /* Refresh the terrain params UBO without re-uploading the heightmap. Cheap; called every
+     * frame to animate the coast wet band (sea_level / time / swash / wet_*). */
+    WGR_API void wgr_terrain_set_params(WgrRenderer* renderer, const WgrTerrainParams* params);
 
     /* Set the terrain ground layers: `handles[i]` is the wgr_texture_create
      * handle for Landscape texture index i (0 = the built-in white fallback).

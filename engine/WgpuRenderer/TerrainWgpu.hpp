@@ -68,6 +68,10 @@ class TerrainWgpu : public ITerrainRenderer
     float _extentFactor;
 
     std::vector<WgrTerrainNode> _selected;
+
+    // Terrain params UBO mirror. The static fields (grid/dims/range) are set at upload; the
+    // coast wet-band fields (sea_level/time/swash/wet_*) are refreshed and pushed every frame.
+    WgrTerrainParams _params{};
 };
 
 } // namespace Poseidon

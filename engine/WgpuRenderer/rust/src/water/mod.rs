@@ -14,7 +14,12 @@ const GRID_N: u32 = 32;
 // ground array, index/jitter maps or shadow sweep; water needs none of them here.
 pub struct Water {
     params_ubo: wgpu::Buffer,
+    group1_layout: wgpu::BindGroupLayout,
+    // Holds group1 = { params UBO, scene depth }. Seeded with a 1x1 dummy depth (which the bind
+    // group keeps alive) until set_depth_view swaps in the real scene depth on the first resize.
     group1_bind: wgpu::BindGroup,
+    // depth_sample_view generation the current group1_bind was built against (u64::MAX = dummy).
+    depth_gen: u64,
     grid_vbuf: wgpu::Buffer,
     grid_ibuf: wgpu::Buffer,
     grid_index_count: u32,
@@ -38,16 +43,31 @@ impl Water {
     ) -> Water {
         let group1_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_water_group1_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
-                ty: wgpu::BindingType::Buffer {
-                    ty: wgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                // Opaque scene depth (prepass), single-sample: the 1x depth aspect or the MSAA
+                // resolved Depth32Float. textureLoad'd (no sampler) to reconstruct the seabed for
+                // depth-based colour + the soft shoreline. One entry serves both formats.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
         });
 
         let params_ubo = device.create_buffer(&wgpu::BufferDescriptor {
@@ -75,19 +95,36 @@ impl Water {
             spec_intensity: 14.0,
             alpha: 0.9,
             shadow_dim: 0.5,
-            _pad1: 0.0,
-            _pad2: 0.0,
+            color_ext: 0.35,
+            coast_fade: 0.6,
+            shallow_color: [0.10, 0.28, 0.32, 0.0],
+            deep_color: [0.004, 0.030, 0.055, 0.0],
+            foam_width: 0.4,
+            foam_intensity: 1.0,
+            swash_amp: 0.15,
+            swash_speed: 0.15,
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 
-        let group1_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wgr_water_group1_bind"),
-            layout: &group1_layout,
-            entries: &[wgpu::BindGroupEntry {
-                binding: 0,
-                resource: params_ubo.as_entire_binding(),
-            }],
-        });
+        // 1x1 single-sample depth stand-in so group1 is valid before the first ensure_depth.
+        let dummy_depth = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgr_water_dummy_depth"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Depth32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+
+        let group1_bind = build_group1(device, &group1_layout, &params_ubo, &dummy_depth);
 
         let (grid_vbuf, grid_ibuf, grid_index_count) = build_grid(device);
 
@@ -194,7 +231,9 @@ impl Water {
 
         Water {
             params_ubo,
+            group1_layout,
             group1_bind,
+            depth_gen: u64::MAX,
             grid_vbuf,
             grid_ibuf,
             grid_index_count,
@@ -204,6 +243,17 @@ impl Water {
             pipeline,
             have_params: false,
         }
+    }
+
+    // Point group1 at the scene depth (opaque prepass) for the depth-based colour + soft
+    // shoreline. Rebuilds the bind group only when the view was recreated (resize), tracked by
+    // `gen` from Gfx3d::depth_gen(); a no-op otherwise. Called each frame before the water pass.
+    pub fn set_depth_view(&mut self, device: &wgpu::Device, depth: &wgpu::TextureView, view_gen: u64) {
+        if self.depth_gen == view_gen {
+            return;
+        }
+        self.group1_bind = build_group1(device, &self.group1_layout, &self.params_ubo, depth);
+        self.depth_gen = view_gen;
     }
 
     pub fn set_params(&mut self, queue: &wgpu::Queue, params: WgrWaterParams) {
@@ -263,6 +313,30 @@ impl Water {
             first_node..first_node + node_count,
         );
     }
+}
+
+// group1 = { water params UBO (0), opaque scene depth (1) }. Rebuilt whenever the depth view
+// changes (resize); the params UBO is stable so it just rides along.
+fn build_group1(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    params_ubo: &wgpu::Buffer,
+    depth: &wgpu::TextureView,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("wgr_water_group1_bind"),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: params_ubo.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(depth),
+            },
+        ],
+    })
 }
 
 // The reusable unit grid: (GRID_N+1)^2 vertices over [0,1]^2, two triangles per

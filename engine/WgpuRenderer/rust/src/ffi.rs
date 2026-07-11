@@ -520,6 +520,19 @@ pub struct WgrTerrainParams {
     pub hm_height: u32,
     pub land_range: u32,
     pub data_scale: f32,
+    // Coast wet band (Stage 2c), pushed per frame via wgr_terrain_set_params. sea_level + time
+    // (+ swash) move the damp intertidal line in lockstep with the water's edge; wet_height =
+    // metres above the (swash-moved) sea level the band reaches, wet_darken = albedo multiplier
+    // in the band (1 = off). Slope-gated in the shader so cliffs stay dry. Uses the SAME swash
+    // formula + params as the water shader, so the two register.
+    pub sea_level: f32,
+    pub time: f32,
+    pub swash_speed: f32,
+    pub swash_amp: f32,
+    pub wet_height: f32,
+    pub wet_darken: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
 }
 
 // One terrain node (shared grid mesh at world-xz `origin`, `size` wide, level
@@ -565,8 +578,21 @@ pub struct WgrWaterParams {
     pub spec_intensity: f32,
     pub alpha: f32,
     pub shadow_dim: f32,
-    pub _pad1: f32,
-    pub _pad2: f32,
+    // Depth-based colour + soft shoreline (Stage 2). color_ext = 1/m extinction: how fast the
+    // body tint saturates from shallow -> deep with the water column depth. coast_fade = metres
+    // of column depth over which the shoreline ramps transparent -> opaque.
+    pub color_ext: f32,
+    pub coast_fade: f32,
+    // rgb = shallow / deep body colour (gamma-space; the shader decodes to linear on HDR). w unused.
+    pub shallow_color: WgrVec4,
+    pub deep_color: WgrVec4,
+    // Coast foam + swash (Stage 2c). foam_width = m of column depth over which shoreline foam
+    // fades out; foam_intensity scales it. swash_amp = m the near-shore waterline oscillates in/
+    // out; swash_speed = cycles/s. All cosmetic (buoyancy stays on the flat plane).
+    pub foam_width: f32,
+    pub foam_intensity: f32,
+    pub swash_amp: f32,
+    pub swash_speed: f32,
 }
 
 // One water node (shared grid mesh at world-xz `origin`, `size` wide, level `lod`).
@@ -665,10 +691,10 @@ const _: () = assert!(std::mem::size_of::<WgrShadowPass>() == 288);
 const _: () = assert!(std::mem::size_of::<WgrCmd>() == 8);
 const _: () = assert!(std::mem::size_of::<WgrOverlayVertex>() == 20);
 const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
-const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 32);
+const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 80);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 128);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
@@ -1110,6 +1136,27 @@ pub unsafe extern "C" fn wgr_water_set_params(
         let renderer = unsafe { &mut *renderer };
         let params = unsafe { *params };
         renderer.water_set_params(params);
+    }));
+}
+
+/// Refresh the terrain params UBO without re-uploading the heightmap — cheap, called
+/// every frame to animate the coast wet band (sea_level/time/swash/wet_*). See wgpu_renderer.hpp.
+///
+/// # Safety
+/// `renderer` must be live; `params` must point to one valid `WgrTerrainParams` or be null
+/// (in which case the call is ignored).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_terrain_set_params(
+    renderer: *mut WgrRenderer,
+    params: *const WgrTerrainParams,
+) {
+    if renderer.is_null() || params.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let params = unsafe { *params };
+        renderer.terrain_set_params(params);
     }));
 }
 

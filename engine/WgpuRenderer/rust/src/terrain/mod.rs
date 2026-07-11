@@ -342,6 +342,14 @@ impl Terrain {
             hm_height: 1,
             land_range: 1,
             data_scale: 1.0,
+            sea_level: 0.0,
+            time: 0.0,
+            swash_speed: 0.15,
+            swash_amp: 0.15,
+            wet_height: 1.2,
+            wet_darken: 0.55,
+            _pad0: 0.0,
+            _pad1: 0.0,
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 
@@ -722,6 +730,13 @@ impl Terrain {
             prepass_pipeline,
             max_dim: device.limits().max_texture_dimension_2d,
         }
+    }
+
+    // Cheap per-frame params refresh (no heightmap re-upload): the coast wet-band fields
+    // (sea_level, time, swash, wet_*) animate every frame, and the static fields are re-sent
+    // unchanged. Overwrites the whole params UBO.
+    pub fn set_params(&self, queue: &wgpu::Queue, params: WgrTerrainParams) {
+        queue.write_buffer(&self.params_ubo, 0, bytemuck::bytes_of(&params));
     }
 
     pub fn set_heightmap(

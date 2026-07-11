@@ -1911,6 +1911,36 @@ void DrawWaterTab()
     ImGui::SetItemTooltip("Terrain + CSM sun-shadow always removes the glint/direct sun on shadowed water; "
                           "this additionally darkens the shadowed surface (0 = physical sun-only removal).");
 
+    ImGui::Separator();
+    ImGui::TextUnformatted("Coast (depth-based colour + soft shoreline)");
+    changed |= ImGui::ColorEdit3("Shallow colour", s.shallowColor);
+    ImGui::SetItemTooltip("Body tint of shallow water (near the coast).");
+    changed |= ImGui::ColorEdit3("Deep colour", s.deepColor);
+    ImGui::SetItemTooltip("Body tint of deep water; the surface blends shallow -> deep with the water "
+                          "column depth reconstructed from the opaque-depth prepass.");
+    changed |= ImGui::SliderFloat("Colour clarity", &s.colorExt, 0.02f, 3.0f, "%.3f",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Extinction (1/m): higher = the tint reaches the deep colour in shallower water, "
+                          "so the depth colouring reads stronger. Lower = subtler, more uniform colour.");
+    changed |= ImGui::SliderFloat("Soft edge width (m)", &s.coastFade, 0.0f, 3.0f, "%.2f");
+    ImGui::SetItemTooltip("Metres of water depth over which the shoreline fades transparent -> opaque. "
+                          "Large values look misty/foggy at the coast; lower it for a crisper waterline.");
+    changed |= ImGui::SliderFloat("Foam width (m)", &s.foamWidth, 0.0f, 8.0f, "%.2f");
+    ImGui::SetItemTooltip("Column-depth band the churning foam spans (peaks ~1/4 in). 0 = no foam.");
+    changed |= ImGui::SliderFloat("Foam intensity", &s.foamIntensity, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Brightness / coverage of the shoreline foam.");
+    changed |= ImGui::SliderFloat("Swash amplitude (m)", &s.swashAmp, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("How far the near-shore waterline oscillates in/out over the wet beach "
+                          "(cosmetic — buoyancy stays on the flat plane).");
+    changed |= ImGui::SliderFloat("Swash speed (Hz)", &s.swashSpeed, 0.0f, 1.0f, "%.3f",
+                                  ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Swash cycles per second (slow = long, lazy wash).");
+    changed |= ImGui::SliderFloat("Wet band height (m)", &s.wetHeight, 0.0f, 4.0f, "%.2f");
+    ImGui::SetItemTooltip("Terrain side: metres above sea level the damp/darkened intertidal band "
+                          "reaches, on near-flat ground only (cliffs stay dry).");
+    changed |= ImGui::SliderFloat("Wet darkening", &s.wetDarken, 0.3f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Albedo multiplier for wet sand (lower = darker). 1 = off.");
+
     if (ImGui::Button("Reset to defaults"))
     {
         s = decltype(s){};
@@ -1921,6 +1951,24 @@ void DrawWaterTab()
 
     if (changed)
         GEngine->SetWaterSettings(s);
+
+    // Copy the full authored water look so the tuned values can be pasted back as the
+    // Engine::WaterSettings defaults (like the Sky / Tonemap tabs).
+    ImGui::Separator();
+    ImGui::TextDisabled("Preset (copy to persist as defaults):");
+    char preset[720];
+    snprintf(preset, sizeof(preset),
+             "water: amp=%.2f choppy=%.2f speed=%.2f scale=%.2f fade=%.0f,%.0f warp=%.2f "
+             "spec=%.0f,%.2f alpha=%.2f shadowDim=%.2f shallow=%.3f,%.3f,%.3f deep=%.3f,%.3f,%.3f "
+             "clarity=%.3f coastFade=%.2f foam=%.2f,%.2f swash=%.2f,%.3f wet=%.2f,%.2f",
+             s.waveAmp, s.waveChoppy, s.waveSpeed, s.waveScale, s.fadeStart, s.fadeEnd, s.warpAmp,
+             s.specPower, s.specIntensity, s.alpha, s.shadowDim, s.shallowColor[0], s.shallowColor[1],
+             s.shallowColor[2], s.deepColor[0], s.deepColor[1], s.deepColor[2], s.colorExt, s.coastFade,
+             s.foamWidth, s.foamIntensity, s.swashAmp, s.swashSpeed, s.wetHeight, s.wetDarken);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##waterPreset", preset, sizeof(preset), ImGuiInputTextFlags_ReadOnly);
+    if (ImGui::Button("Copy preset to clipboard"))
+        ImGui::SetClipboardText(preset);
 }
 void DrawMouseTab()
 {

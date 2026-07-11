@@ -4,6 +4,7 @@
 #include "EngineWgpu.hpp"
 #include "TextureWgpu.hpp"
 
+#include <Poseidon/Core/Global.hpp> // Glob.time (coast wet-band animation clock)
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
 #include <Poseidon/IO/ParamFileExt.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
@@ -98,15 +99,15 @@ bool TerrainWgpu::UploadIfNeeded(const Landscape& land)
         }
     }
 
-    WgrTerrainParams params{};
-    params.world_origin = {0.0f, 0.0f};
-    params.land_grid = land.GetLandGrid();
-    params.terrain_grid = land.GetTerrainGrid();
-    params.hm_width = static_cast<uint32_t>(range);
-    params.hm_height = static_cast<uint32_t>(range);
-    params.land_range = static_cast<uint32_t>(land.GetLandRange());
-    params.data_scale = 1.0f;
-    wgr_terrain_set_heightmap(_renderer, heights.data(), &params);
+    // Fill the static params (the coast wet-band fields are refreshed per frame in DrawTerrain).
+    _params.world_origin = {0.0f, 0.0f};
+    _params.land_grid = land.GetLandGrid();
+    _params.terrain_grid = land.GetTerrainGrid();
+    _params.hm_width = static_cast<uint32_t>(range);
+    _params.hm_height = static_cast<uint32_t>(range);
+    _params.land_range = static_cast<uint32_t>(land.GetLandRange());
+    _params.data_scale = 1.0f;
+    wgr_terrain_set_heightmap(_renderer, heights.data(), &_params);
 
     UploadGroundTextures(land);
     UploadIndexMap(land);
@@ -234,6 +235,18 @@ void TerrainWgpu::DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zE
     {
         return;
     }
+
+    // Refresh the coast wet-band params every frame: the animated sea level + clock (+ the
+    // live-tuned coast look) drive the damp intertidal band, keyed on the SAME sea level and
+    // swash the water uses so the two register at one moving waterline.
+    const Engine::WaterSettings& coast = _engine.WaterLook();
+    _params.sea_level = land.GetSeaLevel();
+    _params.time = Glob.time.toFloat();
+    _params.swash_speed = coast.swashSpeed;
+    _params.swash_amp = coast.swashAmp;
+    _params.wet_height = coast.wetHeight;
+    _params.wet_darken = coast.wetDarken;
+    wgr_terrain_set_params(_renderer, &_params);
 
     Camera* camera = scene.GetCamera();
     if (camera == nullptr)

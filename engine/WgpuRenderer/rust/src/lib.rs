@@ -1022,16 +1022,10 @@ impl Renderer {
                                 .draw(pass, cam, off, b.first_node, b.node_count, kind);
                         }
                     }
-                    Plan3dOp::Water(arg) => {
-                        st3d = crate::gfx3d::Pass3dState::default();
-                        if let (Some(b), Some(cam)) =
-                            (water_batches.get(*arg as usize), self.gfx3d.camera_bind())
-                        {
-                            let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
-                            self.water
-                                .draw(pass, cam, off, b.first_node, b.node_count);
-                        }
-                    }
+                    // Water is drawn in a dedicated pass after this sub-pass (it samples the
+                    // opaque depth it also depth-tests against, which needs a read-only depth
+                    // attachment the shared colour sub-pass can't give). Skipped here.
+                    Plan3dOp::Water(_) => {}
                     Plan3dOp::ClearDepth | Plan3dOp::Resolve => {}
                 }
             }
@@ -1248,6 +1242,56 @@ impl Renderer {
                 drop(pass);
             }
 
+            // Dedicated water pass. Water is transparent and reconstructs the seabed by SAMPLING
+            // the opaque prepass depth — which it also depth-tests against — so its depth
+            // attachment must be READ-ONLY (depth_ops/stencil_ops = None). The shared colour
+            // sub-pass can't be read-only (the GPU-driven opaque pipeline writes depth), so water
+            // draws here instead, after the opaque set, loading colour + read-only depth. Water
+            // still depth-tests vs the coast (GreaterEqual) and writes no depth. Pre-resolve only
+            // (the world segment); the resolved MSAA depth that water samples is filled by the
+            // depth-resolve run before this segment's colour pass.
+            let has_water = seg_ops.iter().any(|o| matches!(o, Plan3dOp::Water(_)));
+            if has_water && !resolved {
+                let dgen = self.gfx3d.depth_gen();
+                if let Some(dv) = self.gfx3d.depth_sample_view() {
+                    self.water.set_depth_view(&self.device, dv, dgen);
+                }
+                if let Some(cam) = self.gfx3d.camera_bind() {
+                    encoder.push_debug_group("wgr_water");
+                    let mut wpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("wgr_water_pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &target,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                            view: seg_depth,
+                            depth_ops: None,
+                            stencil_ops: None,
+                        }),
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    for op in seg_ops {
+                        if let Plan3dOp::Water(arg) = op {
+                            if let Some(b) = water_batches.get(*arg as usize) {
+                                let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                                self.water
+                                    .draw(&mut wpass, cam, off, b.first_node, b.node_count);
+                            }
+                        }
+                    }
+                    drop(wpass);
+                    encoder.pop_debug_group();
+                }
+            }
+
             // 2D sub-pass: the overlays, over the fogged colour, loading the 3D depth +
             // stencil so any depth-tested 2D still occludes and stencil state carries over.
             if has_2d {
@@ -1443,6 +1487,10 @@ impl Renderer {
 
     fn water_set_params(&mut self, params: WgrWaterParams) {
         self.water.set_params(&self.queue, params);
+    }
+
+    fn terrain_set_params(&mut self, params: WgrTerrainParams) {
+        self.terrain.set_params(&self.queue, params);
     }
 
     fn terrain_set_ground_layers(&mut self, handles: &[u64]) {

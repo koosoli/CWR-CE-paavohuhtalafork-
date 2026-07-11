@@ -154,6 +154,14 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _params.spec_intensity = look.specIntensity;
     _params.alpha = look.alpha;
     _params.shadow_dim = look.shadowDim;
+    _params.color_ext = look.colorExt;
+    _params.coast_fade = look.coastFade;
+    _params.shallow_color = {look.shallowColor[0], look.shallowColor[1], look.shallowColor[2], 0.0f};
+    _params.deep_color = {look.deepColor[0], look.deepColor[1], look.deepColor[2], 0.0f};
+    _params.foam_width = look.foamWidth;
+    _params.foam_intensity = look.foamIntensity;
+    _params.swash_amp = look.swashAmp;
+    _params.swash_speed = look.swashSpeed;
     wgr_water_set_params(_renderer, &_params);
 
     // Water clips to the whole (over-sized) tree, not the engine's land draw-distance

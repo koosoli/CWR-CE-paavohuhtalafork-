@@ -34,6 +34,13 @@ struct Frame {
     sun_diffuse: vec4<f32>, // sun light, accommodation folded in (terrain)
     sun_ambient: vec4<f32>,
     sun_dir_world: vec4<f32>, // main light's surface-to-light direction (terrain)
+    // inverse(view) * inverse(proj), computed Rust-side in f64 (the reversed-Z / infinite-far
+    // proj is ill-conditioned to invert in f32; invert the two SEPARATELY, as the sky does).
+    // Unprojects a forward-NDC point vec4(ndc.xy, 1 - stored_depth, 1) to a CAMERA-RELATIVE
+    // world position (÷ w). Appended after the WgrCamera bytes in the camera upload, so it is
+    // NOT part of the WgrCamera C ABI. Used by water seabed-depth reconstruction (Stage 2);
+    // reusable by SSAO / refraction / contact shadows.
+    inv_view_proj: mat4x4<f32>,
 };
 
 // One frame-global point or spot light. Positions are ABSOLUTE world space so a

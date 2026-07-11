@@ -441,7 +441,10 @@ struct CameraGroup {
 
 impl CameraGroup {
     fn new(device: &wgpu::Device) -> Self {
-        let bind_size = std::mem::size_of::<WgrCamera>() as u64;
+        // The GPU `Frame` UBO is the WgrCamera bytes plus a Rust-appended `inv_view_proj`
+        // (mat4, 64 B) written after each camera in the upload loop — so the bind size is
+        // sizeof(WgrCamera) + 64, NOT the raw C-ABI size. Keep the two in sync.
+        let bind_size = std::mem::size_of::<WgrCamera>() as u64 + 64;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_3d_camera_layout"),
             entries: &[
@@ -1150,6 +1153,9 @@ pub struct Gfx3d {
     // WebGPU cannot resolve depth via a render-pass resolve_target and consumers want a plain
     // single-sample texture. Rebuilt with the depth target.
     depth_sample_view: Option<wgpu::TextureView>,
+    // Bumped whenever depth_sample_view is (re)created (resize), so external consumers that
+    // build their own bind group over it (e.g. Water) rebuild only when it actually changed.
+    depth_gen: u64,
     // MSAA depth resolve (Some only when sample_count > 1). A tiny fullscreen pass reduces the
     // multisampled depth to a single-sample Depth32Float target that feeds depth_sample_view.
     depth_resolve: Option<DepthResolve>,
@@ -1620,6 +1626,7 @@ impl Gfx3d {
             depth_size: (0, 0),
             gpu_color_group1_bind: None,
             depth_sample_view: None,
+            depth_gen: 0,
             depth_resolve,
             ui_depth: None,
             hiz: hiz::HiZ::new(device),
@@ -2364,12 +2371,24 @@ impl Gfx3d {
             (tex, view)
         });
         self.depth_size = size;
+        self.depth_gen += 1;
         // The Hi-Z pyramid tracks this size; (re)allocated in prepare_cull (gated on occlusion
         // being active) so a live toggle picks up the current size without a resize.
     }
 
     pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
         self.depth.as_ref().map(|(_, v)| v)
+    }
+
+    // The single-sample sampleable scene depth (opaque prepass): the 1x depth-aspect, or the
+    // resolved Depth32Float under MSAA. Framebuffer-resolution; consumers textureLoad it. Paired
+    // with depth_gen() so a borrower rebuilds its bind group only when this view is recreated.
+    pub fn depth_sample_view(&self) -> Option<&wgpu::TextureView> {
+        self.depth_sample_view.as_ref()
+    }
+
+    pub fn depth_gen(&self) -> u64 {
+        self.depth_gen
     }
 
     // Single-sample UI-phase depth (Some only under MSAA); the post-tonemap 2D uses it instead of
@@ -3018,7 +3037,21 @@ impl Gfx3d {
             );
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {
-                queue.write_buffer(buf, i as u64 * self.cameras.stride, bytemuck::bytes_of(c));
+                let base = i as u64 * self.cameras.stride;
+                queue.write_buffer(buf, base, bytemuck::bytes_of(c));
+                // Append inv(proj·view) for depth→world unprojection (Frame.inv_view_proj).
+                // Invert view and proj SEPARATELY in f64: the reversed-Z/infinite-far proj has
+                // an ill-conditioned z-row and inverting the combined f32 matrix smears that
+                // into x/y (same fix the sky uses, lib.rs). The view already has its translation
+                // zeroed (geometry is camera-relative), so this maps NDC → camera-relative world.
+                let view = glam::DMat4::from_cols_array(&c.view.map(f64::from));
+                let proj = glam::DMat4::from_cols_array(&c.proj.map(f64::from));
+                let inv_vp = (view.inverse() * proj.inverse()).as_mat4().to_cols_array();
+                queue.write_buffer(
+                    buf,
+                    base + std::mem::size_of::<WgrCamera>() as u64,
+                    bytemuck::cast_slice(&inv_vp),
+                );
             }
         }
         // Track buffer regrowth so the combined group-1 bind groups (which borrow
