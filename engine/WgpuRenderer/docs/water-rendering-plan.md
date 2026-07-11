@@ -267,17 +267,32 @@ Verified against the current renderer; these are the non-obvious decisions the c
   advancing/retreating waterline — with no hard edge. All procedural; zero asset edits; zero gameplay
   impact.
 
-### Stage 3 — Screen-space refraction (adds the scene-colour copy)
-- Pre-water resolve/blit `scene_view` → `refraction_src` (§0.3; under MSAA a mid-frame resolve of the
-  in-flight colour target); sample it at a normal-perturbed, depth-scaled, depth-clamped screen UV; the
-  deep-colour tint modulates the refracted sample by `water_depth`.
-- **Exit:** the seabed/objects beneath the surface wobble with the waves; refraction doesn't bleed
-  foreground.
+### Stage 3 — Screen-space refraction — **ATTEMPTED then REVERTED (2026-07-11); needs a separate pass**
+Screen-space refraction (sampling a pre-water copy of the *composited* scene at a wave-perturbed UV) was
+built and backed out the same day. **Why it can't work here:** the composited frame contains the
+first-person weapon and (third-person) the player model. A screen-space depth guard can't reliably
+exclude them — they read as ugly ghosts refracted through the surface. **Refraction must render its own
+underwater-only view** (seabed + submerged geometry, excluding the player/weapon/foreground actors) into a
+dedicated target, then sample that. That is a Stage-4b-class effort (a second scene pass), and given OFP's
+calm coastal water and the strong flat depth-tint from Stage 2, it is **deferred** — revisit only if a
+proper underwater pass is built. The `refraction_src` copy, `WgrWaterParams.refract_*`, the water group(1)
+colour binding, and the Water-tab controls were all removed; the flat depth-tinted body (Stage 2) stands.
 
 ### Stage 4 — Reflection (4a sky-only, 4b planar scene)
-- **4a:** refactor `sky.wgsl` into an importable `sky` module exposing `sky_radiance(dir)`; reflect the
-  view ray about the water normal; Fresnel-mix sky reflection with the Stage 3 refraction. No cull, no
-  multi-view.
+- **4a — DONE (2026-07-11), via a sky ENV MAP (not per-pixel `sky_radiance`).** The plan's "importable
+  `sky_radiance(dir)` called per water fragment" was rejected on two counts: (1) every sky helper reads the
+  `sky` group(0) globals, so an `#import` would collide with water's own group(0) (camera) — sharing would
+  need every helper re-plumbed to take the LUTs/params as args; (2) a full atmosphere raymarch per water
+  pixel is expensive. Instead: `sky_radiance(dir)` was extracted **inside `sky.wgsl`** (disc-free; `fs_sky`
+  now = `sky_radiance` + disc + tonemap, output identical), and a new **`fs_sky_env`** bakes it into a
+  256×128 **equirect env map** once per frame (`Sky::render_env`, reusing the sky group(0) bind). Water
+  binds that one texture (group1 bindings 2/3) and, on the HDR path, reflects it: `refl =
+  sky_env_sample(reflect(normalize(world_pos), n))`, Fresnel-mixed as before. This **supersedes the
+  `fog_color`/`sun_up` reflection hack** (kept only as the LDR-direct fallback): night water now reflects a
+  genuinely dark sky, and the pre-dawn horizon glow appears **only** on fragments that geometrically reflect
+  toward it — no uniform pink wash. Sun disc excluded (per decision: analytic Blinn-Phong glint stays the
+  glint source). Env map is disc-free linear radiance; equirect UV convention shared by `fs_sky_env` (bake)
+  and `sky_env_sample` (water). **Not yet run in-game** (Rust+shader validated).
 - **4b:** mirrored-camera half-res planar re-render through the **existing multi-view cull path** (mirror =
   another view, `frustum_planes(mirror_vp)`, its own `set_shadow_view_count`-style view + records). **Add a
   waterline clip** — the one missing piece (§0.2.3): an oblique near-plane on the mirror projection or an
@@ -327,6 +342,11 @@ Verified against the current renderer; these are the non-obvious decisions the c
 Stage 1 (waves + glint) — **DONE**. Then, per the confirmed re-sequencing:
 
 **Stage 2 (expose depth → depth colour + soft shoreline) → Stage 2c (coast: foam + swash + terrain wet
-band) → Stage 3 (refraction) → Stage 4a (sky reflection) → Stage 4b (planar reflection) → Stage 5 (per-map
-look + tab + sky coupling)**, with Stage 6 (underwater) as optional later polish. One PR per stage, behind
-the water flag with per-effect sub-toggles. Coast look (Stages 2 + 2c) is the immediate next work.
+band) → ~~Stage 3 (refraction)~~ → Stage 4a (sky reflection) → Stage 4b (planar reflection) → Stage 5
+(per-map look + tab + sky coupling)**, with Stage 6 (underwater) as optional later polish. One PR per
+stage, behind the water flag with per-effect sub-toggles. **Stages 2 + 2c are DONE** (uncommitted
+2026-07-11); **Stage 3 (screen-space refraction) was attempted and reverted** — it needs a dedicated
+underwater pass (see above), deferred. Two coast-look bug-fixes also landed 2026-07-11: **foam is now lit**
+(no night glow) and **water reconstructs seabed depth from a FARTHEST-sample MSAA resolve** so A2C foliage
+/ rotor edges no longer ring with foam. Stage 4a (sky reflection) is the next look work — it needs
+`sky.wgsl` refactored into an importable `sky_radiance(dir)` module (§0.3).

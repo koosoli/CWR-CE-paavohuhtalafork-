@@ -8,7 +8,7 @@
 
 #define_import_path shading
 
-#import frame::{frame, terrain_sun_shadow, apply_fog}
+#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -42,6 +42,9 @@ fn shade(
     linear: f32,
     foliage_shadow_ao: f32,
     is_cutout: bool,
+    // Alpha-blended (glass) surface: damp the diffuse sky-irradiance ambient (a transparent
+    // canopy is not a diffuse reflector; a full sky wash blows it out + spikes auto-exposure).
+    is_translucent: bool,
 ) -> vec3<f32> {
     var albedo = albedo_in;
     var m_emissive = mat.emissive;
@@ -73,10 +76,17 @@ fn shade(
     let sun_vis = 1.0 - sun_occ;
     var sun: vec3<f32>;
     if (sky_lit) {
-        // Sky-based lighting: frame-global atmosphere sun + ambient fill applied straight
-        // (albedo is the reflectance via `rgb = albedo * lit`). The per-material folded sun
-        // (m_sun_*) is deliberately unused here — see the original fs_main note.
-        sun = m_emissive + frame.sun_ambient.rgb + frame.sun_diffuse.rgb * ndotl * sun_vis;
+        // Sky-based lighting: frame-global atmosphere sun + DIRECTIONAL sky-irradiance ambient
+        // (SH-9 projection of the env map, evaluated per normal), scaled by the skyAmbient knob in
+        // sun_ambient.w. albedo is the reflectance via `rgb = albedo * lit`. The per-material folded
+        // sun (m_sun_*) is deliberately unused here — see the original fs_main note.
+        var ambient = sky_irradiance(nrm) * frame.sun_ambient.w;
+        // Glass canopies: keep only a fraction of the sky wash so they read as glazing, not a lit
+        // diffuse dome (the direct sun sheen + any glint still sit on top).
+        if (is_translucent) {
+            ambient *= 0.2;
+        }
+        sun = m_emissive + ambient + frame.sun_diffuse.rgb * ndotl * sun_vis;
     } else {
         sun = m_emissive + m_sun_ambient + m_sun_diffuse * ndotl * sun_vis;
     }

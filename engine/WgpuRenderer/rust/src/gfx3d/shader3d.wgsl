@@ -67,6 +67,9 @@ override is_shadow: f32 = 0.0;   // 1 = output black + shadow-strength alpha
 // alpha_to_coverage_enabled. Set only on cutout (alpha_ref > 0), non-shadow pipelines under
 // MSAA; the prepass twin (fs_prepass_a2c) emits the same coverage so the masks match.
 override a2c: f32 = 0.0;
+// 1 = an alpha-blended (glass) pipeline: the shared shading damps its diffuse sky-irradiance
+// ambient so transparent cockpit canopies don't wash out to the sky (and crash auto-exposure).
+override translucent: f32 = 0.0;
 // Brightness a fully terrain-shadowed alpha-tested surface (foliage cutout) keeps.
 // Dense canopy self-occludes its sky ambient — which the world-space terrain mask
 // can't model and foliage materials inflate for the sunlit look — so shadowed
@@ -241,7 +244,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     m.spec_power = material.specular.w;
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
-        alpha_ref > 0.0,
+        alpha_ref > 0.0, translucent > 0.5,
     );
     return vec4<f32>(rgb, out_a);
 }

@@ -1009,7 +1009,10 @@ void EngineWgpu::NextFrame()
             // shader's sRGB decode; 0 = legacy gamma sun). sun_ambient/diffuse rgb are already the
             // right space for the active path (see the skyLit block above).
             cameras[i].sun_diffuse = {sunLin[0], sunLin[1], sunLin[2], skyLit};
-            cameras[i].sun_ambient = {ambLin[0], ambLin[1], ambLin[2], 0.0f};
+            // sun_ambient.rgb = flat ambient fill (still used by water + the legacy path). On the
+            // sky-lit path .w carries the skyAmbient knob, scaling the DIRECTIONAL SH sky-irradiance
+            // ambient the lit-mesh/terrain shaders now use in place of the flat rgb.
+            cameras[i].sun_ambient = {ambLin[0], ambLin[1], ambLin[2], skyLit > 0.5f ? _sky.skyAmbient : 0.0f};
             cameras[i].sun_dir_world = {sunDir.X(), sunDir.Y(), sunDir.Z(), 0.0f};
             if (shadowActive)
             {

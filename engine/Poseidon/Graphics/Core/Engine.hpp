@@ -810,7 +810,7 @@ class Engine : public IGraphicsEngine
     /// instead of cutting off). `resolution` is the per-cascade depth-map size.
     struct ShadowMapTuning
     {
-        bool enabled = false;
+        bool enabled = true;
         float darkness = 0.35f;
         int cascadeCount = 4;
         float distanceCoef = 1.00f; // shadows reach the full view distance (frustum tiers)
@@ -1068,8 +1068,8 @@ class Engine : public IGraphicsEngine
         // sun = sunIntensity*exposure*transmittance(camAlt->sun) (reddens at sunset, -> 0 below
         // horizon), on the same physical radiance scale as the sky/fog. Off = legacy GL33 sun.
         // A toggle for A/B while the look is re-tuned. See lighting.wgsl / EngineWgpu PushFrame.
-        bool skyLighting = false;                          // atmosphere-driven surface sun/ambient
-        float skyAmbient = 0.35f;                          // non-physical ambient fill fraction (no GI): engine ToD ambient x this x sun scale. ~0.2-0.3 keeps interiors/shadows readable; real sky irradiance later
+        bool skyLighting = true;                           // atmosphere-driven surface sun/ambient
+        float skyAmbient = 0.35f;                          // scale on the DIRECTIONAL SH sky-irradiance ambient (objects/terrain sample the env map per normal). Physical now, so expect to re-tune this in the planned sky/tonemap pass
         // Drive the atmosphere look (exposure/sunIntensity/rayleigh/mie/ozone/turbidity/
         // sun radius/night intensity) from the per-time-of-day preset table each frame,
         // like the tonemap grade. Off = hold the Sky tab's manually edited values so the
@@ -1125,9 +1125,9 @@ class Engine : public IGraphicsEngine
         float fadeStart = 589.0f;
         float fadeEnd = 865.0f;
         float warpAmp = 2.52f;       // low-frequency domain warp (m) that de-tiles the field
-        float specPower = 168.0f;    // sun-glint sharpness
-        float specIntensity = 5.71f; // sun-glint brightness (HDR, blooms)
-        float alpha = 0.60f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
+        float specPower = 110.0f;    // sun-glint sharpness
+        float specIntensity = 0.52f; // sun-glint brightness (HDR, blooms)
+        float alpha = 0.65f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
         // Sun shadow: terrain heightfield + CSM occlusion removes the sun glint and
         // direct-sun sheen where the water is shadowed; shadowDim additionally darkens
         // the whole shadowed surface (0 = physical sun-only removal, 1 = strong artistic).
@@ -1138,19 +1138,19 @@ class Engine : public IGraphicsEngine
         // coast is a soft wash over the wet beach, not a hard clip line.
         float shallowColor[3] = {0.126f, 0.252f, 0.279f}; // turquoise shallows (gamma-space)
         float deepColor[3] = {0.014f, 0.062f, 0.108f};    // dark blue depths
-        float colorExt = 0.062f;  // 1/m: how fast the tint saturates to deepColor with depth
-        float coastFade = 0.38f;  // m of column depth over which the shore ramps transparent->opaque
+        float colorExt = 0.043f;  // 1/m: how fast the tint saturates to deepColor with depth
+        float coastFade = 0.09f;  // m of column depth over which the shore ramps transparent->opaque
         // Coast foam + swash (Stage 2c): a churning foam band at the waterline, and a gentle
         // oscillation of the near-shore water edge in/out over the wet beach. Cosmetic only.
-        float foamWidth = 3.00f;   // m of column depth the foam band spans (peaks ~1/4 in)
-        float foamIntensity = 0.13f;// foam brightness / coverage
+        float foamWidth = 1.12f;   // m of column depth the foam band spans (peaks ~1/4 in)
+        float foamIntensity = 0.16f;// foam brightness / coverage
         float swashAmp = 0.47f;    // m the near-shore waterline oscillates in/out
         float swashSpeed = 0.018f; // swash cycles per second (very slow = long, lazy wash)
         // Terrain-side wet/intertidal band: near-flat ground just above the (swash-moved) sea
         // level reads as damp sand (darker albedo), registering with the water's edge. Shared
         // by the terrain shader via WgrTerrainParams. wetDarken = 1 disables it.
-        float wetHeight = 1.10f;   // m above sea level the damp band reaches
-        float wetDarken = 0.56f;   // albedo multiplier in the band (1 = no darkening / off)
+        float wetHeight = 0.26f;   // m above sea level the damp band reaches
+        float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening / off)
     };
     // True on backends with a GPU water renderer (wgpu with water enabled); gates the tab.
     virtual bool SupportsWater() const { return false; }

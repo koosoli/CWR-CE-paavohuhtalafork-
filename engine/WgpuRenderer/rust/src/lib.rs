@@ -717,6 +717,7 @@ impl Renderer {
             heightmap_gen,
             &conform_params,
             self.sky.froxel_view(),
+            self.sky.sh_buffer(),
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
@@ -913,6 +914,12 @@ impl Renderer {
                 &shadow_mask_view,
                 self.gfx3d.shadow_sample_view(),
             );
+            // Bake the disc-free sky reflection env map (equirect) from the fresh uniform + LUTs, so
+            // the water surface can reflect this frame's sky (Stage 4a). Cheap; before the sky pass.
+            self.sky.render_env(&mut encoder);
+            // Project the env map into SH-9 diffuse sky irradiance (object + terrain ambient). Reads
+            // the fresh env; the camera group already binds the resulting buffer (frame binding 9).
+            self.sky.render_sh(&mut encoder);
             encoder.push_debug_group("wgr_sky");
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("wgr_sky"),
@@ -1252,10 +1259,18 @@ impl Renderer {
             // depth-resolve run before this segment's colour pass.
             let has_water = seg_ops.iter().any(|o| matches!(o, Plan3dOp::Water(_)));
             if has_water && !resolved {
+                // Water reconstructs the seabed from the FARTHEST-sample depth resolve (not the
+                // Hi-Z near resolve): a nearest resolve reads A2C foliage/rotor edges as the seabed
+                // and rings them with foam. Record that resolve, then point water at it.
+                self.gfx3d.resolve_water_depth(&mut encoder);
                 let dgen = self.gfx3d.depth_gen();
-                if let Some(dv) = self.gfx3d.depth_sample_view() {
+                if let Some(dv) = self.gfx3d.water_depth_view() {
                     self.water.set_depth_view(&self.device, dv, dgen);
                 }
+                // Lend Sky's reflection env map to water (Stage 4a). The env texture never resizes,
+                // so gen 0 binds it once; a no-op thereafter.
+                self.water
+                    .set_env_view(&self.device, self.sky.env_view(), 0);
                 if let Some(cam) = self.gfx3d.camera_bind() {
                     encoder.push_debug_group("wgr_water");
                     let mut wpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

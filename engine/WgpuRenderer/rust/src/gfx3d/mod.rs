@@ -539,6 +539,18 @@ impl CameraGroup {
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
+                // SH-9 sky-irradiance coefficients (Sky-owned, lent by buffer), for directional sky
+                // ambient on the lit-mesh + terrain fragment shaders (frame::sky_irradiance).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 9,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(9 * 16),
+                    },
+                    count: None,
+                },
             ],
         });
         let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -611,6 +623,7 @@ impl CameraGroup {
         mask_view: &wgpu::TextureView,
         mask_gen: u64,
         froxel_view: &wgpu::TextureView,
+        sky_sh_buf: &wgpu::Buffer,
     ) {
         let needed = count as u64 * self.stride;
         let grow = self.cap < needed || self.buf.is_none();
@@ -672,6 +685,10 @@ impl CameraGroup {
                     wgpu::BindGroupEntry {
                         binding: 8,
                         resource: wgpu::BindingResource::Sampler(&self.mask_sampler),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 9,
+                        resource: sky_sh_buf.as_entire_binding(),
                     },
                 ],
             }));
@@ -975,7 +992,9 @@ struct DepthResolve {
 }
 
 impl DepthResolve {
-    fn new(device: &wgpu::Device, sample_count: u32) -> Self {
+    // `reduce_far` picks the per-sample reduction: false = nearest (Hi-Z occlusion), true = farthest
+    // (the true seabed for water depth — skips A2C foliage/rotor edges that would ring as foam).
+    fn new(device: &wgpu::Device, sample_count: u32, reduce_far: bool) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgr_depth_resolve"),
             source: wgpu::ShaderSource::Wgsl(include_str!("depth_resolve.wgsl").into()),
@@ -998,9 +1017,12 @@ impl DepthResolve {
             bind_group_layouts: &[Some(&layout)],
             immediate_size: 0,
         });
-        // The FS unrolls a per-sample max over the source; the sample count is a spec constant so
-        // the loop bound resolves at pipeline creation.
-        let constants = [("sample_count", sample_count as f64)];
+        // The FS unrolls a per-sample reduction over the source; the sample count + reduction
+        // direction are spec constants so the loop bound + branch resolve at pipeline creation.
+        let constants = [
+            ("sample_count", sample_count as f64),
+            ("reduce_far", if reduce_far { 1.0 } else { 0.0 }),
+        ];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgr_depth_resolve_pipeline"),
             layout: Some(&pl),
@@ -1153,12 +1175,18 @@ pub struct Gfx3d {
     // WebGPU cannot resolve depth via a render-pass resolve_target and consumers want a plain
     // single-sample texture. Rebuilt with the depth target.
     depth_sample_view: Option<wgpu::TextureView>,
-    // Bumped whenever depth_sample_view is (re)created (resize), so external consumers that
-    // build their own bind group over it (e.g. Water) rebuild only when it actually changed.
+    // Farthest-sample counterpart of depth_sample_view for water's seabed reconstruction: at 1x the
+    // same depth aspect; under MSAA a SEPARATE far-resolve (min under reversed-Z) so A2C foliage /
+    // rotor edges don't poison the water column depth into a foam ring. Rebuilt with the depth target.
+    water_depth_view: Option<wgpu::TextureView>,
+    // Bumped whenever the sampleable depth views are (re)created (resize), so external consumers that
+    // build their own bind group over them (e.g. Water) rebuild only when they actually changed.
     depth_gen: u64,
-    // MSAA depth resolve (Some only when sample_count > 1). A tiny fullscreen pass reduces the
-    // multisampled depth to a single-sample Depth32Float target that feeds depth_sample_view.
+    // MSAA depth resolves (Some only when sample_count > 1). Tiny fullscreen passes reducing the
+    // multisampled depth to single-sample Depth32Float: `depth_resolve` = nearest (Hi-Z, feeds
+    // depth_sample_view); `depth_resolve_far` = farthest (water, feeds water_depth_view).
     depth_resolve: Option<DepthResolve>,
+    depth_resolve_far: Option<DepthResolve>,
     // Single-sample depth-stencil for the post-tonemap UI phase (Some only when sample_count > 1).
     // That phase composites display-referred 2D to the 1x swapchain, so it can't share the MSAA
     // scene depth (mismatched sample counts). Cleared per use; world occlusion isn't carried into
@@ -1597,9 +1625,11 @@ impl Gfx3d {
             surface_format,
             sample_count,
         );
-        // MSAA depth resolve: built only when the scene is multisampled. Reduces the MSAA depth
-        // to a single-sample texture the Hi-Z build (+ future SSAO / water opacity) can sample.
-        let depth_resolve = (sample_count > 1).then(|| DepthResolve::new(device, sample_count));
+        // MSAA depth resolves: built only when the scene is multisampled. Reduce the MSAA depth to
+        // single-sample textures — nearest for the Hi-Z build, farthest for water's seabed depth.
+        let depth_resolve = (sample_count > 1).then(|| DepthResolve::new(device, sample_count, false));
+        let depth_resolve_far =
+            (sample_count > 1).then(|| DepthResolve::new(device, sample_count, true));
 
         Gfx3d {
             cameras,
@@ -1626,8 +1656,10 @@ impl Gfx3d {
             depth_size: (0, 0),
             gpu_color_group1_bind: None,
             depth_sample_view: None,
+            water_depth_view: None,
             depth_gen: 0,
             depth_resolve,
+            depth_resolve_far,
             ui_depth: None,
             hiz: hiz::HiZ::new(device),
             // GPU Hi-Z occlusion: default on when GPU-driven is on (the point of this feature),
@@ -1807,12 +1839,18 @@ impl Gfx3d {
         // the shadow-darken pass, and only under MSAA. Drives the shader's coverage path and the
         // pipeline's alpha_to_coverage_enabled below.
         let a2c = self.foliage_a2c && key.blend == WgrBlend::Opaque as u8 && alpha_ref > 0.0;
+        // Alpha-blended draws (glass canopies) are flagged so the shared shading damps their diffuse
+        // sky-irradiance ambient — a transparent surface isn't a diffuse reflector, and a full sky
+        // wash blows out cockpit glass (and spikes auto-exposure). Only Alpha; Additive effects and
+        // the opaque/cutout GPU-driven set stay at the default 0.
+        let translucent = if key.blend == WgrBlend::Alpha as u8 { 1.0 } else { 0.0 };
         let constants = [
             ("alpha_ref", alpha_ref),
             ("is_shadow", is_shadow),
             ("depth_bias", depth_bias),
             ("linear", linear),
             ("a2c", if a2c { 1.0 } else { 0.0 }),
+            ("translucent", translucent),
         ];
 
         // Shadow draws exclude already-shadowed pixels via the stencil: test EQUAL
@@ -2325,9 +2363,16 @@ impl Gfx3d {
             // MSAA: the depth-aspect view above is multisampled — bind it as the resolve pass'
             // source, and hand its single-sample resolved output to the Hi-Z / sampling path.
             self.depth_sample_view = Some(dr.resize(device, size.0, size.1, &depth_aspect));
+            // Water gets the farthest-sample resolve (its own target) off the same MSAA source.
+            self.water_depth_view = self
+                .depth_resolve_far
+                .as_mut()
+                .map(|dr_far| dr_far.resize(device, size.0, size.1, &depth_aspect));
         } else {
-            // 1x: consumers sample the depth target's own depth aspect directly.
-            self.depth_sample_view = Some(depth_aspect);
+            // 1x: consumers sample the depth target's own depth aspect directly (exact — a single
+            // sample, so no A2C edge poisoning; water and Hi-Z share it).
+            self.depth_sample_view = Some(depth_aspect.clone());
+            self.water_depth_view = Some(depth_aspect);
         }
         self.depth = Some((texture, view));
         // View-space normal G-buffer, matched to the depth size and sample count (it is the
@@ -2380,11 +2425,20 @@ impl Gfx3d {
         self.depth.as_ref().map(|(_, v)| v)
     }
 
-    // The single-sample sampleable scene depth (opaque prepass): the 1x depth-aspect, or the
-    // resolved Depth32Float under MSAA. Framebuffer-resolution; consumers textureLoad it. Paired
-    // with depth_gen() so a borrower rebuilds its bind group only when this view is recreated.
-    pub fn depth_sample_view(&self) -> Option<&wgpu::TextureView> {
-        self.depth_sample_view.as_ref()
+    // Farthest-sample sceen depth for water's seabed reconstruction (see the field comment). Under
+    // MSAA this is stale until resolve_water_depth records the far-resolve; at 1x it's the live 1x
+    // depth aspect. Paired with depth_gen() for bind-group rebuild tracking.
+    pub fn water_depth_view(&self) -> Option<&wgpu::TextureView> {
+        self.water_depth_view.as_ref()
+    }
+
+    // Record the water far-resolve (MSAA depth → single-sample farthest). No-op at 1x (water_depth_view
+    // is the live depth aspect). Called from the frame graph right before the water pass, independent
+    // of Hi-Z occlusion (which owns the separate nearest resolve), so water always samples fresh depth.
+    pub fn resolve_water_depth(&self, encoder: &mut wgpu::CommandEncoder) {
+        if let Some(dr_far) = self.depth_resolve_far.as_ref() {
+            dr_far.resolve(encoder);
+        }
     }
 
     pub fn depth_gen(&self) -> u64 {
@@ -3007,6 +3061,7 @@ impl Gfx3d {
         heightmap_gen: u64,
         conform_params: &crate::terrain::TerrainConformParams,
         froxel_view: &wgpu::TextureView,
+        sky_sh_buf: &wgpu::Buffer,
     ) {
         // Lend the terrain heightmap + its sampling params to the mesh conform group
         // (group 4) so vs_main can conform ClipLand vegetation to SurfaceY per vertex.
@@ -3034,6 +3089,7 @@ impl Gfx3d {
                 shadow_mask_view,
                 shadow_mask_gen,
                 froxel_view,
+                sky_sh_buf,
             );
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {

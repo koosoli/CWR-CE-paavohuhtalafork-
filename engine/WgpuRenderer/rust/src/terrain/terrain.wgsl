@@ -7,7 +7,7 @@
 // Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
 // pipeline via the frame module, so terrain receives the same CSM shadows and
 // sun lighting.
-#import frame::{frame, reverse_z, fog_factor, apply_fog}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -298,6 +298,11 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
             sun_ambient = srgb_to_linear(sun_ambient);
         }
         fog_color = srgb_to_linear(fog_color);
+    }
+    // Sky-based lighting: replace the flat ambient with DIRECTIONAL sky irradiance (SH-9 env
+    // projection, per surface normal), scaled by the skyAmbient knob in sun_ambient.w.
+    if (sky_lit) {
+        sun_ambient = sky_irradiance(n) * frame.sun_ambient.w;
     }
     let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) + sun_ambient;
     // HDR keeps radiance uncapped into the float target; LDR saturates like GL33.

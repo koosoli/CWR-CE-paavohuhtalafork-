@@ -46,9 +46,15 @@ struct WaterParams {
 const GRID_N: f32 = 32.0;
 
 @group(1) @binding(0) var<uniform> wp: WaterParams;
-// Opaque scene depth from the prepass (single-sample: 1x aspect or MSAA resolved). Used to
-// reconstruct the seabed and hence the water column depth for depth-based colour + soft shore.
+// Opaque scene depth from the prepass, farthest-sample resolved (single-sample: 1x aspect or the
+// MSAA far-resolve). Used to reconstruct the seabed and hence the water column depth for depth-based
+// colour + soft shore + foam. The FARTHEST sample matters: a nearest resolve would read A2C foliage
+// / rotor edges as the "seabed", collapsing water_depth to ~0 and ringing them with foam.
 @group(1) @binding(1) var scene_depth: texture_depth_2d;
+// Sky reflection environment map (equirect, linear radiance) + its sampler (U wraps, V clamps),
+// for the Stage-4a real sky reflection: sampled in the reflected view direction (HDR path only).
+@group(1) @binding(2) var sky_env: texture_2d<f32>;
+@group(1) @binding(3) var sky_env_samp: sampler;
 
 // Hard-coded wave set (per-map authoring can come later). Each: dir.xy (un-normalised),
 // wavelength (m), amplitude (m). Gentle by design — the amplitudes sum to ~0.25 m, the
@@ -238,6 +244,15 @@ fn foam_noise(p_world: vec2<f32>, t: f32) -> f32 {
     return v;
 }
 
+// Equirect lookup into the sky reflection env map. Matches fs_sky_env's convention in sky.wgsl:
+// u = azimuth (atan2(z, x)/2pi + 0.5, U-wrapped), v = 0 at zenith .. 1 at nadir (acos(y)/pi).
+// `dir` is a world-space direction. Returns linear sky radiance.
+fn sky_env_sample(dir: vec3<f32>) -> vec3<f32> {
+    let u = 0.5 + atan2(dir.z, dir.x) / TWO_PI;
+    let v = acos(clamp(dir.y, -1.0, 1.0)) / (TWO_PI * 0.5);
+    return textureSampleLevel(sky_env, sky_env_samp, vec2<f32>(u, v), 0.0).rgb;
+}
+
 @fragment
 fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Receiver-plane derivatives for the CSM bias must be taken in uniform control flow.
@@ -254,9 +269,17 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // sheen and (via shadow_dim) darkens the shadowed water — e.g. a headland's shadow.
     let world_y = in.world_pos.y + frame.cam_pos.y;
     let csm_s = shadow_strength(in.world_pos, n, in.fog, dwx, dwy);
-    let ter_s = terrain_sun_shadow(in.base_xz, world_y) * in.fog;
+    // Raw terrain sun-occlusion (1 = a ridge blocks the sun above this point) — reused below to
+    // occlude the sky reflection where a hill stands between the water and the sun.
+    let ter_raw = terrain_sun_shadow(in.base_xz, world_y);
+    let ter_s = ter_raw * in.fog;
     let sun_shadow = max(csm_s, ter_s);
-    let sun_vis = 1.0 - sun_shadow;
+    // A sub-horizon sun casts no shadow, so shadowing alone can't remove its glint/sheen before
+    // sunrise (the water was reading a bright specular reflection of a sun still under the horizon).
+    // Gate the DIRECT sun on its elevation: l.y = surface->sun.y = sin(elevation), 0 at the horizon.
+    // Ambient/sky (twilight tint) is untouched, so the pre-dawn colour still comes through.
+    let sun_up = smoothstep(0.0, 0.06, l.y);
+    let sun_vis = (1.0 - sun_shadow) * sun_up;
 
     var sun_diffuse = frame.sun_diffuse.rgb;
     var sun_ambient = frame.sun_ambient.rgb;
@@ -272,8 +295,8 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     }
 
     // Depth-based body colour: turquoise shallows -> dark blue depths, saturating with the water
-    // column depth like Beer-Lambert extinction. Reconstructed from the opaque prepass depth.
-    // (Constants hard-coded for Stage 2 increment 1; move to WgrWaterParams/Water tab next.)
+    // column depth like Beer-Lambert extinction. Reconstructed from the (farthest-resolved) opaque
+    // prepass depth. Colours/extinction are live WgrWaterParams (Water tab).
     let water_depth = seabed_depth(in.clip.xy, in.world_pos);
     var shallow = wp.shallow_color.rgb;
     var deep = wp.deep_color.rgb;
@@ -288,13 +311,33 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let ndl = max(dot(n, l), 0.0);
     var rgb = body * (sun_ambient + sun_diffuse * ndl * 0.15 * sun_vis);
 
-    // Fresnel toward the horizon/sky tint (a cheap reflection stand-in until Stage 4's
-    // real sky reflection): near-grazing water lightens and reads reflective.
+    // Fresnel toward the horizon/sky tint (a cheap reflection stand-in until Stage 4's real sky
+    // reflection): near-grazing water lightens and reads reflective.
     let ndv = max(dot(n, v), 0.0);
     let f0 = 0.02;
     // max() guards pow() against a tiny negative base from normalize() rounding (NaN).
     let fresnel = f0 + (1.0 - f0) * pow(max(1.0 - ndv, 0.0), 5.0);
-    rgb = mix(rgb, fog_color, fresnel);
+    // Stage 4a: reflect the REAL sky. Sample the sky env map (disc-free atmosphere radiance) in the
+    // reflected view direction — so night water reflects a genuinely dark sky, and only the fragments
+    // that geometrically reflect toward the sun/horizon pick up its glow (no uniform pink wash). The
+    // LDR-direct reference path has no linear env, so it keeps the sun-elevation-dimmed fog_color
+    // stand-in. reflect(incident, n): incident = camera->surface world dir = normalize(world_pos).
+    var refl: vec3<f32>;
+    if (linear > 0.5) {
+        let refl_dir = reflect(normalize(in.world_pos), n);
+        var sky_refl = sky_env_sample(refl_dir);
+        // The env map has no terrain, so a grazing reflection toward the low sun mirrors the bright
+        // horizon glow even where a hill actually blocks that direction (a mountain between the water
+        // and the sun). Approximate the missing occlusion with the terrain sun-shadow: where the sun
+        // is ridge-occluded here AND the reflection points toward it, fade the reflected glow to the
+        // (shadowed) sky ambient. A full fix is Stage 4b — reflecting the actual terrain.
+        let toward_sun = smoothstep(0.0, 0.4, dot(refl_dir, l));
+        sky_refl = mix(sky_refl, sun_ambient, ter_raw * toward_sun);
+        refl = sky_refl;
+    } else {
+        refl = mix(sun_ambient, fog_color, sun_up);
+    }
+    rgb = mix(rgb, refl, fresnel);
 
     // Sharp HDR sun glint (Blinn-Phong); un-clamped so the bloom pass catches it. The
     // sun is occluded in shadow, so the glint vanishes there.
@@ -331,7 +374,10 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let ft = eff_depth / max(wp.foam_width, 1e-4);
     let foam_band = smoothstep(0.0, 0.25, ft) * (1.0 - smoothstep(0.25, 1.0, ft));
     let foam = clamp(foam_band * foam_noise(in.base_xz, wp.time) * wp.foam_intensity, 0.0, 1.0);
-    rgb = mix(rgb, vec3<f32>(1.0), foam);
+    // Foam is bright diffuse spray, not an emitter: light it by the sky ambient + direct sun (where
+    // the water isn't shadowed) so it goes dim at night instead of glowing white in the dark.
+    let foam_color = sun_ambient + sun_diffuse * sun_vis;
+    rgb = mix(rgb, foam_color, foam);
 
     // Base opacity, Fresnel-opaque at grazing angles (where real water is a mirror) so
     // the seabed only shows through looking down. A soft shoreline fade dissolves the water

@@ -178,7 +178,7 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     m.spec_power = sm.specular.w;
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
-        sm.alpha_ref > 0.0,
+        sm.alpha_ref > 0.0, false, // GPU-driven set is opaque/cutout — never the glass path
     );
     return vec4<f32>(rgb, out_a);
 }

@@ -317,24 +317,22 @@ fn ign(p: vec2<f32>) -> f32 {
     return fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
 }
 
-@fragment
-fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
-    let dir = normalize(in.ray_dir);
+// Linear sky radiance along a world direction: the atmosphere march + night-faded horizon
+// haze + the authored night-sky floor, WITHOUT the sun disc (callers that want the disc add it
+// against the true, unfloored `dir`). Shared by the fullscreen sky (fs_sky) and the reflection
+// environment map (fs_sky_env), so the water surface reflects the exact same sky.
+fn sky_radiance(dir: vec3<f32>) -> vec3<f32> {
     let sun = normalize(sky.sun_dir.xyz);
     let planet_r = sky.params.z;
     let top_r = planet_r + sky.params.w;
     let cam_alt = max(sky.night_zenith.w, 0.0);
     let pos = vec3<f32>(0.0, planet_r + cam_alt, 0.0);
 
-    let ground = ray_sphere(pos, dir, planet_r);
-    let hit_ground = ground.x > 0.0;
-
     // Sun radiance scale x the authored exposure (radiance -> scene-referred).
     let radiance = sky.sun_dir.w * sky.params.y;
 
-    // March a horizon-floored direction so the sky BELOW the horizon smoothly
-    // continues the horizon colour instead of darkening into an ugly band; the
-    // terrain draws over it. Sun disc / ground tests still use the true `dir`.
+    // March a horizon-floored direction so the sky BELOW the horizon smoothly continues the
+    // horizon colour instead of darkening into an ugly band (the terrain / water draws over it).
     let march_dir = normalize(vec3<f32>(dir.x, max(dir.y, 0.0), dir.z));
     let atmo = ray_sphere(pos, march_dir, top_r);
     var color = vec3<f32>(0.0);
@@ -342,9 +340,8 @@ fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
         color = raymarch_sky(pos, march_dir, sun, atmo.y) * radiance;
     }
 
-    // Night-faded horizon haze: blend toward the scene fog colour near the horizon so
-    // the fogged distant terrain and the sky meet without a seam (interim aerial
-    // perspective, plan Stage 4). Fades out at night so it stops lighting the dark sky.
+    // Night-faded horizon haze: blend toward the scene fog colour near the horizon so the fogged
+    // distant terrain and the sky meet without a seam. Fades out at night (dark sky).
     let haze_strength = sky.fog_color.w * (1.0 - sky.ground_albedo.w);
     if (haze_strength > 0.0) {
         var fog = sky.fog_color.rgb;
@@ -355,39 +352,65 @@ fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
         color = mix(color, fog, clamp(th, 0.0, 1.0));
     }
 
-    // Procedural sun disc, attenuated by atmospheric transmittance (reddens at low sun).
-    // Only when the view ray misses the planet.
-    if (!hit_ground) {
-        let cos_sun = dot(dir, sun);
-        let cos_radius = cos(sky.params.x);
-        if (cos_sun > cos_radius) {
-            let sun_t = sample_transmittance(pos, sun);
-            let edge = clamp((cos_sun - cos_radius) / (1.0 - cos_radius), 0.0, 1.0);
-            let limb = 0.4 + 0.6 * sqrt(edge);
-            color = color + radiance * sun_t * limb;
-        }
-    }
-
-    // Night-sky floor: an authored deep-blue that fills in as the sun drops below the
-    // horizon (blended by sun altitude), so twilight/night settle into a believable
-    // blue instead of the physical model's near-black. Added, so the sunset glow and
-    // the emerging night coexist. See docs/procedural-sky-plan.md Stage 6.
+    // Night-sky floor: an authored deep-blue that fills in as the sun drops below the horizon
+    // (blended by sun altitude), so twilight/night settle into a believable blue instead of the
+    // physical model's near-black. See docs/procedural-sky-plan.md Stage 6.
     let night_blend = 1.0 - smoothstep(sky.night_params.y, sky.night_params.x, sun.y);
     if (night_blend > 0.0) {
         let night = mix(sky.night_horizon.rgb, sky.night_zenith.rgb, clamp(dir.y, 0.0, 1.0));
         color = color + night * sky.night_params.z * night_blend;
     }
 
-    color = max(color, vec3<f32>(0.0));
+    return max(color, vec3<f32>(0.0));
+}
 
-    // Linear HDR path: hand linear radiance to the tonemap resolve. LDR-direct: no
-    // resolve runs, so self-tonemap (exposure already baked into the radiance scale).
+@fragment
+fn fs_sky(in: VsOut) -> @location(0) vec4<f32> {
+    let dir = normalize(in.ray_dir);
+    let sun = normalize(sky.sun_dir.xyz);
+    let planet_r = sky.params.z;
+    let cam_alt = max(sky.night_zenith.w, 0.0);
+    let pos = vec3<f32>(0.0, planet_r + cam_alt, 0.0);
+
+    var color = sky_radiance(dir);
+
+    // Procedural sun disc, attenuated by atmospheric transmittance (reddens at low sun). Only when
+    // the view ray misses the planet. Added here (not in sky_radiance) so the water reflection —
+    // which uses its own analytic glint — doesn't double up on the sun.
+    let ground = ray_sphere(pos, dir, planet_r);
+    if (ground.x <= 0.0) {
+        let cos_sun = dot(dir, sun);
+        let cos_radius = cos(sky.params.x);
+        if (cos_sun > cos_radius) {
+            let sun_t = sample_transmittance(pos, sun);
+            let edge = clamp((cos_sun - cos_radius) / (1.0 - cos_radius), 0.0, 1.0);
+            let limb = 0.4 + 0.6 * sqrt(edge);
+            let radiance = sky.sun_dir.w * sky.params.y;
+            color = color + radiance * sun_t * limb;
+        }
+    }
+
+    // Linear HDR path: hand linear radiance to the tonemap resolve. LDR-direct: no resolve runs,
+    // so self-tonemap (exposure already baked into the radiance scale).
     if (sky.output.x < 0.5) {
         color = hable(color);
         color = linear_to_srgb(color);
         color += (ign(in.clip.xy) - 0.5) / 255.0;
     }
     return vec4<f32>(color, 1.0);
+}
+
+// Reflection environment map: bakes sky_radiance into an equirectangular (lat-long) texture the
+// water surface samples in its reflected view direction. Always LINEAR radiance (disc-free), so
+// water Fresnel-mixes it directly on the HDR path; the fullscreen sky/tonemap are unaffected.
+// UV convention (must match water.wgsl's dir_to_equirect): u = azimuth, v = 0 at zenith .. 1 nadir.
+@fragment
+fn fs_sky_env(in: VsOut) -> @location(0) vec4<f32> {
+    let azimuth = (in.uv.x - 0.5) * (2.0 * PI);
+    let polar = in.uv.y * PI;              // 0 = up, PI = down
+    let sp = sin(polar);
+    let dir = vec3<f32>(sp * cos(azimuth), cos(polar), sp * sin(azimuth));
+    return vec4<f32>(sky_radiance(dir), 1.0);
 }
 
 // ---- Aerial-perspective froxel volume (fill) ---------------------------------

@@ -89,6 +89,43 @@ struct TerrainShadowMap {
 @group(0) @binding(7) var froxel_tex: texture_3d<f32>;
 @group(0) @binding(8) var froxel_samp: sampler;
 
+// Diffuse sky irradiance as 9 spherical-harmonic RGB coefficients, projected from the sky
+// reflection env map each frame (sky_sh.wgsl / Sky::render_sh). The lit-mesh + terrain fragment
+// shaders evaluate directional ambient from these on the sky-lit path (sky_irradiance), replacing
+// the old flat ambient fill. rgb per coeff; w padding.
+struct SkySh {
+    c: array<vec4<f32>, 9>,
+};
+@group(0) @binding(9) var<uniform> sky_sh: SkySh;
+
+// Diffuse sky irradiance for a world-space surface normal, from the SH-9 sky projection
+// (Ramamoorthi, "An Efficient Representation for Irradiance Environment Maps"), divided by PI so
+// it is the Lambertian ambient reflectance factor (final ambient = albedo * sky_irradiance * scale).
+// A future sky-visibility (AO) term multiplies this per point by the fraction of sky it can see.
+fn sky_irradiance(n: vec3<f32>) -> vec3<f32> {
+    let l00 = sky_sh.c[0].rgb;
+    let l1m1 = sky_sh.c[1].rgb;
+    let l10 = sky_sh.c[2].rgb;
+    let l11 = sky_sh.c[3].rgb;
+    let l2m2 = sky_sh.c[4].rgb;
+    let l2m1 = sky_sh.c[5].rgb;
+    let l20 = sky_sh.c[6].rgb;
+    let l21 = sky_sh.c[7].rgb;
+    let l22 = sky_sh.c[8].rgb;
+    let x = n.x;
+    let y = n.y;
+    let z = n.z;
+    let c1 = 0.429043;
+    let c2 = 0.511664;
+    let c3 = 0.743125;
+    let c4 = 0.886227;
+    let c5 = 0.247708;
+    let e = c1 * l22 * (x * x - y * y) + c3 * l20 * (z * z) + c4 * l00 - c5 * l20
+        + 2.0 * c1 * (l2m2 * x * y + l21 * x * z + l2m1 * y * z)
+        + 2.0 * c2 * (l11 * x + l1m1 * y + l10 * z);
+    return max(e, vec3<f32>(0.0)) * (1.0 / 3.14159265359);
+}
+
 // Aerial-perspective fog for a camera-relative fragment position. The froxel volume
 // supplies only the fog COLOUR — the physically scattered airlight along this view ray,
 // so it reddens toward the sun and meets the sky seamlessly at the horizon. The blend

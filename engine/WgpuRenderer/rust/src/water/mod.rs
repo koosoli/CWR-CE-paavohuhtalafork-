@@ -15,11 +15,16 @@ const GRID_N: u32 = 32;
 pub struct Water {
     params_ubo: wgpu::Buffer,
     group1_layout: wgpu::BindGroupLayout,
-    // Holds group1 = { params UBO, scene depth }. Seeded with a 1x1 dummy depth (which the bind
-    // group keeps alive) until set_depth_view swaps in the real scene depth on the first resize.
+    // Holds group1 = { params UBO, scene depth, sky env map, env sampler }. The current depth +
+    // env views (and the sampler) are retained so either setter can rebuild the combined bind
+    // group without the other's view going stale; seeded with 1x1 dummies.
     group1_bind: wgpu::BindGroup,
-    // depth_sample_view generation the current group1_bind was built against (u64::MAX = dummy).
+    depth_view: wgpu::TextureView,
+    env_view: wgpu::TextureView,
+    env_sampler: wgpu::Sampler,
+    // Generations the current group1_bind was built against (u64::MAX = still the dummy).
     depth_gen: u64,
+    env_gen: u64,
     grid_vbuf: wgpu::Buffer,
     grid_ibuf: wgpu::Buffer,
     grid_index_count: u32,
@@ -65,6 +70,25 @@ impl Water {
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
+                    count: None,
+                },
+                // Sky reflection environment map (equirect, Rgba16Float linear radiance) + its
+                // sampler, for the Stage-4a real sky reflection. Sampled in the reflected view
+                // direction. A 1x1 dummy seeds it until Sky's env view is bound each frame.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
@@ -124,7 +148,41 @@ impl Water {
             })
             .create_view(&wgpu::TextureViewDescriptor::default());
 
-        let group1_bind = build_group1(device, &group1_layout, &params_ubo, &dummy_depth);
+        // 1x1 dummy env map + its sampler so group1 is valid before Sky's env view is bound. The
+        // sampler wraps in U (equirect azimuth seam) and clamps V (poles). Linear filter.
+        let dummy_env = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgr_water_dummy_env"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba16Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let env_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_water_env_sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let group1_bind = build_group1(
+            device,
+            &group1_layout,
+            &params_ubo,
+            &dummy_depth,
+            &dummy_env,
+            &env_sampler,
+        );
 
         let (grid_vbuf, grid_ibuf, grid_index_count) = build_grid(device);
 
@@ -233,7 +291,11 @@ impl Water {
             params_ubo,
             group1_layout,
             group1_bind,
+            depth_view: dummy_depth,
+            env_view: dummy_env,
+            env_sampler,
             depth_gen: u64::MAX,
+            env_gen: u64::MAX,
             grid_vbuf,
             grid_ibuf,
             grid_index_count,
@@ -252,8 +314,31 @@ impl Water {
         if self.depth_gen == view_gen {
             return;
         }
-        self.group1_bind = build_group1(device, &self.group1_layout, &self.params_ubo, depth);
+        self.depth_view = depth.clone();
         self.depth_gen = view_gen;
+        self.rebuild_group1(device);
+    }
+
+    // Point group1 at Sky's reflection env map (Stage 4a). The env texture is created once (never
+    // resized), so `view_gen` is effectively constant and this rebuilds group1 exactly once.
+    pub fn set_env_view(&mut self, device: &wgpu::Device, env: &wgpu::TextureView, view_gen: u64) {
+        if self.env_gen == view_gen {
+            return;
+        }
+        self.env_view = env.clone();
+        self.env_gen = view_gen;
+        self.rebuild_group1(device);
+    }
+
+    fn rebuild_group1(&mut self, device: &wgpu::Device) {
+        self.group1_bind = build_group1(
+            device,
+            &self.group1_layout,
+            &self.params_ubo,
+            &self.depth_view,
+            &self.env_view,
+            &self.env_sampler,
+        );
     }
 
     pub fn set_params(&mut self, queue: &wgpu::Queue, params: WgrWaterParams) {
@@ -315,13 +400,16 @@ impl Water {
     }
 }
 
-// group1 = { water params UBO (0), opaque scene depth (1) }. Rebuilt whenever the depth view
-// changes (resize); the params UBO is stable so it just rides along.
+// group1 = { water params UBO (0), opaque scene depth (1), sky env map (2), env sampler (3) }.
+// Rebuilt whenever the depth or env view changes; the params UBO + sampler are stable so they ride
+// along.
 fn build_group1(
     device: &wgpu::Device,
     layout: &wgpu::BindGroupLayout,
     params_ubo: &wgpu::Buffer,
     depth: &wgpu::TextureView,
+    env: &wgpu::TextureView,
+    env_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgr_water_group1_bind"),
@@ -334,6 +422,14 @@ fn build_group1(
             wgpu::BindGroupEntry {
                 binding: 1,
                 resource: wgpu::BindingResource::TextureView(depth),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::TextureView(env),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::Sampler(env_sampler),
             },
         ],
     })

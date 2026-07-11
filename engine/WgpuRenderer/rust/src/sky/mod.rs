@@ -31,6 +31,20 @@ fn sky_wgsl_validates() {
     .expect("sky.wgsl validate");
 }
 
+// Same offline guard for the standalone SH-projection compute (create_shader_module'd, so it is
+// not covered by the naga_oil entry-shader compose test).
+#[test]
+fn sky_sh_wgsl_validates() {
+    let module =
+        naga::front::wgsl::parse_str(include_str!("sky_sh.wgsl")).expect("sky_sh.wgsl parse");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("sky_sh.wgsl validate");
+}
+
 // LUT resolutions. Transmittance is smooth in both axes; multiscatter is very
 // low-frequency, so a tiny map suffices (its build is the expensive one).
 const TRANSMITTANCE_W: u32 = 256;
@@ -44,6 +58,13 @@ const FROXEL_W: u32 = 32;
 const FROXEL_H: u32 = 32;
 const FROXEL_D: u32 = 32;
 const FROXEL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
+
+// Reflection environment map: an equirectangular (lat-long) bake of the disc-free sky radiance,
+// sampled by the water surface in its reflected direction (water look plan Stage 4a). The sky is
+// low-frequency, so a small map is plenty; 2:1 for the full sphere. Linear radiance (Rgba16Float).
+const ENV_W: u32 = 256;
+const ENV_H: u32 = 128;
+const ENV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 // GPU uniform for the sky pass: the pushed WgrSky (8 vec4) plus the reconstructed
 // inverse view-projection and an output-mode block. Must match `Sky` in sky.wgsl.
@@ -98,6 +119,17 @@ pub struct Sky {
     // Main fullscreen sky pipeline (targets the scene format).
     sky_pipeline: wgpu::RenderPipeline,
     sky_bind: wgpu::BindGroup,
+    // Reflection environment map: same group(0) as the sky pass (reuses sky_bind), fs_sky_env
+    // entry, baked into env_view each frame. `_tex` keeps the texture alive.
+    env_pipeline: wgpu::RenderPipeline,
+    #[allow(dead_code)]
+    env_tex: wgpu::Texture,
+    env_view: wgpu::TextureView,
+    // SH-9 projection of the env map into diffuse sky irradiance (sky_sh.wgsl). Computed each frame
+    // after the env bake; the buffer is lent to the camera group so lit meshes + terrain read it.
+    sh_pipeline: wgpu::ComputePipeline,
+    sh_bind: wgpu::BindGroup,
+    sh_buf: wgpu::Buffer,
     // LUT build pipelines (target LUT_FORMAT) + their target views/binds.
     transmittance_pipeline: wgpu::RenderPipeline,
     transmittance_bind: wgpu::BindGroup,
@@ -235,6 +267,92 @@ impl Sky {
             1,
         );
         let sky_pipeline = make_pipeline("wgr_sky", &sky_layout, "fs_sky", color_format, sample_count);
+        // Env-map bake: same group(0) layout as the sky pass, single-sample, LUT_FORMAT target.
+        let env_pipeline = make_pipeline("wgr_sky_env", &sky_layout, "fs_sky_env", ENV_FORMAT, 1);
+        let env_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_sky_env"),
+            size: wgpu::Extent3d {
+                width: ENV_W,
+                height: ENV_H,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: ENV_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let env_view = env_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // SH-9 sky-irradiance projection: reads the env map (textureLoad, non-filtering) and writes
+        // 9 vec4 RGB coefficients into sh_buf (also bound UNIFORM into the camera group). Zero-init
+        // so a read before the first bake (or on the non-sky-lit path, where it's unread) is defined.
+        let sh_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgr_sky_sh_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("sky_sh.wgsl").into()),
+        });
+        let sh_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wgr_sky_sh"),
+            contents: &[0u8; 9 * 16],
+            usage: wgpu::BufferUsages::STORAGE
+                | wgpu::BufferUsages::UNIFORM
+                | wgpu::BufferUsages::COPY_DST,
+        });
+        let sh_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_sky_sh_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Storage { read_only: false },
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let sh_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_sky_sh_bind"),
+            layout: &sh_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&env_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: sh_buf.as_entire_binding(),
+                },
+            ],
+        });
+        let sh_pipeline = {
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgr_sky_sh"),
+                bind_group_layouts: &[Some(&sh_layout)],
+                immediate_size: 0,
+            });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("wgr_sky_sh"),
+                layout: Some(&pl),
+                module: &sh_shader,
+                entry_point: Some("cs_sky_sh"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
 
         let make_lut = |label: &str, w: u32, h: u32| {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -520,6 +638,12 @@ impl Sky {
         Self {
             sky_pipeline,
             sky_bind,
+            env_pipeline,
+            env_tex,
+            env_view,
+            sh_pipeline,
+            sh_bind,
+            sh_buf,
             transmittance_pipeline,
             transmittance_bind,
             transmittance_view,
@@ -632,6 +756,58 @@ impl Sky {
         pass.set_pipeline(&self.sky_pipeline);
         pass.set_bind_group(0, &self.sky_bind, &[]);
         pass.draw(0..3, 0..1);
+    }
+
+    // Bake the disc-free sky radiance into the reflection env map (equirect) for this frame. Reuses
+    // this frame's sky uniform + LUTs (so `upload` + `render_luts` must have run first) via the same
+    // group(0) bind as the sky pass. Cheap (256x128); recorded once per frame before the water pass.
+    pub fn render_env(&self, encoder: &mut wgpu::CommandEncoder) {
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wgr_sky_env"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &self.env_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.env_pipeline);
+        pass.set_bind_group(0, &self.sky_bind, &[]);
+        pass.draw(0..3, 0..1);
+    }
+
+    // The reflection env map view, lent to the water bind group (water look plan Stage 4a).
+    pub fn env_view(&self) -> &wgpu::TextureView {
+        &self.env_view
+    }
+
+    // Project the env map into SH-9 diffuse sky irradiance for this frame. Must run after render_env
+    // (reads the freshly-baked env) and before the lit-mesh / terrain passes read `sh_buf`. One tiny
+    // dispatch. Recorded on the same encoder so wgpu barriers env-write -> read and sh-write -> read.
+    pub fn render_sh(&self, encoder: &mut wgpu::CommandEncoder) {
+        encoder.push_debug_group("wgr_sky_sh");
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("wgr_sky_sh"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.sh_pipeline);
+        pass.set_bind_group(0, &self.sh_bind, &[]);
+        pass.dispatch_workgroups(1, 1, 1);
+        drop(pass);
+        encoder.pop_debug_group();
+    }
+
+    // The SH-9 sky-irradiance buffer, lent to the camera bind group (frame group binding 9) so the
+    // lit-mesh + terrain shaders evaluate directional sky ambient (frame::sky_irradiance).
+    pub fn sh_buffer(&self) -> &wgpu::Buffer {
+        &self.sh_buf
     }
 
     // Fill the aerial-perspective froxel volume for this frame (see cs_froxel). Reuses
