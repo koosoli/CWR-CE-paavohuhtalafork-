@@ -11,7 +11,7 @@
 
 #import frame::{frame, reverse_z, fog_factor}
 #import shading::{shade, ShadeMaterial}
-#import gbuffer::oct_encode
+#import gbuffer::{oct_encode, a2c_coverage}
 // Terrain conform (group 4 heightmap + surface_y/surface_grad), shared with shader3d /
 // shadow_depth. Lets the GPU-driven VS conform ClipLand vegetation/fences to the ground per
 // vertex, matching the per-draw path — so these objects no longer have to stay on the CPU.
@@ -20,6 +20,10 @@
 // Pipeline-overridable constants (kept out of a per-draw binding), same as shader3d.
 override linear: f32 = 0.0;
 override foliage_shadow_ao: f32 = 0.35;
+// 1 = alpha-to-coverage active on this (single) GPU-driven pipeline under MSAA. The set mixes
+// opaque + cutout sections, so cutout-ness is decided per-fragment (sm.alpha_ref > 0, uniform
+// per quad): cutout emits sharpened coverage, opaque emits 1.0 (full coverage -> unchanged).
+override a2c: f32 = 0.0;
 
 // InstanceGpu / RecordGpu / SectionMaterialGpu (cull.rs). conform0/1/2 is the terrain-conform
 // plane (WgrDraw3D::conform* parity); conform2.z = mode (0 rigid, 1 ForestPlain plane, 2
@@ -145,7 +149,19 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     // The section id is uniform across a derivative quad (one section per primitive), so the
     // bindless index stays uniform and implicit-mip sampling is legal.
     let base = textureSample(textures[sm.texture_slot], samplers[sm.sampler_idx], in.uv);
-    if (base.a < sm.alpha_ref) {
+    // A2C (MSAA): cutout sections (sm.alpha_ref > 0, uniform per quad) emit a sharpened coverage
+    // alpha; opaque sections keep full coverage (1.0). Without A2C, the classic hard discard.
+    var out_a = base.a;
+    if (a2c > 0.5) {
+        if (sm.alpha_ref > 0.0) {
+            out_a = a2c_coverage(base.a, sm.alpha_ref);
+            if (out_a <= 0.0) {
+                discard;
+            }
+        } else {
+            out_a = 1.0;
+        }
+    } else if (base.a < sm.alpha_ref) {
         discard;
     }
     // Fold RAW material x the frame sun, reproducing GL33's UploadVSMaterialConstants
@@ -164,7 +180,7 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
         sm.alpha_ref > 0.0,
     );
-    return vec4<f32>(rgb, base.a);
+    return vec4<f32>(rgb, out_a);
 }
 
 // Depth+normal PREPASS fragment: no shading — writes ONLY the view-space octahedral normal
@@ -184,4 +200,25 @@ fn fs_gpu_prepass(in: VsOut) -> @location(0) vec2<f32> {
     // direction gives view space (matches shader3d::fs_prepass).
     let n_view = (frame.view * vec4<f32>(normalize(in.normal), 0.0)).xyz;
     return oct_encode(normalize(n_view));
+}
+
+// A2C prepass twin (MSAA), mirroring shader3d::fs_prepass_a2c for the GPU-driven set. Returns a
+// vec4 so location(0)'s .a carries coverage for alpha-to-coverage; cutout emits the sharpened
+// coverage (matching fs_gpu), opaque emits 1.0. Writes depth to exactly the covered samples so
+// terrain fills the rest (no edge halo). The whole set goes through this pipeline, hence the
+// per-fragment opaque/cutout split rather than a pipeline override.
+@fragment
+fn fs_gpu_prepass_a2c(in: VsOut) -> @location(0) vec4<f32> {
+    let sm = section_materials[in.section];
+    var cov = 1.0;
+    if (sm.alpha_ref > 0.0) {
+        let alpha = textureSample(textures[sm.texture_slot], samplers[sm.sampler_idx], in.uv).a;
+        cov = a2c_coverage(alpha, sm.alpha_ref);
+        if (cov <= 0.0) {
+            discard;
+        }
+    }
+    let n_view = (frame.view * vec4<f32>(normalize(in.normal), 0.0)).xyz;
+    let oct = oct_encode(normalize(n_view));
+    return vec4<f32>(oct.x, oct.y, 0.0, cov);
 }

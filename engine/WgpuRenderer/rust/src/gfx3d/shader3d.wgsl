@@ -9,7 +9,7 @@
 #import skin::{skin_pos, skin_normal}
 #import lighting::lights_contrib
 #import color::srgb_to_linear
-#import gbuffer::oct_encode
+#import gbuffer::{oct_encode, a2c_coverage}
 // Shared fragment shading, also used by the GPU-driven indirect path (gpu_driven.wgsl).
 #import shading::{shade, ShadeMaterial}
 // Group(4) terrain heightmap + surface_y, shared with the shadow depth pass.
@@ -62,6 +62,11 @@ struct Material {
 // per-draw binding avoids a 5th bind group (wgpu's default maxBindGroups is 4).
 override alpha_ref: f32 = 0.0;   // discard fragments with alpha below this (0 = off)
 override is_shadow: f32 = 0.0;   // 1 = output black + shadow-strength alpha
+// 1 = this cutout pipeline uses alpha-to-coverage (MSAA foliage): the fragment emits a
+// sharpened coverage alpha instead of a hard discard, and the pipeline has
+// alpha_to_coverage_enabled. Set only on cutout (alpha_ref > 0), non-shadow pipelines under
+// MSAA; the prepass twin (fs_prepass_a2c) emits the same coverage so the masks match.
+override a2c: f32 = 0.0;
 // Brightness a fully terrain-shadowed alpha-tested surface (foliage cutout) keeps.
 // Dense canopy self-occludes its sky ambient — which the world-space terrain mask
 // can't model and foliage materials inflate for the sunlit look — so shadowed
@@ -208,7 +213,16 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let material = materials[in.instance];
     let packed = bitcast<u32>(material.emissive.w);
     let base = textureSample(textures[packed >> 3u], samplers[packed & 7u], in.uv);
-    if (base.a < alpha_ref) {
+    // Cutout: A2C emits a sharpened coverage alpha (edge dithered across MSAA samples);
+    // otherwise the classic hard discard. a2c is a compile-time override, so exactly one
+    // path is compiled and control flow stays uniform for the derivatives above/below.
+    var out_a = base.a;
+    if (a2c > 0.5) {
+        out_a = a2c_coverage(base.a, alpha_ref);
+        if (out_a <= 0.0) {
+            discard;
+        }
+    } else if (base.a < alpha_ref) {
         discard;
     }
     if (is_shadow > 0.5) {
@@ -229,7 +243,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
         alpha_ref > 0.0,
     );
-    return vec4<f32>(rgb, base.a);
+    return vec4<f32>(rgb, out_a);
 }
 
 // Depth + normal prepass fragment (docs/depth-prepass-plan.md). Reuses vs_main/
@@ -251,4 +265,22 @@ fn fs_prepass(in: VsOut) -> @location(0) vec2<f32> {
     // view matrix's translation is zeroed, so multiplying the direction gives view space.
     let n_view = (frame.view * vec4<f32>(normalize(in.normal), 0.0)).xyz;
     return oct_encode(normalize(n_view));
+}
+
+// A2C prepass twin (MSAA cutout foliage). Same normal output as fs_prepass, but returns a
+// vec4 so location(0)'s .a carries the sharpened coverage for alpha-to-coverage — the extra
+// .b/.a components are dropped by the Rg16Float attachment write but still drive the coverage
+// mask. Emits the SAME coverage as fs_main so the prepass writes depth to exactly the samples
+// the colour pass will shade (terrain fills the rest -> no background halo at edges).
+@fragment
+fn fs_prepass_a2c(in: VsOut) -> @location(0) vec4<f32> {
+    let packed = bitcast<u32>(materials[in.instance].emissive.w);
+    let alpha = textureSample(textures[packed >> 3u], samplers[packed & 7u], in.uv).a;
+    let cov = a2c_coverage(alpha, alpha_ref);
+    if (cov <= 0.0) {
+        discard;
+    }
+    let n_view = (frame.view * vec4<f32>(normalize(in.normal), 0.0)).xyz;
+    let oct = oct_encode(normalize(n_view));
+    return vec4<f32>(oct.x, oct.y, 0.0, cov);
 }

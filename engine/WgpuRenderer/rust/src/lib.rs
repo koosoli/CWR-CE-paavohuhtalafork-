@@ -70,7 +70,14 @@ pub struct Renderer {
     // All None/false = the LDR-direct-to-swapchain path, the A/B reference.
     hdr_enabled: bool,
     hdr: Option<(wgpu::Texture, wgpu::TextureView)>,
+    // Single-sample resolve target for the MSAA scene colour (Some only when sample_count > 1).
+    // The scene renders into the multisampled `hdr`; a resolve writes this, and the tonemap /
+    // bloom / exposure sample it. At 1x this is None and those read `hdr` directly.
+    hdr_resolve: Option<(wgpu::Texture, wgpu::TextureView)>,
     hdr_size: (u32, u32),
+    // MSAA sample count of the scene targets (1 = off). Fixed at startup (WGR_MSAA); pipelines
+    // and offscreen targets are built against it.
+    sample_count: u32,
     tonemap: Option<Tonemap>,
     // Bloom pyramid, built alongside the tonemap on the HDR path; the resolve adds it.
     bloom: Option<Bloom>,
@@ -258,13 +265,48 @@ impl Renderer {
         // the direct draw_one path for A/B. Disabled outright without INDIRECT_FIRST_INSTANCE.
         let indirect_enabled = indirect_first_instance
             && std::env::var("WGR_INDIRECT").map(|v| v != "0").unwrap_or(true);
-        // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3). OPT-IN and
-        // inert until C++ registers a retained scene (Stage 3b-3); needs first_instance for
-        // its indirect args. Off by default while the path is built up.
+        // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3). Default-on now
+        // that the path is built up; inert until C++ registers a retained scene (Stage 3b-3),
+        // and needs first_instance for its indirect args. WGR_GPU_DRIVEN=0 forces it off.
         let gpu_driven_enabled = indirect_first_instance
-            && std::env::var("WGR_GPU_DRIVEN").map(|v| v == "1").unwrap_or(false);
+            && std::env::var("WGR_GPU_DRIVEN").map(|v| v != "0").unwrap_or(true);
         let hdr_enabled = std::env::var("WGR_HDR").map(|v| v != "0").unwrap_or(true);
         let color_format = if hdr_enabled { HDR_FORMAT } else { config.format };
+        // MSAA (WGR_MSAA, default 4x). Requires the HDR path: the multisampled scene colour is
+        // resolved to a single-sample HDR target the tonemap samples, and WebGPU has no depth
+        // resolve_target, so the LDR-direct-to-swapchain path stays 1x. Clamped to what the
+        // adapter supports for every multisampled scene format (colour + depth + normal G-buffer).
+        let msaa_req = std::env::var("WGR_MSAA")
+            .ok()
+            .and_then(|v| v.parse::<u32>().ok())
+            .unwrap_or(4);
+        let sample_count = if hdr_enabled && msaa_req > 1 {
+            let ok = [color_format, gfx3d::DEPTH_FORMAT, gfx3d::NORMAL_FORMAT]
+                .iter()
+                .all(|&f| {
+                    adapter
+                        .get_texture_format_features(f)
+                        .flags
+                        .sample_count_supported(msaa_req)
+                });
+            if ok {
+                msaa_req
+            } else {
+                log.log(
+                    log_level::WARN,
+                    &format!("wgpu MSAA {msaa_req}x unsupported for the scene formats; using 1x"),
+                );
+                1
+            }
+        } else {
+            1
+        };
+        if sample_count > 1 {
+            log.log(
+                log_level::INFO,
+                &format!("wgpu MSAA enabled: {sample_count}x (WGR_MSAA)"),
+            );
+        }
         if hdr_enabled {
             log.log(log_level::INFO, "wgpu HDR path enabled (WGR_HDR)");
         }
@@ -299,11 +341,12 @@ impl Renderer {
         // One composer, pre-loaded with the shared shader modules, shared by the
         // 3D subsystems that #import them.
         let mut composer = shaders::build_composer();
-        let gfx2d = Gfx2d::new(&device, &textures, color_format, config.format);
+        let gfx2d = Gfx2d::new(&device, &textures, color_format, config.format, sample_count);
         let gfx3d = Gfx3d::new(
             &device,
             &textures,
             color_format,
+            sample_count,
             &mut composer,
             skin_bake_enabled,
             indirect_enabled,
@@ -327,6 +370,7 @@ impl Renderer {
             &queue,
             gfx3d.camera_layout(),
             color_format,
+            sample_count,
             !partially_bound.is_empty(),
             textures.white_view().clone(),
             &mut composer,
@@ -336,6 +380,7 @@ impl Renderer {
             &queue,
             gfx3d.camera_layout(),
             color_format,
+            sample_count,
             &mut composer,
         );
         let tonemap = hdr_enabled.then(|| Tonemap::new(&device, config.format));
@@ -343,7 +388,7 @@ impl Renderer {
         let exposure = hdr_enabled.then(|| Exposure::new(&device, &queue));
         // The sky targets the scene color format (HDR target or swapchain), matching
         // the scene pipelines, and self-tonemaps when that is an LDR-direct swapchain.
-        let sky = Sky::new(&device, color_format);
+        let sky = Sky::new(&device, color_format, sample_count);
         // Seed live params from the env knobs so behaviour is unchanged until the
         // ImGui tab pushes its own values (env_f32's >0 filter is fine for scales;
         // env_f32_opt keeps a 0 for the mode/encode toggles).
@@ -367,7 +412,9 @@ impl Renderer {
             water,
             hdr_enabled,
             hdr: None,
+            hdr_resolve: None,
             hdr_size: (0, 0),
+            sample_count,
             tonemap,
             bloom,
             exposure,
@@ -414,6 +461,33 @@ impl Renderer {
         let Some(tonemap) = self.tonemap.as_ref() else {
             return;
         };
+        // MSAA: resolve the multisampled scene colour into the single-sample HDR target the
+        // post-processing chain (bloom/exposure/tonemap) samples. An empty load/store pass with a
+        // resolve_target performs the resolve at pass end; StoreOp::Discard drops the now-unneeded
+        // multisampled contents. No-op at 1x (hdr_resolve is None, the chain reads `hdr` directly).
+        if let (Some((_, msaa_view)), Some((_, resolve_view))) =
+            (self.hdr.as_ref(), self.hdr_resolve.as_ref())
+        {
+            encoder.push_debug_group("wgr_hdr_resolve");
+            let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wgr_hdr_resolve"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: msaa_view,
+                    depth_slice: None,
+                    resolve_target: Some(resolve_view),
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Discard,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            drop(pass);
+            encoder.pop_debug_group();
+        }
         // Live params from the ImGui Tonemap tab (seeded from WGR_* at startup).
         tonemap.upload_params(&self.queue, &self.tonemap_params);
         // Build the bloom pyramid from the finished HDR scene (already includes aerial
@@ -478,6 +552,14 @@ impl Renderer {
         if self.hdr.is_some() && self.hdr_size == (width, height) {
             return;
         }
+        let msaa = self.sample_count > 1;
+        // The scene colour target. MSAA: RENDER_ATTACHMENT only — it is resolved, never sampled.
+        // 1x: also TEXTURE_BINDING, since the tonemap/bloom/exposure sample it directly.
+        let usage = if msaa {
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+        } else {
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+        };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_hdr_target"),
             size: wgpu::Extent3d {
@@ -486,36 +568,61 @@ impl Renderer {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: self.sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: HDR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            usage,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        // MSAA: a single-sample resolve target the scene colour is resolved into (run_tonemap
+        // records the resolve); the post-processing chain samples it. 1x: none, and the chain
+        // samples the scene target itself.
+        let resolve = msaa.then(|| {
+            let t = self.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgr_hdr_resolve"),
+                size: wgpu::Extent3d {
+                    width,
+                    height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: HDR_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let v = t.create_view(&wgpu::TextureViewDescriptor::default());
+            (t, v)
+        });
+        // The single-sample view the post-processing chain reads (resolve target under MSAA,
+        // else the scene target directly).
+        let sample_view = resolve.as_ref().map(|(_, v)| v).unwrap_or(&view).clone();
         // Rebuild the bloom pyramid for the new size, then point the resolve at both
         // the HDR target and the bloom mip0. A 1x1 fallback keeps set_source valid if
         // the pyramid somehow has no mips.
         if let Some(bloom) = self.bloom.as_mut() {
-            bloom.resize(&self.device, width, height, HDR_FORMAT, &view);
+            bloom.resize(&self.device, width, height, HDR_FORMAT, &sample_view);
         }
         if let Some(exposure) = self.exposure.as_mut() {
-            exposure.resize(&self.device, width, height, &view);
+            exposure.resize(&self.device, width, height, &sample_view);
         }
         if let Some(tonemap) = self.tonemap.as_mut() {
             let bloom_view = self
                 .bloom
                 .as_ref()
                 .and_then(|b| b.view())
-                .unwrap_or(&view);
+                .unwrap_or(&sample_view);
             let scale_view = self
                 .exposure
                 .as_ref()
                 .map(|e| e.scale_view())
-                .unwrap_or(&view);
-            tonemap.set_source(&self.device, &view, bloom_view, scale_view);
+                .unwrap_or(&sample_view);
+            tonemap.set_source(&self.device, &sample_view, bloom_view, scale_view);
         }
         self.hdr = Some((texture, view));
+        self.hdr_resolve = resolve;
         self.hdr_size = (width, height);
     }
 
@@ -648,6 +755,10 @@ impl Renderer {
             .depth_view()
             .ok_or("depth target missing")?
             .clone();
+        // MSAA only: the single-sample depth the post-tonemap UI phase attaches instead of the
+        // multisampled scene depth (its 2D draws composite to the 1x swapchain). None at 1x, where
+        // `depth` is already single-sample and serves both phases.
+        let ui_depth = self.gfx3d.ui_depth_view().cloned();
         // The prepass' view-space normal G-buffer target (None when the prepass is
         // disabled). Cloned (Arc) so no borrow of self is held across the segment loop.
         let normal = if self.prepass_enabled {
@@ -1066,6 +1177,16 @@ impl Renderer {
                 self.gfx3d.cull_dispatch_color(&mut encoder);
             }
 
+            // Depth attachment for this segment's sub-passes. Post-tonemap (resolved) the target is
+            // the 1x swapchain, so under MSAA attach the single-sample UI depth instead of the
+            // multisampled scene depth (matching sample counts). Pre-resolve, and always at 1x,
+            // it's the scene depth.
+            let seg_depth: &wgpu::TextureView = if resolved {
+                ui_depth.as_ref().unwrap_or(&depth)
+            } else {
+                &depth
+            };
+
             // 3D sub-pass: all non-2D draws. Depth/stencil are cleared here only when the
             // prepass didn't already fill them (stencil to 0 so shadow draws EQUAL 0 /
             // INCR darken each pixel once); colour per the load.
@@ -1082,7 +1203,7 @@ impl Renderer {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &depth,
+                        view: seg_depth,
                         depth_ops: Some(wgpu::Operations {
                             load: if prepassed {
                                 wgpu::LoadOp::Load
@@ -1142,7 +1263,7 @@ impl Renderer {
                         },
                     })],
                     depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                        view: &depth,
+                        view: seg_depth,
                         depth_ops: Some(wgpu::Operations {
                             load: wgpu::LoadOp::Load,
                             store: wgpu::StoreOp::Store,

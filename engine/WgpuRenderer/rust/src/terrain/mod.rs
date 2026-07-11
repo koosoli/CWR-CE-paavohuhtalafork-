@@ -163,11 +163,13 @@ pub struct Terrain {
 }
 
 impl Terrain {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         camera_layout: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
+        sample_count: u32,
         partially_bound: bool,
         white_view: wgpu::TextureView,
         composer: &mut naga_oil::compose::Composer,
@@ -632,7 +634,10 @@ impl Terrain {
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),
-                multisample: wgpu::MultisampleState::default(),
+                multisample: wgpu::MultisampleState {
+                    count: sample_count,
+                    ..Default::default()
+                },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(fs_entry),

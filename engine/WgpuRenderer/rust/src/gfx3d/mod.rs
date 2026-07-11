@@ -34,6 +34,10 @@ pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
 
 // Cascade shadow depth maps: one D32 array layer per cascade.
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
+// Single-sample target the MSAA depth is resolved into (depth-only; the resolve keeps depth
+// but drops stencil, which no depth consumer samples). Depth32Float samples as Depth like the
+// 1x depth aspect, so the Hi-Z copy layout is unchanged.
+const RESOLVED_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_CASCADES: u32 = 4;
 
 // Polygon-offset variants (mirror GL33's SetPolygonOffsetForDecals / ..ForShadows):
@@ -954,6 +958,147 @@ impl ConformGroup {
     }
 }
 
+// MSAA depth resolve. WebGPU has no depth resolve_target, so a tiny fullscreen pass reduces the
+// multisampled depth (bound as texture_depth_multisampled_2d) to a single-sample Depth32Float
+// target that the Hi-Z build (+ future SSAO / depth-based water opacity) can sample like the 1x
+// depth aspect. Present only when sample_count > 1.
+struct DepthResolve {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    // Per-size: the resolved depth target's view (both the resolve pass' depth attachment and the
+    // sample view handed to depth_sample_view) + the bind group over the MSAA source depth.
+    view: Option<wgpu::TextureView>,
+    bind: Option<wgpu::BindGroup>,
+}
+
+impl DepthResolve {
+    fn new(device: &wgpu::Device, sample_count: u32) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgr_depth_resolve"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("depth_resolve.wgsl").into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_depth_resolve_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: true,
+                },
+                count: None,
+            }],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgr_depth_resolve_pipeline_layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        // The FS unrolls a per-sample max over the source; the sample count is a spec constant so
+        // the loop bound resolves at pipeline creation.
+        let constants = [("sample_count", sample_count as f64)];
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wgr_depth_resolve_pipeline"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: RESOLVED_DEPTH_FORMAT,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::Always),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &constants,
+                    ..Default::default()
+                },
+                targets: &[],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self {
+            pipeline,
+            layout,
+            view: None,
+            bind: None,
+        }
+    }
+
+    // (Re)allocate the resolved depth target for `w x h` and bind `src` (the MSAA depth's DepthOnly
+    // aspect view) as the resolve source. Returns a clone of the resolved view for depth_sample_view.
+    fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        w: u32,
+        h: u32,
+        src: &wgpu::TextureView,
+    ) -> wgpu::TextureView {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_3d_depth_resolved"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: RESOLVED_DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_depth_resolve_bind"),
+            layout: &self.layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(src),
+            }],
+        }));
+        self.view = Some(view.clone());
+        view
+    }
+
+    // Record the resolve pass (MSAA depth -> single-sample). Recorded after the prepass depth is
+    // complete and before the Hi-Z build reads the resolved view.
+    fn resolve(&self, encoder: &mut wgpu::CommandEncoder) {
+        let (Some(view), Some(bind)) = (self.view.as_ref(), self.bind.as_ref()) else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wgr_depth_resolve"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(0.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, bind, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
 pub struct Gfx3d {
     cameras: CameraGroup,
     conform: ConformGroup,
@@ -979,6 +1124,14 @@ pub struct Gfx3d {
     plain_layout: wgpu::PipelineLayout,
     skinned_layout: wgpu::PipelineLayout,
     surface_format: wgpu::TextureFormat,
+    // MSAA sample count of the scene targets (1 = no MSAA). Every scene-targeting object
+    // pipeline (colour + prepass + GPU-driven) is built with it; the shadow-depth pipelines
+    // stay single-sample (the shadow map is never multisampled).
+    sample_count: u32,
+    // Alpha-to-coverage for cutout foliage (needs MSAA). When set, cutout (blend Opaque,
+    // alpha_ref > 0) colour + prepass pipelines enable alpha_to_coverage and emit a sharpened
+    // coverage instead of a hard discard, antialiasing leaf/grass edges across the MSAA samples.
+    foliage_a2c: bool,
     vbuf_attrs: [wgpu::VertexAttribute; 4],
     skin_attrs: [wgpu::VertexAttribute; 2],
     pipelines: FxHashMap<PipelineKey, wgpu::RenderPipeline>,
@@ -991,9 +1144,20 @@ pub struct Gfx3d {
     // target; the prepass' one colour attachment. Sampled by no consumer yet (Stage 1).
     normal: Option<(wgpu::Texture, wgpu::TextureView)>,
     depth_size: (u32, u32),
-    // Depth-aspect view of the depth target (Depth24PlusStencil8 needs an explicit DepthOnly
-    // aspect to sample), fed to the Hi-Z copy pass. Rebuilt with the depth target.
+    // Depth-aspect view fed to the Hi-Z copy pass (+ future SSAO / depth-based water opacity).
+    // 1x path: the DepthOnly aspect of the depth target (Depth24PlusStencil8 needs an explicit
+    // aspect to sample). MSAA path: the single-sample resolved depth (`depth_resolve`), since
+    // WebGPU cannot resolve depth via a render-pass resolve_target and consumers want a plain
+    // single-sample texture. Rebuilt with the depth target.
     depth_sample_view: Option<wgpu::TextureView>,
+    // MSAA depth resolve (Some only when sample_count > 1). A tiny fullscreen pass reduces the
+    // multisampled depth to a single-sample Depth32Float target that feeds depth_sample_view.
+    depth_resolve: Option<DepthResolve>,
+    // Single-sample depth-stencil for the post-tonemap UI phase (Some only when sample_count > 1).
+    // That phase composites display-referred 2D to the 1x swapchain, so it can't share the MSAA
+    // scene depth (mismatched sample counts). Cleared per use; world occlusion isn't carried into
+    // the HUD (the UI segment already clears depth even on the 1x path).
+    ui_depth: Option<(wgpu::Texture, wgpu::TextureView)>,
     // Hi-Z depth pyramid + GPU-driven occlusion cull toggle (docs §5). The pyramid is built
     // from the post-prepass depth; the color-pass cull samples it. occlusion_enabled gates the
     // whole path (env WGR_GPU_OCCLUSION + ImGui Culling tab); when off, the color pass reuses
@@ -1122,6 +1286,7 @@ impl Gfx3d {
         device: &wgpu::Device,
         textures: &SharedTextures,
         surface_format: wgpu::TextureFormat,
+        sample_count: u32,
         composer: &mut naga_oil::compose::Composer,
         skin_bake_enabled: bool,
         indirect_enabled: bool,
@@ -1382,6 +1547,12 @@ impl Gfx3d {
             cache: None,
         });
 
+        // Alpha-to-coverage for cutout foliage: needs MSAA; default-on there, WGR_FOLIAGE_A2C=0
+        // opts out. Drives both the shader coverage path and alpha_to_coverage_enabled on the
+        // cutout colour + prepass pipelines (per-draw and GPU-driven).
+        let foliage_a2c = sample_count > 1
+            && std::env::var("WGR_FOLIAGE_A2C").map(|v| v != "0").unwrap_or(true);
+
         // GPU-driven rendering (Stage 3): retained scene + cull compute + the opaque draw
         // pipeline. Groups 0/2/3 (camera, bindless textures, samplers) are shared with the
         // per-draw path; group 1 is instances/records/materials.
@@ -1396,6 +1567,8 @@ impl Gfx3d {
             &textures.sampler_array_layout,
             &conform.layout,
             surface_format,
+            sample_count,
+            foliage_a2c,
         );
         // GPU-driven cascade shadow depth pipeline (§6 multi-view): the retained set cast into
         // each cascade's depth map. Group 0 is the shadow pass UBO (light-VP), so it shares the
@@ -1416,7 +1589,11 @@ impl Gfx3d {
             &cameras.layout,
             &cull_debug_layout,
             surface_format,
+            sample_count,
         );
+        // MSAA depth resolve: built only when the scene is multisampled. Reduces the MSAA depth
+        // to a single-sample texture the Hi-Z build (+ future SSAO / water opacity) can sample.
+        let depth_resolve = (sample_count > 1).then(|| DepthResolve::new(device, sample_count));
 
         Gfx3d {
             cameras,
@@ -1432,6 +1609,8 @@ impl Gfx3d {
             plain_layout: pipeline_layout,
             skinned_layout,
             surface_format,
+            sample_count,
+            foliage_a2c,
             vbuf_attrs,
             skin_attrs,
             pipelines: FxHashMap::default(),
@@ -1441,6 +1620,8 @@ impl Gfx3d {
             depth_size: (0, 0),
             gpu_color_group1_bind: None,
             depth_sample_view: None,
+            depth_resolve,
+            ui_depth: None,
             hiz: hiz::HiZ::new(device),
             // GPU Hi-Z occlusion: default on when GPU-driven is on (the point of this feature),
             // opt-out via WGR_GPU_OCCLUSION=0; also toggleable live from the ImGui Culling tab.
@@ -1615,11 +1796,16 @@ impl Gfx3d {
         } else {
             0.0
         };
+        // Alpha-to-coverage for this pipeline: cutout foliage (opaque blend, alpha_ref > 0), not
+        // the shadow-darken pass, and only under MSAA. Drives the shader's coverage path and the
+        // pipeline's alpha_to_coverage_enabled below.
+        let a2c = self.foliage_a2c && key.blend == WgrBlend::Opaque as u8 && alpha_ref > 0.0;
         let constants = [
             ("alpha_ref", alpha_ref),
             ("is_shadow", is_shadow),
             ("depth_bias", depth_bias),
             ("linear", linear),
+            ("a2c", if a2c { 1.0 } else { 0.0 }),
         ];
 
         // Shadow draws exclude already-shadowed pixels via the stencil: test EQUAL
@@ -1675,7 +1861,11 @@ impl Gfx3d {
                 stencil,
                 bias,
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: self.sample_count,
+                alpha_to_coverage_enabled: a2c,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module,
                 entry_point: Some("fs_main"),
@@ -1729,6 +1919,11 @@ impl Gfx3d {
         };
         let alpha_ref = f32::from_bits(key.alpha_ref_bits) as f64;
         let constants = [("alpha_ref", alpha_ref), ("depth_bias", 0.0)];
+        // Cutout foliage under MSAA: the A2C prepass twin emits a vec4 whose .a carries coverage,
+        // and the pipeline enables alpha_to_coverage so it writes depth to exactly the samples the
+        // colour pass will shade. Pure-opaque prepass (alpha_ref == 0) keeps the vec2 fs_prepass.
+        let a2c = self.foliage_a2c && alpha_ref > 0.0;
+        let fs_entry = if a2c { "fs_prepass_a2c" } else { "fs_prepass" };
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgr_3d_prepass_pipeline"),
             layout: Some(layout),
@@ -1755,10 +1950,14 @@ impl Gfx3d {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: self.sample_count,
+                alpha_to_coverage_enabled: a2c,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module,
-                entry_point: Some("fs_prepass"),
+                entry_point: Some(fs_entry),
                 compilation_options: wgpu::PipelineCompilationOptions {
                     constants: &constants,
                     ..Default::default()
@@ -2100,23 +2299,34 @@ impl Gfx3d {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: self.sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: DEPTH_FORMAT,
-            // TEXTURE_BINDING so the Hi-Z copy pass can sample the depth aspect (occlusion §5).
+            // TEXTURE_BINDING so the depth aspect can be sampled: the Hi-Z copy pass reads it
+            // directly at 1x, and the MSAA depth-resolve pass reads it multisampled at Nx.
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
-        // Depth-aspect view for sampling (Depth24PlusStencil8 must pick an aspect explicitly).
-        self.depth_sample_view = Some(texture.create_view(&wgpu::TextureViewDescriptor {
+        // Depth-aspect view (Depth24PlusStencil8 must pick an aspect explicitly).
+        let depth_aspect = texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("wgr_3d_depth_sample"),
             aspect: wgpu::TextureAspect::DepthOnly,
             ..Default::default()
-        }));
+        });
+        if let Some(dr) = self.depth_resolve.as_mut() {
+            // MSAA: the depth-aspect view above is multisampled — bind it as the resolve pass'
+            // source, and hand its single-sample resolved output to the Hi-Z / sampling path.
+            self.depth_sample_view = Some(dr.resize(device, size.0, size.1, &depth_aspect));
+        } else {
+            // 1x: consumers sample the depth target's own depth aspect directly.
+            self.depth_sample_view = Some(depth_aspect);
+        }
         self.depth = Some((texture, view));
-        // View-space normal G-buffer, matched to the depth size. TEXTURE_BINDING now
-        // (harmless) so Stage 2 can expose it to SSAO without a realloc.
+        // View-space normal G-buffer, matched to the depth size and sample count (it is the
+        // prepass' colour attachment, co-rendered with the MSAA depth). TEXTURE_BINDING is
+        // harmless now; SSAO will additionally need a resolve_target on the prepass normal
+        // attachment to sample it single-sample (nothing samples it yet).
         let normal = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_3d_normal"),
             size: wgpu::Extent3d {
@@ -2125,7 +2335,7 @@ impl Gfx3d {
                 depth_or_array_layers: 1,
             },
             mip_level_count: 1,
-            sample_count: 1,
+            sample_count: self.sample_count,
             dimension: wgpu::TextureDimension::D2,
             format: NORMAL_FORMAT,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
@@ -2133,6 +2343,26 @@ impl Gfx3d {
         });
         let normal_view = normal.create_view(&wgpu::TextureViewDescriptor::default());
         self.normal = Some((normal, normal_view));
+        // Single-sample UI-phase depth-stencil (MSAA only): the post-tonemap 2D composites to the
+        // 1x swapchain and needs a matching-sample depth attachment for its (1x) pipelines.
+        self.ui_depth = (self.sample_count > 1).then(|| {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgr_3d_ui_depth"),
+                size: wgpu::Extent3d {
+                    width: size.0,
+                    height: size.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: DEPTH_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            (tex, view)
+        });
         self.depth_size = size;
         // The Hi-Z pyramid tracks this size; (re)allocated in prepare_cull (gated on occlusion
         // being active) so a live toggle picks up the current size without a resize.
@@ -2140,6 +2370,12 @@ impl Gfx3d {
 
     pub fn depth_view(&self) -> Option<&wgpu::TextureView> {
         self.depth.as_ref().map(|(_, v)| v)
+    }
+
+    // Single-sample UI-phase depth (Some only under MSAA); the post-tonemap 2D uses it instead of
+    // the multisampled scene depth so its 1x pipelines / swapchain target match.
+    pub fn ui_depth_view(&self) -> Option<&wgpu::TextureView> {
+        self.ui_depth.as_ref().map(|(_, v)| v)
     }
 
     // The prepass' view-space normal G-buffer view (the prepass colour attachment).
@@ -3787,6 +4023,12 @@ impl Gfx3d {
         let Some(depth) = self.depth_sample_view.as_ref() else {
             return;
         };
+        // MSAA: depth_sample_view is the resolved single-sample target, which is stale until the
+        // resolve pass fills it from this frame's freshly-completed prepass depth. No-op at 1x
+        // (depth_sample_view is the depth target's own aspect, already current).
+        if let Some(dr) = self.depth_resolve.as_ref() {
+            dr.resolve(encoder);
+        }
         self.hiz.build(device, encoder, depth);
     }
 

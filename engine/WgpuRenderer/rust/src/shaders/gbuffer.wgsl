@@ -28,3 +28,13 @@ fn oct_decode(e: vec2<f32>) -> vec3<f32> {
     }
     return normalize(v);
 }
+
+// Alpha-to-coverage sharpen for cutout foliage. Rescales the sampled alpha so the
+// alpha-test transition spans ~1px (Wyman/McGuire "Anti-Aliased Alpha Test"), which keeps
+// the A2C coverage from dissolving foliage at distance (where mip'd alpha trends toward the
+// average) while still dithering the edge across MSAA samples. MUST be called from uniform
+// control flow (uses fwidth) and produce IDENTICAL results in the prepass and the colour
+// pass so their per-sample coverage masks match by construction.
+fn a2c_coverage(alpha: f32, cutoff: f32) -> f32 {
+    return clamp((alpha - cutoff) / max(fwidth(alpha), 1e-4) + 0.5, 0.0, 1.0);
+}

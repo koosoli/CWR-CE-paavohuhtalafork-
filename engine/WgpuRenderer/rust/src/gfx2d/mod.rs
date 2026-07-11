@@ -36,6 +36,9 @@ impl Gfx2d {
         // Swapchain format for the dev overlay, which always composites post-tonemap
         // straight to the surface.
         overlay_format: wgpu::TextureFormat,
+        // MSAA sample count of the scene target (the HDR path). The scene-phase 2D set
+        // matches it; the display set + overlay always target the single-sample swapchain.
+        sample_count: u32,
     ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgr_2d_shader"),
@@ -94,7 +97,7 @@ impl Gfx2d {
         // (test, write): plain 2D / sky use (false,false); transparent meshes
         // (false… ) — see callers below. test gates GreaterEqual (reversed-Z) vs Always.
         let make_pipeline =
-            |blend: Option<wgpu::BlendState>, test: bool, write: bool, format: wgpu::TextureFormat| {
+            |blend: Option<wgpu::BlendState>, test: bool, write: bool, format: wgpu::TextureFormat, samples: u32| {
                 device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                     label: Some("wgr_2d_pipeline"),
                     layout: Some(&pipeline_layout),
@@ -121,7 +124,10 @@ impl Gfx2d {
                         stencil: wgpu::StencilState::default(),
                         bias: wgpu::DepthBiasState::default(),
                     }),
-                    multisample: wgpu::MultisampleState::default(),
+                    multisample: wgpu::MultisampleState {
+                        count: samples,
+                        ..Default::default()
+                    },
                     fragment: Some(wgpu::FragmentState {
                         module: &shader,
                         entry_point: Some("fs_main"),
@@ -163,15 +169,15 @@ impl Gfx2d {
         // target when HDR is on) for scene-phase 2D (sky, horizon, rain); `pipelines_display`
         // targets the swapchain for the display-referred UI phase drawn after the tonemap
         // resolve. Identical when HDR is off (surface_format == overlay_format).
-        let make_set = |format: wgpu::TextureFormat| {
+        let make_set = |format: wgpu::TextureFormat, samples: u32| {
             [
-                std::array::from_fn(|b| make_pipeline(blends[b], false, false, format)),
-                std::array::from_fn(|b| make_pipeline(blends[b], true, false, format)),
-                std::array::from_fn(|b| make_pipeline(blends[b], true, true, format)),
+                std::array::from_fn(|b| make_pipeline(blends[b], false, false, format, samples)),
+                std::array::from_fn(|b| make_pipeline(blends[b], true, false, format, samples)),
+                std::array::from_fn(|b| make_pipeline(blends[b], true, true, format, samples)),
             ]
         };
-        let pipelines = make_set(surface_format);
-        let pipelines_display = make_set(overlay_format);
+        let pipelines = make_set(surface_format, sample_count);
+        let pipelines_display = make_set(overlay_format, 1);
 
         let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgr_overlay_shader"),

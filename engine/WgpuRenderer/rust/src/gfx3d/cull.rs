@@ -1212,6 +1212,8 @@ pub fn build_gpu_pipeline(
     sampler_layout: &wgpu::BindGroupLayout,
     conform_layout: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
+    sample_count: u32,
+    foliage_a2c: bool,
 ) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
     let module = crate::shaders::make_module(
         device,
@@ -1247,7 +1249,11 @@ pub fn build_gpu_pipeline(
     } else {
         0.0
     };
-    let constants = [("linear", linear)];
+    // The GPU-driven set mixes opaque + cutout sections through one pipeline. Under MSAA foliage
+    // A2C, the colour shader decides coverage per-fragment (cutout -> sharpened, opaque -> 1.0);
+    // `a2c` just tells it the pipeline has alpha_to_coverage enabled. Module-level override, so
+    // it's valid to hand to both stages of this module.
+    let constants = [("linear", linear), ("a2c", if foliage_a2c { 1.0 } else { 0.0 })];
     let depth_stencil = wgpu::DepthStencilState {
         format: super::DEPTH_FORMAT,
         depth_write_enabled: Some(true),
@@ -1276,7 +1282,11 @@ pub fn build_gpu_pipeline(
         },
         primitive,
         depth_stencil: Some(depth_stencil.clone()),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            alpha_to_coverage_enabled: foliage_a2c,
+            ..Default::default()
+        },
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: Some("fs_gpu"),
@@ -1304,10 +1314,20 @@ pub fn build_gpu_pipeline(
         },
         primitive,
         depth_stencil: Some(depth_stencil),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            alpha_to_coverage_enabled: foliage_a2c,
+            ..Default::default()
+        },
         fragment: Some(wgpu::FragmentState {
             module: &module,
-            entry_point: Some("fs_gpu_prepass"),
+            // A2C twin emits a vec4 whose .a carries coverage; the plain prepass writes the vec2
+            // normal only. Coverage matches fs_gpu so the depth pass covers the same samples.
+            entry_point: Some(if foliage_a2c {
+                "fs_gpu_prepass_a2c"
+            } else {
+                "fs_gpu_prepass"
+            }),
             compilation_options: wgpu::PipelineCompilationOptions::default(),
             targets: &[Some(wgpu::ColorTargetState {
                 format: super::NORMAL_FORMAT,
@@ -1433,6 +1453,7 @@ pub fn build_cull_debug_pipeline(
     camera_layout: &wgpu::BindGroupLayout,
     group1_layout: &wgpu::BindGroupLayout,
     surface_format: wgpu::TextureFormat,
+    sample_count: u32,
 ) -> wgpu::RenderPipeline {
     let module = crate::shaders::make_module(
         device,
@@ -1468,7 +1489,10 @@ pub fn build_cull_debug_pipeline(
             ..Default::default()
         },
         depth_stencil: Some(depth_stencil),
-        multisample: wgpu::MultisampleState::default(),
+        multisample: wgpu::MultisampleState {
+            count: sample_count,
+            ..Default::default()
+        },
         fragment: Some(wgpu::FragmentState {
             module: &module,
             entry_point: Some("fs_sphere"),

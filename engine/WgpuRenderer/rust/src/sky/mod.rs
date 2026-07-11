@@ -129,7 +129,7 @@ pub struct Sky {
 }
 
 impl Sky {
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat) -> Self {
+    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat, sample_count: u32) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgr_sky_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
@@ -177,10 +177,14 @@ impl Sky {
             label: Some("wgr_sky_layout"),
             entries: &[uniform_entry(0), sampler_entry, tex_entry(2), tex_entry(3)],
         });
+        // Only the main sky pass draws into the (MSAA) scene target; the transmittance +
+        // multiscatter LUTs are single-sample offscreen renders, so each pipeline takes its
+        // own sample count.
         let make_pipeline = |label: &str,
                              layout: &wgpu::BindGroupLayout,
                              fs: &str,
-                             format: wgpu::TextureFormat| {
+                             format: wgpu::TextureFormat,
+                             samples: u32| {
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some(label),
                 bind_group_layouts: &[Some(layout)],
@@ -197,7 +201,10 @@ impl Sky {
                 },
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
+                multisample: wgpu::MultisampleState {
+                    count: samples,
+                    ..Default::default()
+                },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader,
                     entry_point: Some(fs),
@@ -218,14 +225,16 @@ impl Sky {
             &transmittance_layout,
             "fs_transmittance",
             LUT_FORMAT,
+            1,
         );
         let multiscatter_pipeline = make_pipeline(
             "wgr_sky_multiscatter",
             &multiscatter_layout,
             "fs_multiscatter",
             LUT_FORMAT,
+            1,
         );
-        let sky_pipeline = make_pipeline("wgr_sky", &sky_layout, "fs_sky", color_format);
+        let sky_pipeline = make_pipeline("wgr_sky", &sky_layout, "fs_sky", color_format, sample_count);
 
         let make_lut = |label: &str, w: u32, h: u32| {
             let tex = device.create_texture(&wgpu::TextureDescriptor {

@@ -33,6 +33,7 @@ impl Water {
         queue: &wgpu::Queue,
         camera_layout: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
+        sample_count: u32,
         composer: &mut naga_oil::compose::Composer,
     ) -> Water {
         let group1_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -170,7 +171,10 @@ impl Water {
                 stencil: wgpu::StencilState::default(),
                 bias: wgpu::DepthBiasState::default(),
             }),
-            multisample: wgpu::MultisampleState::default(),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                ..Default::default()
+            },
             fragment: Some(wgpu::FragmentState {
                 module: &shader,
                 entry_point: Some("fs_water"),
