@@ -267,6 +267,12 @@ class Object: public NetworkObject, public FrameBase, public IAnimator
 	InitPtr<SortObject> _inList;
 	// quick link to object shadow
 	SRef<ShadowIndex> _shadow;
+	// GPU-driven retained-scene coverage cache (raw GpuDrawCoverage: 0=None, 1=Full, 2=Partial),
+	// stamped by EngineWgpu at register/move/remove. Lets GEngine->GpuDrivenCoverage() be an O(1)
+	// field read instead of a per-frame unordered_map<Object*> probe — that lookup was the single
+	// hottest CPU cost once the divert called it for every visible object. 0 (None) is the correct
+	// default for non-GPU-driven objects and survives the ClassIsMovableZeroed memset pattern.
+	unsigned char _gpuCoverage = 0;
 
 	public:
 
@@ -295,6 +301,11 @@ class Object: public NetworkObject, public FrameBase, public IAnimator
 	virtual float CloudletClippingCoef() const;
 	SortObject *GetInList() const {return _inList;}
 	void SetInList( SortObject *inList ) {_inList=inList;}
+
+	// GPU-driven coverage cache (raw GpuDrawCoverage value; see _gpuCoverage). Written only by
+	// EngineWgpu's Scene{ObjectCreated,Removed,Moved} hooks; read by GpuDrivenCoverage().
+	int GetGpuCoverage() const { return _gpuCoverage; }
+	void SetGpuCoverage( int cov ) { _gpuCoverage = (unsigned char)cov; }
 
 	// Perform any animation of object shape. May transform vertices or change face
 	// attributes (texture, flags). When changing face attributes, the section

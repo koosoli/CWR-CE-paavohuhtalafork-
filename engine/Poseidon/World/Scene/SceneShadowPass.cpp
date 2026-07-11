@@ -497,13 +497,14 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
             continue;
         }
         // GPU-driven shadow casting (docs/gpu-culling-and-depth-plan.md §6, multi-view): the
-        // retained scene casts its own shadows on the GPU (draw_gpu_driven_shadow), so drop the
-        // matching CPU casters to avoid a redundant depth draw. Full-coverage objects (+ their
-        // GPU-driven proxy children, which are resident instances the cascade cull casts on its
-        // own) are cast entirely on the GPU; Partial objects cast their GPU-owned opaque sections
-        // on the GPU and only their complement (blend/decal sections + non-GPU proxies) here,
-        // gated by GSkipGpuOwnedSections in AddShadowCaster below. No-op unless WGR_GPU_DRIVEN is
-        // on and the object is registered (cov == None everywhere else).
+        // retained scene casts its own shadows on the GPU (draw_gpu_driven_shadow). Full-coverage
+        // objects (+ their GPU-driven proxy children, resident instances the cascade cull casts on
+        // its own) are diverted out of the draw list upstream (Scene::ObjectForDrawing), so they
+        // normally never appear in _drawMergers — this Full guard is a defensive backstop. Partial
+        // objects DO reach here and cast their GPU-owned opaque sections on the GPU and only their
+        // complement (blend/decal sections + non-GPU proxies) here, gated by GSkipGpuOwnedSections
+        // in AddShadowCaster below. No-op unless WGR_GPU_DRIVEN is on and the object is registered
+        // (cov == None everywhere else).
         const GpuDrawCoverage cov = GEngine->GpuDrivenCoverage(oi->object);
         if (cov == GpuDrawCoverage::Full)
         {

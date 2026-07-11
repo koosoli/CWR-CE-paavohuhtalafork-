@@ -11,8 +11,10 @@ the terrain-subdivision re-seat). **Hi-Z occlusion (§5) LANDED (2026-07-11)**: 
 occlusion, terrain-as-occluder, built-in CPU occlusion disabled while active, ImGui-toggleable. **Instancing
 collapse (§3.6) LANDED + user-verified in-game + RenderDoc (2026-07-11)**: the cull is now a three-pass
 COUNT→EMIT→SCATTER that emits one INSTANCED draw per surviving section instead of one per
-(instance,section) pair. Remaining before the
-CPU-render divert: dynamics/skinned/transparent/multi-view (reflections). Everything is on branch
+(instance,section) pair. **CPU-render divert IMPLEMENTED (2026-07-11, pending in-game verify)**: FULL-coverage
+GPU objects no longer get a `SortObject` (one guard in `Scene::ObjectForDrawing`), taking them out of the
+whole Pass1 walk — image-invariant (DrawSortObject already skipped them), pure CPU-work removal. Remaining:
+dynamics/skinned/transparent/multi-view (reflections). Everything is on branch
 `new-renderer-infrastructure`, gated, A/B-toggleable.
 **Roadmap slot:** Phase 4 — see [implementation-roadmap.md](implementation-roadmap.md).
 

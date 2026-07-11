@@ -705,6 +705,17 @@ extern bool ObjViewer;
 namespace Poseidon
 {
 bool EnableObjOcc = true;
+
+// Perf diagnostic (dumped by the PERF-shapes one-shot, SceneDraw.cpp): this frame's coverage split
+// of the visible object set, tallied in ObjectForDrawing. gCovFull = diverted onto the GPU-driven
+// path (no SortObject, out of the whole Pass1 walk); gCovPartial = GPU owns the opaque geometry but
+// the CPU still draws the blend/decal/proxy complement; gCovNone = fully CPU (untouched by the
+// opaque GPU path — geometry with no opaque-Default section, dominated by on-surface ROAD/decal
+// segments, plus wire fences and glass-only objects; vegetation is alpha-TEST cutout, which IS
+// GPU-owned, so it's Full, not here). Shows how much the divert removed vs what still rides Pass1.
+int gCovFull = 0;
+int gCovPartial = 0;
+int gCovNone = 0;
 } // namespace Poseidon
 
 #include <Poseidon/World/Terrain/Occlusion.hpp>
@@ -720,6 +731,10 @@ SRef<Occlusion>& GetOcclusions()
 
 void Scene::BeginObjects()
 {
+    gCovFull = 0;
+    gCovPartial = 0;
+    gCovNone = 0;
+
     // mark all objects and not in list:
     for (int i = 0; i < _drawObjects.Size(); i++)
     {
@@ -803,6 +818,30 @@ void Scene::ObjectForDrawing(Object* obj, int forceLOD, ClipFlags clip)
     {
         return; // nothing to draw
     }
+
+    // GPU-render divert (docs/gpu-culling-and-depth-plan.md — "CPU-render divert"): a FULL-coverage
+    // GPU-driven object is culled, LOD-selected, colour-drawn AND shadow-cast entirely by the
+    // compute/indirect path, so it never needs a SortObject. Skipping the add here takes it out of
+    // the whole Pass1 walk — the frustum/shadow-visibility tests below, QSort, Occlusion::TestBBox,
+    // AdjustComplexity, the SortObject alloc churn, and the DrawSortObject / AddShadowCaster loops
+    // — which is the actual per-frame CPU saving the retained scene was built for. PARTIAL objects
+    // stay: the GPU owns their opaque geometry but the CPU still paints/casts the complement
+    // (blend/decal sections + non-GPU proxies), so they keep a SortObject and DrawSortObject /
+    // AddShadowCaster drop the GPU-owned sections via GSkipGpuOwnedSections.
+    //
+    // Read the coverage cached ON the Object (Object::_gpuCoverage, stamped by EngineWgpu at
+    // register/move/remove) rather than the virtual GEngine->GpuDrivenCoverage() — this runs for
+    // EVERY visible object (~160 K/frame at 20 km view distance with the whole island in view), so
+    // even the virtual dispatch is worth dropping. 0 (None) for GL33 / dynamics / unregistered
+    // shapes, so they fall straight through to the CPU path below.
+    const int gpuCov = obj->GetGpuCoverage();
+    if (gpuCov == static_cast<int>(GpuDrawCoverage::Full))
+    {
+        gCovFull++;
+        return;
+    }
+    (gpuCov == static_cast<int>(GpuDrawCoverage::Partial) ? gCovPartial : gCovNone)++;
+
     float radius = obj->GetRadius();
     // get object position in clipping coordinates
 

@@ -1456,11 +1456,12 @@ static void DrawSortObject(SortObject* oi)
     Object* obj = oi->object;
     // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md §12 / Stage 3b): objects handed
     // to the GPU retained scene are culled + drawn by the compute/indirect path. Full-coverage
-    // objects skip their CPU colour draw entirely; Partial-coverage objects (buildings — the GPU
-    // draws the opaque geometry, but the CPU still paints interior furniture proxies + blend/
-    // decal sections) keep their CPU draw with GSkipGpuOwnedSections set, so Shape::Draw drops
-    // the GPU-owned sections and never repaints them. Shadow casters stay on the CPU path
-    // (SceneShadowPass, a separate pass). No-op unless WGR_GPU_DRIVEN is on and obj registered.
+    // objects are diverted out of the draw list entirely (Scene::ObjectForDrawing never creates a
+    // SortObject for them), so they normally never reach here — this Full guard is a defensive
+    // backstop. Partial-coverage objects (buildings — the GPU draws the opaque geometry, but the
+    // CPU still paints interior furniture proxies + blend/decal sections) DO keep their CPU draw
+    // with GSkipGpuOwnedSections set, so Shape::Draw drops the GPU-owned sections and never
+    // repaints them. No-op unless WGR_GPU_DRIVEN is on and obj registered.
     const GpuDrawCoverage cov = GEngine->GpuDrivenCoverage(obj);
     if (cov == GpuDrawCoverage::Full)
     {
@@ -1573,6 +1574,14 @@ void Scene::DrawObjectsAndShadowsPass1()
             top.push_back({kv.second, kv.first});
         std::sort(top.rbegin(), top.rend());
         LOG_INFO(Graphics, "PERF shapes: {} objects, {} unique shapes", _drawMergers.Size(), (int)hist.size());
+        // Coverage split (tallied this frame in Scene::ObjectForDrawing): how much the GPU-render
+        // divert removed (Full) vs what still rides the whole Pass1 walk (Partial complement / None
+        // = fully CPU). EnableObjOcc: whether the software occlusion (Occlusion::TestBBox) is still
+        // running — should be OFF (GPU Hi-Z replaces it) when GPU occlusion is active.
+        extern int gCovFull, gCovPartial, gCovNone;
+        extern bool EnableObjOcc;
+        LOG_INFO(Graphics, "PERF coverage: Full(diverted)={} Partial(cpu-complement)={} None(cpu)={} | EnableObjOcc={}",
+                 gCovFull, gCovPartial, gCovNone, EnableObjOcc ? 1 : 0);
         for (size_t i = 0; i < top.size() && i < 20; i++)
             LOG_INFO(Graphics, "PERF shape[{}]: {} x{}", (int)i, top[i].second.c_str(), top[i].first);
     }

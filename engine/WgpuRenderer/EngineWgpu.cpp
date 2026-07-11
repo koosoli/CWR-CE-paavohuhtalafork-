@@ -2079,6 +2079,8 @@ void EngineWgpu::SceneObjectCreated(Object* obj)
         }
     }
     _gpuInstances[obj] = GpuInstance{model, slot, obj->Transform().Position(), cp.mode, cov};
+    // Mirror the coverage onto the Object so GpuDrivenCoverage() is an O(1) field read (see there).
+    obj->SetGpuCoverage(static_cast<int>(cov));
 }
 
 void EngineWgpu::SceneObjectRemoved(Object* obj)
@@ -2095,6 +2097,7 @@ void EngineWgpu::SceneObjectRemoved(Object* obj)
     }
     wgr_instance_remove(_renderer, it->second.slot);
     _gpuInstances.erase(it);
+    obj->SetGpuCoverage(static_cast<int>(GpuDrawCoverage::None)); // back to the CPU path
 }
 
 void EngineWgpu::SceneObjectMoved(Object* obj)
@@ -2115,6 +2118,7 @@ void EngineWgpu::SceneObjectMoved(Object* obj)
     {
         wgr_instance_remove(_renderer, it->second.slot);
         _gpuInstances.erase(it);
+        obj->SetGpuCoverage(static_cast<int>(GpuDrawCoverage::None)); // dropped to the CPU path
         RemoveGpuProxies(obj); // §12d: furniture goes with the parent (CPU draws destroyed geo)
         return;
     }
@@ -2152,42 +2156,18 @@ void EngineWgpu::SceneObjectMoved(Object* obj)
 
 GpuDrawCoverage EngineWgpu::GpuDrivenCoverage(const Object* obj) const
 {
-    if (!_gpuDriven)
+    // O(1) field read (Object::_gpuCoverage), stamped by Scene{ObjectCreated,Removed,Moved}. This
+    // replaced a per-object unordered_map<Object*> probe that Scene::ObjectForDrawing (the divert)
+    // calls for EVERY visible object — profiled at ~2.4 s/frame-budget of pure hash cache misses,
+    // the single hottest CPU cost. The retained scene is now trusted correct-by-construction (all
+    // transform movers fire SceneObjectMoved), so the old per-lookup drift tripwire + self-heal is
+    // dropped with it — a stale transform is a hook bug to fix at the source, not to paper over on
+    // every frame's whole visible set.
+    if (!_gpuDriven || !obj)
     {
         return GpuDrawCoverage::None;
     }
-    auto it = _gpuInstances.find(obj);
-    if (it == _gpuInstances.end())
-    {
-        return GpuDrawCoverage::None;
-    }
-    // Drift TRIPWIRE. Every known mover of a static object's transform now fires
-    // SceneObjectMoved (Landscape::MoveObject, and the terrain-relative re-seat in
-    // Landscape::MakeObjectsTerrainAbsolute that every heightfield change funnels through), so
-    // the retained transform should NEVER drift from the live one. If it does, an unhooked
-    // mover exists: warn (so it's found and hooked — the retained scene must stay correct by
-    // events, not by this per-frame CPU walk, which GPU-driven rendering will eliminate) and
-    // refresh so rendering stays correct meanwhile.
-    const Vector3 live = obj->Transform().Position();
-    if (live.Distance2(it->second.pos) > Square(0.01f))
-    {
-        static int warned = 0;
-        if (warned < 8)
-        {
-            warned++;
-            const LODShapeWithShadow* shape = obj->GetShape();
-            LOG_WARN(Graphics, "GPU-driven instance drifted without a Moved hook (unhooked mover?): {} stored=({},{},{}) live=({},{},{})",
-                        shape ? shape->Name() : "?", it->second.pos.X(), it->second.pos.Y(), it->second.pos.Z(),
-                        live.X(), live.Y(), live.Z());
-        }
-        EngineWgpu* self = const_cast<EngineWgpu*>(this);
-        self->SceneObjectMoved(const_cast<Object*>(obj));
-        // SceneObjectMoved can DROP the object (destroyed / shape gone): then it must draw fully
-        // on the CPU this frame (coverage None).
-        auto refreshed = self->_gpuInstances.find(obj);
-        return refreshed != self->_gpuInstances.end() ? refreshed->second.coverage : GpuDrawCoverage::None;
-    }
-    return it->second.coverage;
+    return static_cast<GpuDrawCoverage>(obj->GetGpuCoverage());
 }
 
 bool EngineWgpu::GpuDrivenProxy(const Object* parent, int level, int proxyIndex) const
