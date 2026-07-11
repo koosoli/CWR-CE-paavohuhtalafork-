@@ -15,6 +15,7 @@
 #include <Poseidon/World/Simulation/Animation/Animation.hpp>
 #include <Poseidon/Graphics/Core/TLVertex.hpp>
 
+#include <Poseidon/Graphics/Rendering/BuildRenderPassDescriptor.hpp>
 #include <Poseidon/Graphics/Rendering/Primitives/Edges.hpp>
 #include <Poseidon/Graphics/Rendering/Draw/SpecLods.hpp>
 
@@ -74,6 +75,7 @@ bool Shape::HasBlendSections() const
 }
 
 SectionClassFilter GSectionFilter = SectionClassFilter::All;
+bool GSkipGpuOwnedSections = false;
 ConformPlane GCurrentConformPlane;
 bool GGpuTerrainConform = false;
 
@@ -121,6 +123,16 @@ void Shape::Draw(class IAnimator* matSource, const LightList& lights, ClipFlags 
             {
                 const ShapeSection& sec = GetSection(i);
                 if (sec.properties.Special() & (IsHidden | IsHiddenProxy))
+                {
+                    continue;
+                }
+
+                // Partial GPU-driven object (wgpu §12): the GPU retained scene already drew
+                // this shape's GPU-owned (opaque, Default-surface) sections into the colour +
+                // prepass targets, so the CPU repaints only the complement (blend glass,
+                // decals). Same predicate the wgpu backend registered the section with, so
+                // owned sections are dropped exactly once — never double-drawn, never held.
+                if (GSkipGpuOwnedSections && render::IsGpuOwnedSectionSpec(sec.properties.Special()))
                 {
                     continue;
                 }

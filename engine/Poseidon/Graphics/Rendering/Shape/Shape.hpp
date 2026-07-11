@@ -227,6 +227,17 @@ enum class SectionClassFilter
 // changing the virtual Object::Draw signature (which has many overrides). Default All.
 extern SectionClassFilter GSectionFilter;
 
+// Partial GPU-driven suppression (wgpu, docs/gpu-culling-and-depth-plan.md §12): when a
+// building's own opaque geometry is drawn by the GPU retained scene but the object still
+// needs a CPU draw for its complement (interior proxies / furniture, blend glass, decals),
+// the scene sets this true around that object's Object::Draw. Shape::Draw then skips every
+// GPU-owned section (render::IsGpuOwnedSectionSpec) so the CPU repaints only what the GPU
+// did NOT take — no double-draw of the opaque geometry the indirect pass already emitted.
+// Threads through Shape::Draw exactly like GSectionFilter (no Object::Draw signature
+// change); proxies reset it to false on entry (the GPU never owns proxy geometry under
+// 12a). Default false; only the wgpu GPU-driven path ever sets it, so GL33 is unaffected.
+extern bool GSkipGpuOwnedSections;
+
 // Terrain-conform plane published around a conformed object's draw (ForestPlain),
 // so the wgpu backend can upload the shared base mesh ONCE undeformed and conform it
 // per instance in the vertex shader instead of the CPU rewriting the shared vertex

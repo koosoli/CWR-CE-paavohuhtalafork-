@@ -510,3 +510,209 @@ The shadow pass conforms ClipLand independently (`shadow_depth.wgsl`), and shado
 - Both modes landed and verified in-game (see the Implementation-status block for the final architecture,
   the `SaveOriginalPos` requirement, and the terrain-subdivision re-seat hook that keeps conform instances'
   transforms + `bcSurfaceY` correct across heightfield changes).
+
+## 12. Partial suppression: buildings (proxy-bearing + mixed transparent/decal shapes) — priority, expands coverage
+
+**Status:** 12a + 12d-core IMPLEMENTED + user-verified in-game (2026-07-11): 12a "no render problems"; 12d-core
+"furniture renders as expected." No new GPU features. 12b (mixed transparent/decal — comes largely for free
+via the same per-section ownership, verify §12.5 LOD mismatch) and 12d-full (Full-downgrade for proxies-only
+buildings, §12.7) still ahead.
+
+**⚠️ vtable regression (fixed 2026-07-11):** the first 12a/12d cut broke 3D UI — `GpuDrivenObject` was made
+non-virtual and `GpuDrivenCoverage`/`GpuDrivenProxy` inserted mid-class, shifting every later `Engine` vtable
+slot (ccache/PCH partial recompiles misdispatch). Fix: `GpuDrivenObject` kept at its ORIGINAL slot (now
+delegates to `GpuDrivenCoverage`); the two new virtuals APPENDED at the true class end (with `SuppressWorldObjects`).
+New `Engine` virtuals must always go at the class end — see the note there.
+
+**12d-core landed (files, all in `EngineWgpu.*` + `Object.cpp`):** proxies (interior furniture) move onto
+the GPU as **child instances**. `BuildGpuProxyInstance(world, model)` builds a rigid instance at the
+COMPOSED transform `parentTransform × proxyLocalTransform`; `EmitGpuProxies` walks the finest graphical LOD
+that carries proxies, registers each **Full-coverage** proxy shape (self-contained: no complement, no nested
+proxies — anything Partial stays CPU) via `RegisterGpuModel`, and adds a child instance per eligible proxy,
+recorded in `_gpuProxies : parent → {refLevel, [{proxyIndex, slot, model}]}`. `SceneObjectMoved` re-composes
+children; `SceneObjectRemoved` + the destroy/shape-swap branch drop them (`RemoveGpuProxies`). New virtual
+`Engine::GpuDrivenProxy(parent, level, proxyIndex)` (EngineWgpu-implemented) lets `Object::DrawProxies` skip
+the GPU-handed proxies (only at `level == refLevel`) so furniture isn't drawn twice. Parent stays **Partial**
+(still runs `Object::Draw` for any CPU-remaining proxies / complement); the Full-downgrade is 12d-full.
+
+**12a landed (files):** shared ownership predicate `render::IsGpuOwnedSection` /
+`IsGpuOwnedSectionSpec` (`BuildRenderPassDescriptor.hpp`) — the single source of truth used by the wgpu
+`ClassifyGpuSection` (what the GPU takes) *and* `Shape::Draw`'s skip (what the CPU drops); tri-state
+`GpuDrawCoverage{None,Full,Partial}` + `virtual GpuDrivenCoverage()` on the `Engine` base (with a
+non-virtual `GpuDrivenObject` bool wrapper), overridden by `EngineWgpu`; transient
+`GSkipGpuOwnedSections` (`Shape.hpp`/`ShapeDraw.cpp`) consulted in `Shape::Draw`'s T&L section loop;
+`Object::DrawProxies` clears+restores the flag so proxy furniture draws in full; `RegisterGpuModel`
+drops the whole-shape `NProxies>0` + any-non-owned-section rejections, registers owned sections per LOD,
+and caches `Full`/`Partial` per model (`_gpuModelCoverage`), tagged onto each `GpuInstance`;
+`DrawSortObject` returns early for `Full`, else runs `Object::Draw` under an RAII skip guard for `Partial`.
+
+**Motivation.** The GPU-driven set is still *whole-shape-opaque, no-proxy* only. Two **whole-shape**
+rejections in `RegisterGpuModel`/`ClassifyGpuSection` keep the single biggest remaining static slice —
+**town buildings** — 100% on the CPU:
+1. **Proxy-bearing shapes** (`s->NProxies() > 0` ⇒ ineligible, [EngineWgpu.cpp:1785](../EngineWgpu.cpp#L1785)).
+   Buildings carry interior furniture as `_proxy[]` objects drawn *inline* by `Object::DrawProxies`
+   ([Object.cpp:1009](../../Poseidon/World/Scene/Object.cpp#L1009)); the all-or-nothing CPU-draw
+   suppression in `DrawSortObject` ([SceneDraw.cpp:1461](../../Poseidon/World/Scene/SceneDraw.cpp#L1461))
+   would skip `DrawProxies`, so the furniture would vanish.
+2. **Any non-opaque section** ⇒ whole shape ineligible (`ClassifyGpuSection` returns false for
+   `blend != Opaque || surface != Default`, [EngineWgpu.cpp:1607](../EngineWgpu.cpp#L1607), and one false
+   fails the whole model). One glass pane (blend) or one painted-on decal sends the entire building to CPU.
+
+Both are unlocked by the **same keystone: make CPU-draw suppression *partial* instead of whole-object.**
+The GPU takes the opaque-`Default` sections; the CPU keeps drawing only **the complement** — proxies + any
+blend/decal sections — at that object's CPU-selected LOD, in the passes those already run in.
+
+### 12.1 The tri-state: None / Full / Partial
+
+`GpuDrivenObject(obj)` becomes tri-state (keep a `bool` convenience wrapper for the shadow-path call sites):
+- **None** — not registered ⇒ CPU draws normally (today).
+- **Full** — GPU owns *every* drawn section and the shape has **no proxies** ⇒ `DrawSortObject` skips the
+  CPU draw entirely (today's `return`). Unchanged behaviour, unchanged code path.
+- **Partial** — GPU owns the opaque-`Default` sections, but the shape **has proxies and/or ≥1 non-owned
+  section** ⇒ `DrawSortObject` **still runs `obj->Draw`**, but the parent `Shape::Draw` skips the
+  GPU-owned sections. `DrawProxies` runs (furniture draws); the complement sections draw in their normal
+  passes (glass in `BlendOnly`, decals in the on-surface pass).
+
+Coverage is decided per model at registration and cached alongside the model id (`GpuInstance` grows a
+`coverage` field, or a parallel `_gpuPartial` set).
+
+### 12.2 The section-skip mechanism (mirror `GSectionFilter` / `ConformPlane`)
+
+The transient-global threading pattern already used for `GSectionFilter` and `GCurrentConformPlane`
+([Shape.hpp:224-251](../../Poseidon/Graphics/Rendering/Shape/Shape.hpp#L224)) is exactly right — it threads
+through `Object::Draw` → `Shape::Draw` (and proxies/sub-shapes) with **no** change to the many-overridden
+`Object::Draw` signature:
+
+- Add `extern bool GSkipGpuOwnedSections;` (default false). `DrawSortObject` sets it true around a
+  **Partial** object's `obj->Draw` and restores it after (like the `PassKindHint` save/restore already
+  there). Orthogonal to `GSectionFilter` — the pass filter still selects opaque-vs-blend; this *additionally*
+  removes GPU-owned sections.
+- In `Shape::Draw`'s section loop ([ShapeDraw.cpp:120-170](../../Poseidon/Graphics/Rendering/Shape/ShapeDraw.cpp#L120)),
+  skip a section when `GSkipGpuOwnedSections && IsGpuOwnedSection(sec)` — **the same predicate**
+  `ClassifyGpuSection` uses. Proxies are separate objects (their own `Object::Draw`); they reset the flag to
+  false on entry (GPU never owns proxy geometry) so proxy interiors draw in full.
+
+**Single source of truth (load-bearing).** Factor the eligibility predicate into ONE
+`bool IsGpuOwnedSection(const ShapeSection&)` (opaque blend + `Default` surface + not hidden) used by BOTH
+`ClassifyGpuSection` (what the GPU takes) and the `Shape::Draw` skip (what the CPU drops). If they ever
+diverge: a section owned by neither ⇒ **hole**; owned by both ⇒ **double-draw** (z-equal overdraw, or
+z-fight for the decal/blend cases). This helper is the correctness anchor of the whole feature.
+
+### 12.3 `RegisterGpuModel` changes ([EngineWgpu.cpp:1754](../EngineWgpu.cpp#L1754))
+
+- **Drop the `NProxies() > 0` whole-shape rejection** ([:1785](../EngineWgpu.cpp#L1785)). Proxies no longer
+  disqualify — they just force `coverage = Partial`.
+- **Stop letting a non-owned section fail the whole model.** `ClassifyGpuSection` returning false for a
+  section becomes "CPU owns this section" (⇒ `Partial`), not `eligible = false`. Register the owned sections;
+  count the non-owned ones. A model with **zero** owned sections stays `WGR_INVALID_MODEL` (nothing to GPU-drive).
+- Compute `coverage`: `Full` iff `NProxies()==0` on every level **and** every non-hidden section is owned;
+  else `Partial`. Store it with the model.
+- Hidden proxy-MARKER sections (`IsHidden|IsHiddenProxy`) stay skipped as today — neither owned nor complement.
+
+### 12.4 Passes & correctness
+
+- **Opaque pass** (`GSectionFilter = OpaqueAndCutout`): a Partial object's parent `Shape::Draw` now draws
+  *nothing* GPU-owned (skip flag) — only its DrawProxies furniture renders here. No double-draw with the GPU
+  indirect set (which already drew the opaque geometry into the same colour + prepass targets).
+- **Blend pass** (`BlendOnly`): the building's glass draws normally (never GPU-owned; the skip flag is false
+  here because Partial objects are only re-entered per pass through the normal `_drawMergers` walk — set the
+  flag per `DrawSortObject` invocation, so it applies in whichever pass that call belongs to).
+- **On-surface/decal pass**: painted-on decals draw normally (not owned).
+- **Shadows: unaffected.** Casters are a separate CPU pass (`SceneShadowPass`) not gated by
+  `GpuDrivenObject`; a Partial building still casts a full CPU shadow (its GPU-owned geometry is *not* yet a
+  GPU shadow caster — that's the still-pending GPU-path shadow work). No double shadow, no missing shadow.
+- **Non-T&L / whole-shape fallback** ([ShapeDraw.cpp:185-199](../../Poseidon/Graphics/Rendering/Shape/ShapeDraw.cpp#L185)):
+  buildings take the hardware-T&L path (they have a `_buffer`), so the skip lives in the T&L section loop.
+  Verify a Partial object never routes through `DrawWholeShapeInPass` (which can't section-split) — if one
+  does, treat it as CPU-only (don't register), since the whole-shape draw can't drop GPU-owned faces.
+
+### 12.5 The real open question — LOD mismatch on a Partial object
+
+The GPU cull+LOD compute picks the LOD for the **owned** geometry; the CPU picks `oi->drawLOD` for the
+**complement**. For a Partial object these can differ (GPU pushes LODs further, §Implementation-status "no
+exact-parity requirement") ⇒ glass from one LOD floating over walls from another, or z-fighting where the
+complement's faces coincide with a coarser owned LOD. For the whole-shape set this was a non-issue (one
+owner). For Partial objects it must be resolved:
+- **(a) Accept it.** Buildings have few LODs; glass/decals are small. Evaluate visually first — may be fine.
+- **(b) Force the GPU to the CPU-chosen LOD for Partial instances.** Carry a `forced_lod` in the instance
+  record (sentinel = "cull-select"); the cull shader honours it when set. Partial objects are a minority and
+  the CPU already walks them (for proxies/complement), so feeding a forced LOD costs ~nothing and guarantees
+  the two halves agree. **Recommended** if (a) shows artifacts.
+- **(c)** Draw the complement at the GPU's LOD — needs reading back the GPU LOD choice CPU-side; rejected
+  (breaks the CPU-out-of-loop model for no gain over (b)).
+
+### 12.6 Staging
+
+- **12a — Partial infra + proxy-bearing, fully-opaque-own-geometry shapes.** Add the tri-state, the
+  `GSkipGpuOwnedSections` flag + `Shape::Draw` skip, the shared `IsGpuOwnedSection` predicate, and drop the
+  `NProxies` rejection. Complement here = *proxies only* (own geometry fully owned ⇒ parent draws nothing,
+  furniture draws). Proves partial suppression + DrawProxies coexistence with the smallest surface. Biggest
+  single win (proxy buildings are common).
+- **12b — Mixed transparent/decal shapes.** Turn the per-section reject into per-section CPU-ownership so
+  glass/decal buildings register their opaque sections; the complement now includes real blend/decal sections
+  drawing in their own passes. Resolve §12.5 (start with (a), fall to (b)).
+- **12c (follow-on, not this plan):** GPU-path shadow casting for Partial objects' owned geometry, once
+  GPU-path shadows land generally — until then Partial buildings cast full CPU shadows (correct, just not yet
+  GPU-driven).
+- **12d — Proxies (furniture) → GPU child instances.** Layers additively on 12a's hooks; see §12.7. Turns a
+  no-glass proxy building **Full** (zero CPU draw).
+
+### 12.7 Proxies (furniture) on the GPU — §12d detail
+
+A proxy is *already a static instance*: `DrawProxies` draws `world = parentTransform × proxy.obj->Transform()`
+([Object.cpp:884](../../Poseidon/World/Scene/Object.cpp#L884)), and `NewProxyObject` builds a plain
+`NewObject(shape,-1)` static ([ObjectClasses.cpp:963](../../Poseidon/World/Scene/ObjectClasses.cpp#L963)) — no
+simulation. For a **static** parent both factors are static ⇒ the composed transform is a static GPU instance,
+exactly `BuildGpuInstance`'s input. Shared furniture shapes instance for free.
+
+**Mechanism (additive on 12a):**
+1. **Emit child instances.** In `SceneObjectCreated`, after registering the parent, walk
+   `shape->LevelOpaque(0)->Proxy(i)` (the richest LOD's proxy list, §caveat below); for each,
+   `RegisterGpuModel(proxy.obj->GetShape())` (recursion-safe — the function already memoizes per shape) and
+   `wgr_instance_add` one instance with `world = parentTransform × proxy.obj->Transform()` and the proxy's own
+   conform (proxies are rigid furniture ⇒ mode 0).
+2. **Child lifetime.** `GpuInstance` (or a side map `_gpuProxies : Object* → std::vector<uint32_t> slots`)
+   tracks the child slots per parent. `SceneObjectMoved` re-composes + `wgr_instance_update`s each child;
+   `SceneObjectRemoved` `wgr_instance_remove`s them. Reuses the existing hooks — no new engine plumbing.
+3. **Fallbacks stay Partial.** A proxy whose shape is ineligible (transparent, itself proxy-bearing, animated)
+   is NOT emitted → it stays in the CPU complement, and `DrawProxies` must still draw *that* proxy. So the
+   parent's `GSkipGpuOwnedSections` draw needs a companion **per-proxy skip**: `DrawProxies` skips proxy `i`
+   iff it was handed to the GPU. Simplest: the child-slot map keys by (parent, proxy index); `DrawProxies`
+   consults it. If ALL proxies moved and own geometry is fully owned ⇒ parent is **Full** (skip CPU entirely).
+
+**Caveats / gates (verify):**
+- **LOD coupling (the real behavioral change).** Proxies are per-parent-LOD (furniture usually only on LOD0);
+  independent GPU instances decouple that — furniture visibility becomes each proxy's *own* distance/sub-pixel
+  cull, not the parent's LOD. For small furniture ~equivalent (self-culls at range), arguably cleaner. This is
+  the proxy analogue of §12.5; accept + eyeball (option A).
+- **Animated-selection proxies** (a proxy bolted to a moving part — windmill radar, door): NOT static even on
+  a static parent; repositioned in *derived* `Object::Draw` overrides, not the base static path. Gate them
+  out — only emit proxies of parents drawn by the base static `Object::Draw` (and skip any proxy whose
+  `selection` maps to an animated selection). Leave those on CPU.
+- **Instance-count growth** (N buildings × M furniture) is the point; §3.6 instancing collapse amortizes the
+  extra sub-draws. Watch the instance-buffer / arg-buffer sizing (`DEFAULT_VARIANT_CAPACITY`).
+- **Recursion**: `RegisterGpuModel` on a proxy shape that itself has proxies rejects (its own `NProxies>0`
+  path under 12a) → that proxy stays CPU. Nested-proxy furniture is rare; not worth recursing initially.
+
+**12d-core implementation notes (2026-07-11):**
+- **Eligibility = `coverage == Full`** (reuses the §12a enum, no `RegisterGpuModel` change): `Full` already
+  means "no complement sections **and** no proxies," i.e. a fully self-contained furniture mesh the GPU can
+  draw whole. A `Partial` proxy (transparent bits, or its own nested proxies) stays on the CPU.
+- **Reference-LOD double-draw window (accepted, option A).** Proxies are registered from ONE reference LOD
+  (finest graphical level with proxies); `DrawProxies` skips GPU'd proxies only when drawing at that LOD.
+  The GPU child instances are always resident and distance-cull independently. If a *coarser* LOD also lists
+  furniture proxies AND the child instances haven't distance-culled yet, the coarser LOD's CPU proxies and
+  the reference-LOD GPU children could briefly co-draw (double furniture). Uncommon (furniture is normally
+  on the finest LOD only) and within the accepted LOD-coupling caveat; revisit with 12d-full if it shows.
+- **Drift safety:** proxy children ride the parent's `SceneObjectMoved` (re-composed there) and the parent's
+  drift tripwire in `GpuDrivenCoverage` (which calls `SceneObjectMoved`), so an unhooked parent mover
+  refreshes furniture too. There is no separate per-proxy tripwire.
+- **12d-full (next):** downgrade a proxies-only building (owned geometry fully GPU + every proxy GPU-eligible
+  + no complement) to `Full` so its `Object::Draw` is skipped entirely — removing the last per-building CPU
+  walk. Needs tracking "Partial was proxies-only" and confirming all proxies registered; deferred so 12d-core
+  can be verified first.
+
+**Verify:** furniture still draws inside proxy buildings; no double-draw halo/z-fight on building walls
+(prepass + colour); glass/decals still composite correctly; the `DrawSortObject` drift tripwire stays quiet;
+CPU opaque-pass draw-call count drops by the building count; toggling `WGR_GPU_DRIVEN` off restores the exact
+CPU image (A/B).

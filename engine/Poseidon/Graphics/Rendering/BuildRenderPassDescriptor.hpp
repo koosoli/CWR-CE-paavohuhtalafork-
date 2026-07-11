@@ -195,6 +195,26 @@ inline RenderPassDescriptor BuildRenderPassDescriptor(const LegacySpec& spec, co
     return d;
 }
 
+// A shape section is "GPU-owned" on the wgpu GPU-driven retained path when it is plain
+// opaque, Default-surface geometry — exactly the class the wgpu backend hands to the
+// retained scene (see EngineWgpu::ClassifyGpuSection). This is the SINGLE source of truth
+// for section ownership: the wgpu registration (what the GPU *takes*) and Shape::Draw's
+// partial-suppression skip (what the CPU *drops* for a partially-GPU-driven object) MUST
+// both route through it. Divergence => a section drawn twice (z-fight / overdraw) or not
+// at all (hole). Cutout (alpha-tested, blend==Opaque) IS owned; alpha-blend and on-surface
+// decals are the CPU complement. Hidden sections are filtered by the callers, not here.
+inline bool IsGpuOwnedSection(const RenderPassDescriptor& d)
+{
+    return d.blend == BlendMode::Opaque && d.surface == SurfaceMode::Default;
+}
+
+// Convenience for callers that only have the raw section spec (Shape::Draw). Builds the
+// descriptor in the default 3D-pass context — identical to ClassifyGpuSection's context.
+inline bool IsGpuOwnedSectionSpec(int special)
+{
+    return IsGpuOwnedSection(BuildRenderPassDescriptor(SplitLegacy(special)));
+}
+
 } // namespace render
 
 } // namespace Poseidon

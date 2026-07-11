@@ -1454,14 +1454,25 @@ float Scene::GetSmokeGeneralization() const
 static void DrawSortObject(SortObject* oi)
 {
     Object* obj = oi->object;
-    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b): objects handed to
-    // the GPU retained scene are culled + drawn by the compute/indirect path, so skip their
-    // CPU colour draw. Their shadow casters stay on the CPU path (SceneShadowPass, a separate
-    // pass). No-op unless WGR_GPU_DRIVEN is on and this object was registered.
-    if (GEngine->GpuDrivenObject(obj))
+    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md §12 / Stage 3b): objects handed
+    // to the GPU retained scene are culled + drawn by the compute/indirect path. Full-coverage
+    // objects skip their CPU colour draw entirely; Partial-coverage objects (buildings — the GPU
+    // draws the opaque geometry, but the CPU still paints interior furniture proxies + blend/
+    // decal sections) keep their CPU draw with GSkipGpuOwnedSections set, so Shape::Draw drops
+    // the GPU-owned sections and never repaints them. Shadow casters stay on the CPU path
+    // (SceneShadowPass, a separate pass). No-op unless WGR_GPU_DRIVEN is on and obj registered.
+    const GpuDrawCoverage cov = GEngine->GpuDrivenCoverage(obj);
+    if (cov == GpuDrawCoverage::Full)
     {
         return;
     }
+    // RAII: set the owned-section skip for a Partial object's draw, restore on every exit.
+    struct SkipOwnedGuard
+    {
+        bool prev;
+        explicit SkipOwnedGuard(bool v) : prev(GSkipGpuOwnedSections) { GSkipGpuOwnedSections = v; }
+        ~SkipOwnedGuard() { GSkipGpuOwnedSections = prev; }
+    } skipOwnedGuard(cov == GpuDrawCoverage::Partial);
     const bool cockpit =
         GWorld && oi->drawLOD != LOD_INVISIBLE && oi->drawLOD == obj->InsideLOD(GWorld->GetCameraType());
     if (!cockpit)

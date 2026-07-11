@@ -875,9 +875,23 @@ void Object::DrawProxies(int level, ClipFlags clipFlags, const Matrix4& transfor
 {
     Shape* sShape = _shape->LevelOpaque(level);
 
+    // A proxy is an independent object. Under wgpu §12 partial suppression this parent may be
+    // drawn with GSkipGpuOwnedSections set (the GPU drew its opaque geometry), but each proxy
+    // is NOT GPU-driven under 12a — its furniture must draw ALL its sections. Clear the parent's
+    // skip for the proxy draws, then restore it for the parent's own Shape::Draw that follows.
+    const bool savedSkipGpuOwned = GSkipGpuOwnedSections;
+    GSkipGpuOwnedSections = false;
+
     // draw all proxy objects
     for (int i = 0; i < sShape->NProxies(); i++)
     {
+        // wgpu §12d: a proxy moved onto the GPU retained scene (as a child instance) is culled +
+        // drawn there — skip its CPU draw so the furniture isn't painted twice. No-op unless
+        // WGR_GPU_DRIVEN is on and this (parent, level, proxy) was registered.
+        if (GEngine->GpuDrivenProxy(this, level, i))
+        {
+            continue;
+        }
         const ProxyObject& proxy = sShape->Proxy(i);
 
         // smart clipping par of obj->Draw
@@ -903,6 +917,8 @@ void Object::DrawProxies(int level, ClipFlags clipFlags, const Matrix4& transfor
 
         proxy.obj->Draw(level, ClipAll, pFrame);
     }
+
+    GSkipGpuOwnedSections = savedSkipGpuOwned;
 }
 
 // pos is used mainly for proper proxy object positioning. This is the main function

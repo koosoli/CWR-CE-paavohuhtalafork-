@@ -1602,9 +1602,11 @@ bool ClassifyGpuSection(const Shape& s, uint64_t mesh, const AutoArray<render::m
     ctx.isIn3DPass = true;
     ctx.shadowAlphaRef = 0;
     const render::RenderPassDescriptor desc = render::BuildRenderPassDescriptor(split, ctx);
-    // First cut: plain opaque surfaces only. Transparent/additive/shadow blends and
-    // on-surface decals (roads/footprints, which need a polygon-offset) stay on the CPU path.
-    if (desc.blend != render::BlendMode::Opaque || desc.surface != render::SurfaceMode::Default)
+    // Plain opaque surfaces only. Transparent/additive/shadow blends and on-surface decals
+    // (roads/footprints, which need a polygon-offset) are the CPU complement — the SAME
+    // predicate Shape::Draw uses to skip GPU-owned sections when it draws a Partial object,
+    // so the two can never disagree (double-draw / hole). See IsGpuOwnedSection.
+    if (!render::IsGpuOwnedSection(desc))
     {
         return false;
     }
@@ -1709,6 +1711,23 @@ WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, const ConformPla
     return inst;
 }
 
+// §12d: a proxy child instance — rigid interior furniture at an explicit COMPOSED world
+// transform (parentTransform * proxyLocalTransform), which is static for a static parent. No
+// conform (mode 0). Cull sphere center = the composed origin, radius = the proxy model's own
+// bounding sphere * the composed scale (registered with wgr_model_register), matching
+// BuildGpuInstance and the CPU cull.
+static WgrInstance BuildGpuProxyInstance(const Matrix4& world, uint32_t model)
+{
+    WgrInstance inst{};
+    GfxMatrix g;
+    ConvertMatrix(g, world);
+    std::memcpy(inst.world.m, &g, sizeof(inst.world.m));
+    inst.model = model;
+    const Vector3 center = world.Position();
+    inst.center = {center.X(), center.Y(), center.Z(), world.Scale()};
+    return inst;
+}
+
 // bcSurfaceY for a conform (ClipLand) instance: the surface height at the object's ground
 // reference, matching Object::PublishConformPlane (mode 2). 0 for non-conform / no landscape.
 static float GpuConformBcSurfaceY(const Object& obj, const LODShapeWithShadow& shape)
@@ -1763,6 +1782,13 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
     std::vector<WgrModelMaterial> materials;
     bool eligible = true;
     bool isConform = false;
+    // §12 partial coverage. `hasProxies` = some level carries interior furniture proxies (drawn
+    // by the CPU Object::DrawProxies); `hasComplement` = some visible section is NOT GPU-owned
+    // (blend glass / on-surface decal, drawn by the CPU with GSkipGpuOwnedSections set). Either
+    // makes the object Partial: the GPU draws the owned opaque geometry, the CPU repaints the
+    // rest. Neither => Full (the GPU draws the whole object; the CPU draw is suppressed).
+    bool hasProxies = false;
+    bool hasComplement = false;
 
     for (int level = 0; level < shape->NLevels() && eligible; level++)
     {
@@ -1775,17 +1801,39 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
         {
             continue;
         }
-        // Proxy-bearing shapes (buildings with interior furniture proxies) must stay wholly on
-        // the CPU path. The real furniture is created at shape-load into the parent's _proxy[]
-        // and drawn INLINE by Object::DrawProxies (called from Object::Draw) — which the GPU-
-        // driven CPU-colour suppression (DrawSortObject) would skip, so the furniture would
-        // vanish. The parent shape also carries hidden, texture-nulled proxy-MARKER sections;
-        // the GPU path has no per-proxy hook. Reject the whole model -> CPU (furniture draws,
-        // markers stay hidden). Mirrors the instanced-run predicate (SceneDraw.cpp NProxies()==0).
+        // Proxy-bearing shapes (buildings with interior furniture proxies): §12 partial
+        // suppression keeps the proxies on the CPU (Object::DrawProxies, which the CPU
+        // complement draw still runs) while the parent's own opaque geometry goes to the GPU.
+        // So proxies no longer disqualify the model — they just force Partial coverage. The
+        // hidden, texture-nulled proxy-MARKER sections are IsHidden and skipped below (in both
+        // this registration and the CPU Shape::Draw), so they never bake as white triangles.
         if (s->NProxies() > 0)
         {
-            eligible = false;
-            break;
+            hasProxies = true;
+        }
+        // Does this level contribute any GPU-owned (opaque, Default-surface) section? If none,
+        // the whole level is CPU-drawn (all blend/decal) — don't build a pool mesh for it, just
+        // note the complement so the object stays Partial and the CPU keeps drawing it.
+        bool levelHasOwned = false;
+        for (int i = 0; i < s->NSections(); i++)
+        {
+            const ShapeSection& shSec = s->GetSection(i);
+            if (shSec.properties.Special() & (IsHidden | IsHiddenProxy))
+            {
+                continue;
+            }
+            if (render::IsGpuOwnedSectionSpec(shSec.properties.Special()))
+            {
+                levelHasOwned = true;
+            }
+            else
+            {
+                hasComplement = true; // a visible non-owned section => CPU complement draw
+            }
+        }
+        if (!levelHasOwned)
+        {
+            continue;
         }
         // Terrain-conformed shapes (ClipLand fences / individual vegetation): the GPU-driven
         // vertex shader conforms them to SurfaceY per vertex (mode 2, matching the per-draw
@@ -1855,16 +1903,20 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
             }
             WgrModelSection sec{};
             WgrModelMaterial mat{};
+            // ClassifyGpuSection returns false for a non-owned section (blend/decal — the CPU
+            // complement, already tallied in hasComplement above) or a degenerate one (empty
+            // index range). Either way the GPU doesn't draw it: skip, don't fail the model.
             if (!ClassifyGpuSection(*s, mesh, secs, i, sec, mat))
             {
-                eligible = false;
-                break;
+                continue;
             }
             sections.push_back(sec);
             materials.push_back(mat);
             count++;
         }
-        if (eligible)
+        // Only register a LOD that actually has owned geometry (levelHasOwned guaranteed >=1
+        // candidate, but it may have been degenerate). Empty owned LODs are CPU-drawn instead.
+        if (count > 0)
         {
             lods.push_back(WgrModelLod{shape->Resolution(level), base, count, 0});
         }
@@ -1879,11 +1931,98 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
                                    WgrSlice<WgrModelMaterial>{materials.data(), U32(materials.size())});
     }
     _gpuModels[shape] = model;
+    // Cache coverage so SceneObjectCreated can tag each instance and GpuDrivenCoverage can tell
+    // the scene loop whether to suppress the whole CPU draw or only the GPU-owned sections.
+    _gpuModelCoverage[shape] =
+        (hasProxies || hasComplement) ? GpuDrawCoverage::Partial : GpuDrawCoverage::Full;
     if (model != WGR_INVALID_MODEL && isConform)
     {
         _gpuConformShapes.insert(shape);
     }
     return model;
+}
+
+// §12d: register the parent's eligible interior furniture proxies as GPU child instances. A
+// proxy rides the parent's transform (world = parentTransform * proxyLocalTransform), so for a
+// static parent it is a static instance. Only Full-coverage proxy shapes (self-contained: no
+// transparent/decal sections, no nested proxies of their own) are taken — the rest keep drawing
+// on the CPU via Object::DrawProxies, which skips the ones registered here.
+void EngineWgpu::EmitGpuProxies(Object* parent, LODShapeWithShadow* shape)
+{
+    // Reference LOD = the finest graphical level that actually carries proxies (furniture lives
+    // on the detailed interior LOD; coarser LODs usually have none). We register only this LOD's
+    // proxies; the GPU child instances then cull by their own distance, and DrawProxies at a
+    // different (coarser) LOD draws whatever proxies that LOD has, unregistered.
+    int refLevel = -1;
+    for (int level = 0; level < shape->NLevels(); level++)
+    {
+        if (!shape->IsNormalLevel(level))
+        {
+            continue;
+        }
+        Shape* s = shape->LevelOpaque(level);
+        if (s && s->NProxies() > 0)
+        {
+            refLevel = level;
+            break;
+        }
+    }
+    if (refLevel < 0)
+    {
+        return; // no proxies to move
+    }
+    Shape* s = shape->LevelOpaque(refLevel);
+    GpuProxySet set;
+    set.refLevel = refLevel;
+    const Matrix4 parentT = parent->Transform();
+    for (int i = 0; i < s->NProxies(); i++)
+    {
+        const ProxyObject& proxy = s->Proxy(i);
+        if (!proxy.obj)
+        {
+            continue;
+        }
+        LODShapeWithShadow* pshape = proxy.obj->GetShape();
+        if (!pshape)
+        {
+            continue;
+        }
+        const uint32_t pmodel = RegisterGpuModel(pshape);
+        if (pmodel == WGR_INVALID_MODEL)
+        {
+            continue; // ineligible furniture -> stays on the CPU
+        }
+        // Full coverage == the proxy shape has no CPU complement and no nested proxies, so the
+        // GPU can draw it whole; anything Partial would need its own complement/proxy handling
+        // (not done for nested proxies) -> keep it on the CPU.
+        const auto covIt = _gpuModelCoverage.find(pshape);
+        if (covIt == _gpuModelCoverage.end() || covIt->second != GpuDrawCoverage::Full)
+        {
+            continue;
+        }
+        const Matrix4 world = parentT * proxy.obj->Transform();
+        const WgrInstance inst = BuildGpuProxyInstance(world, pmodel);
+        const uint32_t slot = wgr_instance_add(_renderer, &inst);
+        set.children.push_back(GpuProxyChild{i, slot, pmodel});
+    }
+    if (!set.children.empty())
+    {
+        _gpuProxies[parent] = std::move(set);
+    }
+}
+
+void EngineWgpu::RemoveGpuProxies(const Object* parent)
+{
+    auto it = _gpuProxies.find(parent);
+    if (it == _gpuProxies.end())
+    {
+        return;
+    }
+    for (const auto& child : it->second.children)
+    {
+        wgr_instance_remove(_renderer, child.slot);
+    }
+    _gpuProxies.erase(it);
 }
 
 void EngineWgpu::SceneObjectCreated(Object* obj)
@@ -1913,7 +2052,17 @@ void EngineWgpu::SceneObjectCreated(Object* obj)
     const ConformPlane cp = GpuConformFor(*obj, *shape, _gpuConformShapes.count(shape) != 0);
     const WgrInstance inst = BuildGpuInstance(*obj, model, cp);
     const uint32_t slot = wgr_instance_add(_renderer, &inst);
-    _gpuInstances[obj] = GpuInstance{model, slot, obj->Transform().Position(), cp.mode};
+    // Full (whole object on the GPU) vs Partial (GPU owns the opaque geometry; the CPU still
+    // draws proxies + blend/decal sections) — decided per shape in RegisterGpuModel.
+    const auto covIt = _gpuModelCoverage.find(shape);
+    const GpuDrawCoverage cov = covIt != _gpuModelCoverage.end() ? covIt->second : GpuDrawCoverage::Full;
+    _gpuInstances[obj] = GpuInstance{model, slot, obj->Transform().Position(), cp.mode, cov};
+    // §12d: a Partial object may carry interior furniture proxies — move the eligible ones onto
+    // the GPU as child instances (only Partial objects have proxies; Full ones never do).
+    if (cov == GpuDrawCoverage::Partial)
+    {
+        EmitGpuProxies(obj, shape);
+    }
 }
 
 void EngineWgpu::SceneObjectRemoved(Object* obj)
@@ -1922,6 +2071,7 @@ void EngineWgpu::SceneObjectRemoved(Object* obj)
     {
         return;
     }
+    RemoveGpuProxies(obj); // §12d: drop the object's furniture child instances (no-op if none)
     auto it = _gpuInstances.find(obj);
     if (it == _gpuInstances.end())
     {
@@ -1949,6 +2099,7 @@ void EngineWgpu::SceneObjectMoved(Object* obj)
     {
         wgr_instance_remove(_renderer, it->second.slot);
         _gpuInstances.erase(it);
+        RemoveGpuProxies(obj); // §12d: furniture goes with the parent (CPU draws destroyed geo)
         return;
     }
     // The conform plane depends on position (mode-1 land cell, mode-2 bcSurfaceY), so recompute
@@ -1959,18 +2110,40 @@ void EngineWgpu::SceneObjectMoved(Object* obj)
     wgr_instance_update(_renderer, it->second.slot, &inst);
     it->second.pos = obj->Transform().Position();
     it->second.mode = cp.mode;
+    // §12d: the parent moved, so its furniture children's composite transforms change too.
+    auto pit = _gpuProxies.find(obj);
+    if (pit != _gpuProxies.end())
+    {
+        Shape* s = shape->LevelOpaque(pit->second.refLevel);
+        const Matrix4 parentT = obj->Transform();
+        for (const auto& child : pit->second.children)
+        {
+            if (!s || child.proxyIndex >= s->NProxies())
+            {
+                continue;
+            }
+            const ProxyObject& proxy = s->Proxy(child.proxyIndex);
+            if (!proxy.obj)
+            {
+                continue;
+            }
+            const Matrix4 world = parentT * proxy.obj->Transform();
+            const WgrInstance pinst = BuildGpuProxyInstance(world, child.model);
+            wgr_instance_update(_renderer, child.slot, &pinst);
+        }
+    }
 }
 
-bool EngineWgpu::GpuDrivenObject(const Object* obj) const
+GpuDrawCoverage EngineWgpu::GpuDrivenCoverage(const Object* obj) const
 {
     if (!_gpuDriven)
     {
-        return false;
+        return GpuDrawCoverage::None;
     }
     auto it = _gpuInstances.find(obj);
     if (it == _gpuInstances.end())
     {
-        return false;
+        return GpuDrawCoverage::None;
     }
     // Drift TRIPWIRE. Every known mover of a static object's transform now fires
     // SceneObjectMoved (Landscape::MoveObject, and the terrain-relative re-seat in
@@ -1993,11 +2166,36 @@ bool EngineWgpu::GpuDrivenObject(const Object* obj) const
         }
         EngineWgpu* self = const_cast<EngineWgpu*>(this);
         self->SceneObjectMoved(const_cast<Object*>(obj));
-        // SceneObjectMoved can DROP the object (destroyed / shape gone): then it must draw on
-        // the CPU this frame.
-        return self->_gpuInstances.count(obj) != 0;
+        // SceneObjectMoved can DROP the object (destroyed / shape gone): then it must draw fully
+        // on the CPU this frame (coverage None).
+        auto refreshed = self->_gpuInstances.find(obj);
+        return refreshed != self->_gpuInstances.end() ? refreshed->second.coverage : GpuDrawCoverage::None;
     }
-    return true;
+    return it->second.coverage;
+}
+
+bool EngineWgpu::GpuDrivenProxy(const Object* parent, int level, int proxyIndex) const
+{
+    if (!_gpuDriven)
+    {
+        return false;
+    }
+    // Proxies are registered from one reference LOD only; at any other draw LOD they are not on
+    // the GPU (that LOD's proxy list is different / empty). Furniture count per building is small,
+    // so a linear scan is fine.
+    auto it = _gpuProxies.find(parent);
+    if (it == _gpuProxies.end() || it->second.refLevel != level)
+    {
+        return false;
+    }
+    for (const auto& child : it->second.children)
+    {
+        if (child.proxyIndex == proxyIndex)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 void EngineWgpu::SuppressWorldObjects(bool suppress)

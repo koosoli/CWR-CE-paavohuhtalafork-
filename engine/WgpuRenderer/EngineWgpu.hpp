@@ -104,7 +104,8 @@ class EngineWgpu : public EngineDummy
     void SceneObjectCreated(Object* obj) override;
     void SceneObjectRemoved(Object* obj) override;
     void SceneObjectMoved(Object* obj) override;
-    bool GpuDrivenObject(const Object* obj) const override;
+    GpuDrawCoverage GpuDrivenCoverage(const Object* obj) const override;
+    bool GpuDrivenProxy(const Object* parent, int level, int proxyIndex) const override;
     void SuppressWorldObjects(bool suppress) override;
 
     // Software-T&L path: 3D-in-UI objects (e.g. the menu laptop) arrive here with
@@ -292,6 +293,10 @@ class EngineWgpu : public EngineDummy
     // ineligible (transparent/decal/etc.), so an object using it never re-scans and stays
     // on the CPU path.
     std::unordered_map<const LODShapeWithShadow*, uint32_t> _gpuModels;
+    // Per-registered-model coverage (§12): Full = the GPU draws the whole object (skip the CPU
+    // draw); Partial = the shape has proxies and/or non-owned (blend/decal) sections, so the CPU
+    // still draws the complement with GSkipGpuOwnedSections set. Keyed by shape like _gpuModels.
+    std::unordered_map<const LODShapeWithShadow*, GpuDrawCoverage> _gpuModelCoverage;
     // Shapes registered as terrain-conform (ClipLand, mode 2): their instances carry the
     // CONFORM_CLIPLAND flag + bcSurfaceY so the GPU-driven VS conforms them to SurfaceY.
     std::unordered_set<const LODShapeWithShadow*> _gpuConformShapes;
@@ -304,9 +309,35 @@ class EngineWgpu : public EngineDummy
         // object's live Position() to expose stale transforms.
         Vector3 pos = VZero;
         int mode = 0;
+        // How much of this object the GPU draws — read by GpuDrivenCoverage to tell the scene
+        // draw loop whether to suppress the whole CPU draw (Full) or just the owned sections
+        // (Partial). Cached from _gpuModelCoverage at add time.
+        GpuDrawCoverage coverage = GpuDrawCoverage::Full;
     };
     // Objects handed to the GPU path -> their model + retained instance slot.
     std::unordered_map<const Object*, GpuInstance> _gpuInstances;
+    // §12d: interior furniture proxies moved to the GPU as CHILD instances. A proxy is a shared
+    // ProxyObject on the parent shape at a reference LOD; its world = parentTransform *
+    // proxyLocalTransform, a static composite for a static parent. Only proxies whose shape is
+    // Full coverage (self-contained: no complement sections, no nested proxies) are taken; the
+    // rest stay on the CPU (Object::DrawProxies). Keyed by the PARENT object.
+    struct GpuProxyChild
+    {
+        int proxyIndex; // index into the reference LOD's Proxy() list (for the DrawProxies skip)
+        uint32_t slot;  // retained-instance slot (for update on move / remove)
+        uint32_t model; // the proxy shape's model (for re-composing the transform on move)
+    };
+    struct GpuProxySet
+    {
+        int refLevel = -1; // the parent LOD whose proxy list we registered (finest with proxies)
+        std::vector<GpuProxyChild> children;
+    };
+    std::unordered_map<const Object*, GpuProxySet> _gpuProxies;
+    // Register the parent's eligible interior proxies as GPU child instances (§12d); records them
+    // in _gpuProxies so DrawProxies skips them and Moved/Removed maintain them.
+    void EmitGpuProxies(Object* parent, LODShapeWithShadow* shape);
+    // Drop a parent's proxy child instances (on remove / destruction / shape swap).
+    void RemoveGpuProxies(const Object* parent);
     // Dedicated pool meshes the retained scene OWNS (one per registered model LOD), created
     // directly from shape geometry so they survive ShapeBank::OptimizeAll's release of the
     // shapes' own vertex buffers. Destroyed in the dtor. (Map-change re-registration is a TODO:

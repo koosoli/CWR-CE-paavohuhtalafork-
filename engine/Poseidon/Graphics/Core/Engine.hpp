@@ -285,6 +285,17 @@ struct Line2DFloat
 class ITerrainRenderer;
 class IWaterRenderer;
 
+// How much of an object the wgpu GPU-driven retained scene draws (§12 of
+// docs/gpu-culling-and-depth-plan.md). Only EngineWgpu (WGR_GPU_DRIVEN) ever reports
+// anything but None; every other backend leaves objects on the CPU path.
+enum class GpuDrawCoverage
+{
+    None,    // not GPU-driven — the CPU draws the whole object as usual
+    Full,    // the GPU owns every drawn section and the shape has no proxies — skip the CPU draw
+    Partial, // the GPU owns the opaque sections; the CPU still draws the complement (proxies,
+             // blend/decal sections) with GSkipGpuOwnedSections set so it never repaints the owned geometry
+};
+
 class Engine : public IGraphicsEngine
 {
   protected:
@@ -397,12 +408,18 @@ class Engine : public IGraphicsEngine
     // other backend and the flag-off wgpu path ignore them and keep the CPU draw path.
     // `SceneObjectCreated` fires when a drawable object enters the world (static clutter
     // load or spawn), `Removed` before it leaves, `Moved` after its transform changes.
-    // `GpuDrivenObject(obj)` reports whether `obj` is currently drawn by the GPU path, so
-    // the scene draw loop can suppress its CPU colour draw (shadow casters stay on CPU).
+    // `GpuDrivenObject`/`GpuDrivenCoverage(obj)` report how much of `obj` the GPU path draws, so
+    // the scene draw loop can suppress the CPU colour draw entirely (Full) or only the GPU-owned
+    // sections (Partial — the CPU still paints the complement + proxies). Shadow casters stay on
+    // the CPU path regardless. NOTE: `GpuDrivenObject` MUST keep its original vtable slot here;
+    // the tri-state `GpuDrivenCoverage` + `GpuDrivenProxy` are appended at the class end instead
+    // (see the vtable-slot note on SuppressWorldObjects) — inserting them here shifts every
+    // later Engine virtual and breaks ccache partial recompiles (3D-UI misdispatch).
     virtual void SceneObjectCreated(Object* /*obj*/) {}
     virtual void SceneObjectRemoved(Object* /*obj*/) {}
     virtual void SceneObjectMoved(Object* /*obj*/) {}
-    virtual bool GpuDrivenObject(const Object* /*obj*/) const { return false; }
+    // Any GPU involvement at all (Full or Partial); delegates to GpuDrivenCoverage (class end).
+    virtual bool GpuDrivenObject(const Object* obj) const { return GpuDrivenCoverage(obj) != GpuDrawCoverage::None; }
 
     void FogColorChanged(ColorVal fogColor) override = 0;
 
@@ -1144,6 +1161,15 @@ class Engine : public IGraphicsEngine
     // loading, shutdown) so those frames clear to black with no clutter leaking behind the 2D
     // UI. Default no-op. NOTE: appended at the class end on purpose (see the vtable-slot note).
     virtual void SuppressWorldObjects(bool /*suppress*/) {}
+
+    // Tri-state GPU-driven coverage (§12) + proxy query (§12d). APPENDED HERE at the class end to
+    // keep every existing vtable slot stable (vtable-slot note above) — do NOT move these up next
+    // to SceneObject*/GpuDrivenObject, or ccache partial recompiles misdispatch (breaks 3D UI).
+    // Only EngineWgpu with WGR_GPU_DRIVEN overrides them; everything else keeps objects on the CPU.
+    virtual GpuDrawCoverage GpuDrivenCoverage(const Object* /*obj*/) const { return GpuDrawCoverage::None; }
+    // §12d: is proxy `proxyIndex` at parent LOD `level` drawn by the GPU retained scene (as a child
+    // instance)? Object::DrawProxies skips it if so, to avoid double-drawing the furniture.
+    virtual bool GpuDrivenProxy(const Object* /*parent*/, int /*level*/, int /*proxyIndex*/) const { return false; }
 
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy
