@@ -4,6 +4,8 @@
 #include <Poseidon/Graphics/Core/MipmapLayout.hpp>
 #include <Poseidon/Graphics/Textures/PAADecoder.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
+#include <Poseidon/Foundation/Containers/StaticArray.hpp>
+#include <Poseidon/IO/FileServer.hpp>
 #include <Poseidon/IO/Streams/QBStream.hpp>
 #include <Poseidon/IO/Streams/QStream.hpp>
 
@@ -53,6 +55,39 @@ int BcFormatFor(PacFormat fmt)
         default:
             return -1;
     }
+}
+
+// Decode the top (full-resolution) mip once and classify its alpha channel — mirrors
+// TextureGL33::ScanTopMipAlphaClass. Reads the texture bytes through the VFS (works for
+// PBO-packed textures) and decodes via the shared DecodePAABuffer, which handles every
+// PAA/PAC pixel format. Top mip on purpose: a smaller mip blurs a cutout's crisp 0/255 holes
+// into false partial-alpha, mis-routing a pole/fence to the blend pass.
+AlphaStats::Kind ScanTopMipAlphaClass(const char* name)
+{
+    if (!name)
+    {
+        return AlphaStats::Opaque;
+    }
+    QIFStream in;
+    GFileServer->Open(in, name);
+    const int size = in.fail() ? 0 : in.rest();
+    if (size <= 0)
+    {
+        return AlphaStats::Opaque;
+    }
+    AUTO_STATIC_ARRAY(char, fileData, 256 * 1024);
+    fileData.Realloc(size);
+    fileData.Resize(size);
+    in.read(fileData.Data(), size);
+
+    const size_t len = strlen(name);
+    const bool isPaa = len >= 4 && (name[len - 1] == 'a' || name[len - 1] == 'A'); // .paa vs .pac
+    const DecodedImage img = DecodePAABuffer(fileData.Data(), static_cast<size_t>(size), isPaa);
+    if (!img.valid())
+    {
+        return AlphaStats::Opaque;
+    }
+    return ClassifyAlpha(img.rgba.data(), static_cast<size_t>(img.width) * static_cast<size_t>(img.height)).kind;
 }
 
 } // namespace
@@ -110,6 +145,36 @@ int TextureWgpu::Init()
     _w = _mipmaps[0]._w;
     _h = _mipmaps[0]._h;
     return 0;
+}
+
+// Three-way alpha classification for the section-sort renderer (opaque/cutout occlude;
+// blend defers to the back-to-front pass). Mirrors TextureGL33::GetAlphaClass: cheap header
+// flags decide it outright except for a multi-bit-alpha format, which needs the top-mip decode
+// to tell cutout from blend. Cached in _alphaClass. Dynamic textures keep the base Opaque.
+AlphaStats::Kind TextureWgpu::GetAlphaClass()
+{
+    if (_alphaClass >= 0)
+    {
+        return static_cast<AlphaStats::Kind>(_alphaClass);
+    }
+    AlphaStats::Kind kind = AlphaStats::Opaque;
+    if (_src)
+    {
+        const bool hasAlpha = _src->IsAlpha();
+        const bool chroma = _src->IsTransparent();
+        const bool oneBit = _src->GetFormat() == PacDXT1; // 1-bit alpha: punch-through only
+        // Only multi-bit-alpha formats need the (cached) decode to tell cutout from blend.
+        AlphaStats decoded;
+        const AlphaStats* decodedPtr = nullptr;
+        if (hasAlpha && !oneBit)
+        {
+            decoded.kind = ScanTopMipAlphaClass(Name());
+            decodedPtr = &decoded;
+        }
+        kind = ClassifyTextureAlpha(hasAlpha, chroma, oneBit, decodedPtr);
+    }
+    _alphaClass = static_cast<signed char>(kind);
+    return kind;
 }
 
 void TextureWgpu::InitDynamic(int w, int h, const void* rgba, uint32_t size)

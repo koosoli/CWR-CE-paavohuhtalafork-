@@ -32,6 +32,12 @@ class TextureWgpu : public Texture
     // don't keep retrying a texture that fails to load
     bool _uploadTried = false;
     bool _dynamic = false;
+    // Cached three-way alpha classification (-1 = not computed yet). Drives the section-sort
+    // renderer's opaque-vs-blend pass routing (Shape::Draw / HasBlendSections). Mirrors
+    // TextureGL33::GetAlphaClass — without this override the base default (always Opaque) left
+    // every wgpu section in the opaque pass, so alpha-blended sections composited against the
+    // sky fill (see-through grills/badges).
+    signed char _alphaClass = -1;
 
     int Init();
     void InitDynamic(int w, int h, const void* rgba, uint32_t size);
@@ -53,6 +59,7 @@ class TextureWgpu : public Texture
     bool IsTransparent() const override { return _src && _src->IsTransparent(); }
     bool IsAlpha() const override { return _dynamic || (_src && _src->IsAlpha()); }
     Color GetColor() override { return _src ? _src->GetAverageColor() : HBlack; }
+    AlphaStats::Kind GetAlphaClass() override;
 
     bool VerifyChecksum(const MipInfo&) const override { return true; }
     bool IsGpuResident() const override { return _gpuHandle != 0; }

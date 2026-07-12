@@ -340,9 +340,9 @@ static_assert(sizeof(WgrModelMaterial) == 80, "WgrModelMaterial must match Rust"
 static_assert(sizeof(WgrModelLod) == 16, "WgrModelLod must match Rust");
 static_assert(sizeof(WgrInstance) == 144, "WgrInstance must match Rust");
 
-/* Live tonemap/look parameters, pushed via wgr_set_tonemap (from the ImGui Tonemap
- * tab). The Hable curve is fixed in the shader; these are exposure + the colour-grade
- * block. Layout matches the Rust WgrTonemap #[repr(C)] and the tonemap.wgsl uniform. */
+/* Live tonemap/look parameters (from the ImGui Tonemap tab; pushed inside WgrRenderParams
+ * via wgr_set_render_params). The Hable curve is fixed in the shader; these are exposure +
+ * the colour-grade block. Layout matches the Rust WgrTonemap #[repr(C)] and tonemap.wgsl. */
 struct WgrTonemap
 {
     float exposure;    /* linear pre-curve multiplier */
@@ -359,8 +359,9 @@ struct WgrTonemap
     float bloom_knee;      /* bloom soft-knee half-width */
 };
 
-/* Eye-adaptation / auto-exposure parameters, pushed via wgr_set_exposure. Layout
- * matches the Rust WgrExposure #[repr(C)] and exposure.wgsl's ExpParams (8 f32). */
+/* Eye-adaptation / auto-exposure parameters (pushed inside WgrRenderParams via
+ * wgr_set_render_params). Layout matches the Rust WgrExposure #[repr(C)] and exposure.wgsl's
+ * ExpParams (8 f32). */
 struct WgrExposure
 {
     float enabled;   /* 0 = off (scale eases to 1.0), 1 = auto-exposure on */
@@ -373,11 +374,11 @@ struct WgrExposure
     float _pad2;
 };
 
-/* Procedural sky parameters, pushed via wgr_set_sky. The celestial fields
- * (sun/moon direction, night factor) are refreshed every frame from LightSun; the
- * atmosphere + look fields are authored and tuned in the ImGui Sky tab. The renderer
- * combines these with the per-frame inverse view-projection into the sky pass.
- * Layout matches the Rust WgrSky #[repr(C)] (7 vec4). See docs/procedural-sky-plan.md. */
+/* Procedural sky UBO (renderer-internal assembly target). Its authored look half is written
+ * from WgrSkyLook (wgr_set_render_params) and its per-frame celestial/camera half from
+ * WgrSkyRuntime (wgr_set_sky_runtime); C++ no longer builds this struct directly. Layout
+ * matches the Rust WgrSky #[repr(C)] (7 vec4). See docs/procedural-sky-plan.md and
+ * docs/render-params-consolidation-plan.md. */
 struct WgrSky
 {
     WgrVec4 sun_dir;       /* xyz = unit dir TO the sun (up by day); w = sun radiance scale */
@@ -393,6 +394,68 @@ struct WgrSky
     WgrVec4 night_zenith;  /* xyz = night radiance at the zenith, w = camera altitude ASL (m; aerial/sky raymarch origin) */
     WgrVec4 night_horizon; /* xyz = night radiance at the horizon */
     WgrVec4 night_params;  /* x = full-day sun_dir.y, y = full-night sun_dir.y, z = intensity, w = far-fade range (m; aerial dissolves the terrain edge into sky by this dist, 0 = off) */
+};
+
+/* --- Consolidated imgui-tweakable render params (docs/render-params-consolidation-plan.md) ---
+ * Every ImGui-tweakable render parameter that crosses the FFI as a setter is pushed as one
+ * WgrRenderParams block via wgr_set_render_params. Per-frame runtime the engine recomputes
+ * (sun/moon dir, night factor, fog colour, camera altitude, fog range) rides WgrSkyRuntime,
+ * pushed each frame via wgr_set_sky_runtime. The two write disjoint halves of the internal
+ * WgrSky UBO (layout + sky shader unchanged). Layouts match the Rust #[repr(C)] structs. */
+
+/* Authored procedural-sky look (the ImGui Sky tab). No celestial/runtime fields. */
+struct WgrSkyLook
+{
+    WgrVec4 rayleigh;      /* xyz = scattering coeff (1/m); w = scale height (m) */
+    WgrVec4 mie;           /* x = coeff, y = g, z = scale height (m), w = turbidity */
+    WgrVec4 ground_sun;    /* xyz = ground albedo; w = sun radiance scale (sunIntensity) */
+    WgrVec4 params;        /* x = sun angular radius (rad), y = exposure, z = planet radius (m), w = atmosphere (m) */
+    WgrVec4 control;       /* x = enabled, y = view samples, z = light samples, w = ozone */
+    WgrVec4 night_zenith;  /* xyz = night radiance at the zenith; w = horizon-haze strength */
+    WgrVec4 night_horizon; /* xyz = night radiance at the horizon; w = aerial-shadow strength */
+    WgrVec4 night_params;  /* x = full-day sun_dir.y, y = full-night sun_dir.y, z = night intensity, w = pad */
+};
+
+/* Per-frame celestial + camera runtime (from LightSun / the camera). NOT an ImGui knob. */
+struct WgrSkyRuntime
+{
+    WgrVec4 sun_dir;   /* xyz = unit dir TO the sun; w = pad */
+    WgrVec4 moon_dir;  /* xyz = unit dir TO the moon; w = moon phase */
+    WgrVec4 fog_color; /* xyz = scene fog colour; w = fog far-range (m) */
+    WgrVec4 misc;      /* x = night factor (0..1), y = camera altitude ASL (m), z/w = pad */
+};
+
+/* Long-distance terrain sun-shadow sweep (was wgr_terrain_set_sun_shadow's args). */
+struct WgrTerrainSunShadow
+{
+    float    strength;     /* 0 = disabled */
+    uint32_t scale;        /* mask supersample factor — CHANGING THIS reallocates the mask */
+    uint32_t max_steps;    /* march cap (steps * terrain_grid) */
+    float    penumbra_deg; /* soft-edge half-width */
+};
+
+/* Terrain sky-visibility (sky-view factor) AO (was wgr_terrain_set_sky_visibility's args). */
+struct WgrSkyVisibility
+{
+    float    strength;   /* 0 = disabled */
+    float    contrast;   /* deepens the near-1 factor */
+    float    floor;      /* minimum ambient in fully-occluded columns */
+    float    radius_m;   /* horizon-scan reach (m) — CHANGING re-runs the CPU scan */
+    uint32_t k_azimuths; /* scan direction count — CHANGING re-runs the scan */
+    uint32_t downsample; /* scan coarseness — CHANGING re-runs the scan */
+    uint32_t debug;      /* 1 = terrain outputs the factor as greyscale */
+    uint32_t _pad;
+};
+
+/* Every imgui-tweakable render parameter that crosses the FFI as a setter, in one block.
+ * Append future look knobs here; do not add new FFI setters. */
+struct WgrRenderParams
+{
+    WgrTonemap          tonemap;
+    WgrExposure         exposure;
+    WgrSkyLook          sky;
+    WgrTerrainSunShadow terrain_sun_shadow;
+    WgrSkyVisibility    sky_visibility;
 };
 
 /* Frame-global scalars carried in the camera UBO so the 3D shader can read them
@@ -702,6 +765,11 @@ static_assert(sizeof(WgrLight) == 64, "WgrLight layout must match the Rust #[rep
 static_assert(sizeof(WgrTonemap) == 48, "WgrTonemap layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrExposure) == 32, "WgrExposure layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrSky) == 176, "WgrSky layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSkyLook) == 128, "WgrSkyLook layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSkyRuntime) == 64, "WgrSkyRuntime layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrRenderParams) == 256, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");
@@ -859,28 +927,9 @@ extern "C"
      * Handle 0 is ignored (the neutral built-in stand-in stays). */
     WGR_API void wgr_terrain_set_detail_layer(WgrRenderer* renderer, WgrTexture handle);
 
-    /* Live-tune the long-distance terrain sun-shadow sweep (heightfield self-
-     * shadow, a complement to the cascade maps). `strength` scales the occlusion
-     * (0 = off, 1 = physical, >1 = exaggerated for debugging); `scale` is the mask
-     * supersample factor over the heightmap grid (>=1, higher = sharper edges,
-     * more VRAM); `max_steps` caps the march range (steps * terrain_grid metres);
-     * `penumbra_deg` is the soft-edge half-width in degrees. Changing `scale`
-     * reallocates the mask; any change re-runs the amortized sweep next frame. */
-    WGR_API void wgr_terrain_set_sun_shadow(WgrRenderer* renderer, float strength, uint32_t scale,
-                                            uint32_t max_steps, float penumbra_deg);
-
-    /* Live-tune the terrain sky-visibility (sky-view factor) ambient occlusion — the AO complement to
-     * the sun-shadow sweep, darkening the ambient in valleys/gorges/cove-water/cliff-bases (terrain,
-     * objects and water). `strength` scales the effect (0 = off), `contrast` deepens the occlusion for
-     * the near-1 factor smooth terrain yields (1 = physical/linear, higher = punchier), `floor` keeps
-     * a minimum ambient in fully-occluded columns; these three are cheap per-frame uniform values.
-     * `radius_m`, `k_azimuths` and `downsample` (output-grid coarseness, >=1; 1 = per-heightmap-texel,
-     * sharpest) shape the CPU horizon scan and re-run it (from the retained heightfield) ONLY when they
-     * change. `debug` makes terrain output the (contrast-shaped) sky-view factor as greyscale.
-     * See docs/sky-visibility-ambient-plan.md. */
-    WGR_API void wgr_terrain_set_sky_visibility(WgrRenderer* renderer, float strength, float contrast,
-                                                float floor, float radius_m, uint32_t k_azimuths,
-                                                uint32_t downsample, bool debug);
+    /* The terrain sun-shadow and sky-visibility knobs are pushed through the consolidated
+     * WgrRenderParams block (wgr_set_render_params), not their own setters. See below and
+     * docs/render-params-consolidation-plan.md. */
 
     /* Set/refresh the water placement params (see WgrWaterParams). Cheap; called on
      * map load and each frame to update the animated `sea_level`. */
@@ -890,16 +939,19 @@ extern "C"
      * frames), negative on error. */
     WGR_API int32_t wgr_render_frame(WgrRenderer* renderer, const WgrFrame* frame);
 
-    /* Set the live tonemap/look parameters (exposure, curve, Hable params, output
-     * gain). Takes effect on the next frame's resolve; no-op on the LDR-direct path. */
-    WGR_API void wgr_set_tonemap(WgrRenderer* renderer, const WgrTonemap* params);
-    WGR_API void wgr_set_exposure(WgrRenderer* renderer, const WgrExposure* params);
+    /* Debug: read back the current auto-exposure scale (blocking GPU sync; dev panel only). */
     WGR_API float wgr_get_exposure_scale(WgrRenderer* renderer);
 
-    /* Set the procedural sky parameters (celestial + authored look). Pushed per
-     * frame for the celestial fields and on edit from the ImGui Sky tab. Takes
-     * effect next frame; the sky pass is skipped when control.x (enabled) is 0. */
-    WGR_API void wgr_set_sky(WgrRenderer* renderer, const WgrSky* params);
+    /* Push the consolidated ImGui-tweakable render params (tonemap, exposure, sky look,
+     * terrain sun-shadow, sky-visibility) in one block. The two terrain setters are diffed
+     * renderer-side against the last block, so a per-frame push doesn't thrash the sweep/scan.
+     * See docs/render-params-consolidation-plan.md. */
+    WGR_API void wgr_set_render_params(WgrRenderer* renderer, const WgrRenderParams* params);
+
+    /* Push the per-frame sky runtime (celestial dir/phase, night factor, fog colour, camera
+     * altitude, fog range) — the runtime half of the sky UBO; the look half comes from
+     * wgr_set_render_params. */
+    WGR_API void wgr_set_sky_runtime(WgrRenderer* renderer, const WgrSkyRuntime* params);
 
     /* Read one cascade layer of the shadow depth map back as row-major floats
      * (row 0 = the top texture row). Returns the map resolution (side length),

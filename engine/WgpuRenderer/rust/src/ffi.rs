@@ -395,6 +395,113 @@ impl Default for WgrSky {
     }
 }
 
+// --- Consolidated imgui-tweakable render params (docs/render-params-consolidation-plan.md) ---
+//
+// Every ImGui-tweakable render parameter that crosses the FFI as a *setter* is pushed as one
+// `WgrRenderParams` block via wgr_set_render_params. Per-frame runtime the engine recomputes
+// (sun/moon dir, night factor, fog colour, camera altitude, fog range) is NOT a knob and rides
+// the small `WgrSkyRuntime` pushed each frame via wgr_set_sky_runtime. The two write disjoint
+// halves of the same internal `WgrSky` UBO (layout + sky shader unchanged).
+
+// Authored procedural-sky look (the ImGui Sky tab). No celestial/runtime fields. The renderer
+// folds these into the WgrSky UBO's look slots; defaults mirror WgrSky::default()'s look fields.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrSkyLook {
+    pub rayleigh: WgrVec4,      // xyz = scattering coeff (1/m); w = scale height (m)
+    pub mie: WgrVec4,           // x = coeff, y = g, z = scale height (m), w = turbidity
+    pub ground_sun: WgrVec4,    // xyz = ground albedo; w = sun radiance scale (sunIntensity)
+    pub params: WgrVec4,        // x = sun angular radius (rad), y = exposure, z = planet radius (m), w = atmosphere (m)
+    pub control: WgrVec4,       // x = enabled, y = view samples, z = light samples, w = ozone
+    pub night_zenith: WgrVec4,  // xyz = night radiance at the zenith; w = horizon-haze strength
+    pub night_horizon: WgrVec4, // xyz = night radiance at the horizon; w = aerial-shadow strength
+    pub night_params: WgrVec4,  // x = full-day sun_dir.y, y = full-night sun_dir.y, z = night intensity, w = pad
+}
+
+impl Default for WgrSkyLook {
+    fn default() -> Self {
+        Self {
+            rayleigh: [5.8e-6, 13.5e-6, 33.1e-6, 8000.0],
+            mie: [21e-6, 0.76, 1200.0, 1.0],
+            ground_sun: [0.1, 0.1, 0.1, 22.0],
+            params: [0.0047, 1.0, 6_360_000.0, 60_000.0],
+            control: [1.0, 16.0, 8.0, 1.0],
+            night_zenith: [0.15, 0.30, 0.80, 0.0],
+            night_horizon: [0.35, 0.45, 0.90, 1.0],
+            night_params: [0.052, -0.139, 0.02, 0.0],
+        }
+    }
+}
+
+// Per-frame celestial + camera runtime for the sky (from LightSun / the camera). NOT an ImGui
+// knob. Folded into the WgrSky UBO's runtime slots by set_sky_runtime.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct WgrSkyRuntime {
+    pub sun_dir: WgrVec4,   // xyz = unit dir TO the sun; w = pad
+    pub moon_dir: WgrVec4,  // xyz = unit dir TO the moon; w = moon phase
+    pub fog_color: WgrVec4, // xyz = scene fog colour; w = fog far-range (m)
+    pub misc: WgrVec4,      // x = night factor (0..1), y = camera altitude ASL (m), z/w = pad
+}
+
+// Long-distance terrain sun-shadow sweep (was wgr_terrain_set_sun_shadow's args).
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct WgrTerrainSunShadow {
+    pub strength: f32,     // 0 = disabled
+    pub scale: u32,        // mask supersample factor — CHANGING THIS reallocates the mask
+    pub max_steps: u32,    // march cap (steps * terrain_grid)
+    pub penumbra_deg: f32, // soft-edge half-width
+}
+
+impl Default for WgrTerrainSunShadow {
+    fn default() -> Self {
+        Self { strength: 1.0, scale: 2, max_steps: 512, penumbra_deg: 1.0 }
+    }
+}
+
+// Terrain sky-visibility (sky-view factor) AO (was wgr_terrain_set_sky_visibility's args).
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct WgrSkyVisibility {
+    pub strength: f32,   // 0 = disabled
+    pub contrast: f32,   // deepens the near-1 factor
+    pub floor: f32,      // minimum ambient in fully-occluded columns
+    pub radius_m: f32,   // horizon-scan reach (m) — CHANGING re-runs the CPU scan
+    pub k_azimuths: u32, // scan direction count — CHANGING re-runs the scan
+    pub downsample: u32, // scan coarseness — CHANGING re-runs the scan
+    pub debug: u32,      // 1 = terrain outputs the factor as greyscale
+    pub _pad: u32,
+}
+
+impl Default for WgrSkyVisibility {
+    fn default() -> Self {
+        Self {
+            strength: 0.70,
+            contrast: 6.5,
+            floor: 0.30,
+            radius_m: 600.0,
+            k_azimuths: 12,
+            downsample: 2,
+            debug: 0,
+            _pad: 0,
+        }
+    }
+}
+
+// Every imgui-tweakable render parameter that crosses the FFI as a setter, pushed as one block.
+// Passed by pointer only (never uploaded whole), so #[repr(C)] but not Pod. Append future look
+// knobs here; do not add new FFI setters.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct WgrRenderParams {
+    pub tonemap: WgrTonemap,
+    pub exposure: WgrExposure,
+    pub sky: WgrSkyLook,
+    pub terrain_sun_shadow: WgrTerrainSunShadow,
+    pub sky_visibility: WgrSkyVisibility,
+}
+
 pub const NO_PALETTE: u32 = 0xFFFF_FFFF;
 
 // Bits for WgrDraw3D::flags (mirror WgrDraw3DFlags in wgpu_renderer.hpp).
@@ -683,6 +790,11 @@ const _: () = assert!(std::mem::size_of::<WgrModelLod>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrInstance>() == 144);
 const _: () = assert!(std::mem::size_of::<WgrTonemap>() == 48);
 const _: () = assert!(std::mem::size_of::<WgrSky>() == 176);
+const _: () = assert!(std::mem::size_of::<WgrSkyLook>() == 128);
+const _: () = assert!(std::mem::size_of::<WgrSkyRuntime>() == 64);
+const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
+const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 256);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);
@@ -1229,60 +1341,10 @@ pub unsafe extern "C" fn wgr_terrain_set_jitter_map(
     }));
 }
 
-/// Live-tune the long-distance terrain sun-shadow sweep (heightfield self-shadow).
-/// `strength` scales the occlusion (0 = off, 1 = physical, >1 = exaggerated for
-/// debugging); `scale` is the mask supersample factor over the heightmap;
-/// `max_steps` caps the march range (steps * terrain_grid); `penumbra_deg` is the
-/// soft-edge half-width in degrees. Changing `scale` reallocates the mask; any
-/// change re-runs the (amortized) sweep on the next frame. See wgpu_renderer.hpp.
-///
-/// # Safety
-/// `renderer` must be a live pointer from `wgr_create`, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_terrain_set_sun_shadow(
-    renderer: *mut WgrRenderer,
-    strength: f32,
-    scale: u32,
-    max_steps: u32,
-    penumbra_deg: f32,
-) {
-    if renderer.is_null() {
-        return;
-    }
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        unsafe { &mut *renderer }.terrain_set_sun_shadow(strength, scale, max_steps, penumbra_deg);
-    }));
-}
-
-/// Set the sky-visibility (sky-view factor) ambient-occlusion params (see wgpu_renderer.hpp and
-/// docs/sky-visibility-ambient-plan.md). `strength` scales the effect (0 = off), `contrast` deepens
-/// the occlusion for the near-1 factor smooth terrain yields, `floor` keeps a minimum ambient in
-/// fully-occluded columns; these three are cheap live uniform values. `radius_m` / `k_azimuths` /
-/// `downsample` shape the CPU scan and re-run it (from the retained heightfield) only on change.
-/// `debug` makes terrain fragments output the (contrast-shaped) factor as greyscale.
-///
-/// # Safety
-/// `renderer` must be a live pointer from `wgr_create`, or null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_terrain_set_sky_visibility(
-    renderer: *mut WgrRenderer,
-    strength: f32,
-    contrast: f32,
-    floor: f32,
-    radius_m: f32,
-    k_azimuths: u32,
-    downsample: u32,
-    debug: bool,
-) {
-    if renderer.is_null() {
-        return;
-    }
-    let _ = catch_unwind(AssertUnwindSafe(|| {
-        unsafe { &mut *renderer }.terrain_set_sky_visibility(
-            strength, contrast, floor, radius_m, k_azimuths, downsample, debug,
-        );
-    }));
-}
+// The terrain sun-shadow + sky-visibility knobs are pushed through the consolidated
+// WgrRenderParams block (wgr_set_render_params), which fans out (with diffing) to
+// Renderer::terrain_set_sun_shadow / terrain_set_sky_visibility. See
+// docs/render-params-consolidation-plan.md.
 
 /// Set the terrain detail noise texture to a wgr_texture_create handle. See
 /// wgpu_renderer.hpp.
@@ -1361,35 +1423,6 @@ pub unsafe extern "C" fn wgr_render_frame(
     .unwrap_or(-3)
 }
 
-/// Set the live tonemap/look parameters (exposure, curve, Hable params, output
-/// gain). No-op on the LDR-direct path (no tonemap pass); takes effect next frame.
-///
-/// # Safety
-/// `renderer` must be live; `params` must point to one valid `WgrTonemap` or be null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_set_tonemap(renderer: *mut WgrRenderer, params: *const WgrTonemap) {
-    if renderer.is_null() || params.is_null() {
-        return;
-    }
-    let renderer = unsafe { &mut *renderer };
-    let params = unsafe { &*params };
-    renderer.set_tonemap(*params);
-}
-
-/// Set the eye-adaptation / auto-exposure parameters. Takes effect next frame.
-///
-/// # Safety
-/// `renderer` must be live; `params` must point to one valid `WgrExposure` or be null.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_set_exposure(renderer: *mut WgrRenderer, params: *const WgrExposure) {
-    if renderer.is_null() || params.is_null() {
-        return;
-    }
-    let renderer = unsafe { &mut *renderer };
-    let params = unsafe { &*params };
-    renderer.set_exposure(*params);
-}
-
 /// Debug: read back the current auto-exposure scale (blocking GPU sync — dev panel
 /// only). Returns 1.0 if the renderer is null or the HDR path is off.
 ///
@@ -1404,20 +1437,45 @@ pub unsafe extern "C" fn wgr_get_exposure_scale(renderer: *mut WgrRenderer) -> f
     renderer.exposure_scale()
 }
 
-/// Set the procedural sky parameters (celestial + authored look). Pushed per frame
-/// for the celestial fields and on edit from the ImGui Sky tab. Takes effect next
-/// frame. See docs/procedural-sky-plan.md.
+/// Push the consolidated ImGui-tweakable render params (tonemap, exposure, sky look, terrain
+/// sun-shadow, sky-visibility) in one block. Fans out to the per-subsystem state; the terrain
+/// setters are diffed against the last block so a per-frame push doesn't thrash the sweep/scan.
+/// See docs/render-params-consolidation-plan.md.
 ///
 /// # Safety
-/// `renderer` must be live; `params` must point to one valid `WgrSky` or be null.
+/// `renderer` must be live; `params` must point to one valid `WgrRenderParams` or be null.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_set_sky(renderer: *mut WgrRenderer, params: *const WgrSky) {
+pub unsafe extern "C" fn wgr_set_render_params(
+    renderer: *mut WgrRenderer,
+    params: *const WgrRenderParams,
+) {
+    if renderer.is_null() || params.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let params = unsafe { *params };
+        renderer.set_render_params(params);
+    }));
+}
+
+/// Push the per-frame sky runtime (celestial direction/phase, night factor, fog colour, camera
+/// altitude, fog range). Writes the runtime half of the sky UBO; the authored look half comes
+/// from wgr_set_render_params. See docs/render-params-consolidation-plan.md.
+///
+/// # Safety
+/// `renderer` must be live; `params` must point to one valid `WgrSkyRuntime` or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_sky_runtime(
+    renderer: *mut WgrRenderer,
+    params: *const WgrSkyRuntime,
+) {
     if renderer.is_null() || params.is_null() {
         return;
     }
     let renderer = unsafe { &mut *renderer };
     let params = unsafe { &*params };
-    renderer.set_sky(*params);
+    renderer.set_sky_runtime(*params);
 }
 
 /// Read one cascade layer of the shadow depth map back as row-major floats

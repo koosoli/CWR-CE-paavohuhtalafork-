@@ -580,8 +580,8 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
         _tonemap.encode = std::strtol(en, nullptr, 10) != 0;
         _tonemapAuto = false;
     }
-    PushTonemap();
-    PushSky();
+    PushRenderParams();
+    PushSkyRuntime();
 
     Dev::DebugOverlay::InitForEngine(_window);
     _eventWindow.Attach(_window, _w, _h);
@@ -855,15 +855,14 @@ void EngineWgpu::NextFrame()
 {
     if (_renderer)
     {
-        // Interpolate the per-time-of-day tonemap/grade preset for this frame (auto
-        // mode only; manual override holds the tab's values).
+        // Interpolate the per-time-of-day tonemap/grade + atmosphere presets for this frame
+        // into _tonemap / _sky (auto mode only; manual override holds the tabs' values).
         UpdateAutoTonemap();
-        // Interpolate the per-time-of-day atmosphere preset (auto mode only; manual holds
-        // the Sky tab's values). Runs before PushSky so the frame pushes the ToD look.
         UpdateAutoSky();
-        // Refresh the procedural sky's live celestial params (sun/moon direction,
-        // night factor) from LightSun; authored look params ride along unchanged.
-        PushSky();
+        // Push the consolidated look block (picks up the auto-ToD updates; renderer diffs the
+        // terrain sub-blocks) and then the per-frame sky runtime (celestial + camera).
+        PushRenderParams();
+        PushSkyRuntime();
 
         // Build + flatten the ImGui frame; SubmitOverlay fills the _overlay*
         // vectors the WgrFrame below points at. Composites over everything,
@@ -1477,9 +1476,11 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
     }
 
     uint64_t tex = 0;
+    Poseidon::AlphaStats::Kind alphaClass = Poseidon::AlphaStats::Opaque;
     if (auto* t = static_cast<TextureWgpu*>(sMesh.GetSection(beg).properties.GetTexture()))
     {
         tex = t->EnsureUploaded();
+        alphaClass = t->GetAlphaClass();
     }
 
     const int sectionSpec = sMesh.GetSection(beg).properties.Special();
@@ -1525,10 +1526,26 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
             d.conform2 = {cf.d1011, cf.d0111, 1.0f, 0.0f};
         }
     }
-    d.blend = BlendFromDesc(desc.blend);
+    // AlphaClass draw-mode override (design: AlphaStats — "Opaque and Cutout occlude: write
+    // depth, alpha-test the holes"). BuildRenderPassDescriptor only sees the section SPEC, so a
+    // face authored IsAlpha (-> AlphaBlend) over a Cutout-class texture (1-bit / punch-through
+    // holes: badges, vehicle grills, fences) would soft-blend its filtered edges against whatever
+    // is already in the framebuffer. It draws in the OPAQUE pass (SectionClassFilter routes
+    // Cutout there), before the geometry behind it, so that "whatever" is the sky fill — the
+    // long-standing see-through grill/badge bug. Force the Cutout class to a hard alpha-test
+    // (opaque blend, mid alpha-ref): the holes discard and the solid occludes + depth-writes,
+    // so the geometry behind shows through the holes and MSAA A2C still anti-aliases the edges.
+    render::BlendMode blend = desc.blend;
+    float alphaRef = AlphaRefFromDesc(desc);
+    if (blend == render::BlendMode::AlphaBlend && alphaClass == Poseidon::AlphaStats::Cutout)
+    {
+        blend = render::BlendMode::Opaque;
+        alphaRef = 0.5f;
+    }
+    d.blend = BlendFromDesc(blend);
     d.sampler = U32(SamplerForSpec(effectiveSpec));
     d.depth = DepthFromDesc(desc.depth);
-    d.alpha_ref = AlphaRefFromDesc(desc);
+    d.alpha_ref = alphaRef;
     // Polygon-offset selection (ignored for shadows, which get their own offset):
     //  - OnSurface routing (roads / footprint decals): the light decal offset.
     //  - Otherwise ZBias overlay faces (traffic-sign decals etc.) flagged via
@@ -2504,56 +2521,18 @@ void EngineWgpu::GetZCoefs(float& zAdd, float& zMult)
 void EngineWgpu::SetTonemapSettings(const TonemapSettings& s)
 {
     _tonemap = s;
-    PushTonemap();
-}
-
-void EngineWgpu::PushTonemap()
-{
-    if (!_renderer)
-        return;
-    const WgrTonemap t = {
-        _tonemap.exposure,
-        _tonemap.hable ? 1.0f : 0.0f,
-        _tonemap.encode ? 1.0f : 0.0f,
-        _tonemap.temperature,
-        _tonemap.tint,
-        _tonemap.contrast,
-        _tonemap.saturation,
-        _tonemap.lift,
-        _tonemap.gain,
-        _tonemap.bloomIntensity,
-        _tonemap.bloomThreshold,
-        _tonemap.bloomKnee,
-    };
-    wgr_set_tonemap(_renderer, &t);
+    PushRenderParams();
 }
 
 void EngineWgpu::SetExposureSettings(const ExposureSettings& s)
 {
     _exposure = s;
-    PushExposure();
+    PushRenderParams();
 }
 
 float EngineWgpu::GetAutoExposureScale() const
 {
     return _renderer ? wgr_get_exposure_scale(_renderer) : 1.0f;
-}
-
-void EngineWgpu::PushExposure()
-{
-    if (!_renderer)
-        return;
-    const WgrExposure e = {
-        _exposure.enabled ? 1.0f : 0.0f,
-        _exposure.key,
-        _exposure.minScale,
-        _exposure.maxScale,
-        _exposure.rate,
-        _exposure.skyWeight,
-        0.0f,
-        0.0f,
-    };
-    wgr_set_exposure(_renderer, &e);
 }
 
 void EngineWgpu::UpdateAutoTonemap()
@@ -2568,7 +2547,7 @@ void EngineWgpu::UpdateAutoTonemap()
     _tonemap.bloomIntensity = bi;
     _tonemap.bloomThreshold = bt;
     _tonemap.bloomKnee = bk;
-    PushTonemap();
+    // The push happens in NextFrame after UpdateAutoSky (PushRenderParams).
 }
 
 void EngineWgpu::UpdateAutoSky()
@@ -2596,10 +2575,84 @@ void EngineWgpu::UpdateAutoSky()
 void EngineWgpu::SetSkySettings(const SkySettings& s)
 {
     _sky = s;
-    PushSky();
+    PushRenderParams();
 }
 
-void EngineWgpu::PushSky()
+void EngineWgpu::PushRenderParams()
+{
+    if (!_renderer)
+        return;
+
+    WgrRenderParams p{};
+
+    p.tonemap = {
+        _tonemap.exposure,
+        _tonemap.hable ? 1.0f : 0.0f,
+        _tonemap.encode ? 1.0f : 0.0f,
+        _tonemap.temperature,
+        _tonemap.tint,
+        _tonemap.contrast,
+        _tonemap.saturation,
+        _tonemap.lift,
+        _tonemap.gain,
+        _tonemap.bloomIntensity,
+        _tonemap.bloomThreshold,
+        _tonemap.bloomKnee,
+    };
+
+    p.exposure = {
+        _exposure.enabled ? 1.0f : 0.0f,
+        _exposure.key,
+        _exposure.minScale,
+        _exposure.maxScale,
+        _exposure.rate,
+        _exposure.skyWeight,
+        0.0f,
+        0.0f,
+    };
+
+    // Authored sky look (no celestial/runtime — that rides WgrSkyRuntime in PushSkyRuntime).
+    const float haze = GScene ? _sky.horizonHaze : 0.0f;
+    const float deg2rad = 3.14159265f / 180.0f;
+    p.sky.rayleigh = {_sky.rayleigh[0], _sky.rayleigh[1], _sky.rayleigh[2], _sky.rayleighHeight};
+    p.sky.mie = {_sky.mie, _sky.mieG, _sky.mieHeight, _sky.turbidity};
+    p.sky.ground_sun = {_sky.ground[0], _sky.ground[1], _sky.ground[2], _sky.sunIntensity};
+    p.sky.params = {_sky.sunAngularRadius, _sky.exposure, _sky.planetRadius, _sky.atmosphereHeight};
+    p.sky.control = {_sky.enabled ? 1.0f : 0.0f, static_cast<float>(_sky.viewSamples),
+                     static_cast<float>(_sky.lightSamples), _sky.ozone};
+    p.sky.night_zenith = {_sky.nightZenith[0], _sky.nightZenith[1], _sky.nightZenith[2], haze};
+    // night_horizon.w = the froxel fog terrain sun-shadow strength (0 = off; 1 = physical).
+    p.sky.night_horizon = {_sky.nightHorizon[0], _sky.nightHorizon[1], _sky.nightHorizon[2], _sky.aerialShadow};
+    // Blend band expressed as sun_dir.y (= sin elevation) so the shader compares directly.
+    p.sky.night_params = {std::sin(_sky.nightStartDeg * deg2rad), std::sin(_sky.nightEndDeg * deg2rad),
+                          _sky.nightIntensity, 0.0f};
+
+    // Long-distance terrain sun-shadow (wgpu-only); strength 0 = disabled. The renderer
+    // diffs this sub-block so a per-frame push doesn't re-run the sweep.
+    p.terrain_sun_shadow = {
+        _smTuning.terrainShadowEnabled ? _smTuning.terrainShadowStrength : 0.0f,
+        _smTuning.terrainShadowScale < 1 ? 1u : uint32_t(_smTuning.terrainShadowScale),
+        _smTuning.terrainShadowSteps < 1 ? 1u : uint32_t(_smTuning.terrainShadowSteps),
+        _smTuning.terrainShadowPenumbra,
+    };
+
+    // Sky-visibility ambient occlusion (wgpu-only); strength 0 = disabled. Radius/azimuths/
+    // downsample re-run the scan renderer-side only when they change (also diffed).
+    p.sky_visibility = {
+        _smTuning.terrainSkyVisEnabled ? _smTuning.terrainSkyVisStrength : 0.0f,
+        _smTuning.terrainSkyVisContrast,
+        _smTuning.terrainSkyVisFloor,
+        _smTuning.terrainSkyVisRadius,
+        _smTuning.terrainSkyVisAzimuths < 1 ? 1u : uint32_t(_smTuning.terrainSkyVisAzimuths),
+        _smTuning.terrainSkyVisDownsample < 1 ? 1u : uint32_t(_smTuning.terrainSkyVisDownsample),
+        _smTuning.terrainSkyVisDebug ? 1u : 0u,
+        0u,
+    };
+
+    wgr_set_render_params(_renderer, &p);
+}
+
+void EngineWgpu::PushSkyRuntime()
 {
     if (!_renderer)
         return;
@@ -2651,37 +2704,21 @@ void EngineWgpu::PushSky()
         _skyFog[2] += (tFog.B() - _skyFog[2]) * alpha;
     }
 
-    const float haze = GScene ? _sky.horizonHaze : 0.0f;
-
-    WgrSky sky{};
-    sky.sun_dir = {_skySunDir.X(), _skySunDir.Y(), _skySunDir.Z(), _sky.sunIntensity};
-    sky.moon_dir = {_skyMoonDir.X(), _skyMoonDir.Y(), _skyMoonDir.Z(), _skyMoonPhase};
-    sky.rayleigh = {_sky.rayleigh[0], _sky.rayleigh[1], _sky.rayleigh[2], _sky.rayleighHeight};
-    sky.mie = {_sky.mie, _sky.mieG, _sky.mieHeight, _sky.turbidity};
-    sky.ground_albedo = {_sky.ground[0], _sky.ground[1], _sky.ground[2], _skyNight};
-    sky.params = {_sky.sunAngularRadius, _sky.exposure, _sky.planetRadius, _sky.atmosphereHeight};
-    sky.control = {_sky.enabled ? 1.0f : 0.0f, static_cast<float>(_sky.viewSamples),
-                   static_cast<float>(_sky.lightSamples), _sky.ozone};
-    sky.fog_color = {_skyFog[0], _skyFog[1], _skyFog[2], haze};
     // Camera altitude ASL feeds the aerial/sky raymarch origin: with the old fixed 200 m
     // the march dived below the terrain when flying (fake density -> grey wash). Sea level
     // is y = 0 in OFP, so the camera's world Y is the altitude directly.
     Camera* skyCam = GScene ? GScene->GetCamera() : nullptr;
     const float camAlt = skyCam ? static_cast<float>(skyCam->Position().Y()) : 0.0f;
-    sky.night_zenith = {_sky.nightZenith[0], _sky.nightZenith[1], _sky.nightZenith[2], camAlt};
-    // night_horizon.w carries the froxel fog terrain sun-shadow strength (0 = off, for A/B
-    // testing the effect; 1 = physical; >1 exaggerated). The .rgb is the night horizon colour.
-    sky.night_horizon = {_sky.nightHorizon[0], _sky.nightHorizon[1], _sky.nightHorizon[2], _sky.aerialShadow};
-    // Blend band expressed as sun_dir.y (= sin elevation) so the shader compares directly.
-    // night_params.w = the far-fade range: the aerial pass dissolves the terrain edge
-    // into the full sky as it nears the fog/view distance, hiding the horizon colour
-    // step left by the infinite-far projection (the terrain edge is finite, the sky is
-    // fogged to infinity). 0 when there's no scene, which disables the fade.
+    // fog far-range: the aerial pass dissolves the terrain edge into the full sky as it nears
+    // the fog/view distance, hiding the horizon colour step. 0 when there's no scene.
     const float fogFar = GScene ? GScene->GetFogMaxRange() : 0.0f;
-    const float deg2rad = 3.14159265f / 180.0f;
-    sky.night_params = {std::sin(_sky.nightStartDeg * deg2rad), std::sin(_sky.nightEndDeg * deg2rad),
-                        _sky.nightIntensity, fogFar};
-    wgr_set_sky(_renderer, &sky);
+
+    WgrSkyRuntime rt{};
+    rt.sun_dir = {_skySunDir.X(), _skySunDir.Y(), _skySunDir.Z(), 0.0f};
+    rt.moon_dir = {_skyMoonDir.X(), _skyMoonDir.Y(), _skyMoonDir.Z(), _skyMoonPhase};
+    rt.fog_color = {_skyFog[0], _skyFog[1], _skyFog[2], fogFar};
+    rt.misc = {_skyNight, camAlt, 0.0f, 0.0f};
+    wgr_set_sky_runtime(_renderer, &rt);
 }
 
 void EngineWgpu::ResolveSceneToDisplay()

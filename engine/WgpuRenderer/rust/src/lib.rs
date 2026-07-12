@@ -92,6 +92,12 @@ pub struct Renderer {
     // (celestial per frame, authored on edit); skipped when control.x (enabled) = 0.
     sky: Sky,
     sky_params: ffi::WgrSky,
+    // Last terrain sun-shadow / sky-visibility blocks received via wgr_set_render_params.
+    // The consolidated block is pushed every frame, but these two setters realloc the mask /
+    // re-run the CPU scan (and set_sun_shadow_params dirties the sweep unconditionally), so we
+    // only fan out to them when their values actually change. See render-params-consolidation-plan.md.
+    last_sun_shadow: Option<ffi::WgrTerrainSunShadow>,
+    last_sky_visibility: Option<ffi::WgrSkyVisibility>,
     // WGR_SKY_DEBUG: log the sky's camera count + chosen index when they change, to
     // catch frame-to-frame camera alternation (the suspected sun/haze stutter cause).
     sky_debug: bool,
@@ -422,6 +428,8 @@ impl Renderer {
             tonemap_params,
             sky,
             sky_params: ffi::WgrSky::default(),
+            last_sun_shadow: None,
+            last_sky_visibility: None,
             sky_debug: std::env::var("WGR_SKY_DEBUG").is_ok(),
             sky_dbg_last: (usize::MAX, usize::MAX),
             prepass_enabled,
@@ -430,21 +438,69 @@ impl Renderer {
         })
     }
 
-    // Live update from the ImGui Sky tab / per-frame celestial push (wgr_set_sky).
-    // Applied on the next frame's sky pass.
-    fn set_sky(&mut self, params: ffi::WgrSky) {
-        self.sky_params = params;
+    // Consolidated ImGui-tweakable render params (wgr_set_render_params). Fans out to the
+    // per-subsystem state. tonemap/exposure/sky-look are cheap re-assigns; the two terrain
+    // setters are diffed against the last block because they realloc/re-scan (and the sun-shadow
+    // setter dirties its sweep on every call). See docs/render-params-consolidation-plan.md.
+    fn set_render_params(&mut self, p: ffi::WgrRenderParams) {
+        self.tonemap_params = p.tonemap;
+        self.exposure_params = p.exposure;
+
+        // Write the LOOK half of the sky UBO, leaving the runtime slots set_sky_runtime owns
+        // (sun/moon dir + phase, night factor, fog rgb, cam altitude, fog far) intact.
+        let s = &mut self.sky_params;
+        let l = &p.sky;
+        s.sun_dir[3] = l.ground_sun[3]; // sun radiance scale (sunIntensity)
+        s.rayleigh = l.rayleigh;
+        s.mie = l.mie;
+        s.ground_albedo[0] = l.ground_sun[0];
+        s.ground_albedo[1] = l.ground_sun[1];
+        s.ground_albedo[2] = l.ground_sun[2];
+        s.params = l.params;
+        s.control = l.control;
+        s.fog_color[3] = l.night_zenith[3]; // horizon-haze strength
+        s.night_zenith[0] = l.night_zenith[0];
+        s.night_zenith[1] = l.night_zenith[1];
+        s.night_zenith[2] = l.night_zenith[2];
+        s.night_horizon = l.night_horizon; // xyz + aerial-shadow (w)
+        s.night_params[0] = l.night_params[0];
+        s.night_params[1] = l.night_params[1];
+        s.night_params[2] = l.night_params[2];
+
+        if self.last_sun_shadow != Some(p.terrain_sun_shadow) {
+            self.last_sun_shadow = Some(p.terrain_sun_shadow);
+            let ss = &p.terrain_sun_shadow;
+            self.terrain_set_sun_shadow(ss.strength, ss.scale, ss.max_steps, ss.penumbra_deg);
+        }
+        if self.last_sky_visibility != Some(p.sky_visibility) {
+            self.last_sky_visibility = Some(p.sky_visibility);
+            let sv = &p.sky_visibility;
+            self.terrain_set_sky_visibility(
+                sv.strength,
+                sv.contrast,
+                sv.floor,
+                sv.radius_m,
+                sv.k_azimuths,
+                sv.downsample,
+                sv.debug != 0,
+            );
+        }
     }
 
-    // Live update from the ImGui Tonemap tab (via wgr_set_tonemap). Applied on the
-    // next frame's resolve; ignored on the LDR-direct path (no tonemap pass).
-    fn set_tonemap(&mut self, params: ffi::WgrTonemap) {
-        self.tonemap_params = params;
-    }
-
-    // Live update from the ImGui Tonemap tab (via wgr_set_exposure). Applied next frame.
-    fn set_exposure(&mut self, params: ffi::WgrExposure) {
-        self.exposure_params = params;
+    // Per-frame sky runtime (wgr_set_sky_runtime): the celestial + camera fields, written into
+    // the runtime half of the sky UBO. The authored look half comes from set_render_params.
+    fn set_sky_runtime(&mut self, rt: ffi::WgrSkyRuntime) {
+        let s = &mut self.sky_params;
+        s.sun_dir[0] = rt.sun_dir[0]; // keep sun_dir.w (sunIntensity, a look field)
+        s.sun_dir[1] = rt.sun_dir[1];
+        s.sun_dir[2] = rt.sun_dir[2];
+        s.moon_dir = rt.moon_dir; // xyz dir + w phase
+        s.ground_albedo[3] = rt.misc[0]; // night factor
+        s.fog_color[0] = rt.fog_color[0]; // keep fog_color.w (haze, a look field)
+        s.fog_color[1] = rt.fog_color[1];
+        s.fog_color[2] = rt.fog_color[2];
+        s.night_zenith[3] = rt.misc[1]; // camera altitude ASL
+        s.night_params[3] = rt.fog_color[3]; // fog far-range
     }
 
     // Debug readback of the current auto-exposure scale (blocking; dev panel only).

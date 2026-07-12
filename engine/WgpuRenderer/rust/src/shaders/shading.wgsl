@@ -62,7 +62,21 @@ fn shade(
         m_light_ambient = srgb_to_linear(m_light_ambient);
         m_specular = srgb_to_linear(m_specular);
     }
-    let nrm = normalize(normal);
+    // Decal / overlay sections (traffic-sign text, insignia) can carry ZERO vertex normals:
+    // the legacy flat ambient (m_sun_ambient) never used the normal, so nobody noticed. The
+    // sky-lit path's DIRECTIONAL sky_irradiance(nrm) does — and normalize((0,0,0)) is NaN, which
+    // renders the whole face black regardless of sun/ambient level. When the vertex normal is
+    // degenerate, reconstruct the GEOMETRIC face normal from the world-position derivatives
+    // (oriented toward the camera) so the overlay lights IDENTICALLY to the base face it sits on
+    // — a flat DC-only fallback would leave it noticeably darker than that face (no directional
+    // sky, no sun N.L). For every real (unit-ish) normal this is bit-identical to normalize().
+    let n_len = length(normal);
+    var nrm = normal / max(n_len, 1e-4);
+    if (n_len < 1e-4) {
+        var n_geo = normalize(cross(dwx, dwy));
+        // world_pos is camera-relative (camera at the origin), so the front hemisphere faces it.
+        nrm = select(n_geo, -n_geo, dot(n_geo, world_pos) > 0.0);
+    }
     let ndotl = max(dot(nrm, -frame.sun_dir_world.xyz), 0.0);
     let sky_lit = frame.sun_diffuse.w > 0.5;
     // CSM shadow (near contact). Folded into the sun removal on the sky-lit path, kept as a

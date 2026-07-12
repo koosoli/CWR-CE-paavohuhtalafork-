@@ -135,9 +135,9 @@ class EngineWgpu : public EngineDummy
     // Emit the scene->UI resolve marker (WGR_CMD_RESOLVE) into the command stream.
     void ResolveSceneToDisplay() override;
 
-    // Procedural atmospheric sky (ImGui Sky tab). Authored params are edited here and
-    // pushed to the renderer; the celestial fields are refreshed every frame from
-    // LightSun in PushSky (called from NextFrame). See docs/procedural-sky-plan.md.
+    // Procedural atmospheric sky (ImGui Sky tab). Authored look is edited here and pushed via
+    // PushRenderParams; the celestial fields are refreshed every frame from LightSun in
+    // PushSkyRuntime (both called from NextFrame). See docs/procedural-sky-plan.md.
     bool SupportsSky() const override { return _renderer != nullptr; }
     SkySettings GetSkySettings() const override { return _sky; }
     void SetSkySettings(const SkySettings& s) override;
@@ -164,24 +164,10 @@ class EngineWgpu : public EngineDummy
     void SetShadowMapTuning(const ShadowMapTuning& tuning) override
     {
         _smTuning = tuning;
-        // Push the terrain sun-shadow knobs to the renderer (wgpu-only feature);
-        // strength 0 = disabled. The sweep realloc/recompute happens renderer-side.
-        if (_renderer)
-        {
-            const float strength = tuning.terrainShadowEnabled ? tuning.terrainShadowStrength : 0.0f;
-            const uint32_t scale = tuning.terrainShadowScale < 1 ? 1u : uint32_t(tuning.terrainShadowScale);
-            const uint32_t steps = tuning.terrainShadowSteps < 1 ? 1u : uint32_t(tuning.terrainShadowSteps);
-            wgr_terrain_set_sun_shadow(_renderer, strength, scale, steps, tuning.terrainShadowPenumbra);
-
-            // Sky-visibility ambient occlusion (wgpu-only); strength 0 = disabled. Radius/azimuths/
-            // downsample re-run the scan renderer-side only when they change.
-            const float svStrength = tuning.terrainSkyVisEnabled ? tuning.terrainSkyVisStrength : 0.0f;
-            const uint32_t svAz = tuning.terrainSkyVisAzimuths < 1 ? 1u : uint32_t(tuning.terrainSkyVisAzimuths);
-            const uint32_t svDs = tuning.terrainSkyVisDownsample < 1 ? 1u : uint32_t(tuning.terrainSkyVisDownsample);
-            wgr_terrain_set_sky_visibility(_renderer, svStrength, tuning.terrainSkyVisContrast,
-                                           tuning.terrainSkyVisFloor, tuning.terrainSkyVisRadius, svAz,
-                                           svDs, tuning.terrainSkyVisDebug);
-        }
+        // The terrain sun-shadow + sky-visibility knobs ride the consolidated render-params
+        // block (assembled + clamped in PushRenderParams). The renderer diffs them, so the
+        // sweep realloc / scan rebuild only happens on an actual change.
+        PushRenderParams();
     }
     void SetShadowMapSunFactor(float factor01) override { _smSunFactor = factor01; }
     bool UsesGpuShadowCasters() const override { return true; }
@@ -235,21 +221,21 @@ class EngineWgpu : public EngineDummy
     // Establish a camera for the frame's first 3D draw if none has been pushed yet.
     void EnsureCamera();
 
-    // Pushes _tonemap to the renderer via wgr_set_tonemap (used on init + on edit).
-    void PushTonemap();
-    // Pushes _exposure to the renderer via wgr_set_exposure (auto-exposure params).
-    void PushExposure();
+    // Assemble the consolidated imgui-tweakable render params (tonemap, exposure, sky look,
+    // terrain sun-shadow, sky-visibility) from _tonemap/_exposure/_sky/_smTuning and push them
+    // via wgr_set_render_params. Called on every edit and once per frame from NextFrame; the
+    // renderer diffs the terrain sub-blocks so the per-frame push is cheap. See
+    // docs/render-params-consolidation-plan.md.
+    void PushRenderParams();
+    // Assemble the per-frame sky runtime (eased celestial values from LightSun + camera
+    // altitude / fog range) and push it via wgr_set_sky_runtime. Called each frame.
+    void PushSkyRuntime();
     // In auto mode, interpolate the per-ToD preset for the current game time into
     // _tonemap and push it. Called once per frame from NextFrame.
     void UpdateAutoTonemap();
-
-    // Build a WgrSky from the authored _sky params + live celestial values from
-    // LightSun and push it via wgr_set_sky. Called each frame (celestial refresh)
-    // and on edit from the Sky tab.
-    void PushSky();
     // In auto mode (_sky.autoToD), interpolate the per-ToD atmosphere preset for the
     // current game time into _sky (preserving the live toggle knobs). Called once per
-    // frame from NextFrame, before PushSky.
+    // frame from NextFrame, before the render-params push.
     void UpdateAutoSky();
 
     SDL_Window* _window = nullptr;
@@ -264,12 +250,12 @@ class EngineWgpu : public EngineDummy
     // Live GPU-water look, edited by the Water tab, read by WaterWgpu each frame.
     Engine::WaterSettings _waterLook;
     // Authored procedural-sky params (atmosphere + look); celestial fields are filled
-    // per frame from LightSun in PushSky.
+    // per frame from LightSun in PushSkyRuntime.
     Engine::SkySettings _sky;
     // Smoothed celestial inputs: LightSun::Recalculate refreshes sun/moon direction,
     // night factor and fog colour only every few seconds with no interpolation, which
-    // makes the sun disc + horizon haze stutter. PushSky eases these toward the live
-    // values each frame (snapping on init / large jumps). See procedural-sky-plan §9.
+    // makes the sun disc + horizon haze stutter. PushSkyRuntime eases these toward the
+    // live values each frame (snapping on init / large jumps). See procedural-sky-plan §9.
     bool _skyInit = false;
     Vector3 _skySunDir;
     Vector3 _skyMoonDir;
