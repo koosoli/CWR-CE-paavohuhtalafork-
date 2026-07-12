@@ -74,7 +74,14 @@ struct TerrainShadowMap {
     inv_span: vec2<f32>,   // 1 / (hm_dims * terrain_grid): world-xz -> [0,1] over the map
     half_texel: vec2<f32>, // 0.5 / mask_dims
     enabled: f32,
-    pad: f32,
+    // Sky-visibility (AO) controls (docs/sky-visibility-ambient-plan.md): strength scales the effect
+    // (0 = off), floor keeps a minimum ambient in fully-occluded columns.
+    sky_vis_strength: f32,
+    sky_vis_floor: f32,
+    sky_vis_debug: f32,    // 1 = terrain outputs the raw sky-view factor as greyscale
+    sky_vis_contrast: f32, // occ = 1 - pow(V, contrast); >1 deepens the AO for near-1 V
+    // naga_oil forbids composable identifiers ending in a digit (see `ctlb` above), so pad_c.
+    pad_c: f32,
 };
 @group(0) @binding(4) var terrain_shadow_mask: texture_2d<f32>;
 @group(0) @binding(5) var terrain_shadow_samp: sampler;
@@ -97,6 +104,12 @@ struct SkySh {
     c: array<vec4<f32>, 9>,
 };
 @group(0) @binding(9) var<uniform> sky_sh: SkySh;
+
+// Coarse sky-visibility (sky-view factor) mask: R8Unorm, one bilinear tap gives the cosine-weighted
+// fraction of sky a terrain column can see (1 = open, 0 = fully occluded). Terrain-owned, produced by
+// the CPU horizon scan (terrain/skyvis.rs); sampled with the terrain-shadow sampler (binding 5) and
+// mapping (binding 6). See terrain_sky_visibility / sky_vis_ao below.
+@group(0) @binding(10) var terrain_skyvis_mask: texture_2d<f32>;
 
 // Diffuse sky irradiance for a world-space surface normal, from the SH-9 sky projection
 // (Ramamoorthi, "An Efficient Representation for Irradiance Environment Maps"), divided by PI so
@@ -184,6 +197,48 @@ fn terrain_sun_shadow(world_xz: vec2<f32>, world_y: f32) -> f32 {
     let sm = textureSampleLevel(terrain_shadow_mask, terrain_shadow_samp, uv, 0.0);
     let lit = smoothstep(sm.r - sm.g, sm.r + sm.g + 1e-3, world_y);
     return clamp(sm.b * (1.0 - lit), 0.0, 1.0);
+}
+
+// Cosine-weighted fraction of sky a terrain column can see [0,1] (1 = open sky). Position-only
+// (evaluated at the terrain surface); the AMBIENT-occlusion analogue of terrain_sun_shadow, which
+// occludes the DIRECT sun. Returns 1 (full sky) off-map or before a heightmap loads so absence of
+// data never darkens. Reuses the terrain-shadow mapping/sampler (no half-texel offset: the coarse,
+// smooth mask relies on the clamping sampler at the edges).
+fn terrain_sky_visibility(world_xz: vec2<f32>) -> f32 {
+    if (terrain_shadow_map.enabled < 0.5) {
+        return 1.0;
+    }
+    let uv = (world_xz - terrain_shadow_map.origin) * terrain_shadow_map.inv_span;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return 1.0;
+    }
+    return textureSampleLevel(terrain_skyvis_mask, terrain_shadow_samp, uv, 0.0).r;
+}
+
+// Ambient-occlusion multiplier for the sky ambient term at a terrain column: blends from 1 (no AO)
+// toward the sky-view factor by sky_vis_strength, then floors it so occluded ground never goes fully
+// black. strength = 0 -> returns 1 (feature off). Multiply the sky ambient term by this.
+fn sky_vis_ao(world_xz: vec2<f32>) -> f32 {
+    let v = clamp(terrain_sky_visibility(world_xz), 0.0, 1.0);
+    // Occlusion, contrast-shaped so the near-1 V of smooth heightfields still darkens visibly:
+    // contrast = 1 -> occ = 1 - V (linear); contrast > 1 -> pow(V, contrast) < V -> deeper occ.
+    let occ = 1.0 - pow(v, terrain_shadow_map.sky_vis_contrast);
+    let ao = 1.0 - terrain_shadow_map.sky_vis_strength * occ;
+    return max(ao, terrain_shadow_map.sky_vis_floor);
+}
+
+// 1 when the sky-visibility debug view is on (terrain shows the factor as greyscale). A helper
+// so importers need not reference the terrain_shadow_map global directly.
+fn sky_vis_debug_on() -> f32 {
+    return terrain_shadow_map.sky_vis_debug;
+}
+
+// Contrast-shaped visibility for the debug view: pow(V, contrast). Unlike raw V (which sits near 1 on
+// smooth terrain and reads as flat white), this pulls the factor down by the same contrast the AO
+// uses, so the mask shape — and its response to radius/azimuths/downsample/contrast — is legible.
+fn sky_vis_debug_value(world_xz: vec2<f32>) -> f32 {
+    let v = clamp(terrain_sky_visibility(world_xz), 0.0, 1.0);
+    return pow(v, terrain_shadow_map.sky_vis_contrast);
 }
 
 // Reversed-Z: the shared projection is forward (near->0, far->1). Remap to

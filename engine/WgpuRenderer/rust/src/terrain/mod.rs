@@ -3,6 +3,8 @@ use wgpu::util::DeviceExt;
 use crate::ffi::{WgrTerrainNode, WgrTerrainParams};
 use crate::gfx3d::{DEPTH_FORMAT, NORMAL_FORMAT};
 
+mod skyvis;
+
 // Which terrain pipeline a draw uses (docs/depth-prepass-plan.md). Color = the shading
 // pass (depth write ON). ColorNoWrite = the prepassed segment's colour pass (depth
 // already complete -> GreaterEqual/write-off). Prepass = the depth+normal G-buffer pass.
@@ -62,7 +64,19 @@ pub struct TerrainShadowMap {
     pub inv_span: glam::Vec2,
     pub half_texel: glam::Vec2,
     pub enabled: f32,
-    pub _pad: f32,
+    // Sky-visibility (ambient-occlusion) controls, riding this shared group(0) uniform so all three
+    // consumers (terrain/objects/water) read them without a new binding. strength scales the effect
+    // (0 = off), floor keeps a minimum ambient in fully-occluded columns. See terrain_sky_visibility
+    // in frame.wgsl and docs/sky-visibility-ambient-plan.md.
+    pub sky_vis_strength: f32,
+    pub sky_vis_floor: f32,
+    // Debug: 1 = terrain fragments output the raw sky-view factor as greyscale (mask inspection).
+    pub sky_vis_debug: f32,
+    // Exaggeration exponent on the occlusion: occ = 1 - pow(V, contrast). 1 = physical/linear; >1
+    // deepens the AO for the near-1 V that smooth heightfields produce (so it is actually visible).
+    pub sky_vis_contrast: f32,
+    // Pad the struct to 48 bytes (a multiple of 16) for the uniform layout.
+    pub _pad2: f32,
 }
 
 // Terrain height-sampling params for the mesh conform pass (vegetation): the world->
@@ -89,6 +103,15 @@ fn shadow_mask_dims(w: u32, h: u32, scale: u32, max_dim: u32) -> (u32, u32) {
     (mw, mh)
 }
 
+// Source heightfield retained for re-running the sky-visibility scan when its ImGui-tuned options
+// change (radius/K/downsample), without waiting for a fresh heightmap upload.
+struct SkyvisSrc {
+    heights: Vec<f32>,
+    w: u32,
+    h: u32,
+    terrain_grid: f32,
+}
+
 pub struct Terrain {
     group1_layout: wgpu::BindGroupLayout,
     group2_layout: wgpu::BindGroupLayout,
@@ -113,6 +136,23 @@ pub struct Terrain {
     // meshes sample terrain shadow; mask_gen bumps on realloc so that bind rebuilds.
     shadow_mask_view: wgpu::TextureView,
     mask_gen: u64,
+
+    // Sky-visibility (sky-view factor) mask: a COARSE, CPU-computed R8Unorm texture (V in [0,1] per
+    // column), lent to the shared frame group(0) so terrain/objects/water modulate their ambient by
+    // it. Computed once per heightmap (sun-independent) in set_heightmap; a 1x1 stand-in until then.
+    // See skyvis.rs + docs/sky-visibility-ambient-plan.md.
+    #[allow(dead_code)] // kept alive: skyvis_view references it
+    skyvis_mask: wgpu::Texture,
+    skyvis_view: wgpu::TextureView,
+    sky_vis_strength: f32,
+    sky_vis_floor: f32,
+    sky_vis_debug: f32,
+    sky_vis_contrast: f32,
+    skyvis_opts: skyvis::SkyvisOptions,
+    // Source heightfield kept so the ImGui-tuned scan options (radius/K/downsample) can re-run the
+    // scan without a fresh heightmap upload. None until the first heightmap arrives.
+    skyvis_src: Option<SkyvisSrc>,
+
     shadow_sweep_ubo: wgpu::Buffer,
     shadow_sweep_layout: wgpu::BindGroupLayout,
     shadow_sweep_bind: wgpu::BindGroup,
@@ -374,6 +414,14 @@ impl Terrain {
         // on the first real upload. Terrain never draws until then.
         let shadow_mask = create_shadow_mask(device, 1, 1);
         let shadow_mask_view = shadow_mask.create_view(&wgpu::TextureViewDescriptor::default());
+        // 1x1 stand-in sky-visibility mask (fully visible = 255) until a heightmap loads.
+        let (skyvis_mask, skyvis_view) = create_skyvis(device, queue, 1, 1, &[255u8]);
+        // Default-ON with the user-tuned values (2026-07-12). Terrain params reach the renderer only
+        // via the SetShadowMapTuning FFI push, so — like the sun-shadow sweep — the RENDERER default is
+        // what makes it on out of the box; the C++ ShadowMapTuning defaults mirror these for ImGui.
+        // Env overrides: WGR_SKY_VIS = strength (0 = off), WGR_SKY_VIS_FLOOR, WGR_SKY_VIS_CONTRAST.
+        let sky_vis_strength = env_f32("WGR_SKY_VIS", 0.70);
+        let sky_vis_floor = env_f32("WGR_SKY_VIS_FLOOR", 0.30);
         let mask_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("wgr_terrain_shadow_mask_sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
@@ -691,6 +739,18 @@ impl Terrain {
             shadow_mask,
             shadow_mask_view,
             mask_gen: 0,
+            skyvis_mask,
+            skyvis_view,
+            sky_vis_strength,
+            sky_vis_floor,
+            sky_vis_debug: if std::env::var("WGR_SKY_VIS_DEBUG").is_ok() { 1.0 } else { 0.0 },
+            sky_vis_contrast: env_f32("WGR_SKY_VIS_CONTRAST", 6.5),
+            skyvis_opts: skyvis::SkyvisOptions {
+                k_azimuths: 12,
+                blur_radius: env_f32("WGR_SKY_VIS_BLUR", 1.0).max(0.0) as u32,
+                ..skyvis::SkyvisOptions::default()
+            },
+            skyvis_src: None,
             shadow_sweep_ubo,
             shadow_sweep_layout,
             shadow_sweep_bind,
@@ -796,6 +856,18 @@ impl Terrain {
         self.shadow_mask_view = mask_view;
         self.heightmap_view = view;
         self.mask_gen += 1;
+
+        // Sky-visibility (sky-view factor): retain the source heightfield and (re)compute the coarse
+        // AO grid from it. Sun-independent, so this is the only place it is produced from a new
+        // heightmap. Phase A recomputes on every heightmap upload (including fractal subdivision) and
+        // runs synchronously; Phase B adds the base-map-only gate + disk cache (plan §3/§4a).
+        self.skyvis_src = Some(SkyvisSrc {
+            heights: heights[..(w as usize * h as usize)].to_vec(),
+            w,
+            h,
+            terrain_grid: params.terrain_grid,
+        });
+        self.rebuild_skyvis(device, queue);
         self.world_origin = params.world_origin;
         self.terrain_grid = params.terrain_grid;
         // Tallest terrain point: lets the march stop once the ray climbs above all
@@ -939,7 +1011,72 @@ impl Terrain {
                 0.5 / self.mask_height as f32,
             ),
             enabled: if self.have_heightmap { 1.0 } else { 0.0 },
-            _pad: 0.0,
+            sky_vis_strength: self.sky_vis_strength,
+            sky_vis_floor: self.sky_vis_floor,
+            sky_vis_debug: self.sky_vis_debug,
+            sky_vis_contrast: self.sky_vis_contrast,
+            _pad2: 0.0,
+        }
+    }
+
+    // Sky-visibility mask view, lent to the shared frame group(0) at binding 10 so all three
+    // consumers modulate ambient by it. Reuses mask_gen (recreated in the same set_heightmap call
+    // that bumps it) as the rebuild gate.
+    pub fn skyvis_view(&self) -> wgpu::TextureView {
+        self.skyvis_view.clone()
+    }
+
+    // Re-run the sky-view scan from the retained source heightfield with the current options and
+    // upload the fresh mask. No-op before any heightmap has loaded. Bumps mask_gen so the shared
+    // camera bind group (gfx3d ensure()) rebinds to the NEW skyvis view — without this, a live
+    // radius/downsample re-scan produces a texture nothing samples (the bind keeps the old view).
+    fn rebuild_skyvis(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        let Some(src) = &self.skyvis_src else {
+            return;
+        };
+        let (sv_w, sv_h, sv) =
+            skyvis::compute(&src.heights, src.w, src.h, src.terrain_grid, self.skyvis_opts);
+        let sv_bytes: Vec<u8> = sv
+            .iter()
+            .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)
+            .collect();
+        let (skyvis_mask, skyvis_view) = create_skyvis(device, queue, sv_w, sv_h, &sv_bytes);
+        self.skyvis_mask = skyvis_mask;
+        self.skyvis_view = skyvis_view;
+        self.mask_gen += 1;
+    }
+
+    // Live sky-visibility tuning from the ImGui shadow tab (via wgr_terrain_set_sky_visibility).
+    // strength/floor/contrast/debug are cheap (uniform values, applied next frame via
+    // shadow_mapping()). The scan options (radius/K/downsample) only re-run the CPU scan when they
+    // actually change, so idle frames cost nothing; a change recomputes synchronously.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_sky_visibility(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        strength: f32,
+        contrast: f32,
+        floor: f32,
+        radius_m: f32,
+        k_azimuths: u32,
+        downsample: u32,
+        debug: bool,
+    ) {
+        self.sky_vis_strength = strength;
+        self.sky_vis_floor = floor;
+        self.sky_vis_contrast = contrast.max(0.01);
+        self.sky_vis_debug = if debug { 1.0 } else { 0.0 };
+        let k = k_azimuths.max(1);
+        let ds = downsample.max(1);
+        let opts_changed = (self.skyvis_opts.radius_m - radius_m).abs() > 1e-3
+            || self.skyvis_opts.k_azimuths != k
+            || self.skyvis_opts.downsample != ds;
+        if opts_changed {
+            self.skyvis_opts.radius_m = radius_m;
+            self.skyvis_opts.k_azimuths = k;
+            self.skyvis_opts.downsample = ds;
+            self.rebuild_skyvis(device, queue);
         }
     }
 
@@ -1173,6 +1310,57 @@ fn create_shadow_mask(device: &wgpu::Device, w: u32, h: u32) -> wgpu::Texture {
         usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
         view_formats: &[],
     })
+}
+
+// Coarse sky-visibility mask (R8Unorm, filterable): CPU-computed V in [0,1] per column, uploaded
+// once per heightmap. R8Unorm avoids the f32->f16 conversion an R16Float upload would need and is
+// ample for a smooth, low-frequency AO factor. `Queue::write_texture` repacks arbitrary row pitches,
+// so the 1-byte-per-texel rows need no 256-byte alignment.
+fn create_skyvis(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    w: u32,
+    h: u32,
+    bytes: &[u8],
+) -> (wgpu::Texture, wgpu::TextureView) {
+    let tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wgr_terrain_skyvis_mask"),
+        size: wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::R8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        texel_copy(&tex),
+        bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(w),
+            rows_per_image: Some(h),
+        },
+        wgpu::Extent3d {
+            width: w,
+            height: h,
+            depth_or_array_layers: 1,
+        },
+    );
+    let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+    (tex, view)
+}
+
+// Parse a float env var, falling back to `default` when unset or unparseable.
+fn env_f32(name: &str, default: f32) -> f32 {
+    std::env::var(name)
+        .ok()
+        .and_then(|v| v.parse::<f32>().ok())
+        .unwrap_or(default)
 }
 
 fn make_group1(

@@ -7,7 +7,7 @@
 // Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
 // pipeline via the frame module, so terrain receives the same CSM shadows and
 // sun lighting.
-#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -264,8 +264,14 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     let mask_coord = (in.world_xz - tp.world_origin) / tp.terrain_grid * mask_scale;
     let mask_uv = (mask_coord + vec2<f32>(0.5)) / mask_dims;
     let sm = textureSampleLevel(shadow_mask, shadow_mask_samp, mask_uv, 0.0);
-    // Absolute world height of this fragment (world_pos is camera-relative).
-    let world_y = in.world_pos.y + frame.cam_pos.y;
+    // Fine-surface world height for the shadow test, sampled from the heightmap at this
+    // fragment rather than the interpolated mesh height. The mask's ceiling (sm.r) is
+    // baked from the full-resolution heightfield, but in.world_pos.y sags toward the
+    // coarse lattice at distant LODs; testing that mismatched height drops whole patches
+    // below the ceiling and flashes tile-sized shadow blobs several km out. Sampling the
+    // fine surface makes the test LOD/morph-independent, the same independence the
+    // per-fragment normal above relies on (costs one extra heightmap tap).
+    let world_y = sample_height(in.world_xz);
     let lit = smoothstep(sm.r - sm.g, sm.r + sm.g + 1e-3, world_y);
     let terrain_s = clamp(sm.b * (1.0 - lit), 0.0, 1.0) * in.fog;
     let shadow = max(csm_s, terrain_s);
@@ -304,12 +310,22 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     if (sky_lit) {
         sun_ambient = sky_irradiance(n) * frame.sun_ambient.w;
     }
+    // Sky-visibility AO: scale the ambient (directional SH or legacy flat) by the fraction of sky
+    // this column sees, so valleys/gorges/cliff-bases settle darker than open ground. Orthogonal to
+    // `shadow`, which removes the DIRECT sun. Off (returns 1) when sky_vis_strength = 0.
+    sun_ambient *= sky_vis_ao(in.world_xz);
     let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) + sun_ambient;
     // HDR keeps radiance uncapped into the float target; LDR saturates like GL33.
     let sun = select(min(sun_raw, vec3<f32>(1.0)), sun_raw, linear > 0.5);
     let local = lights_contrib(in.world_pos, n, vec3<f32>(1.0), vec3<f32>(1.0), linear);
     let light_sum = sun + local;
     rgb *= select(clamp(light_sum, vec3<f32>(0.0), vec3<f32>(1.0)), max(light_sum, vec3<f32>(0.0)), linear > 0.5);
+
+    // Debug: output the contrast-shaped sky-view factor as greyscale (unfogged) to inspect/tune the
+    // mask — responds to radius/azimuths/downsample/contrast.
+    if (sky_vis_debug_on() > 0.5) {
+        return vec4<f32>(vec3<f32>(sky_vis_debug_value(in.world_xz)), 1.0);
+    }
 
     // fog_enabled: 2 = aerial perspective via the froxel volume (per-fragment); 1 =
     // legacy flat distance fog; 0 = off. in.fog is still used above for distance-faded

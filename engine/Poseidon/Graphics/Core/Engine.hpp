@@ -860,6 +860,23 @@ class Engine : public IGraphicsEngine
         int terrainShadowScale = 2;
         int terrainShadowSteps = 512;
         float terrainShadowPenumbra = 1.0f;
+
+        // Terrain sky-visibility (sky-view factor) ambient occlusion — the AO complement to the
+        // sun-shadow above: it darkens the AMBIENT (sky) term in valleys/gorges/cove-water/cliff-
+        // bases, where little sky is visible, on terrain + objects + water. Orthogonal to the sun-
+        // shadow (which removes the DIRECT sun). wgpu path only. `Strength` scales the effect
+        // (0 = off), `Floor` keeps a minimum ambient in fully-occluded columns; `Radius` is the
+        // horizon-scan reach (m) and `Azimuths` its direction count — changing either re-runs the
+        // (cheap, cached) CPU scan. `Debug` shows the raw factor as greyscale. Default OFF pending
+        // look validation. See docs/sky-visibility-ambient-plan.md.
+        bool terrainSkyVisEnabled = true;
+        float terrainSkyVisStrength = 0.70f;
+        float terrainSkyVisContrast = 6.5f;
+        float terrainSkyVisFloor = 0.30f;
+        float terrainSkyVisRadius = 600.0f;
+        int terrainSkyVisAzimuths = 12;
+        int terrainSkyVisDownsample = 2;
+        bool terrainSkyVisDebug = false;
     };
 
     /// Shadow-map (depth-buffer) shadows — durable replacement for the projected

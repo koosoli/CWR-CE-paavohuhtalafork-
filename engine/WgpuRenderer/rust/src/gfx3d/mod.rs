@@ -551,6 +551,19 @@ impl CameraGroup {
                     },
                     count: None,
                 },
+                // Coarse sky-visibility (sky-view factor) mask (Terrain-owned, R8Unorm, lent by view),
+                // sampled with the terrain-shadow sampler (binding 5) + mapping (binding 6) to modulate
+                // ambient by terrain sky occlusion (frame::terrain_sky_visibility).
+                wgpu::BindGroupLayoutEntry {
+                    binding: 10,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -624,6 +637,7 @@ impl CameraGroup {
         mask_gen: u64,
         froxel_view: &wgpu::TextureView,
         sky_sh_buf: &wgpu::Buffer,
+        skyvis_view: &wgpu::TextureView,
     ) {
         let needed = count as u64 * self.stride;
         let grow = self.cap < needed || self.buf.is_none();
@@ -689,6 +703,10 @@ impl CameraGroup {
                     wgpu::BindGroupEntry {
                         binding: 9,
                         resource: sky_sh_buf.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 10,
+                        resource: wgpu::BindingResource::TextureView(skyvis_view),
                     },
                 ],
             }));
@@ -3062,6 +3080,7 @@ impl Gfx3d {
         conform_params: &crate::terrain::TerrainConformParams,
         froxel_view: &wgpu::TextureView,
         sky_sh_buf: &wgpu::Buffer,
+        skyvis_view: &wgpu::TextureView,
     ) {
         // Lend the terrain heightmap + its sampling params to the mesh conform group
         // (group 4) so vs_main can conform ClipLand vegetation to SurfaceY per vertex.
@@ -3090,6 +3109,7 @@ impl Gfx3d {
                 shadow_mask_gen,
                 froxel_view,
                 sky_sh_buf,
+                skyvis_view,
             );
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {

@@ -869,6 +869,19 @@ extern "C"
     WGR_API void wgr_terrain_set_sun_shadow(WgrRenderer* renderer, float strength, uint32_t scale,
                                             uint32_t max_steps, float penumbra_deg);
 
+    /* Live-tune the terrain sky-visibility (sky-view factor) ambient occlusion — the AO complement to
+     * the sun-shadow sweep, darkening the ambient in valleys/gorges/cove-water/cliff-bases (terrain,
+     * objects and water). `strength` scales the effect (0 = off), `contrast` deepens the occlusion for
+     * the near-1 factor smooth terrain yields (1 = physical/linear, higher = punchier), `floor` keeps
+     * a minimum ambient in fully-occluded columns; these three are cheap per-frame uniform values.
+     * `radius_m`, `k_azimuths` and `downsample` (output-grid coarseness, >=1; 1 = per-heightmap-texel,
+     * sharpest) shape the CPU horizon scan and re-run it (from the retained heightfield) ONLY when they
+     * change. `debug` makes terrain output the (contrast-shaped) sky-view factor as greyscale.
+     * See docs/sky-visibility-ambient-plan.md. */
+    WGR_API void wgr_terrain_set_sky_visibility(WgrRenderer* renderer, float strength, float contrast,
+                                                float floor, float radius_m, uint32_t k_azimuths,
+                                                uint32_t downsample, bool debug);
+
     /* Set/refresh the water placement params (see WgrWaterParams). Cheap; called on
      * map load and each frame to update the animated `sea_level`. */
     WGR_API void wgr_water_set_params(WgrRenderer* renderer, const WgrWaterParams* params);

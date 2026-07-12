@@ -10,7 +10,7 @@
 // The look params are UBO fields (not pipeline overrides) so the Water ImGui tab tunes
 // them live.
 
-#import frame::{frame, reverse_z, fog_factor, apply_fog, terrain_sun_shadow}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, terrain_sun_shadow, sky_vis_ao}
 #import shadow::shadow_strength
 #import color::srgb_to_linear
 
@@ -309,9 +309,13 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let depth_tint = 1.0 - exp(-water_depth * wp.color_ext);
     // Weakly diffuse — water mostly reflects/transmits — so this is the transmitted body tint.
     let body = mix(shallow, deep, depth_tint);
-    // Direct-sun diffuse sheen is removed in shadow; sky ambient survives.
+    // Direct-sun diffuse sheen is removed in shadow; sky ambient survives. Sky-visibility AO scales
+    // only the diffuse sky ambient (and the foam ambient below) — NOT the env-map reflection term,
+    // which is a directional specular reflection whose own occlusion is Stage 4b's job. Off (1.0) when
+    // sky_vis_strength = 0. Subtle on grazing (reflection-dominated) water; mainly darkens shaded coves.
+    let amb_ao = sky_vis_ao(in.base_xz);
     let ndl = max(dot(n, l), 0.0);
-    var rgb = body * (sun_ambient + sun_diffuse * ndl * 0.15 * sun_vis);
+    var rgb = body * (sun_ambient * amb_ao + sun_diffuse * ndl * 0.15 * sun_vis);
 
     // Fresnel toward the horizon/sky tint (a cheap reflection stand-in until Stage 4's real sky
     // reflection): near-grazing water lightens and reads reflective.
@@ -387,7 +391,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let foam = clamp(foam_band * foam_noise(in.base_xz, wp.time) * wp.foam_intensity, 0.0, 1.0);
     // Foam is bright diffuse spray, not an emitter: light it by the sky ambient + direct sun (where
     // the water isn't shadowed) so it goes dim at night instead of glowing white in the dark.
-    let foam_color = sun_ambient + sun_diffuse * sun_vis;
+    let foam_color = sun_ambient * amb_ao + sun_diffuse * sun_vis;
     rgb = mix(rgb, foam_color, foam);
 
     // Base opacity, Fresnel-opaque at grazing angles (where real water is a mirror) so

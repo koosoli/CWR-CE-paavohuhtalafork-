@@ -1414,6 +1414,24 @@ void DrawShadowsTab()
     ImGui::TextDisabled("  soft-edge half-width; 0 = hard, larger = softer");
 
     ImGui::Separator();
+    ImGui::TextDisabled("Terrain sky-visibility AO (wgpu) — darkens AMBIENT in valleys/gorges/coves");
+    changed |= ImGui::Checkbox("Enabled (sky-visibility AO)", &t.terrainSkyVisEnabled);
+    changed |= ImGui::SliderFloat("SkyVis strength", &t.terrainSkyVisStrength, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  how strongly occluded columns lose ambient (0 = off)");
+    changed |= ImGui::SliderFloat("SkyVis contrast", &t.terrainSkyVisContrast, 1.0f, 12.0f, "%.1f");
+    ImGui::TextDisabled("  occ = 1-pow(V,contrast); smooth terrain gives V~1, so raise this to see it");
+    changed |= ImGui::SliderFloat("SkyVis floor", &t.terrainSkyVisFloor, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  minimum ambient kept where fully occluded (never fully black)");
+    changed |= ImGui::SliderFloat("SkyVis radius (m)", &t.terrainSkyVisRadius, 50.0f, 2000.0f, "%.0f");
+    ImGui::TextDisabled("  horizon-scan reach; larger = distant ridges occlude too (re-runs the scan)");
+    changed |= ImGui::SliderInt("SkyVis azimuths", &t.terrainSkyVisAzimuths, 4, 32);
+    ImGui::TextDisabled("  scan direction count; more = smoother (re-runs the scan)");
+    changed |= ImGui::SliderInt("SkyVis downsample", &t.terrainSkyVisDownsample, 1, 4);
+    ImGui::TextDisabled("  mask coarseness vs heightmap; 1 = sharpest cliffs, slower (re-runs the scan)");
+    changed |= ImGui::Checkbox("SkyVis debug (greyscale factor)", &t.terrainSkyVisDebug);
+    ImGui::TextDisabled("  terrain shows the contrast-shaped sky-view factor for tuning");
+
+    ImGui::Separator();
     if (ImGui::Button("Reset knobs to defaults"))
     {
         const bool keepEnabled = t.enabled;
@@ -1433,11 +1451,13 @@ void DrawShadowsTab()
     snprintf(summary, sizeof(summary),
              "shadows: enabled=%s darkness=%.3f cascades=%d omni=%d/%.3f/%.3f dist=%.3f shadowDist=%.0f split=%.2f "
              "bias=%.6f normOfs=%.2f pcf=%.2f lodBias=%.1f fade=%.1f res=%d | terrain: on=%s str=%.2f scale=%d "
-             "steps=%d pen=%.2f",
+             "steps=%d pen=%.2f | skyvis: on=%s str=%.2f contrast=%.1f floor=%.2f radius=%.0f az=%d ds=%d",
              t.enabled ? "true" : "false", t.darkness, t.cascadeCount, t.omniCount, t.omniCoef0, t.omniCoef1,
              t.distanceCoef, t.shadowDistance, t.splitCoef, t.biasBase, t.normalOffset, t.pcf, t.casterLodBias,
              t.fadeRange, t.resolution, t.terrainShadowEnabled ? "true" : "false", t.terrainShadowStrength,
-             t.terrainShadowScale, t.terrainShadowSteps, t.terrainShadowPenumbra);
+             t.terrainShadowScale, t.terrainShadowSteps, t.terrainShadowPenumbra,
+             t.terrainSkyVisEnabled ? "true" : "false", t.terrainSkyVisStrength, t.terrainSkyVisContrast,
+             t.terrainSkyVisFloor, t.terrainSkyVisRadius, t.terrainSkyVisAzimuths, t.terrainSkyVisDownsample);
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##shadowSummary", summary, sizeof(summary), ImGuiInputTextFlags_ReadOnly);
     if (ImGui::Button("Copy summary to clipboard"))

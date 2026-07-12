@@ -692,6 +692,9 @@ impl Renderer {
         let heightmap_view = self.terrain.heightmap_view();
         let heightmap_gen = self.terrain.heightmap_gen();
         let conform_params = self.terrain.conform_params();
+        // Sky-visibility (sky-view factor) mask, lent to the shared camera group(0) at binding 10 so
+        // terrain/objects/water modulate ambient by terrain sky occlusion.
+        let skyvis_view = self.terrain.skyvis_view();
         // Bucket the frame's 3D draws into instanced groups (see Gfx3d::plan_3d). The
         // plan's `order` drives the storage-array pack order in prepare(); its `ops`
         // replace the raw command stream in the replay loop below.
@@ -718,6 +721,7 @@ impl Renderer {
             &conform_params,
             self.sky.froxel_view(),
             self.sky.sh_buffer(),
+            &skyvis_view,
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
@@ -1506,6 +1510,30 @@ impl Renderer {
 
     fn terrain_set_params(&mut self, params: WgrTerrainParams) {
         self.terrain.set_params(&self.queue, params);
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn terrain_set_sky_visibility(
+        &mut self,
+        strength: f32,
+        contrast: f32,
+        floor: f32,
+        radius_m: f32,
+        k_azimuths: u32,
+        downsample: u32,
+        debug: bool,
+    ) {
+        self.terrain.set_sky_visibility(
+            &self.device,
+            &self.queue,
+            strength,
+            contrast,
+            floor,
+            radius_m,
+            k_azimuths,
+            downsample,
+            debug,
+        );
     }
 
     fn terrain_set_ground_layers(&mut self, handles: &[u64]) {

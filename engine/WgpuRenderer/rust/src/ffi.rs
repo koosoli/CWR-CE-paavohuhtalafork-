@@ -1254,6 +1254,36 @@ pub unsafe extern "C" fn wgr_terrain_set_sun_shadow(
     }));
 }
 
+/// Set the sky-visibility (sky-view factor) ambient-occlusion params (see wgpu_renderer.hpp and
+/// docs/sky-visibility-ambient-plan.md). `strength` scales the effect (0 = off), `contrast` deepens
+/// the occlusion for the near-1 factor smooth terrain yields, `floor` keeps a minimum ambient in
+/// fully-occluded columns; these three are cheap live uniform values. `radius_m` / `k_azimuths` /
+/// `downsample` shape the CPU scan and re-run it (from the retained heightfield) only on change.
+/// `debug` makes terrain fragments output the (contrast-shaped) factor as greyscale.
+///
+/// # Safety
+/// `renderer` must be a live pointer from `wgr_create`, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_terrain_set_sky_visibility(
+    renderer: *mut WgrRenderer,
+    strength: f32,
+    contrast: f32,
+    floor: f32,
+    radius_m: f32,
+    k_azimuths: u32,
+    downsample: u32,
+    debug: bool,
+) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &mut *renderer }.terrain_set_sky_visibility(
+            strength, contrast, floor, radius_m, k_azimuths, downsample, debug,
+        );
+    }));
+}
+
 /// Set the terrain detail noise texture to a wgr_texture_create handle. See
 /// wgpu_renderer.hpp.
 ///

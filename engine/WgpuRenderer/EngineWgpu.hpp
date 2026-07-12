@@ -172,6 +172,15 @@ class EngineWgpu : public EngineDummy
             const uint32_t scale = tuning.terrainShadowScale < 1 ? 1u : uint32_t(tuning.terrainShadowScale);
             const uint32_t steps = tuning.terrainShadowSteps < 1 ? 1u : uint32_t(tuning.terrainShadowSteps);
             wgr_terrain_set_sun_shadow(_renderer, strength, scale, steps, tuning.terrainShadowPenumbra);
+
+            // Sky-visibility ambient occlusion (wgpu-only); strength 0 = disabled. Radius/azimuths/
+            // downsample re-run the scan renderer-side only when they change.
+            const float svStrength = tuning.terrainSkyVisEnabled ? tuning.terrainSkyVisStrength : 0.0f;
+            const uint32_t svAz = tuning.terrainSkyVisAzimuths < 1 ? 1u : uint32_t(tuning.terrainSkyVisAzimuths);
+            const uint32_t svDs = tuning.terrainSkyVisDownsample < 1 ? 1u : uint32_t(tuning.terrainSkyVisDownsample);
+            wgr_terrain_set_sky_visibility(_renderer, svStrength, tuning.terrainSkyVisContrast,
+                                           tuning.terrainSkyVisFloor, tuning.terrainSkyVisRadius, svAz,
+                                           svDs, tuning.terrainSkyVisDebug);
         }
     }
     void SetShadowMapSunFactor(float factor01) override { _smSunFactor = factor01; }

@@ -8,7 +8,7 @@
 
 #define_import_path shading
 
-#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance}
+#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -74,13 +74,16 @@ fn shade(
     let terrain_s = terrain_sun_shadow(world_abs.xz, world_abs.y);
     let sun_occ = select(terrain_s, max(terrain_s, csm_s), sky_lit);
     let sun_vis = 1.0 - sun_occ;
+    // Sky-visibility AO on the ambient term (both paths), keyed on the object's terrain column.
+    // Orthogonal to sun_occ (direct sun). Off (1.0) when sky_vis_strength = 0.
+    let amb_ao = sky_vis_ao(world_abs.xz);
     var sun: vec3<f32>;
     if (sky_lit) {
         // Sky-based lighting: frame-global atmosphere sun + DIRECTIONAL sky-irradiance ambient
         // (SH-9 projection of the env map, evaluated per normal), scaled by the skyAmbient knob in
         // sun_ambient.w. albedo is the reflectance via `rgb = albedo * lit`. The per-material folded
         // sun (m_sun_*) is deliberately unused here — see the original fs_main note.
-        var ambient = sky_irradiance(nrm) * frame.sun_ambient.w;
+        var ambient = sky_irradiance(nrm) * frame.sun_ambient.w * amb_ao;
         // Glass canopies: keep only a fraction of the sky wash so they read as glazing, not a lit
         // diffuse dome (the direct sun sheen + any glint still sit on top).
         if (is_translucent) {
@@ -88,7 +91,7 @@ fn shade(
         }
         sun = m_emissive + ambient + frame.sun_diffuse.rgb * ndotl * sun_vis;
     } else {
-        sun = m_emissive + m_sun_ambient + m_sun_diffuse * ndotl * sun_vis;
+        sun = m_emissive + m_sun_ambient * amb_ao + m_sun_diffuse * ndotl * sun_vis;
     }
     let local = lights_contrib(world_pos, nrm, m_light_diffuse, m_light_ambient, linear);
     let raw = sun + local;

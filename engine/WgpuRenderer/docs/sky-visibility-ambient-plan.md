@@ -1,33 +1,58 @@
 # Sky-visibility ambient plan (heightfield sky-view factor → ambient occlusion)
 
-**Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** PLAN (2026-07-11).
+**Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** PLAN (updated 2026-07-12, revised
+for the landed SH sky-irradiance ambient + env-map water reflection).
+
+## 0. What landed since the first draft (read this first)
+
+Two features this plan originally anticipated as *future* work have **landed**, changing the exact
+insertion points (not the design):
+
+- **Directional sky-irradiance ambient (SH-9).** The flat `sun_ambient` fill is gone on the sky-lit
+  path. `sky_sh.wgsl` projects the sky env map into 9 RGB SH coefficients each frame; `frame::sky_irradiance(n)`
+  ([`frame.wgsl:105`](../rust/src/shaders/frame.wgsl)) evaluates *directional* ambient per surface
+  normal. Terrain ([`terrain.wgsl:305`](../rust/src/terrain/terrain.wgsl)) and objects
+  ([`shading.wgsl:83`](../rust/src/shaders/shading.wgsl)) now use `sky_irradiance(n) * frame.sun_ambient.w`.
+  The `sky_irradiance` doc comment already reserves the hook: *"A future sky-visibility (AO) term
+  multiplies this per point by the fraction of sky it can see."* — **this plan is that term.**
+- **Real env-map water reflection (Stage 4a).** Water's Fresnel term now samples the sky env map in
+  the reflected direction (`sky_env_sample`, [`water.wgsl:327`](../rust/src/water/water.wgsl)),
+  replacing the flat-`fog_color` stand-in — this is what fixed the pre-dawn "pink everywhere" wash.
+- **Bindings shifted.** `group(0) @binding(9)` is now the `sky_sh` uniform. **Sky-vis takes `@binding(10)`.**
 
 ## 1. Motivation
 
-Terrain, water and objects today are lit by two terms:
+Terrain, water and objects are lit by two terms:
 
-- **Direct sun** — `sun_diffuse * N·L`, removed where a point is in shadow. Shadow comes from
-  two sources composed by `max()`: the CSM cascades (near contact / objects) and the long-range
-  **terrain sun-shadow mask** (`terrain_shadow.wgsl`), a heightfield sweep that marches *toward the
-  sun* and stores a per-column "shadow ceiling".
-- **Ambient / sky fill** — `sun_ambient`, added **uniformly everywhere**, normal- and
-  position-independent. This is the term that keeps shadowed ground from going black.
+- **Direct sun** — `sun_diffuse * N·L`, removed where a point is in shadow. Shadow composes (`max()`)
+  the CSM cascades (near contact / objects) and the long-range **terrain sun-shadow mask**
+  (`terrain_shadow.wgsl`), a heightfield sweep that marches *toward the sun*.
+- **Ambient / sky fill** — now `sky_irradiance(n) * sun_ambient.w`: *directional* (varies with the
+  surface normal) but still **positionally uniform**. A valley floor and an open hilltop with the
+  same normal receive the **same** sky irradiance.
 
-The gap: ambient is flat. A point at the bottom of a narrow valley, in a gorge, or hard against a
-cliff face physically sees only a sliver of sky, yet it receives the *same* ambient as an exposed
-hilltop that sees the whole dome. This flattens ravines, coves and the bases of mountains — exactly
-the places where contact darkening should ground the geometry.
+The remaining gap is *spatial*: the SH ambient knows which way a surface faces but not **how much sky
+that point can actually see**. A point at the bottom of a gorge, in a ravine, or hard against a cliff
+physically sees only a sliver of sky, yet gets the full hemisphere's irradiance. Ravines, coves and
+mountain bases stay flat where contact darkening should ground them.
 
-**Sky visibility** (a.k.a. sky-view factor, the ambient-occlusion analogue of the sun-shadow mask)
-fixes this: a per-column scalar in `[0,1]` = the cosine-weighted fraction of the sky hemisphere that
-is *not* occluded by surrounding terrain. It modulates the **ambient** term, orthogonally to the
-existing sun-shadow which modulates the **direct** term.
+**Sky visibility** (sky-view factor — the ambient-occlusion analogue of the sun-shadow mask) supplies
+the missing spatial factor: a per-column scalar `V ∈ [0,1]` = the cosine-weighted fraction of the sky
+hemisphere *not* occluded by surrounding terrain. It **multiplies** the directional SH ambient, giving
+a clean separable model — *directional from the normal* (SH) × *positional from the terrain* (`V`):
 
-Crucially it must land on **all three surfaces at once** — terrain, water and objects — or it reads
-as an inconsistency (dark ground meeting bright water in the same cove). The existing architecture
-makes this cheap: all three already sample the terrain sun-shadow mask through the **shared
-`group(0)` frame bindings** and the same world-xz→UV mapping. Sky visibility rides the exact same
-rails.
+```
+ambient = sky_irradiance(n) * sun_ambient.w * V(xz)
+```
+
+This is exactly the standard scalar-AO approximation the `sky_irradiance` comment anticipates; the
+bent-normal upgrade (evaluate `sky_irradiance` from the *unoccluded* direction) is a natural follow-on
+now that the ambient is directional (§7).
+
+It must land on **all three surfaces at once** — terrain, water and objects — or a cove reads
+inconsistently (dark ground beside bright water). The architecture makes this cheap: all three already
+sample the terrain sun-shadow mask through the **shared `group(0)` frame bindings** and the same
+world-xz→UV mapping. Sky visibility rides the exact same rails.
 
 ## 2. What it is (and what it is not)
 
@@ -113,13 +138,15 @@ world-xz→UV mapping uniform (`TerrainShadowMap`, binding 6) that terrain, wate
 Sky visibility reuses **the same mapping uniform and the same filtering sampler** — it is defined on
 the same world extent — and needs only **one new texture binding**.
 
-- **`group(0) @binding(9)`** — `terrain_skyvis_mask: texture_2d<f32>`, `Float{filterable:true}`,
-  sampled with the existing `terrain_shadow_samp` (binding 5) and the existing
-  `terrain_shadow_map` mapping (binding 6). No new sampler, no new uniform.
-- Layout + bind group: extend `CameraGroup` in `gfx3d/mod.rs` (the binding-4..8 block at
-  `mod.rs:495`) with binding 9; thread the skyvis view through the same path that lends the
-  shadow-mask view (rebuild on `skyvis_gen` bump alongside `mask_gen`). A 1×1 stand-in view before a
-  heightmap loads, exactly like `create_shadow_mask(device, 1, 1)`.
+- **`group(0) @binding(10)`** — `terrain_skyvis_mask: texture_2d<f32>`, `Float{filterable:true}`,
+  sampled with the existing `terrain_shadow_samp` (binding 5) and the existing `terrain_shadow_map`
+  mapping (binding 6). No new sampler, no new uniform. (Binding 9 is now the `sky_sh` SH uniform.)
+- Layout + bind group: extend `CameraGroup` in `gfx3d/mod.rs` — the layout entry block now ends at
+  binding 9 (`sky_sh`, ~`mod.rs:544`); add binding 10 after it. Thread the skyvis view through the
+  **exact pattern `sky_sh_buf` uses**: it is passed as a parameter into the bind-builder (`mod.rs:626`,
+  bound at `mod.rs:690`) and the second builder (`mod.rs:3064`). Add a `skyvis_view: &wgpu::TextureView`
+  parameter alongside it. Rebuild the bind on `skyvis_gen` bump (alongside `mask_gen`). A 1×1 stand-in
+  view before a heightmap loads, exactly like `create_shadow_mask(device, 1, 1)`.
 - Terrain owns the texture + the CPU scan (sibling to the sun-shadow sweep in `terrain/mod.rs`),
   exposes `skyvis_view()` + `skyvis_gen()` (mirroring `shadow_gen()` used at `lib.rs:688`).
 - The froxel pass (`sky/mod.rs`) samples the sun-shadow mask for volumetric occlusion; it does **not**
@@ -170,34 +197,43 @@ fn terrain_sky_visibility(world_xz: vec2<f32>) -> f32 {
 }
 ```
 
-Apply as a tunable partial multiply so occluded areas darken but never go black — the ambient is the
-only thing keeping shadowed geometry off pure black, so a raw multiply would over-darken. Introduce a
-strength/floor:
+Apply as a tunable partial multiply so occluded areas darken but never go black — ambient is the only
+thing keeping shadowed geometry off pure black, so a raw multiply would over-darken. Strength + floor:
 
 ```wgsl
 // skyvis in [0,1]; strength scales the effect, floor keeps minimum fill.
-let ao = mix(1.0, terrain_sky_visibility(xz), sky_vis_strength);   // strength 0 = off
-ambient *= max(ao, sky_vis_floor);
+let ao = max(mix(1.0, terrain_sky_visibility(xz), sky_vis_strength), sky_vis_floor);   // strength 0 = off
+ambient *= ao;
 ```
 
-Touch points (each already samples `sun_ambient`):
+Touch points — the ambient term is the SH `sky_irradiance(n) * sun_ambient.w` on the sky-lit path
+(the flat `sun_ambient` only remains on the legacy fallback):
 
-- **Terrain** — `terrain.wgsl` `fs_terrain`: `sun_raw = sun_diffuse * cos_fi * (1-shadow) + sun_ambient`
-  → scale the `sun_ambient` addend by `ao`. World-xz is `in.world_xz` (already absolute).
-- **Objects** — `shaders/shading.wgsl` `shade()`: both the `sky_lit` and legacy branches add
-  `frame.sun_ambient` / `m_sun_ambient` → scale by `ao`, sampled at `world_abs.xz` (already computed
-  at `shading.wgsl:70` for the sun-shadow lookup). One line, covers per-draw and GPU-driven paths
-  (both funnel through `shade()`).
-- **Water** — `water.wgsl` `fs_water`: `rgb = body * (sun_ambient + sun_diffuse * ndl * 0.15 * sun_vis)`
-  → scale the `sun_ambient` term by `ao` at `in.base_xz`. Also scale the **foam** ambient
-  (`foam_color = sun_ambient + ...`) so shaded coves don't sprout bright foam. Leave the Fresnel
-  horizon-tint (`fog_color` mix) alone — that is a sky *reflection* stand-in, not ambient fill; it is
-  the sky the water sees, and a cove's water still reflects the bright sky band it faces.
+- **Terrain** — `terrain.wgsl` `fs_terrain` ([`:302-306`](../rust/src/terrain/terrain.wgsl)): the
+  `if (sky_lit) { sun_ambient = sky_irradiance(n) * frame.sun_ambient.w; }` block. Multiply that by
+  `ao`. For parity, also scale the legacy `sun_ambient` in the `else` case. World-xz is `in.world_xz`
+  (already absolute).
+- **Objects** — `shaders/shading.wgsl` `shade()` ([`:83`](../rust/src/shaders/shading.wgsl)):
+  `var ambient = sky_irradiance(nrm) * frame.sun_ambient.w;` → multiply by `ao`, sampled at
+  `world_abs.xz` (already computed at `shading.wgsl:73` for the sun-shadow lookup). Applies *before*
+  the translucent-canopy `ambient *= 0.2`. Also scale the legacy `m_sun_ambient` branch. One insertion,
+  covers per-draw and GPU-driven paths (both funnel through `shade()`).
+- **Water** — `water.wgsl` `fs_water` ([`:314`](../rust/src/water/water.wgsl)):
+  `rgb = body * (sun_ambient + sun_diffuse * ndl * 0.15 * sun_vis)`. Water still uses the **flat**
+  `sun_ambient` (it did *not* adopt SH), so scale that `sun_ambient` term by `ao` at `in.base_xz`, and
+  the **foam** ambient (`foam_color`) likewise so shaded coves don't sprout bright foam.
+  - **Do NOT apply `ao` to the water's env-map reflection** (`sky_env_sample(refl_dir)`, the Fresnel
+    term). That is a *directional specular* reflection, not diffuse hemisphere fill — a scalar sky-view
+    factor is the wrong tool. Its own occlusion (a cliff standing in the reflected direction) is
+    Stage 4b's job (real terrain reflection); the code already approximates the sun-toward case via
+    `ter_raw * toward_sun`. Since grazing water is reflection-dominated (high Fresnel), sky-vis on the
+    diffuse ambient is a *subtle* effect on water — visible mainly looking down at near, shaded coves.
+    Correctness/consistency, not a headline change.
 
 Local point/spot lights (`lights_contrib`) are **not** modulated — they are not sky ambient.
 
-The multiply is path-agnostic (legacy gamma ambient or physical sky-lit irradiance both just get
-scaled), so no `sky_lit` branching is needed in the consumers.
+`ao` is path-agnostic (it scales whichever ambient term is live), so no extra `sky_lit` branching is
+needed beyond the branches that already exist.
 
 ## 6. Tuning (ImGui + WgrRenderParams)
 
@@ -217,16 +253,20 @@ controls through `WgrRenderParams` + `wgr_set_render_params`, **not** new per-se
    terrain surface height alongside `V` (or reuse the sun mask's data) and lerp `V→1` over a band of
    `(world_y − terrain_h)`. Needs a second channel or texture; defer until aircraft/tall-object AO
    looks wrong.
-2. **Surface-normal (bent-normal) weighting.** §3 treats the receiver as horizontal. Weighting the
-   per-azimuth contribution by the surface normal (a steep slope facing a wall sees even less) sharpens
-   cliff/slope AO. Cheap to add in the consumers if the normal is available (terrain and objects both
-   have it); water is ~horizontal so it is moot there.
-3. **Directional sky ambient via `sky_radiance(dir)`.** Once the procedural-sky module exposes an
-   importable `sky_radiance(dir)` (already a prerequisite for water Stage 4a sky reflection,
-   see `water-rendering-plan.md`), the ambient could integrate *actual* sky radiance over the visible
-   hemisphere (per bent normal) instead of scaling a single `sun_ambient` scalar — colored ambient
-   occlusion (bluer up, warmer near a lit ridge). This is the physically-correct endpoint; the scalar
-   `V` multiply is its cheap, ship-first approximation and composes forward into it.
+2. **Bent-normal ambient (the natural upgrade, now that ambient is directional SH).** The scalar `V`
+   attenuates `sky_irradiance(n)` uniformly. Better: store the **average unoccluded direction** (bent
+   normal) from the horizon scan alongside `V`, and evaluate `sky_irradiance(bent_normal) * V` — this
+   samples the SH irradiance from the direction the point can actually see, giving *colored* ambient
+   occlusion (a gorge floor open only to the blue zenith reads cool; a slope open toward a warm lit
+   ridge reads warm) for free from the existing SH. Needs the scan to also accumulate a direction
+   vector and one more texture channel (e.g. an `Rgba16Float` skyvis texture: `xyz` = bent normal,
+   `w` = `V`). This is the physically-motivated endpoint; scalar `V` is its ship-first approximation
+   and composes straight into it (same consumers, same sample). **Note:** the old draft listed
+   "directional sky ambient via `sky_radiance(dir)`" as future — that half **already landed** as the
+   SH irradiance; only the *bent-normal* half remains.
+3. **Water env-map reflection occlusion (Stage 4b).** Sky-vis deliberately does not touch the water's
+   specular sky reflection (§5). Reflecting the actual terrain (a cliff in a cove) is Stage 4b in
+   `water-rendering-plan.md` — tracked there, not here.
 
 ## 8. Work breakdown
 
@@ -237,11 +277,13 @@ controls through `WgrRenderParams` + `wgr_set_render_params`, **not** new per-se
    Cache-miss → scan + write; cache-hit → upload blob, bump `skyvis_gen`, skip scan.
 3. `terrain/mod.rs`: skyvis texture (`R16Float`, coarse grid), upload path, `skyvis_gen` gating (base
    heightmap only — *not* subdivision updates), `skyvis_view()`/`skyvis_gen()` accessors.
-4. `gfx3d/mod.rs` `CameraGroup`: add `group(0) @binding(9)` to layout + bind group; thread the view;
-   rebuild-on-`skyvis_gen`. `lib.rs`: pass `skyvis_gen`/view through the frame-group update (beside
-   `shadow_mask_gen` at `lib.rs:688`).
-5. `shaders/frame.wgsl`: `terrain_skyvis_mask` binding + `terrain_sky_visibility()` helper.
-6. Consumers: `terrain.wgsl`, `shaders/shading.wgsl`, `water.wgsl` ambient (+ water foam) multiply.
+4. `gfx3d/mod.rs` `CameraGroup`: add `group(0) @binding(10)` to layout + both bind builders (mirror the
+   `sky_sh_buf` parameter threading at `mod.rs:626`/`3064`); rebuild-on-`skyvis_gen`. `lib.rs`: pass
+   `skyvis_gen`/view through the frame-group update (beside `shadow_mask_gen` at `lib.rs:688`).
+5. `shaders/frame.wgsl`: `terrain_skyvis_mask` at `@binding(10)` + `terrain_sky_visibility()` helper.
+6. Consumers: multiply the SH ambient by `ao` in `terrain.wgsl` (`sky_irradiance` block) and
+   `shading.wgsl` (`ambient` var); multiply the flat `sun_ambient` + `foam_color` in `water.wgsl`.
+   Do **not** touch the water env-map reflection.
 7. `WgrRenderParams`: `sky_vis_strength`, `sky_vis_floor`; ImGui Lighting/Culling controls + debug
    greyscale view. Ship **off** by default; validate, then pick a default.
 
