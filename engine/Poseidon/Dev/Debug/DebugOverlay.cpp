@@ -1325,6 +1325,81 @@ void DrawAspectTab()
     }
 }
 
+void DrawFoliageTab()
+{
+    if (!GEngine)
+    {
+        ImGui::TextDisabled("No engine.");
+        return;
+    }
+
+    ImGui::TextDisabled("Emulated leaf subsurface scattering for alpha-tested vegetation (wgpu).");
+    ImGui::TextDisabled("Evens out the hard lit/dark split on low-poly canopy at harsh sun angles.");
+    ImGui::TextDisabled("Stage 1: applies to every alpha-tested cutout section.");
+    ImGui::Separator();
+
+    Engine::FoliageSettings f = GEngine->GetFoliageSettings();
+    bool changed = false;
+
+    changed |= ImGui::SliderFloat("Transmission", &f.transScale, 0.0f, 2.0f, "%.2f");
+    ImGui::TextDisabled("  DICE fast-SSS: light through the leaf, lifting the dark/backlit side (0 = off)");
+    changed |= ImGui::SliderFloat("Distortion", &f.distortion, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  bends the transmitted light toward the normal; higher = broader wrap-around");
+    changed |= ImGui::SliderFloat("Transmission power", &f.transPower, 1.0f, 16.0f, "%.1f");
+    ImGui::TextDisabled("  lobe tightness; higher = a smaller, sharper backlit glow near the sun");
+    changed |= ImGui::SliderFloat("Wrap", &f.wrap, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  softens the front terminator; 0 = hard Lambert (lit side stays unchanged)");
+    changed |= ImGui::SliderFloat("Ambient boost", &f.ambientBoost, 0.5f, 4.0f, "%.2f");
+    ImGui::TextDisabled("  sky-ambient multiplier for foliage only (1 = off); fades with distance");
+    changed |= ImGui::SliderFloat("GI (ambient x light)", &f.giStrength, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  scale ambient by terrain light level so shadowed foliage stops glowing (0 = off)");
+    changed |= ImGui::SliderFloat("Fill fade end (m)", &f.fillFadeEnd, 0.0f, 1000.0f, "%.0f");
+    ImGui::TextDisabled("  distance where fill + ambient boost fade out (distant foliage -> plain sky-ambient; 0 = never)");
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Spherical canopy normals (GPU-driven path; leaf sections only)");
+    changed |= ImGui::SliderFloat("Bush bend", &f.normalBend, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  bend bush leaf normals toward a radial crown normal so the blob shades round (0 = off)");
+    changed |= ImGui::SliderFloat("Bush crown Y (m)", &f.crownYOffset, -5.0f, 5.0f, "%.2f");
+    ImGui::TextDisabled("  lift the bush crown centre up into the canopy (bounding-sphere centre sits a bit low)");
+    changed |= ImGui::SliderFloat("Tree bend", &f.treeBend, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  same, for trees — applies only to leaf/canopy sections; the solid trunk is untouched");
+    changed |= ImGui::SliderFloat("Tree crown Y (m)", &f.treeCrownY, -2.0f, 12.0f, "%.2f");
+    ImGui::TextDisabled("  lift the tree crown centre up above the trunk (the centre sits mid-trunk)");
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset foliage to defaults"))
+    {
+        f = Engine::FoliageSettings{};
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Disable (zero strengths)"))
+    {
+        f.transScale = 0.0f;
+        f.wrap = 0.0f;
+        f.ambientBoost = 1.0f;
+        f.normalBend = 0.0f;
+        changed = true;
+    }
+
+    if (changed)
+        GEngine->SetFoliageSettings(f);
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Current tuning (copy back to share):");
+    char summary[256];
+    snprintf(summary, sizeof(summary),
+             "foliage: trans=%.2f dist=%.2f transPow=%.1f wrap=%.2f amb=%.2f gi=%.2f fadeEnd=%.0f | "
+             "bush=%.2f/%.2f tree=%.2f/%.2f",
+             f.transScale, f.distortion, f.transPower, f.wrap, f.ambientBoost, f.giStrength, f.fillFadeEnd,
+             f.normalBend, f.crownYOffset, f.treeBend, f.treeCrownY);
+    ImGui::SetNextItemWidth(-1.0f);
+    ImGui::InputText("##foliageSummary", summary, sizeof(summary), ImGuiInputTextFlags_ReadOnly);
+    if (ImGui::Button("Copy foliage summary to clipboard"))
+        ImGui::SetClipboardText(summary);
+}
+
 void DrawShadowsTab()
 {
     if (!GEngine)
@@ -2189,6 +2264,11 @@ void DrawMainWindow()
         if (ImGui::BeginTabItem("Culling"))
         {
             DrawCullingTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Foliage"))
+        {
+            DrawFoliageTab();
             ImGui::EndTabItem();
         }
         ImGuiTabItemFlags shadowFlags = 0;

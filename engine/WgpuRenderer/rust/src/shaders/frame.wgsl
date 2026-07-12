@@ -41,6 +41,16 @@ struct Frame {
     // NOT part of the WgrCamera C ABI. Used by water seabed-depth reconstruction (Stage 2);
     // reusable by SSAO / refraction / contact shadows.
     inv_view_proj: mat4x4<f32>,
+    // Foliage lighting knobs (docs/foliage-translucency-plan.md), appended after inv_view_proj
+    // in the camera upload (mirrors WgrFoliage). Read by shade() for cutout/vegetation draws.
+    //   foliage  = (trans_scale, distortion, trans_power, wrap)
+    //   foliageb = (ambient_boost, normal_bend[bush], crown_y_offset[bush], fill_fade_end)
+    //   foliagec = (gi_strength, tree_bend, tree_crown_y, _)
+    // `foliageb`/`foliagec` not `foliage2`/`foliage3`: naga_oil forbids composable identifiers
+    // ending in a digit.
+    foliage: vec4<f32>,
+    foliageb: vec4<f32>,
+    foliagec: vec4<f32>,
 };
 
 // One frame-global point or spot light. Positions are ABSOLUTE world space so a

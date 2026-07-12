@@ -45,6 +45,10 @@ fn shade(
     // Alpha-blended (glass) surface: damp the diffuse sky-irradiance ambient (a transparent
     // canopy is not a diffuse reflector; a full sky wash blows it out + spikes auto-exposure).
     is_translucent: bool,
+    // Alpha-tested vegetation canopy (leaves/needles): emulate leaf subsurface scattering so the
+    // low-poly cards don't split into a lit/near-black pair at harsh sun angles. Knobs ride in
+    // frame.foliage / frame.foliageb. See docs/foliage-translucency-plan.md.
+    is_foliage: bool,
 ) -> vec3<f32> {
     var albedo = albedo_in;
     var m_emissive = mat.emissive;
@@ -103,7 +107,53 @@ fn shade(
         if (is_translucent) {
             ambient *= 0.2;
         }
-        sun = m_emissive + ambient + frame.sun_diffuse.rgb * ndotl * sun_vis;
+        if (is_foliage) {
+            // Emulated leaf subsurface scattering: even out the hard lit/dark split on low-poly
+            // alpha-tested canopy at harsh sun angles. The fill is tinted by the leaf albedo via the
+            // shared `rgb = albedo * lit` and gated by sun_vis (a leaf in cast shadow neither
+            // transmits nor glows). Knobs: frame.foliage = (trans_scale, distortion, trans_power,
+            // wrap); frame.foliageb = (ambient_boost, normal_bend, crown_y_offset, fill_fade_end);
+            // frame.foliagec = (gi_strength, _, _, _).
+            let k = frame.foliage;
+            let kb = frame.foliageb;
+            let kc = frame.foliagec;
+            let sl = -frame.sun_dir_world.xyz; // surface -> light
+            let ndl = dot(nrm, sl);
+            let vdir = normalize(-world_pos);  // camera at the origin in camera-relative space
+            // Near-field fade (1 near, 0 far), shared by the ambient boost and the SSS fill so both
+            // are close-up enhancements and distant billboards revert to plain sky-ambient + Lambert.
+            var fade = 1.0;
+            if (kb.w > 0.0) {
+                fade = 1.0 - smoothstep(kb.w * 0.5, kb.w, length(world_pos));
+            }
+            // Cheap GI: bounce light tracks local sun exposure, so scale the sky-ambient by the
+            // terrain's light level (1 - terrain sun-shadow). Lit areas keep full ambient; foliage in
+            // a mountain's shadow settles toward the shadowed terrain instead of glowing in the dark.
+            // gi_strength (kc.x) 0 = off; the residual at full shadow is (1 - gi_strength).
+            ambient *= mix(1.0, 1.0 - terrain_s, kc.x);
+            // Ambient boost — a NEAR-FIELD evening-out of lit foliage; fades to the base ambient with
+            // distance so far billboards aren't over-lit.
+            ambient *= 1.0 + (kb.x - 1.0) * fade;
+            // Base Lambert reflectance — IDENTICAL to terrain's response, so a leaf's sunlit side
+            // never over-brightens and a distant leaf shades like the ground it sits on.
+            let front = max(ndl, 0.0);
+            // Terminator-wrap fill: extra lift toward the dark side only (0 on the lit side, where
+            // the wrapped value equals `front`).
+            let wrap_fill = max((ndl + k.w) / (1.0 + k.w), 0.0) - front;
+            // Unified transmission (DICE fast-SSS): light through the thin leaf, its direction bent
+            // by the normal (distortion), seen when the view looks toward that bent light — strong on
+            // the backlit / shadow side, ~0 on the sunlit side, so it lifts the dark side without
+            // doubling the lit side or painting a flat view-only sheet across a billboard.
+            let lt = normalize(sl + nrm * k.y);
+            let trans = pow(clamp(dot(vdir, -lt), 0.0, 1.0), max(k.z, 1.0)) * k.x;
+            // The SSS fill is a NEAR-FIELD effect (per-leaf translucency shouldn't read as a glow at
+            // distance, and low-LOD billboards otherwise flatten into a bright sheet), so it shares
+            // the distance fade above; the base Lambert stays so far foliage matches terrain.
+            let fill = (wrap_fill + trans) * fade;
+            sun = m_emissive + ambient + frame.sun_diffuse.rgb * (front + fill) * sun_vis;
+        } else {
+            sun = m_emissive + ambient + frame.sun_diffuse.rgb * ndotl * sun_vis;
+        }
     } else {
         sun = m_emissive + m_sun_ambient * amb_ao + m_sun_diffuse * ndotl * sun_vis;
     }

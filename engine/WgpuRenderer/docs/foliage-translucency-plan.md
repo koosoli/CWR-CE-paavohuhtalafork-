@@ -1,6 +1,60 @@
 # Foliage translucency plan (emulated subsurface scattering for low-poly vegetation)
 
-**Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** PLAN (2026-07-12). Not implemented.
+**Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** Stage 1 IMPLEMENTED (uncommitted,
+2026-07-12), cutout-gated, modest defaults ON; Stages 2–3 still planned.
+
+## 0. Implementation status
+
+- **Stage 1 (leaf SSS, cutout-gated) — DONE + REWORKED, needs visual tuning.** Live in `shade()` for
+  every alpha-tested cutout (`is_foliage = alpha_ref > 0` on both draw paths). Knobs travel through
+  `WgrRenderParams.foliage` → the per-camera Frame UBO (`frame.foliage` / `frame.foliageb`, appended after
+  `inv_view_proj`; `CameraGroup::new` bind_size +32) and are tunable live on the **Foliage** ImGui tab
+  (`FoliageSettings` in Engine.hpp → `EngineWgpu::_foliage` → `PushRenderParams`). Rust crate + naga
+  compose tests green; C++ not yet built here. Naming: `foliageb` not `foliage2` (naga_oil digit rule).
+  - **Rework (2026-07-12) after first visual pass.** The first cut over-brightened and looked flat/glowy
+    on distant high-LOD billboards — three additive fill terms (wrapped-front + back + a *normal-independent*
+    forward-scatter) stacked onto the full HDR sun. Replaced with a cleaner model (see §3): **base Lambert
+    unchanged** (sunlit foliage now matches terrain, no over-bright), a **single normal-bent DICE
+    transmission** (couples to orientation → no flat view-only sheet), a small **wrap fill**, and a
+    **camera-distance fade** on wrap+transmission so distant billboards revert to plain Lambert. Knobs
+    changed accordingly: `foliage = (trans_scale, distortion, trans_power, wrap)`, `foliageb =
+    (ambient_boost, normal_bend, crown_y_offset, fill_fade_end)`. Defaults: trans 0.3, distortion 0.3,
+    power 4, wrap 0.25, ambient 1.0, fade_end 150 m.
+  - **Note:** the dawn "bright foliage over black terrain" split is mostly the terrain sun-shadow (foliage
+    lit, valley floor shadowed) + still-low ambient — not a foliage bug. The rework targets the *look*
+    (flatness/glow), not that contrast; real relief there wants more ambient / GI, not dimmer foliage.
+  - **Rev 2 (2026-07-12): distance-faded ambient boost + cheap GI.** The ambient boost now fades with
+    distance (shares `fill_fade_end`) so it's a near-field evening-out, and a new **cheap-GI** term scales
+    foliage sky-ambient by the terrain's local light level (`ambient *= mix(1, 1 - terrain_s, gi_strength)`)
+    — sunlit areas keep full/boosted ambient, foliage in a mountain's shadow settles toward the shadowed
+    terrain instead of glowing in the dark. New knob `gi_strength` (default 0.7) in a third vec4
+    `foliagec`; WgrFoliage 32→48 B, WgrRenderParams 288→304, Frame-UBO append +48. Could later generalise
+    the GI scaling to terrain/objects (a scene-wide look change), but it's foliage-scoped for now.
+  - **Known-open: bushes weirdly dark in direct sun.** A bush card whose normal faces away from the sun
+    gets `front = max(N·L, 0) = 0`, so it stays dark in full sun (only ambient + faded fill). This is the
+    back-facing-card problem and the direct motivation for **Stage 3 spherical normals** (a radial canopy
+    normal gives the visible side a sensible `N·L`) — bushes are its sweet spot. Two-sided lighting is the
+    cheaper stopgap if Stage 3 slips.
+- **Stage 3 (spherical/canopy normals for bushes AND trees) — DONE (GPU-driven path), user-verified for
+  bushes.** `vs_gpu` bends a canopy vertex's normal toward `normalize(world_pos − (inst.center − cam_pos +
+  crownY·ŷ))` (radial crown normal), blended by a per-kind bend. **Gated by TWO things:** a per-instance
+  flag (`WGR_INSTANCE_CANOPY_BUSH` = bit 0 / `_TREE` = bit 1 of the already-plumbed `WgrInstance.flags`,
+  set in `BuildGpuInstance` from `GetMapType()`) **AND** the section being cutout
+  (`section_materials[rec.section].alpha_ref > 0` — group-1 is `VERTEX_FRAGMENT`-visible). The cutout gate
+  is what lets trees participate: only leaf/canopy sections bend, the **solid trunk keeps its real normal**.
+  Bush and tree pick different knobs — bush: `foliageb.y`/`.z` (bend 0.85, crownY 0.27); tree: `foliagec.y`/`.z`
+  (bend 0.7, crownY 2.5, a bigger lift because the bounding-sphere centre sits mid-trunk). **No new Rust
+  structs** — `flags` was free + piped end-to-end (cull ignores it); the two tree knobs took spare
+  `foliagec` lanes (no size change). Applied at all distances (a normal is smoothing, not the glowy fill).
+  Fragment shader unchanged. Fixes the back-facing-card problem (a card facing away from the sun now shades
+  from the radial normal instead of going black).
+- **Stage 2 (MapType gate) — PARTIAL.** The bush/tree flags above are the first `MapType`-derived signals.
+  The SSS *fill* (§3.1–3.5) is still gated only on `is_cutout` (so fences etc. still get it); narrowing that
+  to vegetation is the remaining Stage-2 work (per-draw `WgrDraw3D::flags` bit + GPU-driven section flag).
+- **Forests / distant LODs — TODO.** `ForestPlain` is a multi-tree cluster whose single `center` is
+  meaningless per-tree, so radial normals off it would be wrong — excluded. User's idea for distant forests:
+  **flood-fill-split the forest mesh into per-tree submeshes** so each gets its own crown centre. Plus some
+  of the 1 km "looks bad" is non-lighting (billboard aliasing, LOD-cross-fade popping) — separate threads.
 
 ## 1. Motivation
 
@@ -49,70 +103,72 @@ otherwise pick up a green translucent glow at sunset if we keyed on `is_cutout` 
 > So we only need to plumb **one new bit** — "this shape is vegetation" — and combine it in-shader with
 > the `alpha_ref > 0` the section already carries. `is_foliage = is_vegetation && is_cutout`.
 
-## 3. The shading model
+## 3. The shading model (as implemented, post-rework)
 
 All of this lives in the shared `shade()` in [`shading.wgsl`](../rust/src/shaders/shading.wgsl), in the
-`sky_lit` branch around lines 78–89, and is reused verbatim by both draw paths (per-draw `fs_main` in
-`shader3d.wgsl` and GPU-driven `fs_gpu` in `gpu_driven.wgsl`) since both call `shade()`. Every input is
-already present: surface normal `nrm`, sun dir `frame.sun_dir_world`, sun colour `frame.sun_diffuse.rgb`,
-sun visibility `sun_vis` (CSM ⊕ terrain-shadow), albedo, and camera-relative `world_pos` (so
-`V = normalize(-world_pos)`).
+`sky_lit` branch, reused verbatim by both draw paths (per-draw `fs_main` in `shader3d.wgsl` and GPU-driven
+`fs_gpu` in `gpu_driven.wgsl`) since both call `shade()`. Every input is already present: surface normal
+`N = nrm`, sun dir `frame.sun_dir_world`, sun colour `frame.sun_diffuse.rgb`, sun visibility `sun_vis`
+(CSM ⊕ terrain-shadow), albedo, and camera-relative `world_pos` (so `V = normalize(-world_pos)`). Let
+`L = -frame.sun_dir_world.xyz` (surface→light).
 
-Let `L = -frame.sun_dir_world.xyz` (surface→light), `N = nrm`, `V = normalize(-world_pos)`.
+The design principle after the first visual pass: **do not brighten the sunlit side** (that's what made
+foliage read as glowing versus terrain), and **do not paint a flat view-only glow** (that's what made
+distant high-LOD billboards look wrong). So the sunlit response is left as plain Lambert — identical to
+terrain — and every *fill* term (a) lifts only the dark/backlit side, (b) couples to the surface normal,
+and (c) fades out with distance.
 
-**(a) Back-transmission — view-independent, evens out the two sides.** The dominant fix. Light through
-the leaf lands on the shadow-side card:
-
-```wgsl
-let back = max(dot(-N, L), 0.0);            // shadow-side card faces away from sun
-transmission = frame.sun_diffuse.rgb * back * sun_vis * trans_scale;
-```
-
-Tint by albedo (`* albedo` happens via the shared `rgb = albedo * lit`, so transmission naturally reads
-green/leaf-coloured). Scaled by `sun_vis` so a leaf in cast shadow doesn't transmit.
-
-**(b) Forward scatter — view-dependent, the backlit halo.** The glow when looking toward a low sun
-through the canopy — directly the sunrise/sunset case:
+**(1) Base Lambert — unchanged, matches terrain.**
 
 ```wgsl
-let fwd = pow(clamp(dot(V, -L), 0.0, 1.0), trans_power);   // looking into the sun
-forward = frame.sun_diffuse.rgb * fwd * sun_vis * trans_fwd_scale;
+let front = max(dot(N, L), 0.0);   // a leaf's sunlit side lights exactly like the ground it sits on
 ```
 
-(a) + (b) together are the standard DICE "fast subsurface scattering" foliage approximation
-(Barré-Brisebois / Bouchard, GDC 2011), minus the thickness map we don't have — a constant thickness is
-fine for these cards.
-
-**(c) Optional terminator wrap — softens the front terminator.** Replace the front `ndotl` for foliage
-with a half-Lambert-style wrap:
+**(2) Transmission — the single normal-bent DICE fast-SSS term** (Barré-Brisebois / Bouchard, GDC 2011),
+replacing the old separate view-independent "back" + normal-independent "forward" terms. Bending the
+light direction by the normal (`distortion`) is what ties it to orientation, so it lifts the backlit /
+shadow side without becoming a uniform sheet across a billboard:
 
 ```wgsl
-let ndotl_veg = max((dot(N, L) + wrap) / (1.0 + wrap), 0.0);   // wrap ~ 0.5
+let lt = normalize(L + N * distortion);
+let trans = pow(clamp(dot(V, -lt), 0.0, 1.0), max(trans_power, 1.0)) * trans_scale;
 ```
 
-**(d) Fallback ambient boost.** If (a)–(c) still leave the shadow side too dark, a plain multiplier on
-the SH ambient for foliage is trivial:
+Strong when the view looks toward the (bent) transmitted light and the front is dark; ~0 on the sunlit
+side, so it never doubles the lit side. Tinted green/leaf-coloured via the shared `rgb = albedo * lit`.
+
+**(3) Terminator-wrap fill — dark-side only.** The extra lift the wrapped half-Lambert adds *over* base
+Lambert (0 on the lit side, where the wrapped value equals `front`):
 
 ```wgsl
-ambient *= foliage_ambient_boost;   // 1.0 = off
+let wrap_fill = max((dot(N, L) + wrap) / (1.0 + wrap), 0.0) - front;
 ```
+
+**(4) Distance fade — the SSS fill is near-field.** Wrap + transmission fade out with camera distance so
+distant / low-LOD billboards revert to plain Lambert (shading like terrain) instead of glowing as a flat
+sheet. `fill_fade_end <= 0` disables it.
+
+```wgsl
+var fill = wrap_fill + trans;
+if (fill_fade_end > 0.0) { fill *= 1.0 - smoothstep(fill_fade_end * 0.5, fill_fade_end, length(world_pos)); }
+```
+
+**(5) Ambient boost.** A plain multiplier on the SH ambient for foliage (1 = off).
 
 **Composed foliage sun term** (replaces `sun = m_emissive + ambient + frame.sun_diffuse.rgb * ndotl * sun_vis`
 for `is_foliage`):
 
 ```wgsl
-sun = m_emissive
-    + ambient * foliage_ambient_boost
-    + frame.sun_diffuse.rgb * ndotl_veg * sun_vis     // (c) front reflectance, wrapped
-    + transmission                                     // (a) back transmission
-    + forward;                                          // (b) forward-scatter halo
+sun = m_emissive + ambient * ambient_boost
+    + frame.sun_diffuse.rgb * (front + fill) * sun_vis;
 ```
 
+All fill is gated by `sun_vis`, so a leaf in cast shadow neither transmits nor glows.
+
 **Interaction with `foliage_shadow_ao`.** That existing term *darkens* terrain-shadowed cutout foliage
-(dense canopy self-occlusion the world-space mask can't model). It composes cleanly with this plan: (a)/(b)
-are gated on `sun_vis`, so a fully terrain-shadowed leaf gets no transmission/forward glow and still
-darkens via `foliage_shadow_ao`. The two act on opposite lighting states (lit-but-facing-away vs.
-in-cast-shadow) and should be tuned together.
+(dense canopy self-occlusion the world-space mask can't model). It composes cleanly: the fill is gated on
+`sun_vis`, so a fully terrain-shadowed leaf gets no fill and still darkens via `foliage_shadow_ao`. The
+two act on opposite lighting states (lit-but-facing-away vs. in-cast-shadow) and should be tuned together.
 
 ## 4. Plumbing
 
@@ -144,13 +200,14 @@ Per the render-params consolidation convention ([`render-params-consolidation-pl
 all of these ride in `WgrRenderParams` behind one `wgr_set_render_params`, exposed on a new **Foliage**
 ImGui tab — no per-setting FFI:
 
-- `foliage_trans_scale` — back-transmission strength (a).
-- `foliage_fwd_scale`, `foliage_fwd_power` — forward-scatter strength + tightness (b).
-- `foliage_wrap` — front terminator wrap, 0 = off (c).
-- `foliage_ambient_boost` — SH ambient multiplier, 1 = off (d).
+- `trans_scale`, `distortion`, `trans_power` — DICE transmission strength / normal-bend / lobe tightness (§3.2).
+- `wrap` — terminator-wrap fill, 0 = off (§3.3).
+- `fill_fade_end` — distance (m) where wrap+transmission fade out, 0 = never (§3.4).
+- `ambient_boost` — SH ambient multiplier, 1 = off (§3.5).
+- `normal_bend`, `crown_y_offset` — Stage-3 spherical normals (§7); inert until a crown centre is plumbed.
 
-Defaults start conservative (transmission on, forward-scatter modest, wrap ~0.3, ambient boost 1.0) and
-get dialled in live against dawn/noon/dusk presets.
+Defaults (post-rework): trans 0.3, distortion 0.3, power 4, wrap 0.25, fade_end 150 m, ambient 1.0; dialled
+in live against dawn/noon/dusk presets.
 
 ## 6. Staging
 
@@ -219,3 +276,51 @@ No new passes, no new bind groups, no new textures. A few ALU ops in the object 
 new bool parameter to `shade()`, one spare flag bit (per-draw) / spare `_pad` field (GPU-driven), and a
 handful of scalar knobs in the already-uploaded `WgrRenderParams`. Constant thickness (no thickness map)
 is acceptable for geometry this simple.
+
+## 9. Distant forests — per-tree crown centres (PLANNING, future session)
+
+`ForestPlain`/`Forest` is one authored, merged `LODShapeWithShadow` (all tree cards baked into one
+vertex/face table); it retains **no** per-tree placement data, and `Animate` only terrain-conforms the
+existing vertices (`ObjectClasses.cpp`). So the single per-instance `inst.center` is meaningless per-tree,
+and Stage-3 spherical normals are deliberately **excluded** for forests today
+([`EngineWgpu.cpp` BuildGpuInstance](../EngineWgpu.cpp)). To include them, each tree needs its own crown
+centre, and the only source is **flood-fill connected-components** on the merged mesh (position-weld with
+an epsilon, since `Optimize`/`SortVertices` may merge coincident verts; risk = touching canopies at a
+boundary merging into one component).
+
+**Two approaches — pick by goal:**
+
+- **(A) Per-vertex crown-centre attribute — lighting only. RECOMMENDED for the shading goal.** Flood-fill
+  each LOD mesh into components, compute each component's centroid, and bake the owning component's centre
+  as a **per-vertex attribute** (or a per-vertex `u16` index into a small per-model centre table — cheaper;
+  could ride spare bits of the existing `conform` vertex `u32`). The mesh is **not physically split** — one
+  draw per LOD, unchanged. `vs_gpu` reads the per-vertex centre instead of `inst.center`; the rest of the
+  Stage-3 path (bend, gate, tree/bush knobs) is reused verbatim, and the ForestPlain exclusion is lifted.
+  This is small and stays renderer-side (flood-fill runs once in `RegisterGpuModel`, where the base mesh +
+  sections are already in hand).
+
+- **(B) Physical per-tree submeshes / instances — the big engine feature.** Actually split the forest into
+  separate objects/instances. Enables per-tree GPU culling and per-tree LOD, but is a genuine engine-side
+  change, not renderer-contained.
+
+**The two hard parts (noted by the author) are Approach-B problems that Approach A avoids:**
+
+1. **Cross-LOD + occlusion grouping** ("tree #3 in LOD0 = tree #3 in LOD2 = tree #3 in the occluder").
+   *Not needed for A:* each LOD flood-fills independently and a vertex's centre comes from its own LOD's
+   geometry; GPU-driven LOD is selected per-*instance* (the whole forest is one LOD per frame), and a
+   tree's centroid sits at ~the same xz in every LOD, so LOD switches don't pop the normals. No component
+   correspondence across LODs. The occlusion/shadow mesh needs no centres at all (depth-only), so it drops
+   out. *Required for B*, where per-tree LOD/cull needs the matched chain + occluder per tree.
+
+2. **Trees staying in place / conform + skew.** *Near-moot for A:* nothing is moved or split, so trees
+   can't drift. The one wrinkle — the baked centre is pre-conform while vertices are GPU-conformed (mode-1
+   plane) at runtime — is solved by evaluating the **same** per-instance conform plane (`inst.conform*`) at
+   the crown's xz in the shader. Skewed t1/t2 forests register **rigid** (no conform), so they need nothing.
+   *For B*, keeping split submeshes co-located under conform/skew is a real ownership problem.
+
+**Open items for the future session:** the per-vertex centre encoding (full `vec3` attribute vs `u16`
+index + per-model table vs packing into the `conform` word); the flood-fill weld epsilon + the
+touching-canopy merge risk; confirming forest LOD is per-instance (so no cross-LOD matching); and whether
+to also conform the crown-centre Y in-shader or accept the small static offset. Non-lighting distant-forest
+issues (billboard aliasing, LOD cross-fade popping, the impostor art) are **separate** from this and not
+addressed by crown normals.

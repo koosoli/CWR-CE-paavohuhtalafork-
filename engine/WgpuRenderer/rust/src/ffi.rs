@@ -489,6 +489,54 @@ impl Default for WgrSkyVisibility {
     }
 }
 
+// Foliage lighting — emulated subsurface scattering + canopy normals for alpha-tested
+// vegetation (docs/foliage-translucency-plan.md). Scalars ride into the per-camera Frame UBO
+// (frame.foliage / frame.foliageb), read by shade() on the sky-lit path when the draw is a
+// cutout (Stage 1) / MapType vegetation (Stage 2). Two vec4 worth, packed for the shader:
+//   foliage  = (trans_scale, distortion, trans_power, wrap)
+//   foliageb = (ambient_boost, normal_bend[bush], crown_y_offset[bush], fill_fade_end)
+//   foliagec = (gi_strength, tree_bend, tree_crown_y, _pad)
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrFoliage {
+    pub trans_scale: f32,    // DICE transmission strength (dark-side / backlit lift)
+    pub distortion: f32,     // transmission light-dir bend toward the normal (0..1)
+    pub trans_power: f32,    // transmission lobe tightness (>= 1)
+    pub wrap: f32,           // front terminator-wrap fill (0 = hard Lambert)
+    pub ambient_boost: f32,  // SH ambient multiplier for foliage (1 = off), distance-faded
+    pub normal_bend: f32,    // BUSH spherical-normal blend (0 = geometric, 1 = full radial)
+    pub crown_y_offset: f32, // BUSH crown-centre Y lift for the spherical normal
+    pub fill_fade_end: f32,  // camera distance (m) by which the SSS fill + ambient boost fade (0 = off)
+    // Cheap GI: scale foliage sky-ambient by the terrain's light level (1 - terrain sun-shadow) so
+    // shadowed foliage stops glowing. 0 = off; residual at full shadow is (1 - gi_strength).
+    pub gi_strength: f32,
+    pub tree_bend: f32,      // TREE spherical-normal blend (leaf sections only; trunk keeps its normal)
+    pub tree_crown_y: f32,   // TREE crown-centre Y lift (larger than a bush — centre sits mid-trunk)
+    pub _pad2: f32,
+}
+
+impl Default for WgrFoliage {
+    fn default() -> Self {
+        // Kept in sync with C++ Engine::FoliageSettings (the runtime source of truth, pushed every
+        // frame). Dialled in by eye against the scene. Base Lambert stays unchanged (sunlit side
+        // matches terrain); transmission + wrap lift only the dark/backlit side, faded with distance.
+        Self {
+            trans_scale: 0.54,
+            distortion: 0.49,
+            trans_power: 5.1,
+            wrap: 0.5,
+            ambient_boost: 2.5,
+            normal_bend: 0.8,
+            crown_y_offset: 0.27,
+            fill_fade_end: 500.0,
+            gi_strength: 0.44,
+            tree_bend: 0.7,
+            tree_crown_y: -0.52,
+            _pad2: 0.0,
+        }
+    }
+}
+
 // Every imgui-tweakable render parameter that crosses the FFI as a setter, pushed as one block.
 // Passed by pointer only (never uploaded whole), so #[repr(C)] but not Pod. Append future look
 // knobs here; do not add new FFI setters.
@@ -500,9 +548,14 @@ pub struct WgrRenderParams {
     pub sky: WgrSkyLook,
     pub terrain_sun_shadow: WgrTerrainSunShadow,
     pub sky_visibility: WgrSkyVisibility,
+    pub foliage: WgrFoliage,
 }
 
 pub const NO_PALETTE: u32 = 0xFFFF_FFFF;
+
+// WgrInstance::flags is passed through untouched (cull ignores it, Rust never interprets it); its
+// bits live in the C++ producer (WgrInstanceFlags) + the shader consumer (INST_CANOPY_BUSH/_TREE in
+// gpu_driven.wgsl). Bits 0/1 (bush/tree canopy) drive vs_gpu's spherical-normal blend.
 
 // Bits for WgrDraw3D::flags (mirror WgrDraw3DFlags in wgpu_renderer.hpp).
 pub const DRAW3D_ON_SURFACE: u32 = 1;
@@ -794,7 +847,8 @@ const _: () = assert!(std::mem::size_of::<WgrSkyLook>() == 128);
 const _: () = assert!(std::mem::size_of::<WgrSkyRuntime>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
-const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 256);
+const _: () = assert!(std::mem::size_of::<WgrFoliage>() == 48);
+const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 304);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);

@@ -318,6 +318,16 @@ struct WgrModelLod
  * the ABSOLUTE model->world transform (the GPU-driven VS subtracts cam_pos),
  * `center.xyz` the world bounding-sphere center + `center.w` the uniform scale (both
  * read by the cull compute), `model` the wgr_model_register id. */
+/* Bits for WgrInstance::flags (mirror INST_CANOPY_* in gpu_driven.wgsl). vs_gpu bends this
+ * instance's cutout (leaf) normals toward a radial crown normal for rounded low-poly shading
+ * (docs/foliage-translucency-plan.md Stage 3); bush vs tree only differ in the bend + crown-Y
+ * knobs they select. */
+enum WgrInstanceFlags : uint32_t
+{
+    WGR_INSTANCE_CANOPY_BUSH = 1,
+    WGR_INSTANCE_CANOPY_TREE = 2
+};
+
 struct WgrInstance
 {
     WgrMat4 world;
@@ -447,6 +457,25 @@ struct WgrSkyVisibility
     uint32_t _pad;
 };
 
+/* Foliage lighting — emulated subsurface scattering + canopy normals for alpha-tested
+ * vegetation (docs/foliage-translucency-plan.md). The scalars ride into the per-camera Frame
+ * UBO and are read by the object shader's shade() for cutout/vegetation draws. */
+struct WgrFoliage
+{
+    float trans_scale;    /* DICE transmission strength (dark-side / backlit lift) */
+    float distortion;     /* transmission light-dir bend toward the normal (0..1) */
+    float trans_power;    /* transmission lobe tightness (>= 1) */
+    float wrap;           /* front terminator-wrap fill (0 = hard Lambert) */
+    float ambient_boost;  /* SH ambient multiplier for foliage (1 = off), distance-faded */
+    float normal_bend;    /* BUSH spherical-normal blend (0 = geometric, 1 = full radial) */
+    float crown_y_offset; /* BUSH crown-centre Y lift for the spherical normal */
+    float fill_fade_end;  /* camera distance (m) by which the SSS fill + ambient boost fade (0 = off) */
+    float gi_strength;    /* cheap GI: scale ambient by terrain light level, 0 = off */
+    float tree_bend;      /* TREE spherical-normal blend (leaf sections only; trunk unaffected) */
+    float tree_crown_y;   /* TREE crown-centre Y lift (larger than bush — centre sits mid-trunk) */
+    float _pad2;
+};
+
 /* Every imgui-tweakable render parameter that crosses the FFI as a setter, in one block.
  * Append future look knobs here; do not add new FFI setters. */
 struct WgrRenderParams
@@ -456,6 +485,7 @@ struct WgrRenderParams
     WgrSkyLook          sky;
     WgrTerrainSunShadow terrain_sun_shadow;
     WgrSkyVisibility    sky_visibility;
+    WgrFoliage          foliage;
 };
 
 /* Frame-global scalars carried in the camera UBO so the 3D shader can read them
@@ -769,7 +799,8 @@ static_assert(sizeof(WgrSkyLook) == 128, "WgrSkyLook layout must match the Rust 
 static_assert(sizeof(WgrSkyRuntime) == 64, "WgrSkyRuntime layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrRenderParams) == 256, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFoliage) == 48, "WgrFoliage layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrRenderParams) == 304, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");

@@ -442,9 +442,12 @@ struct CameraGroup {
 impl CameraGroup {
     fn new(device: &wgpu::Device) -> Self {
         // The GPU `Frame` UBO is the WgrCamera bytes plus a Rust-appended `inv_view_proj`
-        // (mat4, 64 B) written after each camera in the upload loop — so the bind size is
-        // sizeof(WgrCamera) + 64, NOT the raw C-ABI size. Keep the two in sync.
-        let bind_size = std::mem::size_of::<WgrCamera>() as u64 + 64;
+        // (mat4, 64 B) and the foliage knob block (3×vec4, 48 B = sizeof(WgrFoliage)), written
+        // after each camera in the upload loop — so the bind size is sizeof(WgrCamera) + 64 + 48,
+        // NOT the raw C-ABI size. Keep the three in sync (see prepare's camera upload + frame.wgsl).
+        let bind_size = std::mem::size_of::<WgrCamera>() as u64
+            + 64
+            + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_3d_camera_layout"),
             entries: &[
@@ -3081,6 +3084,7 @@ impl Gfx3d {
         froxel_view: &wgpu::TextureView,
         sky_sh_buf: &wgpu::Buffer,
         skyvis_view: &wgpu::TextureView,
+        foliage: &crate::ffi::WgrFoliage,
     ) {
         // Lend the terrain heightmap + its sampling params to the mesh conform group
         // (group 4) so vs_main can conform ClipLand vegetation to SurfaceY per vertex.
@@ -3127,6 +3131,13 @@ impl Gfx3d {
                     buf,
                     base + std::mem::size_of::<WgrCamera>() as u64,
                     bytemuck::cast_slice(&inv_vp),
+                );
+                // Foliage knobs (frame.foliage / frame.foliageb) after inv_view_proj — same
+                // append pattern; 32 B, matching the +32 in CameraGroup::new's bind_size.
+                queue.write_buffer(
+                    buf,
+                    base + std::mem::size_of::<WgrCamera>() as u64 + 64,
+                    bytemuck::bytes_of(foliage),
                 );
             }
         }

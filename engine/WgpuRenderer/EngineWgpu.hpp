@@ -169,6 +169,14 @@ class EngineWgpu : public EngineDummy
         // sweep realloc / scan rebuild only happens on an actual change.
         PushRenderParams();
     }
+    // Foliage lighting knobs (docs/foliage-translucency-plan.md) — stored here, folded into the
+    // consolidated render-params block by PushRenderParams and read by the object shader.
+    FoliageSettings GetFoliageSettings() const override { return _foliage; }
+    void SetFoliageSettings(const FoliageSettings& s) override
+    {
+        _foliage = s;
+        PushRenderParams();
+    }
     void SetShadowMapSunFactor(float factor01) override { _smSunFactor = factor01; }
     bool UsesGpuShadowCasters() const override { return true; }
     void SetShadowCascades(const shadow::CascadeSet& cascades, int resolution) override;
@@ -377,6 +385,8 @@ class EngineWgpu : public EngineDummy
 
     // Cascaded-shadow state
     ShadowMapTuning _smTuning;
+    // Foliage lighting knobs (docs/foliage-translucency-plan.md), pushed via PushRenderParams.
+    FoliageSettings _foliage;
     float _smSunFactor = 1.0f;
     bool _smEnabledFrame = false;
     shadow::CascadeSet _smCascades;

@@ -890,6 +890,36 @@ class Engine : public IGraphicsEngine
     virtual ShadowMapTuning GetShadowMapTuning() const { return {}; }
     virtual void SetShadowMapTuning(const ShadowMapTuning& /*tuning*/) {}
 
+    /// Foliage lighting — emulated leaf subsurface scattering for alpha-tested vegetation, so
+    /// the low-poly cards don't split into a hard lit/dark pair at harsh sun angles. wgpu path
+    /// only. See docs/foliage-translucency-plan.md. Defaults are modest and ON so the effect is
+    /// visible for tuning; zero the strengths to disable.
+    struct FoliageSettings
+    {
+        // Defaults dialled in by eye against the scene (2026-07-12); tune live on the Foliage tab.
+        float transScale = 0.54f;  // transmission strength — the dark-side / backlit lift (0 = off)
+        float distortion = 0.49f;  // transmission light-dir bend toward the normal (0..1)
+        float transPower = 5.1f;   // transmission lobe tightness (higher = tighter backlit glow)
+        float wrap = 0.5f;         // front terminator-wrap fill (0 = hard Lambert; lit side unchanged)
+        float ambientBoost = 2.5f; // sky-irradiance ambient multiplier for foliage (1 = off), distance-faded
+        float normalBend = 0.8f;   // BUSH spherical-normal blend (0 = geometric, 1 = full radial)
+        float crownYOffset = 0.27f; // BUSH crown-centre Y lift (lifts the crown up into the canopy)
+        float fillFadeEnd = 500.0f; // distance (m) by which the SSS fill + ambient boost fade (0 = never)
+        // Cheap GI: scale foliage ambient by the terrain's light level (1 - terrain shadow) so
+        // shadowed foliage stops glowing. 0 = off; residual at full shadow is (1 - giStrength).
+        float giStrength = 0.44f;
+        // Spherical normals for TREES (leaf sections only; the solid trunk keeps its normal). Trees
+        // pick their own knobs — the bounding-sphere centre already sits up in the canopy, so the
+        // crown lift ends up slightly negative (tuned by eye).
+        float treeBend = 0.7f;     // TREE spherical-normal blend (0 = geometric)
+        float treeCrownY = -0.52f; // TREE crown-centre Y lift
+    };
+
+    /// Read / replace the foliage lighting knobs (see FoliageSettings). Default base returns
+    /// an all-default set; only the wgpu backend stores + pushes it.
+    virtual FoliageSettings GetFoliageSettings() const { return {}; }
+    virtual void SetFoliageSettings(const FoliageSettings& /*s*/) {}
+
     /// One alpha-tested shadow-caster batch: a contiguous run of the alpha vertex
     /// buffer sharing one caster texture, whose alpha cuts the cast shadow (so
     /// cutout foliage casts a leaf silhouette). Vertices are xyz+uv (5 floats).

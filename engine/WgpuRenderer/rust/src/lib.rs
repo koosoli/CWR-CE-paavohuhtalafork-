@@ -98,6 +98,9 @@ pub struct Renderer {
     // only fan out to them when their values actually change. See render-params-consolidation-plan.md.
     last_sun_shadow: Option<ffi::WgrTerrainSunShadow>,
     last_sky_visibility: Option<ffi::WgrSkyVisibility>,
+    // Foliage lighting knobs (docs/foliage-translucency-plan.md), pushed every frame into the
+    // per-camera Frame UBO by gfx3d.prepare — cheap scalars, no diffing needed.
+    foliage_params: ffi::WgrFoliage,
     // WGR_SKY_DEBUG: log the sky's camera count + chosen index when they change, to
     // catch frame-to-frame camera alternation (the suspected sun/haze stutter cause).
     sky_debug: bool,
@@ -430,6 +433,7 @@ impl Renderer {
             sky_params: ffi::WgrSky::default(),
             last_sun_shadow: None,
             last_sky_visibility: None,
+            foliage_params: ffi::WgrFoliage::default(),
             sky_debug: std::env::var("WGR_SKY_DEBUG").is_ok(),
             sky_dbg_last: (usize::MAX, usize::MAX),
             prepass_enabled,
@@ -445,6 +449,7 @@ impl Renderer {
     fn set_render_params(&mut self, p: ffi::WgrRenderParams) {
         self.tonemap_params = p.tonemap;
         self.exposure_params = p.exposure;
+        self.foliage_params = p.foliage;
 
         // Write the LOOK half of the sky UBO, leaving the runtime slots set_sky_runtime owns
         // (sun/moon dir + phase, night factor, fog rgb, cam altitude, fog far) intact.
@@ -778,6 +783,7 @@ impl Renderer {
             self.sky.froxel_view(),
             self.sky.sh_buffer(),
             &skyvis_view,
+            &self.foliage_params,
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);

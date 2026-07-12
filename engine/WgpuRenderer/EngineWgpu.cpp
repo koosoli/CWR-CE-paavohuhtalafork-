@@ -21,6 +21,7 @@
 #include <Poseidon/Graphics/Rendering/Lighting/Material.hpp> // TexMaterial::Combine (GPU-driven material extract)
 #include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
+#include <Poseidon/World/MapTypes.hpp> // MapBush (spherical/canopy-normal flagging)
 #include <Poseidon/World/Scene/Object.hpp> // Object accessors (GPU-driven retained scene)
 #include <Poseidon/World/Scene/ObjectClasses.hpp> // ForestPlain (mode-1 conform exclusion)
 #include <Poseidon/World/Terrain/Landscape.hpp> // GLandscape->SurfaceY (GPU-driven conform bcSurfaceY)
@@ -1722,6 +1723,25 @@ WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, const ConformPla
     // SurfaceY inflate to a sphere that misses the real ground anyway.
     inst.center = {center.X(), center.Y(), center.Z(), obj.Scale()};
 
+    // Spherical/canopy normals (docs/foliage-translucency-plan.md Stage 3): flag vegetation so
+    // vs_gpu bends its cutout (leaf) normals toward a radial crown normal, shading the low-poly
+    // canopy as a rounded volume (fixes back-facing cards that stay dark in full sun). Bush and tree
+    // are distinguished so each picks its own bend + crown-Y lift (a tree's bounding-sphere centre
+    // sits mid-trunk, so it wants a larger lift; the trunk sections are solid, not cutout, so they
+    // keep their real normal). ForestPlain clusters (per-tree centres unavailable) stay excluded.
+    if (const LODShapeWithShadow* s = obj.GetShape(); s)
+    {
+        const MapType mt = s->GetMapType();
+        if (mt == MapBush)
+        {
+            inst.flags |= WGR_INSTANCE_CANOPY_BUSH;
+        }
+        else if (mt == MapTree || mt == MapSmallTree)
+        {
+            inst.flags |= WGR_INSTANCE_CANOPY_TREE;
+        }
+    }
+
     // WGR_CONFORM_DEBUG: dump each retained instance's conform mode + how far its origin
     // floats above the terrain, so a "floating tree" can be identified by shape name and its
     // mode (0 rigid / 1 forest / 2 clipland) checked against whether the CPU would conform it.
@@ -2647,6 +2667,22 @@ void EngineWgpu::PushRenderParams()
         _smTuning.terrainSkyVisDownsample < 1 ? 1u : uint32_t(_smTuning.terrainSkyVisDownsample),
         _smTuning.terrainSkyVisDebug ? 1u : 0u,
         0u,
+    };
+
+    // Foliage lighting (emulated leaf SSS for alpha-tested vegetation); rides the Frame UBO.
+    p.foliage = {
+        _foliage.transScale,
+        _foliage.distortion,
+        _foliage.transPower,
+        _foliage.wrap,
+        _foliage.ambientBoost,
+        _foliage.normalBend,
+        _foliage.crownYOffset,
+        _foliage.fillFadeEnd,
+        _foliage.giStrength,
+        _foliage.treeBend,
+        _foliage.treeCrownY,
+        0.0f,
     };
 
     wgr_set_render_params(_renderer, &p);

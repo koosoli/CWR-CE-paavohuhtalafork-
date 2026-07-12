@@ -69,6 +69,12 @@ struct VsOut {
     @location(4) @interpolate(flat) section: u32,
 };
 
+// WgrInstance::flags bits: vegetation canopy — bend cutout-section normals toward a radial crown
+// normal. Bush and tree differ only in the bend + crown-Y knobs they pick (a tree's bounding-sphere
+// centre sits mid-trunk, so it wants a larger lift). Mirror WgrInstanceFlags in wgpu_renderer.hpp.
+const INST_CANOPY_BUSH: u32 = 1u;
+const INST_CANOPY_TREE: u32 = 2u;
+
 @vertex
 fn vs_gpu(
     @builtin(instance_index) rec_slot: u32,
@@ -131,6 +137,33 @@ fn vs_gpu(
         let gz = select(-d0111, d1000, triA) * s;
         normal_ws = vec3<f32>(normal_ws.x - gx * normal_ws.y, normal_ws.y, normal_ws.z - gz * normal_ws.y);
     }
+    // Spherical / canopy normals (docs/foliage-translucency-plan.md Stage 3): bend a leaf's normal
+    // toward a radial "crown" normal from the object centre, so the low-poly canopy shades as a
+    // rounded volume instead of splitting hard per-card — this is what lets a card facing away from
+    // the sun still light (fixing foliage that stays dark in full sun). Gated to canopy instances
+    // (bush/tree flag) AND cutout (leaf) sections, so a tree's solid trunk keeps its real normal.
+    // Bush and tree pick different bend + crown-Y knobs (a tree's bounding-sphere centre sits mid-
+    // trunk, so it wants a larger lift). Applied at all distances (a normal is smoothing, not the
+    // glowy SSS fill), so it also helps distant billboards. Blended here — after conform, in the
+    // same world/outward space fs_gpu expects — so no fragment-shader change.
+    let canopy = inst.flags & (INST_CANOPY_BUSH | INST_CANOPY_TREE);
+    if (canopy != 0u && section_materials[rec.section].alpha_ref > 0.0) {
+        var bend = frame.foliageb.y;    // bush bend
+        var crown_y = frame.foliageb.z; // bush crown-Y lift
+        if ((inst.flags & INST_CANOPY_TREE) != 0u) {
+            bend = frame.foliagec.y;    // tree bend
+            crown_y = frame.foliagec.z; // tree crown-Y lift
+        }
+        if (bend > 0.0) {
+            var crown = inst.center.xyz - frame.cam_pos.xyz;
+            crown.y = crown.y + crown_y;
+            let d = world_pos - crown;
+            let dl = length(d);
+            if (dl > 1e-3) {
+                normal_ws = normalize(mix(normal_ws, d / dl, bend));
+            }
+        }
+    }
     var out: VsOut;
     out.clip = reverse_z(frame.proj * frame.view * vec4<f32>(world_pos, 1.0));
     out.uv = uv;
@@ -178,7 +211,8 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     m.spec_power = sm.specular.w;
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
-        sm.alpha_ref > 0.0, false, // GPU-driven set is opaque/cutout — never the glass path
+        // GPU-driven set is opaque/cutout — never the glass path. Stage 1: is_foliage = cutout.
+        sm.alpha_ref > 0.0, false, sm.alpha_ref > 0.0,
     );
     return vec4<f32>(rgb, out_a);
 }
