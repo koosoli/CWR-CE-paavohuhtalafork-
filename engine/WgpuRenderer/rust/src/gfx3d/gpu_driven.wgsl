@@ -57,6 +57,10 @@ struct SectionMaterial {
 @group(1) @binding(0) var<storage, read> instances: array<Instance>;
 @group(1) @binding(1) var<storage, read> records: array<Record>;
 @group(1) @binding(2) var<storage, read> section_materials: array<SectionMaterial>;
+// Per-tree crown centres (MODEL space, .xyz; .w unused), foliage-translucency-plan.md §9 Approach
+// A. A merged forest mesh has one meaningless inst.center, so each forest vertex indexes this
+// table (via its conform word) for its own tree's radial-normal centre. Register-once (cull.rs).
+@group(1) @binding(3) var<storage, read> crown_centres: array<vec4<f32>>;
 @group(2) @binding(0) var textures: binding_array<texture_2d<f32>>;
 @group(3) @binding(0) var samplers: binding_array<sampler, 8>;
 
@@ -67,6 +71,10 @@ struct VsOut {
     @location(2) world_pos: vec3<f32>, // camera-relative
     @location(3) normal: vec3<f32>,    // world space, outward
     @location(4) @interpolate(flat) section: u32,
+    // 1 = this instance is vegetation (any canopy flag, i.e. MapType ∈ tree/bush/forest), so the
+    // foliage lighting (leaf SSS + canopy AO) may apply; 0 = other cutouts (fences, grills, decals)
+    // that must NOT pick up the leaf look. The alpha-test discard itself stays keyed on alpha_ref.
+    @location(5) @interpolate(flat) is_veg: u32,
 };
 
 // WgrInstance::flags bits: vegetation canopy — bend cutout-section normals toward a radial crown
@@ -74,6 +82,24 @@ struct VsOut {
 // centre sits mid-trunk, so it wants a larger lift). Mirror WgrInstanceFlags in wgpu_renderer.hpp.
 const INST_CANOPY_BUSH: u32 = 1u;
 const INST_CANOPY_TREE: u32 = 2u;
+// A merged multi-tree forest mesh (§9 Approach A): per-vertex crown centre instead of inst.center.
+const INST_CANOPY_FOREST: u32 = 4u;
+
+// Absolute ForestPlain bilinear ground height at world xz (the mode-1 conform plane; identical to
+// the per-vertex conform below and ObjectClasses.cpp ComputeConformPlane). Used to conform a
+// forest tree's crown centre to the SAME ground its vertices sit on, so a forest on a slope
+// doesn't skew every radial normal.
+fn forest_plane_y(inst: Instance, xz: vec2<f32>) -> f32 {
+    let s = inst.conform0.x;
+    let xIn = xz.x * s + inst.conform0.y;
+    let zIn = xz.y * s + inst.conform0.z;
+    let y00 = inst.conform1.x; let y10 = inst.conform1.y;
+    let d1000 = inst.conform1.z; let d0100 = inst.conform1.w;
+    let d1011 = inst.conform2.x; let d0111 = inst.conform2.y;
+    let triA = xIn <= 1.0 - zIn;
+    return select(y10 + d0111 - d1011 * xIn - zIn * d0111,
+                  y00 + d1000 * zIn + d0100 * xIn, triA);
+}
 
 @vertex
 fn vs_gpu(
@@ -146,16 +172,33 @@ fn vs_gpu(
     // trunk, so it wants a larger lift). Applied at all distances (a normal is smoothing, not the
     // glowy SSS fill), so it also helps distant billboards. Blended here — after conform, in the
     // same world/outward space fs_gpu expects — so no fragment-shader change.
-    let canopy = inst.flags & (INST_CANOPY_BUSH | INST_CANOPY_TREE);
+    let canopy = inst.flags & (INST_CANOPY_BUSH | INST_CANOPY_TREE | INST_CANOPY_FOREST);
     if (canopy != 0u && section_materials[rec.section].alpha_ref > 0.0) {
+        // Forests share the tree bend/crown-Y knobs (both shade around a mid-crown centre, unlike a
+        // bush whose centre is the whole blob).
+        let tree_like = (inst.flags & (INST_CANOPY_TREE | INST_CANOPY_FOREST)) != 0u;
         var bend = frame.foliageb.y;    // bush bend
         var crown_y = frame.foliageb.z; // bush crown-Y lift
-        if ((inst.flags & INST_CANOPY_TREE) != 0u) {
+        if (tree_like) {
             bend = frame.foliagec.y;    // tree bend
             crown_y = frame.foliagec.z; // tree crown-Y lift
         }
         if (bend > 0.0) {
-            var crown = inst.center.xyz - frame.cam_pos.xyz;
+            var crown: vec3<f32>;
+            if ((inst.flags & INST_CANOPY_FOREST) != 0u) {
+                // §9 Approach A: a merged forest's inst.center spans many trees, so each vertex
+                // carries its own tree's crown centre (model space) in the conform word, indexing
+                // crown_centres. Transform to camera-relative world; conform its Y to the same
+                // mode-1 ground plane the vertices use (mode 0 skewed forests are pre-placed rigid).
+                let cm = crown_centres[conform_sel].xyz;
+                let cw = world * vec4<f32>(cm, 1.0);
+                crown = cw.xyz - frame.cam_pos.xyz;
+                if (mode > 0.5 && mode < 1.5) {
+                    crown.y = forest_plane_y(inst, cw.xz) - frame.cam_pos.y + cm.y + inst.conform0.w;
+                }
+            } else {
+                crown = inst.center.xyz - frame.cam_pos.xyz;
+            }
             crown.y = crown.y + crown_y;
             let d = world_pos - crown;
             let dl = length(d);
@@ -171,6 +214,9 @@ fn vs_gpu(
     out.normal = normal_ws;
     out.fog = fog_factor(length(world_pos));
     out.section = rec.section;
+    // Vegetation = any canopy flag (bush/tree/forest cover the whole vegetation MapType set);
+    // gates the foliage lighting in fs_gpu so non-plant cutouts don't get the leaf look.
+    out.is_veg = select(0u, 1u, canopy != 0u);
     return out;
 }
 
@@ -209,10 +255,14 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     m.light_ambient = sm.ambient.rgb;
     m.specular = frame.sun_diffuse.rgb * sm.specular.rgb;
     m.spec_power = sm.specular.w;
+    // Foliage lighting (leaf SSS + canopy self-occlusion AO) applies only to real VEGETATION
+    // cutouts (Stage 2 MapType gate, carried per-instance via the canopy flag) — other alpha-tested
+    // cutouts (fences, grills, road/footprint decals) light normally. GPU-driven set is
+    // opaque/cutout, never the glass path. The alpha discard above stays keyed on alpha_ref.
+    let veg_cutout = in.is_veg != 0u && sm.alpha_ref > 0.0;
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
-        // GPU-driven set is opaque/cutout — never the glass path. Stage 1: is_foliage = cutout.
-        sm.alpha_ref > 0.0, false, sm.alpha_ref > 0.0,
+        veg_cutout, false, veg_cutout,
     );
     return vec4<f32>(rgb, out_a);
 }

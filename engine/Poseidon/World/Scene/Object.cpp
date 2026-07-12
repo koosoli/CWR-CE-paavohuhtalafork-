@@ -1027,6 +1027,18 @@ void Object::Draw(int forceLOD, ClipFlags clipFlags, const FrameBase& pos)
         sShape->PrepareTextures(z2, special);
         // perform actual drawing
 
+        // Publish whether this object is vegetation (from its MapType) so the wgpu per-draw path
+        // gates the foliage subsurface-scattering look to real plants (roads/characters/fences must
+        // not glow). Set here — after DrawProxies (furniture is never vegetation) — and restored
+        // below. GL33 ignores the flag.
+        const bool savedVegetation = GCurrentIsVegetation;
+        {
+            const MapType mt = _shape->GetMapType();
+            GCurrentIsVegetation = mt == MapTree || mt == MapSmallTree || mt == MapBush ||
+                                   mt == MapForestBorder || mt == MapForestTriangle ||
+                                   mt == MapForestSquare;
+        }
+
         // if neccessary, split it
         if (render::Has(specT.routing, render::Routing::OnSurface) &&
             (sShape->GetAndHints() & ClipLandMask) == ClipLandOn)
@@ -1041,6 +1053,7 @@ void Object::Draw(int forceLOD, ClipFlags clipFlags, const FrameBase& pos)
             sShape->Draw(this, lights, clipFlags, special, pos.Transform(), invTransform);
         }
 
+        GCurrentIsVegetation = savedVegetation;
         GScene->SetConstantFog(-1);
     }
     Deanimate(forceLOD);

@@ -1120,6 +1120,29 @@ pub unsafe extern "C" fn wgr_model_register(
     .unwrap_or(WGR_INVALID_MODEL)
 }
 
+/// Register a batch of per-tree crown centres (model space) and return the base index of this
+/// batch in the global crown-centre table (foliage-translucency-plan.md §9 Approach A). The
+/// caller bakes `base + local_component_index` into each forest vertex's `conform` word.
+///
+/// # Safety
+/// `renderer` must be live; `centres` must be a valid slice (data valid for its length, or null
+/// with length 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_register_crown_centres(
+    renderer: *mut WgrRenderer,
+    centres: WgrSlice<WgrVec4>,
+) -> u32 {
+    if renderer.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let centres = unsafe { centres.as_slice() };
+        renderer.register_crown_centres(centres)
+    }))
+    .unwrap_or(0)
+}
+
 /// Add a static retained instance; returns its stable slot (recycled from removed slots).
 ///
 /// # Safety

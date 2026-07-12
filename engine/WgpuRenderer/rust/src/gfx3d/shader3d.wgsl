@@ -242,11 +242,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     m.light_ambient = material.light_ambient.rgb;
     m.specular = material.specular.rgb;
     m.spec_power = material.specular.w;
+    // Stage 2 MapType gate: foliage lighting (leaf SSS + canopy AO) applies only to real
+    // VEGETATION cutouts, so roads / characters / fences don't pick up the leaf look. The object's
+    // MapType is published per draw in the free .w of the sun-ambient material lane (only .rgb is
+    // read for shading) — set from GCurrentIsVegetation in EngineWgpu::DrawSectionTL. The
+    // alpha-test discard above stays keyed on alpha_ref (every cutout still discards).
+    let veg_cutout = material.sun_ambient.w > 0.5 && alpha_ref > 0.0;
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
-        // Stage 1: is_foliage = any alpha-tested cutout (a Stage-2 MapType gate will narrow this
-        // to real vegetation). is_cutout and is_foliage coincide here.
-        alpha_ref > 0.0, translucent > 0.5, alpha_ref > 0.0,
+        veg_cutout, translucent > 0.5, veg_cutout,
     );
     return vec4<f32>(rgb, out_a);
 }

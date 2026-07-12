@@ -16,7 +16,7 @@ use crate::ffi::{
     WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrInstance, WgrMat4, WgrMeshVertex,
     WgrModelLod, WgrModelMaterial, WgrModelSection, WgrOverlayDraw, WgrOverlayVertex, WgrLight,
     WgrShadowCaster, WgrShadowPass, WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams,
-    WgrVertex2D, WgrWaterBatch, WgrWaterNode, WgrWaterParams,
+    WgrVec4, WgrVertex2D, WgrWaterBatch, WgrWaterNode, WgrWaterParams,
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::{Gfx3d, env_f32};
@@ -1521,6 +1521,10 @@ impl Renderer {
     ) -> u32 {
         self.gfx3d
             .register_model(bounding_sphere, lods, sections, materials, &self.textures)
+    }
+
+    fn register_crown_centres(&mut self, centres: &[WgrVec4]) -> u32 {
+        self.gfx3d.register_crown_centres(centres)
     }
 
     fn instance_add(&mut self, inst: &WgrInstance) -> u32 {

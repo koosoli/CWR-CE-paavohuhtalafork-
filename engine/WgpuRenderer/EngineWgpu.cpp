@@ -35,9 +35,12 @@
 #include <SDL3/SDL.h>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <memory>
 #include <span>
 
@@ -1601,6 +1604,11 @@ void EngineWgpu::DrawSectionTL(const Shape& sMesh, int beg, int end)
     const float specPow = float(_curMaterial.specularPower);
     const float specEn = (specPow > 0.0f) ? sunEn : 0.0f;
     d.mat_specular = {specCol.R() * specEn, specCol.G() * specEn, specCol.B() * specEn, specPow};
+    // Vegetation flag for the foliage SSS gate (docs/foliage-translucency-plan.md Stage 2): only
+    // real plants (GCurrentIsVegetation, published from the object's MapType in Object::Draw) get
+    // the leaf subsurface look — roads, characters, fences etc. must not. Rides the free .w of the
+    // per-draw sun-ambient lane (only .rgb is read for shading); fs_main reads it back.
+    d.mat_sun_ambient.w = GCurrentIsVegetation ? 1.0f : 0.0f;
 
     _draws3d.push_back(d);
     _cmds.push_back(WgrCmd{WGR_CMD_DRAW_3D, U32(_draws3d.size() - 1)});
@@ -1723,12 +1731,14 @@ WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, const ConformPla
     // SurfaceY inflate to a sphere that misses the real ground anyway.
     inst.center = {center.X(), center.Y(), center.Z(), obj.Scale()};
 
-    // Spherical/canopy normals (docs/foliage-translucency-plan.md Stage 3): flag vegetation so
+    // Spherical/canopy normals (docs/foliage-translucency-plan.md Stage 3 + §9): flag vegetation so
     // vs_gpu bends its cutout (leaf) normals toward a radial crown normal, shading the low-poly
     // canopy as a rounded volume (fixes back-facing cards that stay dark in full sun). Bush and tree
     // are distinguished so each picks its own bend + crown-Y lift (a tree's bounding-sphere centre
     // sits mid-trunk, so it wants a larger lift; the trunk sections are solid, not cutout, so they
-    // keep their real normal). ForestPlain clusters (per-tree centres unavailable) stay excluded.
+    // keep their real normal). A FOREST is a merged multi-tree mesh whose single centre is
+    // meaningless per-tree, so it carries per-vertex crown centres baked in RegisterGpuModel (§9
+    // Approach A) and reuses the tree bend/crown-Y knobs — no longer excluded.
     if (const LODShapeWithShadow* s = obj.GetShape(); s)
     {
         const MapType mt = s->GetMapType();
@@ -1739,6 +1749,10 @@ WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, const ConformPla
         else if (mt == MapTree || mt == MapSmallTree)
         {
             inst.flags |= WGR_INSTANCE_CANOPY_TREE;
+        }
+        else if (mt == MapForestBorder || mt == MapForestTriangle || mt == MapForestSquare)
+        {
+            inst.flags |= WGR_INSTANCE_CANOPY_FOREST;
         }
     }
 
@@ -1817,6 +1831,121 @@ static ConformPlane GpuConformFor(Object& obj, const LODShapeWithShadow& shape, 
     return cp;
 }
 
+// §9 Approach A: flood-fill a merged forest LOD mesh into per-tree connected components so each
+// tree gets its own crown centre for spherical (radial) normals. A forest is one authored mesh
+// with all trees' cards baked into a single vertex/index table (no per-tree placement), so the
+// single instance centre is meaningless per tree. Two vertices are in the same component if they
+// share a triangle OR sit at the (near-)same position — the position weld reconnects UV/normal
+// seam duplicates that Optimize/SortVertices leaves as distinct indices. Fills `compOut[i]` with
+// each vertex's dense component id and appends each component's MODEL-space centroid to
+// `centresOut`; returns the component count. Risk (accepted, plan-noted): two trees whose canopies
+// touch closely enough to share a welded vertex merge into one component.
+//
+// The per-tree centroid is exactly the pivot future tree-sway will animate around, so this data is
+// reusable beyond lighting.
+static uint32_t BuildForestCrownComponents(const std::vector<SVertex>& verts,
+                                           const std::vector<VertexIndex>& indices,
+                                           std::vector<WgrVec4>& centresOut,
+                                           std::vector<uint32_t>& compOut)
+{
+    const uint32_t nv = U32(verts.size());
+    compOut.assign(nv, 0);
+    if (nv == 0)
+    {
+        return 0;
+    }
+
+    // Union-find with path halving.
+    std::vector<uint32_t> parent(nv);
+    for (uint32_t i = 0; i < nv; i++)
+    {
+        parent[i] = i;
+    }
+    auto find = [&](uint32_t x)
+    {
+        while (parent[x] != x)
+        {
+            parent[x] = parent[parent[x]];
+            x = parent[x];
+        }
+        return x;
+    };
+    auto unite = [&](uint32_t a, uint32_t b)
+    {
+        a = find(a);
+        b = find(b);
+        if (a != b)
+        {
+            parent[a] = b;
+        }
+    };
+
+    // Position weld: union vertices quantised to the same 1 mm cell (tight, so only true seam
+    // duplicates merge — distinct trees are metres apart).
+    constexpr double eps = 1.0e-3;
+    std::map<std::array<int64_t, 3>, uint32_t> weld;
+    for (uint32_t i = 0; i < nv; i++)
+    {
+        const std::array<int64_t, 3> key{std::llround(verts[i].pos.X() / eps),
+                                         std::llround(verts[i].pos.Y() / eps),
+                                         std::llround(verts[i].pos.Z() / eps)};
+        auto [it, inserted] = weld.try_emplace(key, i);
+        if (!inserted)
+        {
+            unite(i, it->second);
+        }
+    }
+
+    // Triangle adjacency: the three corners of a face are one component.
+    for (size_t t = 0; t + 3 <= indices.size(); t += 3)
+    {
+        const uint32_t a = uint32_t(uint16_t(indices[t]));
+        const uint32_t b = uint32_t(uint16_t(indices[t + 1]));
+        const uint32_t c = uint32_t(uint16_t(indices[t + 2]));
+        if (a < nv && b < nv && c < nv)
+        {
+            unite(a, b);
+            unite(a, c);
+        }
+    }
+
+    // Densify roots -> component ids and accumulate centroids (double sums for stability).
+    std::map<uint32_t, uint32_t> rootToComp;
+    std::vector<double> sx, sy, sz;
+    std::vector<uint32_t> count;
+    for (uint32_t i = 0; i < nv; i++)
+    {
+        const uint32_t root = find(i);
+        uint32_t comp;
+        if (auto it = rootToComp.find(root); it != rootToComp.end())
+        {
+            comp = it->second;
+        }
+        else
+        {
+            comp = U32(sx.size());
+            rootToComp.emplace(root, comp);
+            sx.push_back(0.0);
+            sy.push_back(0.0);
+            sz.push_back(0.0);
+            count.push_back(0);
+        }
+        compOut[i] = comp;
+        sx[comp] += verts[i].pos.X();
+        sy[comp] += verts[i].pos.Y();
+        sz[comp] += verts[i].pos.Z();
+        count[comp]++;
+    }
+
+    const uint32_t ncomp = U32(sx.size());
+    for (uint32_t c = 0; c < ncomp; c++)
+    {
+        const double inv = count[c] > 0 ? 1.0 / double(count[c]) : 0.0;
+        centresOut.push_back(WgrVec4{float(sx[c] * inv), float(sy[c] * inv), float(sz[c] * inv), 0.0f});
+    }
+    return ncomp;
+}
+
 } // namespace
 
 uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
@@ -1831,6 +1960,12 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
     std::vector<WgrModelMaterial> materials;
     bool eligible = true;
     bool isConform = false;
+    // §9 Approach A: a merged forest mesh (whole-shape MapType) gets per-tree crown centres baked
+    // per LOD so vs_gpu can bend its cutout normals radially per tree (its single instance centre
+    // is meaningless per-tree). Individual trees/bushes keep using inst.center (BuildGpuInstance).
+    const MapType mapType = shape->GetMapType();
+    const bool isForest =
+        mapType == MapForestBorder || mapType == MapForestTriangle || mapType == MapForestSquare;
     // §12 partial coverage. `hasProxies` = some level carries interior furniture proxies (drawn
     // by the CPU Object::DrawProxies); `hasComplement` = some visible section is NOT GPU-owned
     // (blend glass / on-surface decal, drawn by the CPU with GSkipGpuOwnedSections set). Either
@@ -1927,6 +2062,25 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
         }
         std::vector<VertexIndex> indices(static_cast<size_t>(ni));
         render::mesh::BuildIndices(*s, indices.data());
+        // §9 Approach A: for forests, flood-fill this LOD into per-tree components and bake each
+        // vertex's crown-centre index into its conform word (forests are mode 0/1 conform, which
+        // never read the ClipLand per-vertex selector, so the word is free). vs_gpu reads it to get
+        // a per-tree radial-normal centre from the crown_centres table instead of inst.center.
+        if (isForest)
+        {
+            std::vector<WgrVec4> centres;
+            std::vector<uint32_t> comp;
+            const uint32_t ncomp = BuildForestCrownComponents(verts, indices, centres, comp);
+            if (ncomp > 0)
+            {
+                const uint32_t base = wgr_register_crown_centres(
+                    _renderer, WgrSlice<WgrVec4>{centres.data(), U32(centres.size())});
+                for (size_t vi = 0; vi < verts.size(); vi++)
+                {
+                    verts[vi].conform = base + comp[vi];
+                }
+            }
+        }
         const uint64_t mesh = wgr_mesh_create(
             _renderer, AsMeshVerts(verts),
             WgrSlice<uint16_t>{reinterpret_cast<const uint16_t*>(indices.data()), U32(ni)});

@@ -77,6 +77,7 @@ bool Shape::HasBlendSections() const
 SectionClassFilter GSectionFilter = SectionClassFilter::All;
 bool GSkipGpuOwnedSections = false;
 ConformPlane GCurrentConformPlane;
+bool GCurrentIsVegetation = false;
 bool GGpuTerrainConform = false;
 
 void Shape::Draw(class IAnimator* matSource, const LightList& lights, ClipFlags clip, int spec,

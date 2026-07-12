@@ -3916,6 +3916,10 @@ impl Gfx3d {
             .register_model(bounding_sphere, &gpu_lods, &gpu_sections, &gpu_materials)
     }
 
+    pub fn register_crown_centres(&mut self, centres: &[[f32; 4]]) -> u32 {
+        self.cull.register_crown_centres(centres)
+    }
+
     pub fn instance_add(&mut self, inst: &WgrInstance) -> u32 {
         self.cull.instance_add(instance_to_gpu(inst))
     }
@@ -4004,10 +4008,11 @@ impl Gfx3d {
     }
 
     fn rebuild_gpu_group1(&mut self, device: &wgpu::Device) {
-        let (Some(inst), Some(rec), Some(mat)) = (
+        let (Some(inst), Some(rec), Some(mat), Some(crown)) = (
             self.cull.instance_buf(),
             self.cull.out_records(),
             self.cull.section_material_buf(),
+            self.cull.crown_centre_buf(),
         ) else {
             self.gpu_group1_bind = None;
             self.gpu_color_group1_bind = None;
@@ -4030,6 +4035,10 @@ impl Gfx3d {
                     binding: 2,
                     resource: mat.as_entire_binding(),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: crown.as_entire_binding(),
+                },
             ],
         }));
         // Color-pass draw bind: instances + the occlusion view's records + shared materials.
@@ -4043,6 +4052,7 @@ impl Gfx3d {
                     wgpu::BindGroupEntry { binding: 0, resource: inst.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 1, resource: crec.as_entire_binding() },
                     wgpu::BindGroupEntry { binding: 2, resource: mat.as_entire_binding() },
+                    wgpu::BindGroupEntry { binding: 3, resource: crown.as_entire_binding() },
                 ],
             })
         });
@@ -4076,6 +4086,7 @@ impl Gfx3d {
                         wgpu::BindGroupEntry { binding: 0, resource: inst.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 1, resource: rec.as_entire_binding() },
                         wgpu::BindGroupEntry { binding: 2, resource: mat.as_entire_binding() },
+                        wgpu::BindGroupEntry { binding: 3, resource: crown.as_entire_binding() },
                     ],
                 })
             });

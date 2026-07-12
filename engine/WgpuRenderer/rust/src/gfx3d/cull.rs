@@ -255,6 +255,10 @@ pub struct CullState {
     // Per-section shading, parallel to `sections` (same global index). Draw-side only —
     // not a compute input; bound in the GPU-driven draw pass (3b-2b).
     section_materials: Vec<SectionMaterialGpu>,
+    // Per-tree crown centres (MODEL space, .xyz; .w unused) for forest spherical normals
+    // (foliage-translucency-plan.md §9 Approach A). A global append-only table; a forest vertex's
+    // `conform` word indexes it. Draw-side only (group-1 binding 3 in vs_gpu), not a compute input.
+    crown_centres: Vec<[f32; 4]>,
     tables_dirty: bool,
 
     // Unified instance buffer: static slots [0, static.len()) with a free-list, then the
@@ -271,6 +275,7 @@ pub struct CullState {
     lod_buf: super::StorageArray,
     section_buf: super::StorageArray,
     section_mat_buf: super::StorageArray,
+    crown_centre_buf: super::StorageArray,
     instance_buf: super::StorageArray,
     // Per-variant append cursors written by the compute. Fixed size (CULL_VARIANT_COUNT
     // words) and carries INDIRECT usage so it can double as the count buffer for
@@ -473,6 +478,7 @@ impl CullState {
             lods: Vec::new(),
             sections: Vec::new(),
             section_materials: Vec::new(),
+            crown_centres: Vec::new(),
             tables_dirty: false,
             static_instances: Vec::new(),
             free_slots: Vec::new(),
@@ -483,6 +489,7 @@ impl CullState {
             lod_buf: super::StorageArray::new("wgr_cull_lods"),
             section_buf: super::StorageArray::new("wgr_cull_sections"),
             section_mat_buf: super::StorageArray::new("wgr_cull_section_mats"),
+            crown_centre_buf: super::StorageArray::new("wgr_cull_crown_centres"),
             instance_buf: super::StorageArray::new("wgr_cull_instances"),
             counter_buf,
             out_args: None,
@@ -542,6 +549,17 @@ impl CullState {
         });
         self.tables_dirty = true;
         model_id
+    }
+
+    // Append a batch of per-tree crown centres (model space) to the global table; return the base
+    // index of this batch (foliage-translucency-plan.md §9 Approach A). Forest vertices carry
+    // `base + local_component_index` in their `conform` word, which vs_gpu reads to get a per-tree
+    // radial-normal centre. Register-once, so re-uploaded wholesale under `tables_dirty`.
+    pub fn register_crown_centres(&mut self, centres: &[[f32; 4]]) -> u32 {
+        let base = self.crown_centres.len() as u32;
+        self.crown_centres.extend_from_slice(centres);
+        self.tables_dirty = true;
+        base
     }
 
     // Replace the whole sections table with a freshly-resolved one (same length + order as
@@ -657,6 +675,7 @@ impl CullState {
             grew |= upload_slice(device, queue, &mut self.lod_buf, &self.lods);
             grew |= upload_slice(device, queue, &mut self.section_buf, &self.sections);
             grew |= upload_slice(device, queue, &mut self.section_mat_buf, &self.section_materials);
+            grew |= upload_slice(device, queue, &mut self.crown_centre_buf, &self.crown_centres);
             self.tables_dirty = false;
         }
 
@@ -1058,6 +1077,12 @@ impl CullState {
         self.section_mat_buf.buf.as_ref()
     }
 
+    // Per-tree crown-centre table (model space), read by vs_gpu at group-1 binding 3 for forest
+    // spherical normals. None until prepare() first uploaded the tables.
+    pub fn crown_centre_buf(&self) -> Option<&wgpu::Buffer> {
+        self.crown_centre_buf.buf.as_ref()
+    }
+
     // The per-model table (lod range + bounding_sphere). Read by the cull-sphere debug pass to
     // recover each instance's radius (models[inst.model].bounding_sphere * scale).
     pub fn model_buf(&self) -> Option<&wgpu::Buffer> {
@@ -1190,7 +1215,9 @@ pub fn gpu_group1_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     };
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("wgr_gpu_driven_group1"),
-        entries: &[storage(0), storage(1), storage(2)],
+        // 0 instances, 1 records, 2 section materials, 3 per-tree crown centres (forest spherical
+        // normals; unused by the shadow VS but present so the shared layout stays compatible).
+        entries: &[storage(0), storage(1), storage(2), storage(3)],
     })
 }
 

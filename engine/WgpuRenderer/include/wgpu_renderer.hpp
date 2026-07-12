@@ -321,11 +321,15 @@ struct WgrModelLod
 /* Bits for WgrInstance::flags (mirror INST_CANOPY_* in gpu_driven.wgsl). vs_gpu bends this
  * instance's cutout (leaf) normals toward a radial crown normal for rounded low-poly shading
  * (docs/foliage-translucency-plan.md Stage 3); bush vs tree only differ in the bend + crown-Y
- * knobs they select. */
+ * knobs they select. FOREST (§9 Approach A) is a merged multi-tree mesh: its single instance
+ * centre is meaningless per-tree, so instead of inst.center each vertex carries a per-tree crown
+ * centre index (baked into the vertex `conform` word, indexing the wgr_register_crown_centres
+ * table). It shares the TREE bend/crown-Y knobs. */
 enum WgrInstanceFlags : uint32_t
 {
     WGR_INSTANCE_CANOPY_BUSH = 1,
-    WGR_INSTANCE_CANOPY_TREE = 2
+    WGR_INSTANCE_CANOPY_TREE = 2,
+    WGR_INSTANCE_CANOPY_FOREST = 4
 };
 
 struct WgrInstance
@@ -877,6 +881,14 @@ extern "C"
      * WGR_INVALID_MODEL on error. Call once per shape. */
     WGR_API uint32_t wgr_model_register(WgrRenderer* renderer, float bounding_sphere, WgrSlice<WgrModelLod> lods,
                                         WgrSlice<WgrModelSection> sections, WgrSlice<WgrModelMaterial> materials);
+
+    /* Register a batch of per-tree crown centres (MODEL space) into the global crown-centre
+     * table and return the base index of this batch (foliage-translucency-plan.md §9 Approach A).
+     * Each centre's .xyz is a tree's canopy centroid in the shape's vertex space (.w unused).
+     * The caller bakes `base + local_component_index` into each forest vertex's `conform` word;
+     * vs_gpu reads the table with that index to get a per-tree radial-normal centre instead of the
+     * whole-mesh inst.center. Call once per forest LOD level during model registration. */
+    WGR_API uint32_t wgr_register_crown_centres(WgrRenderer* renderer, WgrSlice<WgrVec4> centres);
 
     /* Add a static retained instance; returns its stable slot (recycled from removed
      * slots). Update it in place with wgr_instance_update (a move, or a destruction-

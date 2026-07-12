@@ -41,13 +41,17 @@ fn shade(
     dwy: vec3<f32>,
     linear: f32,
     foliage_shadow_ao: f32,
+    // Vegetation canopy cutout (leaf/needle section of a plant): enables the dense-canopy
+    // self-occlusion darkening in terrain shadow (foliage_shadow_ao). Since Stage 2 (the MapType
+    // gate) this is vegetation-only — callers pass `is_vegetation && alpha_ref > 0`, NOT every
+    // cutout — so fences/road decals/characters don't get the foliage treatment.
     is_cutout: bool,
     // Alpha-blended (glass) surface: damp the diffuse sky-irradiance ambient (a transparent
     // canopy is not a diffuse reflector; a full sky wash blows it out + spikes auto-exposure).
     is_translucent: bool,
-    // Alpha-tested vegetation canopy (leaves/needles): emulate leaf subsurface scattering so the
-    // low-poly cards don't split into a lit/near-black pair at harsh sun angles. Knobs ride in
-    // frame.foliage / frame.foliageb. See docs/foliage-translucency-plan.md.
+    // Vegetation canopy cutout (as is_cutout): emulate leaf subsurface scattering so the low-poly
+    // cards don't split into a lit/near-black pair at harsh sun angles. Knobs ride in
+    // frame.foliage / frame.foliageb / frame.foliagec. See docs/foliage-translucency-plan.md.
     is_foliage: bool,
 ) -> vec3<f32> {
     var albedo = albedo_in;

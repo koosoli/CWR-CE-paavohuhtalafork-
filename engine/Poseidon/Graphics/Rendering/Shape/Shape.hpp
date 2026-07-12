@@ -261,6 +261,13 @@ struct ConformPlane
 };
 extern ConformPlane GCurrentConformPlane;
 
+// Published by Object::Draw from the drawn object's MapType: is the object currently being drawn a
+// plant (tree / bush / forest)? The wgpu per-draw path (EngineWgpu::DrawSectionTL) reads it to gate
+// the emulated leaf subsurface-scattering look to real vegetation (foliage-translucency-plan.md
+// Stage 2), so roads, characters, fences etc. don't pick up the leaf glow. Default false; GL33
+// ignores it.
+extern bool GCurrentIsVegetation;
+
 // True only when the active graphics backend conforms terrain-clipped geometry on the
 // GPU (the wgpu backend sets it at init). Objects use it to decide whether to publish a
 // conform plane and skip their per-frame CPU vertex deform; GL33 leaves it false and

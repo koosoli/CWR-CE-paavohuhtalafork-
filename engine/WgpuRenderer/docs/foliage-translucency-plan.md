@@ -1,7 +1,8 @@
 # Foliage translucency plan (emulated subsurface scattering for low-poly vegetation)
 
-**Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** Stage 1 IMPLEMENTED (uncommitted,
-2026-07-12), cutout-gated, modest defaults ON; Stages 2–3 still planned.
+**Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** Stages 1–3 + the §9 distant-forest
+work IMPLEMENTED (uncommitted, 2026-07-12); Stage 2 now gates the foliage look to real vegetation (no
+longer every cutout — roads/characters/fences excluded). Modest defaults ON, some visual tuning pending.
 
 ## 0. Implementation status
 
@@ -48,13 +49,25 @@
   `foliagec` lanes (no size change). Applied at all distances (a normal is smoothing, not the glowy fill).
   Fragment shader unchanged. Fixes the back-facing-card problem (a card facing away from the sun now shades
   from the radial normal instead of going black).
-- **Stage 2 (MapType gate) — PARTIAL.** The bush/tree flags above are the first `MapType`-derived signals.
-  The SSS *fill* (§3.1–3.5) is still gated only on `is_cutout` (so fences etc. still get it); narrowing that
-  to vegetation is the remaining Stage-2 work (per-draw `WgrDraw3D::flags` bit + GPU-driven section flag).
-- **Forests / distant LODs — TODO.** `ForestPlain` is a multi-tree cluster whose single `center` is
-  meaningless per-tree, so radial normals off it would be wrong — excluded. User's idea for distant forests:
-  **flood-fill-split the forest mesh into per-tree submeshes** so each gets its own crown centre. Plus some
-  of the 1 km "looks bad" is non-lighting (billboard aliasing, LOD-cross-fade popping) — separate threads.
+- **Stage 2 (MapType gate) — DONE (uncommitted 2026-07-12).** The foliage lighting (SSS fill §3.1–3.5
+  **and** the `foliage_shadow_ao` canopy-AO) now gates on real vegetation, not every cutout — fences, road
+  decals, and the player character no longer pick up the leaf look. Signal = `MapType ∈ {MapTree,
+  MapSmallTree, MapBush, MapForest*}` combined with `alpha_ref > 0` in-shader. The alpha-test **discard**
+  itself stays keyed on `alpha_ref` (every cutout still discards). Plumbing per path:
+  - **GPU-driven** (`fs_gpu`): reuses the per-instance canopy flags — bush/tree/forest already cover the
+    whole vegetation `MapType` set — as a flat `is_veg` varying from `vs_gpu`. **Zero new C++/FFI.**
+  - **Per-draw** (`fs_main`, incl. the skinned player): a new `GCurrentIsVegetation` global (in `Shape.hpp`
+    / `ShapeDraw.cpp`, mirroring `GCurrentConformPlane`) is published from the object's `MapType` in
+    `Object::Draw`, and `EngineWgpu::DrawSectionTL` writes it into the free `.w` of the per-draw sun-ambient
+    material lane (only `.rgb` is read for shading); `fs_main` reads it back. No pipeline-variant growth.
+  - Rejected the plan's original `WgrDraw3D::flags` bit + `SectionMaterialGpu._pad` scheme: flags aren't
+    plumbed to `fs_main`, and the GPU-driven instance flags already encode vegetation for free.
+- **Forests / distant LODs — §9 Approach A DONE (uncommitted 2026-07-12), not yet visually verified.**
+  `ForestPlain` is a multi-tree cluster whose single `center` is meaningless per-tree, so it was excluded.
+  Now each forest LOD is **flood-filled into per-tree connected components** at registration and each
+  vertex carries its own tree's crown centre — the mesh is **not** physically split (one draw per LOD,
+  unchanged). See §9 for the full design/plumbing. Remaining forest work is non-lighting (billboard
+  aliasing, LOD-cross-fade popping, impostor art) — separate threads.
 
 ## 1. Motivation
 
@@ -277,7 +290,39 @@ new bool parameter to `shade()`, one spare flag bit (per-draw) / spare `_pad` fi
 handful of scalar knobs in the already-uploaded `WgrRenderParams`. Constant thickness (no thickness map)
 is acceptable for geometry this simple.
 
-## 9. Distant forests — per-tree crown centres (PLANNING, future session)
+## 9. Distant forests — per-tree crown centres (Approach A IMPLEMENTED, uncommitted 2026-07-12)
+
+**Status: Approach A landed (Rust crate + naga compose tests green; C++ not built here), pending visual
+verification.** What shipped, end to end:
+
+- **Encoding — reuse the per-vertex `conform` word.** A forest is conform mode 0/1, which never reads the
+  ClipLand per-vertex `conform_sel` (`@location(5)`), so that `u32` is free. For forest shapes it now holds
+  a **global crown-centre index**. Zero extra vertex bytes; no vertex-format change (skin bake / prepass /
+  all pipelines untouched). Chosen over a full `vec3` attribute (12 B/vertex) or a per-model base + `u16`.
+- **Crown-centre table.** New global storage buffer `crown_centres: array<vec4<f32>>` (model-space centroid
+  per tree, `.w` unused), bound at **group-1 binding 3** of the GPU-driven draw (`gpu_driven.wgsl`), shared
+  by the colour / prepass / occlusion-colour / shadow binds (the shadow VS doesn't read it — the shared
+  layout just stays compatible). Register-once, uploaded under `tables_dirty` next to section materials
+  (`CullState.crown_centre_buf` in `cull.rs`). New FFI `wgr_register_crown_centres(slice) -> base`.
+- **Flood-fill (C++ `RegisterGpuModel`, `BuildForestCrownComponents`).** For a forest shape (`MapType ∈
+  {MapForestBorder, MapForestTriangle, MapForestSquare}`), each LOD's mesh is union-find'd into per-tree
+  components: **position-weld** (1 mm cells, reconnecting UV/normal seam duplicates) **∪ triangle
+  adjacency**. Each component's model-space centroid is registered → `base`; every vertex's `conform` word
+  is set to `base + its_component_id`. Runs once at load, where the base mesh + indices are already in hand;
+  the mesh is not split.
+- **Shader (`vs_gpu`).** New flag `INST_CANOPY_FOREST` (bit 2 / `WGR_INSTANCE_CANOPY_FOREST`, set in
+  `BuildGpuInstance` for `MapForest*`). When set on a cutout section: `crown_model = crown_centres[conform_sel]`,
+  transformed by `inst.world` to camera-relative world, then its Y conformed to the **same** mode-1 ground
+  plane the vertices use (`forest_plane_y`, so a forest on a slope doesn't skew every radial normal); mode-0
+  skewed forests are pre-placed rigid. It reuses the **tree** bend/crown-Y knobs (`foliagec.y/.z`). The
+  `ForestPlain` exclusion in `BuildGpuInstance` is lifted.
+- **Reuse for tree sway (future).** The per-tree centroid table + per-vertex index *is* the pivot data a
+  future tree-sway pass will animate around, so this plumbing is deliberately reusable beyond lighting.
+
+**Open (visual pass):** touching-canopy false merges (accepted risk); whether the per-tree centroid wants a
+different crown-Y lift than individual trees; billboard/LOD-fade issues are still separate.
+
+### Original design notes (retained)
 
 `ForestPlain`/`Forest` is one authored, merged `LODShapeWithShadow` (all tree cards baked into one
 vertex/face table); it retains **no** per-tree placement data, and `Animate` only terrain-conforms the
