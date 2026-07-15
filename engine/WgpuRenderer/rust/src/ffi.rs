@@ -371,6 +371,12 @@ pub struct WgrSky {
     // the aerial pass dissolves the terrain edge into the full sky as it nears this
     // distance (the fog/view range) so the horizon has no colour step. 0 = disabled.
     pub night_params: WgrVec4,
+    // Volumetric clouds (plan Stage 5): a raymarched cloud shell composited inside
+    // sky_radiance so it also appears in reflections + SH ambient. See sky.wgsl.
+    pub cloud0: WgrVec4, // x = coverage [0,1], y = extinction (1/m), z = cloud bottom (m ASL), w = cloud top (m ASL)
+    pub cloud1: WgrVec4, // x/y = wind world offset (m, RUNTIME, CPU-wrapped), z = shape scale (1/m), w = detail scale (1/m)
+    pub cloud2: WgrVec4, // x = HG forward g, y = powder strength, z = ambient scale, w = max march distance (m)
+    pub cloud3: WgrVec4, // x = weather scale (1/m), y = weather amount [0,1], z = warp scale (1/m), w = warp amount (m)
 }
 
 impl Default for WgrSky {
@@ -391,6 +397,13 @@ impl Default for WgrSky {
             night_horizon: [0.35, 0.45, 0.90, 0.0],
             // Full day above +3 deg sun elevation, full night below -8 deg; intensity 0.02.
             night_params: [0.052, -0.139, 0.02, 0.0],
+            // Clouds off by default (coverage 0) so the clear-sky look is unchanged until tuned.
+            cloud0: [0.0, 0.06, 1200.0, 3500.0],
+            // wind world offset (runtime), shape scale 1/9300, detail scale 1/1700 (incommensurate).
+            cloud1: [0.0, 0.0, 1.0 / 9300.0, 1.0 / 1700.0],
+            cloud2: [0.35, 1.0, 1.0, 60_000.0],
+            // weather scale 1/16000, weather amount, warp scale 1/6000, warp amount (m).
+            cloud3: [1.0 / 16_000.0, 0.4, 1.0 / 6_000.0, 900.0],
         }
     }
 }
@@ -416,6 +429,11 @@ pub struct WgrSkyLook {
     pub night_zenith: WgrVec4,  // xyz = night radiance at the zenith; w = horizon-haze strength
     pub night_horizon: WgrVec4, // xyz = night radiance at the horizon; w = aerial-shadow strength
     pub night_params: WgrVec4,  // x = full-day sun_dir.y, y = full-night sun_dir.y, z = night intensity, w = pad
+    // Cloud look (mirrors WgrSky::cloud0/1/2/3; cloud1.xy = wind offset is runtime, ignored here).
+    pub cloud0: WgrVec4, // x = coverage, y = extinction (1/m), z = bottom (m), w = top (m)
+    pub cloud1: WgrVec4, // x/y unused (runtime wind offset), z = shape scale (1/m), w = detail scale (1/m)
+    pub cloud2: WgrVec4, // x = HG forward g, y = powder, z = ambient scale, w = max distance (m)
+    pub cloud3: WgrVec4, // x = weather scale (1/m), y = weather amount, z = warp scale (1/m), w = warp amount (m)
 }
 
 impl Default for WgrSkyLook {
@@ -429,6 +447,10 @@ impl Default for WgrSkyLook {
             night_zenith: [0.15, 0.30, 0.80, 0.0],
             night_horizon: [0.35, 0.45, 0.90, 1.0],
             night_params: [0.052, -0.139, 0.02, 0.0],
+            cloud0: [0.0, 0.06, 1200.0, 3500.0],
+            cloud1: [0.0, 0.0, 1.0 / 9300.0, 1.0 / 1700.0],
+            cloud2: [0.35, 1.0, 1.0, 60_000.0],
+            cloud3: [1.0 / 16_000.0, 0.4, 1.0 / 6_000.0, 900.0],
         }
     }
 }
@@ -842,13 +864,13 @@ const _: () = assert!(std::mem::size_of::<WgrModelMaterial>() == 80);
 const _: () = assert!(std::mem::size_of::<WgrModelLod>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrInstance>() == 144);
 const _: () = assert!(std::mem::size_of::<WgrTonemap>() == 48);
-const _: () = assert!(std::mem::size_of::<WgrSky>() == 176);
-const _: () = assert!(std::mem::size_of::<WgrSkyLook>() == 128);
+const _: () = assert!(std::mem::size_of::<WgrSky>() == 240);
+const _: () = assert!(std::mem::size_of::<WgrSkyLook>() == 192);
 const _: () = assert!(std::mem::size_of::<WgrSkyRuntime>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrFoliage>() == 48);
-const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 304);
+const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 368);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);

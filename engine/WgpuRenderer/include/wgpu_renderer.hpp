@@ -408,6 +408,11 @@ struct WgrSky
     WgrVec4 night_zenith;  /* xyz = night radiance at the zenith, w = camera altitude ASL (m; aerial/sky raymarch origin) */
     WgrVec4 night_horizon; /* xyz = night radiance at the horizon */
     WgrVec4 night_params;  /* x = full-day sun_dir.y, y = full-night sun_dir.y, z = intensity, w = far-fade range (m; aerial dissolves the terrain edge into sky by this dist, 0 = off) */
+    /* Volumetric clouds (plan Stage 5): a raymarched cloud shell composited inside sky_radiance. */
+    WgrVec4 cloud0; /* x = coverage [0,1], y = extinction (1/m), z = bottom (m ASL), w = top (m ASL) */
+    WgrVec4 cloud1; /* x/y = wind world offset (m, RUNTIME, CPU-wrapped), z = shape scale (1/m), w = detail scale (1/m) */
+    WgrVec4 cloud2; /* x = HG forward g, y = powder strength, z = ambient scale, w = max march distance (m) */
+    WgrVec4 cloud3; /* x = weather scale (1/m), y = weather amount, z = warp scale (1/m), w = warp amount (m) */
 };
 
 /* --- Consolidated imgui-tweakable render params (docs/render-params-consolidation-plan.md) ---
@@ -428,6 +433,11 @@ struct WgrSkyLook
     WgrVec4 night_zenith;  /* xyz = night radiance at the zenith; w = horizon-haze strength */
     WgrVec4 night_horizon; /* xyz = night radiance at the horizon; w = aerial-shadow strength */
     WgrVec4 night_params;  /* x = full-day sun_dir.y, y = full-night sun_dir.y, z = night intensity, w = pad */
+    /* Cloud look (mirrors WgrSky::cloud0/1/2/3; cloud1.xy = wind offset is runtime, unused here). */
+    WgrVec4 cloud0; /* x = coverage, y = extinction (1/m), z = bottom (m), w = top (m) */
+    WgrVec4 cloud1; /* x/y unused (runtime wind offset), z = shape scale (1/m), w = detail scale (1/m) */
+    WgrVec4 cloud2; /* x = HG forward g, y = powder, z = ambient scale, w = max distance (m) */
+    WgrVec4 cloud3; /* x = weather scale (1/m), y = weather amount, z = warp scale (1/m), w = warp amount (m) */
 };
 
 /* Per-frame celestial + camera runtime (from LightSun / the camera). NOT an ImGui knob. */
@@ -798,13 +808,13 @@ static_assert(sizeof(WgrDraw3D) == 264, "WgrDraw3D layout must match the Rust #[
 static_assert(sizeof(WgrLight) == 64, "WgrLight layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTonemap) == 48, "WgrTonemap layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrExposure) == 32, "WgrExposure layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrSky) == 176, "WgrSky layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrSkyLook) == 128, "WgrSkyLook layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSky) == 240, "WgrSky layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSkyLook) == 192, "WgrSkyLook layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrSkyRuntime) == 64, "WgrSkyRuntime layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFoliage) == 48, "WgrFoliage layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrRenderParams) == 304, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrRenderParams) == 368, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");

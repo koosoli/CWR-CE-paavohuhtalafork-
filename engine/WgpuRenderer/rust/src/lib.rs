@@ -397,7 +397,7 @@ impl Renderer {
         let exposure = hdr_enabled.then(|| Exposure::new(&device, &queue));
         // The sky targets the scene color format (HDR target or swapchain), matching
         // the scene pipelines, and self-tonemaps when that is an LDR-direct swapchain.
-        let sky = Sky::new(&device, color_format, sample_count);
+        let sky = Sky::new(&device, &queue, color_format, sample_count);
         // Seed live params from the env knobs so behaviour is unchanged until the
         // ImGui tab pushes its own values (env_f32's >0 filter is fine for scales;
         // env_f32_opt keeps a 0 for the mode/encode toggles).
@@ -471,6 +471,13 @@ impl Renderer {
         s.night_params[0] = l.night_params[0];
         s.night_params[1] = l.night_params[1];
         s.night_params[2] = l.night_params[2];
+        // Cloud look. cloud1.xy (wind WORLD offset) is a runtime field owned by set_sky_runtime,
+        // so copy only the shape/detail scale lanes (z,w) here, leaving xy intact.
+        s.cloud0 = l.cloud0;
+        s.cloud1[2] = l.cloud1[2]; // shape scale
+        s.cloud1[3] = l.cloud1[3]; // detail scale
+        s.cloud2 = l.cloud2;
+        s.cloud3 = l.cloud3;
 
         if self.last_sun_shadow != Some(p.terrain_sun_shadow) {
             self.last_sun_shadow = Some(p.terrain_sun_shadow);
@@ -506,6 +513,8 @@ impl Renderer {
         s.fog_color[2] = rt.fog_color[2];
         s.night_zenith[3] = rt.misc[1]; // camera altitude ASL
         s.night_params[3] = rt.fog_color[3]; // fog far-range
+        s.cloud1[0] = rt.misc[2]; // cloud wind world offset x (m, CPU-wrapped)
+        s.cloud1[1] = rt.misc[3]; // cloud wind world offset z (m, CPU-wrapped)
     }
 
     // Debug readback of the current auto-exposure scale (blocking; dev panel only).
@@ -1369,6 +1378,45 @@ impl Renderer {
                         }
                     }
                     drop(wpass);
+                    encoder.pop_debug_group();
+                }
+            }
+
+            // Depth-aware over-scene clouds (plan Phase 1): march at LOW RES bounded by the resolved
+            // scene depth, then composite over the lit scene (premultiplied blend) so clouds occlude
+            // terrain and envelop the camera when flown through — not a sky-only element. World segment
+            // only, HDR + coverage>0; after water so it composites over water too.
+            if start == 0 && !resolved && sky_drawn && self.sky.clouds_active(&self.sky_params) {
+                // Ensure a resolved single-sample scene depth exists this frame (idempotent if water
+                // already resolved it). Uses the farthest-sample resolve (as water does).
+                self.gfx3d.resolve_water_depth(&mut encoder);
+                if let Some(depth_view) = self.gfx3d.water_depth_view().cloned() {
+                    self.sky.render_cloud(
+                        &self.device,
+                        &mut encoder,
+                        &depth_view,
+                        self.config.width,
+                        self.config.height,
+                    );
+                    encoder.push_debug_group("wgr_cloud_composite");
+                    let mut cpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("wgr_cloud_composite"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &target,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.sky.composite_cloud(&mut cpass);
+                    drop(cpass);
                     encoder.pop_debug_group();
                 }
             }

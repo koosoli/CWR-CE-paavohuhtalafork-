@@ -199,12 +199,21 @@ throw it away in one step, and there is no runtime visual test in CI):
 - **Exit:** no seam between distant terrain and sky; haze responds to sun angle and turbidity.
 
 ### Stage 5 — Clouds
-- **5a — 2D layer:** animated domain-warped fBm cloud layer on the sky hemisphere, coverage from
-  `overcast`, lit by sun/moon transmittance, wind-scrolled. Big visual payoff, cheap.
-- **5b — Volumetric (optional, later):** raymarched clouds (Worley+Perlin density, Henyey-Greenstein
-  scattering, cheap light-march + ambient), temporal reprojection to keep sample counts low. Gated,
-  since it's the one genuinely expensive piece.
-- **Exit:** dynamic cloud coverage tied to weather; overcast skies read as overcast.
+- **5a — 2.5D raymarched shell (IMPLEMENTED 2026-07-12, uncommitted):** instead of the flat 2D layer,
+  a raymarched cloud *shell* between two altitudes, composited **inside `sky_radiance`'s callers**
+  (`fs_sky` full march; `fs_sky_env` a cheap low-step path so wind-scrolled noise doesn't alias into
+  the SH-ambient bake). One model spans isolated cumulus (low coverage → only noise peaks survive) to
+  a solid overcast deck (high coverage → overcast floor + full height band). Domain-warped value-noise
+  fBm density, ~6-step sun light-march (Beer transmittance), Beer-Powder + dual-lobe HG for the
+  silver-lining/fluffy look, night-floor ambient so sunless clouds read grey. View-ray cloud
+  transmittance dims the sun disc. Coverage also dims the directional sun / lifts ambient on the CPU
+  (`EngineWgpu` PushFrame) so overcast reads diffuse. Params ride 3 new `WgrSky`/`WgrSkyLook` cloud
+  vec4 + a `Sky` ImGui **Clouds** section; coverage is an authored slider (default 0 = clear).
+  Animation clock = `Glob.time` (same as water/terrain). **Deferred:** wire game `_actualOvercast` to
+  coverage; soft cloud shadows cast on terrain; sky-first overdraw cost of the per-pixel march.
+- **5b — Volumetric (optional, later):** the shell march is already volumetric-lite; a further
+  Worley+Perlin density + temporal reprojection upgrade stays optional.
+- **Exit:** dynamic cloud coverage; overcast skies read as overcast. [DONE for authored coverage]
 
 ### Stage 6 — Sky-based lighting (irradiance ambient + atmosphere-sourced sun colour)
 Source the scene's environmental lighting from the same atmosphere, without going to full PBR. Sequenced

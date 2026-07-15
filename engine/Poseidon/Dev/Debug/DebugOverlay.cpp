@@ -1853,6 +1853,39 @@ void DrawSkyTab()
     changed |= ImGui::SliderInt("Light samples", &s.lightSamples, 2, 32);
 
     ImGui::Separator();
+    ImGui::TextUnformatted("Clouds");
+    ImGui::TextDisabled("raymarched cloud shell in the sky (also reflected in water + SH ambient)");
+    changed |= ImGui::SliderFloat("Coverage", &s.cloudCoverage, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("0 = clear sky; low = isolated cumulus; high = solid overcast deck. Also dims the "
+                          "directional sun / lifts ambient as it rises (overcast reads flat).");
+    changed |= ImGui::SliderFloat("Density", &s.cloudDensity, 0.005f, 0.3f, "%.3f", ImGuiSliderFlags_Logarithmic);
+    ImGui::SetItemTooltip("Cloud extinction (1/m): higher = more opaque / darker undersides");
+    changed |= ImGui::SliderFloat("Base altitude (m)", &s.cloudBottom, 200.0f, 6000.0f, "%.0f");
+    changed |= ImGui::SliderFloat("Top altitude (m)", &s.cloudTop, 400.0f, 10000.0f, "%.0f");
+    changed |= ImGui::SliderFloat2("Wind (m/s)", s.cloudWind, -30.0f, 30.0f, "%.1f");
+    changed |= ImGui::SliderFloat("Shape size (m)", &s.cloudShapeSize, 2000.0f, 20000.0f, "%.0f");
+    ImGui::SetItemTooltip("World size of the base cloud blobs — LARGER = less visible tiling across the map");
+    changed |= ImGui::SliderFloat("Detail size (m)", &s.cloudDetailSize, 400.0f, 5000.0f, "%.0f");
+    ImGui::SetItemTooltip("Edge detail tile — keep INCOMMENSURATE with shape (not a simple multiple) so the "
+                          "combined pattern's visual period is long");
+    changed |= ImGui::SliderFloat("Warp amount (m)", &s.cloudWarpAmount, 0.0f, 3000.0f, "%.0f");
+    ImGui::SetItemTooltip("Domain-warp displacement — the single highest-impact anti-repetition knob (breaks "
+                          "the grid regularity that makes tiling legible)");
+    changed |= ImGui::SliderFloat("Warp size (m)", &s.cloudWarpSize, 2000.0f, 20000.0f, "%.0f");
+    changed |= ImGui::SliderFloat("Weather amount", &s.cloudWeatherAmount, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("How much coverage DRIFTS across the sky (0 = uniform everywhere, which reads same-y)");
+    changed |= ImGui::SliderFloat("Weather size (m)", &s.cloudWeatherSize, 5000.0f, 40000.0f, "%.0f");
+    ImGui::SetItemTooltip("World scale of the coverage drift — big, so cloudy/clear regions span the map");
+    changed |= ImGui::SliderFloat("Forward scatter g", &s.cloudHgG, 0.0f, 0.9f, "%.2f");
+    ImGui::SetItemTooltip("Henyey-Greenstein anisotropy: higher = brighter silver lining toward the sun");
+    changed |= ImGui::SliderFloat("Powder", &s.cloudPowder, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("Beer-Powder dark-edge term (the fluffy look)");
+    changed |= ImGui::SliderFloat("Ambient fill", &s.cloudAmbient, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Sky-ambient scale on the shadowed cloud sides");
+    changed |= ImGui::SliderFloat("Max distance (m)", &s.cloudMaxDist, 5000.0f, 80000.0f, "%.0f");
+    ImGui::SetItemTooltip("March / visibility cap; the far deck dissolves into the horizon haze");
+
+    ImGui::Separator();
     ImGui::TextUnformatted("Night floor");
     ImGui::TextDisabled("authored deep-blue that fills in as the sun sets (the physical model goes near-black)");
     // Colours are normalised (click the swatch for the picker); intensity scales them.
