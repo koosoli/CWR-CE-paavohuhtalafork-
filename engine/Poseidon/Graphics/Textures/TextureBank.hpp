@@ -13,6 +13,13 @@
 
 namespace Poseidon
 {
+
+struct SurfaceInfo;
+
+//! The surface infos for the four quadrants of a blended terrain texture.
+//! The quadrants are ordered: top-left, top-right, bottom-left, bottom-right.
+using QuadrantSurfaces = const SurfaceInfo* [4];
+
 class Texture : public RemoveLLinks
 {
     friend class AnimatedTexture;
@@ -187,6 +194,8 @@ class AbstractTextBank
     static int AnimatedName(const char* name, char* prefix, char* postfix);
     static int AnimatedNumber(const char* name);
 
+    void GetQuadrantSurfaces(const char* name, QuadrantSurfaces quadrants) const;
+
   protected:
     int FindSurface(const char* name) const; // pattern matching ('?')
     const SurfaceInfo& GetSurface(const char* name) const;
@@ -202,6 +211,8 @@ class AbstractTextBank
 };
 
 extern bool NoTextures;
+
+bool TrySplitBlendedTerrainTextureName(const char* pureName, char quadrantTextures[4][3]);
 
 } // namespace Poseidon
 Poseidon::Texture* GlobPreloadTexture(Poseidon::Foundation::RStringB name);

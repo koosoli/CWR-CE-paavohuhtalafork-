@@ -544,25 +544,39 @@ int AbstractTextBank::FindSurface(const char* name) const
     return -1;
 }
 
-const SurfaceInfo& AbstractTextBank::GetSurface(const char* name) const
+//! Strip path and extension, leaving the bare texture basename in buf
+static void PureTextureName(const char* name, char* buf, int bufSize)
 {
-    // get only pure name (without path or extension)
     const char* fName = findLastSep(name);
-    if (fName)
-    {
-        fName++;
-    }
-    else
-    {
-        fName = name;
-    }
-    char sName[80];
-    snprintf(sName, sizeof(sName), "%s", (const char*)fName);
-    char* ext = strrchr(sName, '.');
+    fName = fName ? fName + 1 : name;
+    snprintf(buf, bufSize, "%s", fName);
+    char* ext = strrchr(buf, '.');
     if (ext)
     {
         *ext = 0;
     }
+}
+
+bool TrySplitBlendedTerrainTextureName(const char* pureName, char quadrantTextures[4][3])
+{
+    // pre-blended tiles consist of four concatenated 2-char base texture codes
+    if (strlen(pureName) != 8)
+    {
+        return false;
+    }
+    for (int i = 0; i < 4; i++)
+    {
+        quadrantTextures[i][0] = pureName[i * 2];
+        quadrantTextures[i][1] = pureName[i * 2 + 1];
+        quadrantTextures[i][2] = 0;
+    }
+    return true;
+}
+
+const SurfaceInfo& AbstractTextBank::GetSurface(const char* name) const
+{
+    char sName[80];
+    PureTextureName(name, sName, sizeof(sName));
     // search
     int index = FindSurface(sName);
     if (index < 0)
@@ -573,9 +587,43 @@ const SurfaceInfo& AbstractTextBank::GetSurface(const char* name) const
             static const SurfaceInfo info = {};
             return info;
         }
-        PoseidonAssert(index >= 0);
     }
     return _surfaces[index];
+}
+
+void AbstractTextBank::GetQuadrantSurfaces(const char* name, QuadrantSurfaces quadrants) const
+{
+    char sName[80];
+    PureTextureName(name, sName, sizeof(sName));
+
+    auto resolve = [this](const char* pure) -> const SurfaceInfo*
+    {
+        int index = FindSurface(pure);
+        if (index < 0)
+        {
+            index = FindSurface("default");
+        }
+        if (index < 0)
+        {
+            static const SurfaceInfo empty = {};
+            return &empty;
+        }
+        return &_surfaces[index];
+    };
+
+    char quadrantTextures[4][3];
+    if (TrySplitBlendedTerrainTextureName(sName, quadrantTextures))
+    {
+        for (int i = 0; i < 4; i++)
+        {
+            quadrants[i] = resolve(quadrantTextures[i]);
+        }
+    }
+    else
+    {
+        const SurfaceInfo* uniform = resolve(sName);
+        quadrants[0] = quadrants[1] = quadrants[2] = quadrants[3] = uniform;
+    }
 }
 
 AbstractTextBank::~AbstractTextBank() = default;

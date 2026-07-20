@@ -796,6 +796,37 @@ int Landscape::GetTexture(int z, int x) const
     return ClippedTextureIndex(z, x);
 }
 
+const SurfaceInfo& Landscape::SurfaceAt(float x, float z) const
+{
+    float xRel = x * _invTerrainGrid;
+    float zRel = z * _invTerrainGrid;
+    int xi = toIntFloor(xRel);
+    int zi = toIntFloor(zRel);
+
+    // the texture grid is coarser than the height grid by tLog
+    int tLog = _terrainRangeLog - _landRangeLog;
+    int xti = xi >> tLog;
+    int zti = zi >> tLog;
+
+    const TextureInfo& info = _texture[ClippedTextureIndex(zti, xti)];
+
+    // fractional position within the texture cell; u runs along +X and v along
+    // +Z, matching the terrain UV mapping baked for clamped (pre-blended) tiles
+    int span = 1 << tLog;
+    float u = (xRel - float(xti << tLog)) / span;
+    float v = (zRel - float(zti << tLog)) / span;
+
+    // quadrants are ordered TL, TR, BL, BR with the image top-left at (u=0, v=0)
+    int quadrant = (v < 0.5f ? 0 : 2) + (u < 0.5f ? 0 : 1);
+    const SurfaceInfo* surface = info.quadrants[quadrant];
+    if (!surface)
+    {
+        static const SurfaceInfo empty = {};
+        return empty;
+    }
+    return *surface;
+}
+
 bool Landscape::ClippedIsWater(int z, int x) const
 {
     if (!this_InRange(z, x) || !this_InRange(z - 1, x - 1))
@@ -1360,6 +1391,10 @@ void Landscape::SetTexture(int i, const char* name)
             _texture[i].texture = nullptr;
             _texture[i].offsetUV = false;
         }
+        if (GLOB_ENGINE && GLOB_ENGINE->TextBank())
+        {
+            GLOB_ENGINE->TextBank()->GetQuadrantSurfaces(aName, _texture[i].quadrants);
+        }
         return;
     }
     _texture.Access(i);
@@ -1385,6 +1420,10 @@ void Landscape::SetTexture(int i, const char* name)
     else
     {
         _texture[i].offsetUV = true;
+    }
+    if (GLOB_ENGINE && GLOB_ENGINE->TextBank())
+    {
+        GLOB_ENGINE->TextBank()->GetQuadrantSurfaces(aName, _texture[i].quadrants);
     }
 }
 

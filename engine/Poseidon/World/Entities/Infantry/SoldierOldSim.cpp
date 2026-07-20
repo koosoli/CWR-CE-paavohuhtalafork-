@@ -502,7 +502,13 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
                                     maxUnder = under;
                                     _landContact = true;
                                     landDX = info.dX, landDZ = info.dZ;
-                                    if (info.texture)
+                                    if (info.obj == nullptr)
+                                    {
+                                        // not standing on an object -> we are standing on the landscape -> get the surface sound from the landscape
+                                        _surfaceSound =
+                                            GLandscape->SurfaceAt(info.pos.X(), info.pos.Z())._soundEnv;
+                                    }
+                                    else if (info.texture)
                                     {
                                         _surfaceSound = info.texture->GetSoundEnv();
                                     }

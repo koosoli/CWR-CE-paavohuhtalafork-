@@ -421,6 +421,9 @@ class Landscape: public SerializeClass
 	{
 		Ref<Texture> texture;
 		bool offsetUV; // enable offseting
+		// Four quadrant surfaces (TL, TR, BL, BR) decoded from the pre-blended texture name.
+		// All four quadrants are the same for base textures.
+		const SurfaceInfo *quadrants[4] = {nullptr, nullptr, nullptr, nullptr};
 		operator Texture *() const {return texture;}
 		Texture *operator ->() const {return texture;}
 
@@ -798,6 +801,7 @@ class Landscape: public SerializeClass
 	Vector3 GetWind() const;
 
 	const SurfaceInfo &GetWaterSurface() const {return _waterSurface;}
+	const SurfaceInfo &SurfaceAt(float x, float z) const;
 
 	// query weather
 	Texture *SkyTexture();
