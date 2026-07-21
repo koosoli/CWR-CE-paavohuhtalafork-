@@ -569,6 +569,10 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // out over the wet beach. The body colour keeps the true depth so it doesn't flicker.
     let swash = sin(TWO_PI * wp.time * wp.swash_speed);
     let eff_depth = water_depth + swash * wp.swash_amp;
+    // The depth field already includes displaced water height. Use the local crest to
+    // concentrate the otherwise restrained shore foam at wave arrivals on the beach.
+    let surface_wave = in.world_pos.y + frame.cam_pos.y - wp.sea_level;
+    let shore_break = smoothstep(0.015, 0.12, surface_wave);
 
     // Shoreline foam: churning procedural noise in a band along the (swash-moved) edge. The band
     // fades IN from the waterline and OUT into deeper water (peak ~1/4 of foam_width in), so the
@@ -577,10 +581,10 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // edge, so the water there is transparent (soft wash over wet sand) rather than opaque white.
     let ft = eff_depth / max(wp.foam_width, 1e-4);
     let foam_band = smoothstep(0.0, 0.25, ft) * (1.0 - smoothstep(0.25, 1.0, ft));
-    let foam = clamp(foam_band * foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time) * wp.foam_intensity, 0.0, 1.0);
+    let foam = clamp(foam_band * foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time) * wp.foam_intensity * (1.0 + shore_break * 0.75), 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
     // The compute source is thresholded, so calm water with no events or breaking crests remains clean.
-    let persistent_foam = clamp(foam_history_sample.r * (0.50 + foam_history_sample.b * 0.30), 0.0, 1.0);
+    let persistent_foam = clamp(foam_history_sample.r * (0.40 + foam_history_sample.b * 0.22), 0.0, 1.0);
     let combined_foam = max(foam, persistent_foam);
     // Foam is bright diffuse spray, not an emitter: light it by the sky ambient + direct sun (where
     // the water isn't shadowed) so it goes dim at night instead of glowing white in the dark.

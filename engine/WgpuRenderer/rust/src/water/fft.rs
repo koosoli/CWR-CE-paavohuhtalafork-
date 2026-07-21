@@ -1,7 +1,8 @@
-/// One conservative, shared ocean resolution. Raising this changes all FFT storage together.
-pub const FFT_RESOLUTION: u32 = 128;
+/// Shared ocean resolution. 256² resolves the medium/small wind bands noticeably better
+/// than 128² while remaining practical for the four-cascade compute path.
+pub const FFT_RESOLUTION: u32 = 256;
 const FFT_LAYERS: u32 = 4;
-const FFT_STAGES: u32 = 7;
+const FFT_STAGES: u32 = 8;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]

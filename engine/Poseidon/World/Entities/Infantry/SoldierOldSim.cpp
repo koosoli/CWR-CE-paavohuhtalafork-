@@ -336,14 +336,31 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
             pForce[0] = 0;
             pForce[1] = -G_CONST * GetMass();
             pForce[2] = 0;
-            if (playerControlled && _waterDepth > 0.0f)
+            if (playerControlled && (_waterDepth > 0.0f || _waterContact))
             {
                 // Use last frame's water contact to counter gravity without changing the
                 // legacy move state, collision queue, or the actor's position directly.
                 float immersion = _waterDepth * 4.0f;
+                if (_waterContact)
+                {
+                    // A floating player can have zero fresh penetration for one frame.
+                    // Keep their buoyancy and wave response continuous across that contact.
+                    saturateMax(immersion, 0.95f);
+                }
                 saturate(immersion, 0.0f, 1.25f);
                 pForce[1] += G_CONST * GetMass() * immersion;
                 pForce[1] -= speed[1] * GetMass() * 3.0f;
+
+                // The GPU FFT is visual-only, so give the swimming player a small stable
+                // carrier swell here instead of snapping their position to render waves.
+                // This stays far below normal player input/ground collision forces.
+                Vector3Val pos = Position();
+                const float waveTime = Glob.time.toFloat();
+                const float swell = sin(pos.X() * 0.025f + pos.Z() * 0.014f + waveTime * 0.52f) * 0.35f +
+                                    sin(pos.X() * -0.041f + pos.Z() * 0.029f - waveTime * 0.79f) * 0.15f;
+                pForce[1] += swell * GetMass() * 3.40f;
+                pForce[0] += cos(pos.Z() * 0.018f + waveTime * 0.46f) * GetMass() * 0.38f;
+                pForce[2] += sin(pos.X() * 0.021f - waveTime * 0.41f) * GetMass() * 0.38f;
             }
             force += pForce;
 
