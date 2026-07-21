@@ -862,7 +862,7 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
             RecalcPositions(moveTrans);
         }
 
-        if (_waterDepth > 0 && !playerControlled)
+        if (_waterDepth > 0)
         {
             _waterContact = true;
             float maxSafeDepth = 1.2f;
@@ -917,6 +917,8 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
                 event.velocityKind[3] = HydroWaterInteractionContinuous;
                 event.timeLifeFoamMass[1] = 0.20f;
                 event.timeLifeFoamMass[2] = 0.20f;
+                // The fourth slot is the renderer-side stable emitter id for continuous events.
+                event.timeLifeFoamMass[3] = 1.0f;
                 event.directionDepthFlags[0] = speed.X() / horizontalSpeed;
                 event.directionDepthFlags[1] = speed.Z() / horizontalSpeed;
                 event.directionDepthFlags[2] = _waterDepth;

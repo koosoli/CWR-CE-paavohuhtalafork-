@@ -756,6 +756,7 @@ pub struct WgrWaterParams {
     pub fft_control: WgrVec4,
     pub fft_wind_sea: WgrVec4,
     pub fft_cascade_lengths: WgrVec4,
+    pub flow_direction_speed: WgrVec4,
 }
 
 pub const MAX_WATER_INTERACTIONS: usize = 48;
@@ -883,7 +884,7 @@ const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 176);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 192);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrWaterInteractionEvent>() == 64);

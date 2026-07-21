@@ -4,7 +4,7 @@ struct WaterParams {
     fade_end: f32, warp_amp: f32, spec_power: f32, spec_intensity: f32, alpha: f32, shadow_dim: f32,
     color_ext: f32, coast_fade: f32, shallow_color: vec4<f32>, deep_color: vec4<f32>, foam_width: f32,
     foam_intensity: f32, swash_amp: f32, swash_speed: f32, fft_control: vec4<f32>,
-    fft_wind_sea: vec4<f32>, fft_cascade_lengths: vec4<f32>,
+    fft_wind_sea: vec4<f32>, fft_cascade_lengths: vec4<f32>, flow_direction_speed: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> water: WaterParams;
 @group(0) @binding(1) var pack0: texture_storage_2d_array<rgba32float, write>;

@@ -1,5 +1,5 @@
 struct InteractionParams { domain: vec4<f32>, previous_domain: vec4<f32>, grid: vec4<f32>, physics: vec4<f32>, misc: vec4<f32>, weather: vec4<f32>, };
-struct WaterParams { world_origin: vec2<f32>, terrain_grid: f32, sea_level: f32, hm_width: u32, hm_height: u32, time: f32, wave_amp: f32, wave_choppy: f32, wave_speed: f32, wave_scale: f32, fade_start: f32, fade_end: f32, warp_amp: f32, spec_power: f32, spec_intensity: f32, alpha: f32, shadow_dim: f32, color_ext: f32, coast_fade: f32, shallow_color: vec4<f32>, deep_color: vec4<f32>, foam_width: f32, foam_intensity: f32, swash_amp: f32, swash_speed: f32, fft_control: vec4<f32>, fft_wind_sea: vec4<f32>, fft_cascade_lengths: vec4<f32>, };
+struct WaterParams { world_origin: vec2<f32>, terrain_grid: f32, sea_level: f32, hm_width: u32, hm_height: u32, time: f32, wave_amp: f32, wave_choppy: f32, wave_speed: f32, wave_scale: f32, fade_start: f32, fade_end: f32, warp_amp: f32, spec_power: f32, spec_intensity: f32, alpha: f32, shadow_dim: f32, color_ext: f32, coast_fade: f32, shallow_color: vec4<f32>, deep_color: vec4<f32>, foam_width: f32, foam_intensity: f32, swash_amp: f32, swash_speed: f32, fft_control: vec4<f32>, fft_wind_sea: vec4<f32>, fft_cascade_lengths: vec4<f32>, flow_direction_speed: vec4<f32>, };
 @group(0) @binding(0) var<uniform> interaction_params: InteractionParams;
 @group(0) @binding(1) var<uniform> water: WaterParams;
 @group(0) @binding(2) var previous_foam: texture_2d<f32>;
@@ -23,7 +23,7 @@ fn fft_source(world: vec2<f32>) -> f32 {
         let auxiliary = textureSampleLevel(fft_auxiliary, field_sampler, uv, layer, 0.0);
         let crest = max(displacement.w, auxiliary.y);
         let compression = max(auxiliary.x, 0.0);
-        source = max(source, smoothstep(0.48, 0.82, crest) * smoothstep(0.12, 0.36, compression));
+        source = max(source, smoothstep(0.32, 0.72, crest) * smoothstep(0.06, 0.22, compression));
     }
     return source;
 }
@@ -47,11 +47,11 @@ fn foam_update(@builtin(global_invocation_id) id: vec3<u32>) {
     let fft = fft_source(world);
     let aeration = clamp(interaction.b, 0.0, 1.0);
     let source = max(fft, aeration);
-    let decayed = history.r * exp(-dt * 2.4);
-    let injection = 1.0 - exp(-source * dt * 1.4);
+    let decayed = history.r * exp(-dt * 1.5);
+    let injection = 1.0 - exp(-source * dt * 2.0);
     let coverage = 1.0 - (1.0 - decayed) * (1.0 - injection);
     let age = mix(min(history.g + dt * 0.08, 1.0), 0.0, clamp(injection * 2.0, 0.0, 1.0));
-    let stored_aeration = max(history.b * exp(-dt * 2.0), aeration);
+    let stored_aeration = max(history.b * exp(-dt * 1.4), aeration);
     let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
     textureStore(next_foam, vec2<i32>(id.xy), vec4<f32>(coverage * smoothstep(0.002, 0.018, edge), age, stored_aeration, 0.0));
 }

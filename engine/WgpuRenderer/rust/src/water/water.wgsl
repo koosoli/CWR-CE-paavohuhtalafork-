@@ -45,6 +45,7 @@ struct WaterParams {
     fft_control: vec4<f32>, // enabled, seed, minimum geometry wavelength, pad
     fft_wind_sea: vec4<f32>, // wind x/z, speed, sea state
     fft_cascade_lengths: vec4<f32>, // stable world-space cascade lengths
+    flow_direction_speed: vec4<f32>, // x/z direction, m/s, water kind (0 ocean, 1 river)
 };
 
 // Must match GRID_N in water/mod.rs (and the terrain grid).
@@ -68,6 +69,10 @@ const GRID_N: f32 = 32.0;
 @group(1) @binding(9) var fft_samp: sampler;
 @group(1) @binding(10) var foam_history: texture_2d<f32>;
 @group(1) @binding(11) var foam_samp: sampler;
+// Completed opaque HDR scene snapshot. It is resolved/copied before water starts, never
+// sampled from the colour target currently being blended into.
+@group(1) @binding(12) var scene_color: texture_2d<f32>;
+@group(1) @binding(13) var scene_samp: sampler;
 
 // Multi-band open-ocean carrier. The long swells establish the readable sea state,
 // while successively shorter cross-waves break up the regularity around the camera.
@@ -274,6 +279,27 @@ fn seabed_depth(frag_xy: vec2<f32>, surface_rel: vec3<f32>) -> f32 {
     return max(surface_rel.y - seabed_rel.y, 0.0);
 }
 
+// Recover the world-xz gradient of the reconstructed column depth from screen derivatives.
+// A cleared/far depth has already become DEEP, so it naturally disables this shallow-only
+// approximation instead of creating flow where terrain/depth data is unavailable.
+fn shallow_flow(depth: f32, xz: vec2<f32>) -> vec2<f32> {
+    let shallow = smoothstep(0.0, max(wp.coast_fade, 1e-4), depth) *
+        (1.0 - smoothstep(max(wp.foam_width, 0.1), max(wp.foam_width * 3.0, 0.3), depth));
+    let dxz = dpdx(xz);
+    let dyz = dpdy(xz);
+    let determinant = dxz.x * dyz.y - dxz.y * dyz.x;
+    if (depth >= DEEP * 0.5 || abs(determinant) < 1e-5 || shallow <= 0.0) {
+        return vec2<f32>(0.0);
+    }
+    let ddx = dpdx(depth);
+    let ddy = dpdy(depth);
+    // Depth increases offshore; carry foam shoreward along the opposite gradient.
+    let gradient = vec2<f32>((ddx * dyz.y - ddy * dxz.y) / determinant,
+                             (dxz.x * ddy - dyz.x * ddx) / determinant);
+    let gradient_length = length(gradient);
+    return select(vec2<f32>(0.0), -gradient / gradient_length * shallow * 0.75, gradient_length > 1e-4);
+}
+
 // Cheap value noise for the shoreline foam (churning band, no texture).
 // Integer-cell bit hash → white-noise value in [0,1). A sin(dot())*large hash (the usual WGSL
 // one-liner) loses all precision once world coords reach the thousands — OFP islands are ~12 km —
@@ -312,6 +338,20 @@ fn sky_env_sample(dir: vec3<f32>) -> vec3<f32> {
     let u = 0.5 + atan2(dir.z, dir.x) / TWO_PI;
     let v = acos(clamp(dir.y, -1.0, 1.0)) / (TWO_PI * 0.5);
     return textureSampleLevel(sky_env, sky_env_samp, vec2<f32>(u, v), 0.0).rgb;
+}
+
+fn scene_uv(frag_xy: vec2<f32>) -> vec2<f32> {
+    return frag_xy / vec2<f32>(textureDimensions(scene_color));
+}
+
+// The distorted lookup is accepted only when its opaque depth remains behind water.
+// Reversed-Z stores nearer geometry with a larger value, so reject that foreground leak.
+fn refracted_scene(uv: vec2<f32>, surface_depth: f32) -> vec3<f32> {
+    let dims = vec2<i32>(textureDimensions(scene_depth));
+    let texel = clamp(vec2<i32>(uv * vec2<f32>(dims)), vec2<i32>(0), dims - vec2<i32>(1));
+    let opaque_depth = textureLoad(scene_depth, texel, 0);
+    let valid = opaque_depth <= surface_depth + 0.0005;
+    return textureSampleLevel(scene_color, scene_samp, uv, 0.0).rgb * select(0.0, 1.0, valid);
 }
 
 @fragment
@@ -368,6 +408,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // column depth like Beer-Lambert extinction. Reconstructed from the (farthest-resolved) opaque
     // prepass depth. Colours/extinction are live WgrWaterParams (Water tab).
     let water_depth = seabed_depth(in.clip.xy, in.world_pos);
+    let coast_flow = shallow_flow(water_depth, in.base_xz);
+    let river_flow = normalize(wp.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) *
+        max(wp.flow_direction_speed.z, 0.0) * select(0.0, 1.0, wp.flow_direction_speed.w > 0.5);
     let interaction_mask = smoothstep(0.0, wp.coast_fade * 2.0, water_depth);
     let interaction_strength = smoothstep(0.00001, 0.001, abs(h_l) + abs(h_r) + abs(h_d) + abs(h_u));
     n = normalize(mix(n, interaction_normal, interaction_mask * interaction_strength));
@@ -414,7 +457,18 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     } else {
         refl = mix(sun_ambient, fog_color, sun_up);
     }
-    rgb = mix(rgb, refl, fresnel);
+    let uv = scene_uv(in.clip.xy);
+    // Refraction is strongest looking down. The normal offset is bounded in pixels so
+    // choppy near water cannot pull foreground geometry across the shoreline.
+    let refract_uv = clamp(uv + n.xz * (0.002 + 0.010 / (1.0 + water_depth)), vec2<f32>(0.001), vec2<f32>(0.999));
+    let refracted = refracted_scene(refract_uv, in.clip.z);
+    let refract_valid = select(0.0, 1.0, max(max(refracted.r, refracted.g), refracted.b) > 0.0);
+    let transmitted = mix(rgb, refracted, refract_valid * (1.0 - depth_tint) * (1.0 - fresnel));
+
+    // A completed opaque snapshot is used for refraction above. Do not mirror it in screen
+    // space for reflections: without a reflected camera/clip plane that produces incorrect
+    // angles and distances. The environment reflection above remains geometrically stable.
+    rgb = mix(transmitted, refl, fresnel);
 
     // Sharp HDR sun glint — the reflected sun disc, on the same physical scale as the sky's now
     // eye-searing sun. sun_diffuse is the solar IRRADIANCE (the scale that drives the sky); an
@@ -459,7 +513,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // edge, so the water there is transparent (soft wash over wet sand) rather than opaque white.
     let ft = eff_depth / max(wp.foam_width, 1e-4);
     let foam_band = smoothstep(0.0, 0.25, ft) * (1.0 - smoothstep(0.25, 1.0, ft));
-    let foam = clamp(foam_band * foam_noise(in.base_xz, wp.time) * wp.foam_intensity, 0.0, 1.0);
+    let foam = clamp(foam_band * foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time) * wp.foam_intensity, 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
     // The compute source is thresholded, so calm water with no events or breaking crests remains clean.
     let persistent_foam = clamp(foam_history_sample.r * (0.35 + foam_history_sample.b * 0.25), 0.0, 1.0);

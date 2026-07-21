@@ -76,6 +76,8 @@ pub struct Renderer {
     // The scene renders into the multisampled `hdr`; a resolve writes this, and the tonemap /
     // bloom / exposure sample it. At 1x this is None and those read `hdr` directly.
     hdr_resolve: Option<(wgpu::Texture, wgpu::TextureView)>,
+    // Single-sample opaque-scene snapshot consumed by water before it writes HDR.
+    water_scene: Option<(wgpu::Texture, wgpu::TextureView)>,
     hdr_size: (u32, u32),
     // MSAA sample count of the scene targets (1 = off). Fixed at startup (WGR_MSAA); pipelines
     // and offscreen targets are built against it.
@@ -443,6 +445,7 @@ impl Renderer {
             hdr_enabled,
             hdr: None,
             hdr_resolve: None,
+            water_scene: None,
             hdr_size: (0, 0),
             sample_count,
             tonemap,
@@ -669,7 +672,7 @@ impl Renderer {
         let usage = if msaa {
             wgpu::TextureUsages::RENDER_ATTACHMENT
         } else {
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING
+            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC
         };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_hdr_target"),
@@ -707,6 +710,15 @@ impl Renderer {
             let v = t.create_view(&wgpu::TextureViewDescriptor::default());
             (t, v)
         });
+        let water_scene_texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_water_scene_snapshot"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        let water_scene_view = water_scene_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // The single-sample view the post-processing chain reads (resolve target under MSAA,
         // else the scene target directly).
         let sample_view = resolve.as_ref().map(|(_, v)| v).unwrap_or(&view).clone();
@@ -734,6 +746,7 @@ impl Renderer {
         }
         self.hdr = Some((texture, view));
         self.hdr_resolve = resolve;
+        self.water_scene = Some((water_scene_texture, water_scene_view));
         self.hdr_size = (width, height);
         // ensure_hdr rebinds every HDR postprocess stage to the normal scene source.
         self.post_source_underwater = false;
@@ -1415,6 +1428,36 @@ impl Renderer {
                 let dgen = self.gfx3d.depth_gen();
                 if let Some(dv) = self.gfx3d.water_depth_view() {
                     self.water.set_depth_view(&self.device, dv, dgen);
+                }
+                // Freeze the completed scene before water writes `target`. Sampling this
+                // separate texture is legal; sampling the active colour attachment is not.
+                if let (true, Some((hdr_texture, hdr_view)), Some((snapshot_texture, snapshot_view))) =
+                    (self.hdr_enabled, self.hdr.as_ref(), self.water_scene.as_ref())
+                {
+                    if self.sample_count > 1 {
+                        let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                            label: Some("wgr_water_scene_resolve"),
+                            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                                view: hdr_view,
+                                depth_slice: None,
+                                resolve_target: Some(snapshot_view),
+                                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                            })],
+                            depth_stencil_attachment: None,
+                            timestamp_writes: None,
+                            occlusion_query_set: None,
+                            multiview_mask: None,
+                        });
+                        drop(pass);
+                    } else {
+                        encoder.copy_texture_to_texture(
+                            wgpu::TexelCopyTextureInfo { texture: hdr_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                            wgpu::TexelCopyTextureInfo { texture: snapshot_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                            wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+                        );
+                    }
+                    let scene_gen = self.hdr_size.0 as u64 ^ ((self.hdr_size.1 as u64) << 32);
+                    self.water.set_scene_view(&self.device, snapshot_view, scene_gen);
                 }
                 // Lend Sky's reflection env map to water (Stage 4a). The env texture never resizes,
                 // so gen 0 binds it once; a no-op thereafter.

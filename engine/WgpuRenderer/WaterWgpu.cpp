@@ -103,6 +103,9 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     _params.fft_control = {1.0f, 1337.0f, 12.0f, 0.0f};
     _params.fft_wind_sea = {0.82f, 0.57f, 6.0f, 0.08f};
     _params.fft_cascade_lengths = {48.0f, 144.0f, 432.0f, 1296.0f};
+    // The sole draw path is the global ocean plane. Keep directed flow disabled until
+    // water-body batches can supply a river-only material signal.
+    _params.flow_direction_speed = {0.0f, 0.0f, 0.0f, static_cast<float>(WGR_WATER_KIND_OCEAN)};
     _haveInteractionDomain = false;
 }
 

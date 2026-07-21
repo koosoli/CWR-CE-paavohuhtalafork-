@@ -7,8 +7,11 @@ use wgpu::util::DeviceExt;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
     time: f32,
-    _pad: [f32; 3],
+    // WGSL aligns the following vec3 to 16 bytes, making the uniform 32 bytes.
+    _pad: [f32; 7],
 }
+
+const _: () = assert!(std::mem::size_of::<Params>() == 32);
 
 #[test]
 fn underwater_wgsl_validates() {
@@ -61,7 +64,7 @@ impl Underwater {
             min_filter: wgpu::FilterMode::Linear, ..Default::default()
         });
         let params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("wgr_underwater_params"), contents: bytemuck::bytes_of(&Params { time: 0.0, _pad: [0.0; 3] }),
+            label: Some("wgr_underwater_params"), contents: bytemuck::bytes_of(&Params { time: 0.0, _pad: [0.0; 7] }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
         Self { pipeline, layout, sampler, params }
@@ -69,7 +72,7 @@ impl Underwater {
 
     pub fn render(&self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder,
                   source: &wgpu::TextureView, depth: &wgpu::TextureView, destination: &wgpu::TextureView, time: f32) {
-        queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&Params { time, _pad: [0.0; 3] }));
+        queue.write_buffer(&self.params, 0, bytemuck::bytes_of(&Params { time, _pad: [0.0; 7] }));
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgr_underwater_bind"), layout: &self.layout,
             entries: &[

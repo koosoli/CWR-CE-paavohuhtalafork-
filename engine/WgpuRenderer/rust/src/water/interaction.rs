@@ -181,12 +181,13 @@ impl Interaction {
             if event.time_life_foam_mass[0] <= 0.0 {
                 event.time_life_foam_mass[0] = now;
             }
-            // Continuous wakes are refreshed in place rather than consuming the event ring.
+            // Continuous wakes with an explicit id are refreshed independently rather than
+            // merging nearby swimmers or vehicles into one ring entry.
             if event.velocity_kind[3] == 5.0 {
                 if let Some(existing) = self.active_events.iter_mut().find(|existing| {
                     existing.velocity_kind[3] == 5.0
-                        && (existing.position_radius[0] - event.position_radius[0]).abs() < 1.0
-                        && (existing.position_radius[1] - event.position_radius[1]).abs() < 1.0
+                        && event.time_life_foam_mass[3] != 0.0
+                        && existing.time_life_foam_mass[3] == event.time_life_foam_mass[3]
                 }) {
                     *existing = event;
                     continue;

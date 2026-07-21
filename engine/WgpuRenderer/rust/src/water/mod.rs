@@ -29,6 +29,8 @@ pub struct Water {
     depth_view: wgpu::TextureView,
     env_view: wgpu::TextureView,
     env_sampler: wgpu::Sampler,
+    scene_view: wgpu::TextureView,
+    scene_sampler: wgpu::Sampler,
     interaction: Interaction,
     fft: Option<Fft>,
     foam: Option<Foam>,
@@ -39,6 +41,7 @@ pub struct Water {
     // Generations the current group1_bind was built against (u64::MAX = still the dummy).
     depth_gen: u64,
     env_gen: u64,
+    scene_gen: u64,
     grid_vbuf: wgpu::Buffer,
     grid_ibuf: wgpu::Buffer,
     grid_index_count: u32,
@@ -133,6 +136,10 @@ impl Water {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 11, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 12, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 13, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
             ],
         });
 
@@ -172,6 +179,7 @@ impl Water {
             fft_control: [1.0, 1337.0, 12.0, 0.0],
             fft_wind_sea: [0.82, 0.57, 11.0, 0.55],
             fft_cascade_lengths: [48.0, 144.0, 432.0, 1296.0],
+            flow_direction_speed: [0.0, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 
@@ -220,6 +228,18 @@ impl Water {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        let scene_view = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_water_dummy_scene"),
+            size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        }).create_view(&Default::default());
+        let scene_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_water_scene_sampler"), address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge, mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear, ..Default::default()
+        });
         let interaction = Interaction::new(device, composer);
         let fft_fallback_view = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_water_fft_fallback"),
@@ -264,6 +284,8 @@ impl Water {
             &fft_sampler,
             foam.as_ref().map_or(&foam_fallback_view, |f| f.view()),
             foam.as_ref().map_or(&foam_sampler, |f| f.sampler()),
+            &scene_view,
+            &scene_sampler,
         );
 
         let (grid_vbuf, grid_ibuf, grid_index_count) = build_grid(device);
@@ -376,6 +398,8 @@ impl Water {
             depth_view: dummy_depth,
             env_view: dummy_env,
             env_sampler,
+            scene_view,
+            scene_sampler,
             interaction,
             fft,
             foam,
@@ -385,6 +409,7 @@ impl Water {
             foam_sampler,
             depth_gen: u64::MAX,
             env_gen: u64::MAX,
+            scene_gen: u64::MAX,
             grid_vbuf,
             grid_ibuf,
             grid_index_count,
@@ -436,6 +461,8 @@ impl Water {
             &self.fft_sampler,
             self.foam.as_ref().map_or(&self.foam_fallback_view, |f| f.view()),
             self.foam.as_ref().map_or(&self.foam_sampler, |f| f.sampler()),
+            &self.scene_view,
+            &self.scene_sampler,
         );
     }
 
@@ -476,6 +503,16 @@ impl Water {
         if let Some(foam) = &mut self.foam {
             foam.dispatch(encoder, self.interaction.current());
         }
+        self.rebuild_group1(device);
+    }
+
+    // The snapshot is a distinct completed scene texture, never water's active target.
+    pub fn set_scene_view(&mut self, device: &wgpu::Device, scene: &wgpu::TextureView, view_gen: u64) {
+        if self.scene_gen == view_gen {
+            return;
+        }
+        self.scene_view = scene.clone();
+        self.scene_gen = view_gen;
         self.rebuild_group1(device);
     }
 
@@ -551,6 +588,8 @@ fn build_group1(
     fft_sampler: &wgpu::Sampler,
     foam: &wgpu::TextureView,
     foam_sampler: &wgpu::Sampler,
+    scene: &wgpu::TextureView,
+    scene_sampler: &wgpu::Sampler,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgr_water_group1_bind"),
@@ -580,6 +619,8 @@ fn build_group1(
             wgpu::BindGroupEntry { binding: 9, resource: wgpu::BindingResource::Sampler(fft_sampler) },
             wgpu::BindGroupEntry { binding: 10, resource: wgpu::BindingResource::TextureView(foam) },
             wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(foam_sampler) },
+            wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(scene) },
+            wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(scene_sampler) },
         ],
     })
 }

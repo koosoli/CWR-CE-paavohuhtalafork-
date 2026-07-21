@@ -35,12 +35,39 @@ camera-relative CDLOD placement and geomorphing. Cascades 1-3 displace geometry;
 all four affect normals. `WGR_WATER_FFT=0` or unavailable backend setup retains
 the 8-band Gerstner carrier.
 
-`WgrWaterParams` is now 176 bytes. Its appended packed fields are
+The FFT phase expanded `WgrWaterParams` to 176 bytes. Its appended packed fields are
 `fft_control = { enabled, seed, min_geometry_wavelength, pad }`,
 `fft_wind_sea = { wind_x, wind_z, speed_mps, sea_state }`, and
 `fft_cascade_lengths = { length0, length1, length2, length3 }`. The current C++
 producer uses deterministic defaults; wire engine weather into `WaterWgpu::BuildQuadtree`
 when a stable renderer-facing wind source is available.
+
+### Hydro v6 shallow/coastal flow (2026-07-21)
+
+`water.wgsl` derives a cosmetic shoreward foam-flow vector from the existing
+farthest-resolved opaque scene depth. It reconstructs water-column depth exactly as
+the shallow tint and shoreline foam do, transforms its screen derivatives into a
+world-xz depth gradient, and only advects procedural shoreline foam inside the valid
+shallow band. Cleared reversed-Z depth is treated as `DEEP`, so missing terrain/depth
+data remains the established deep-ocean path with no invented flow or foam. This is a
+GPU approximation, not a shallow-water solver: it does not change surface height,
+physics, interaction transport, or the FFT field.
+
+`WgrWaterParams` is now 192 bytes and appends
+`flow_direction_speed = { direction_x, direction_z, metres_per_second, water_kind }`.
+`water_kind` is `WGR_WATER_KIND_OCEAN` (0) or `WGR_WATER_KIND_RIVER` (1). Its default
+is zero, preserving current output. A future river batch can use it to scroll its
+foam directionally, but current `WaterWgpu` only emits one global ocean-plane material;
+there is no authored river surface, water-body batch field, or river flow source to set
+without affecting the ocean. A proper river integration therefore needs per-water-body
+draw/material parameters plus an authored reach direction/speed (or a shallow-flow
+tile) before enabling kind 1.
+
+No waterfall renderer path or waterfall asset classification exists in this backend.
+Do not set `water_kind` for waterfalls: a waterfall needs a separately submitted sheet
+mesh/effect with lip/impact geometry, its own directional material, and a receiving
+pool/foam source. Until that path exists, the global horizontal water plane cannot
+represent a vertical fall safely.
 
 ### 0.1 What Stage 1 shipped (the current water)
 
@@ -285,7 +312,15 @@ Verified against the current renderer; these are the non-obvious decisions the c
   advancing/retreating waterline — with no hard edge. All procedural; zero asset edits; zero gameplay
   impact.
 
-### Stage 3 — Screen-space refraction — **ATTEMPTED then REVERTED (2026-07-11); needs a separate pass**
+### Stage 3 — Opaque-scene refraction fallback — **DONE (2026-07-21)**
+The WGPU path now resolves (MSAA) or copies (1x) the completed HDR scene into a persistent,
+single-sample `wgr_water_scene_snapshot` immediately before its read-only-depth water pass. Water samples
+only that snapshot, never its active colour attachment. A wave-normal screen offset is rejected when the
+resolved opaque reversed-Z depth is nearer than the water fragment, avoiding foreground bleed; unavailable,
+cleared, and below-water cases safely retain the existing body/sky result. This is intentionally a bounded
+opaque-scene approximation: it can include earlier transparent scene draws, but never later HUD/weapon UI.
+
+### Superseded Stage 3 note — dedicated underwater view remains optional
 Screen-space refraction (sampling a pre-water copy of the *composited* scene at a wave-perturbed UV) was
 built and backed out the same day. **Why it can't work here:** the composited frame contains the
 first-person weapon and (third-person) the player model. A screen-space depth guard can't reliably
@@ -315,8 +350,14 @@ colour binding, and the Water-tab controls were all removed; the flat depth-tint
   another view, `frustum_planes(mirror_vp)`, its own `set_shadow_view_count`-style view + records). **Add a
   waterline clip** — the one missing piece (§0.2.3): an oblique near-plane on the mirror projection or an
   extra `CullParamsGpu` plane so below-water instances are rejected before draw, else FS-clip in the
-  reflected pass. Flip winding; needs a reflected color+depth target + resolve. Composite over 4a where
-  rays miss geometry.
+   reflected pass. Flip winding; needs a reflected color+depth target + resolve. Composite over 4a where
+   rays miss geometry.
+  **Current blocker (2026-07-21):** this is not safe to add without a camera/scene-pass extension. The C++/Rust
+  camera ABI has no clip-plane or oblique-projection field, `CullParamsGpu` accepts only frustum planes, and
+  the retained-object, prepass, terrain, froxel, and material paths are recorded for the main camera. Reusing
+  them for a mirror would render below-water geometry and risks incorrect culling/fog. The shipped fallback
+  therefore uses the snapshot as a rough mirrored-screen scene contribution, Fresnel-mixed with the stable
+  sky env map; it is not a true planar geometry reflection.
 - **Exit:** grazing water mirrors the sky and coastline; top-down water transmits.
 
 ### Stage 5 — Per-map look settings + Water tab + sky coupling
