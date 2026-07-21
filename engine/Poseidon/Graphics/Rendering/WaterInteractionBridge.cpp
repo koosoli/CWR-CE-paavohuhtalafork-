@@ -1,6 +1,7 @@
 #include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 
 #include <array>
+#include <atomic>
 #include <mutex>
 
 namespace Poseidon
@@ -10,6 +11,7 @@ namespace
 std::array<HydroWaterInteractionEvent, HydroMaxWaterInteractions> pendingEvents;
 uint32_t pendingCount = 0;
 std::mutex pendingEventsMutex;
+std::atomic<float> playerWaterDepth{0.0f};
 } // namespace
 
 void SubmitWaterInteraction(const HydroWaterInteractionEvent& event)
@@ -46,6 +48,16 @@ uint32_t DrainWaterInteractions(HydroWaterInteractionEvent* events, uint32_t cap
     }
     pendingCount -= count;
     return count;
+}
+
+void SetPlayerWaterDepth(float depth)
+{
+    playerWaterDepth.store(depth, std::memory_order_relaxed);
+}
+
+float GetPlayerWaterDepth()
+{
+    return playerWaterDepth.load(std::memory_order_relaxed);
 }
 
 } // namespace Poseidon

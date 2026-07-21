@@ -884,8 +884,11 @@ impl Renderer {
             self.gfx3d.prepare_cull(&self.device, &self.queue, cam, shadow);
         }
         self.ensure_hdr(self.config.width, self.config.height);
-        let underwater_time = self.water.underwater_params().and_then(|(sea_level, time)| {
-            cameras.get(main_scene_cam).and_then(|cam| (cam.cam_pos[1] < sea_level + 0.35).then_some(time))
+        let water_camera = water_batches.first().map(|batch| batch.camera as usize).unwrap_or(main_scene_cam);
+        let underwater_time = self.water.underwater_params().and_then(|(sea_level, time, player_submerged)| {
+            // Use the water draw camera, not an unrelated terrain/scene batch. The visual
+            // submersion boundary is the actual camera crossing the gameplay sea plane.
+            cameras.get(water_camera).and_then(|cam| (player_submerged || cam.cam_pos[1] < sea_level).then_some(time))
         });
         if underwater_time.is_some() && !self.hdr_enabled {
             self.ensure_underwater_target(self.config.width, self.config.height);

@@ -42,4 +42,9 @@ static_assert(sizeof(HydroWaterInteractionEvent) == 64 && alignof(HydroWaterInte
 void SubmitWaterInteraction(const HydroWaterInteractionEvent& event);
 uint32_t DrainWaterInteractions(HydroWaterInteractionEvent* events, uint32_t capacity);
 
+// Player immersion is visual-only. It lets the renderer distinguish a camera above
+// water from an infantry body merely standing in shallow water.
+void SetPlayerWaterDepth(float depth);
+float GetPlayerWaterDepth();
+
 } // namespace Poseidon

@@ -23,7 +23,7 @@ fn fft_source(world: vec2<f32>) -> f32 {
         let auxiliary = textureSampleLevel(fft_auxiliary, field_sampler, uv, layer, 0.0);
         let crest = max(displacement.w, auxiliary.y);
         let compression = max(auxiliary.x, 0.0);
-        source = max(source, smoothstep(0.32, 0.72, crest) * smoothstep(0.06, 0.22, compression));
+        source = max(source, smoothstep(0.06, 0.22, crest) * smoothstep(0.005, 0.03, compression));
     }
     return source;
 }

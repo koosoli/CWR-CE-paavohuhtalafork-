@@ -476,8 +476,8 @@ impl Water {
         self.last_params = Some(params);
     }
 
-    pub fn underwater_params(&self) -> Option<(f32, f32)> {
-        self.last_params.map(|p| (p.sea_level, p.time))
+    pub fn underwater_params(&self) -> Option<(f32, f32, bool)> {
+        self.last_params.map(|p| (p.sea_level, p.time, p.fft_control[3] > 0.5))
     }
 
     pub fn fft_enabled(&self) -> bool {

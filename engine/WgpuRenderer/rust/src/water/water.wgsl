@@ -344,14 +344,76 @@ fn scene_uv(frag_xy: vec2<f32>) -> vec2<f32> {
     return frag_xy / vec2<f32>(textureDimensions(scene_color));
 }
 
-// The distorted lookup is accepted only when its opaque depth remains behind water.
-// Reversed-Z stores nearer geometry with a larger value, so reject that foreground leak.
-fn refracted_scene(uv: vec2<f32>, surface_depth: f32) -> vec3<f32> {
+struct SceneSample {
+    color: vec3<f32>,
+    valid: f32,
+};
+
+// The distorted lookup is accepted only when opaque geometry is farther from the
+// camera than the water surface. Compare reconstructed camera-relative distance,
+// not nonlinear reversed-Z values, and keep validity separate from scene colour.
+fn refracted_scene(uv: vec2<f32>, surface_rel: vec3<f32>) -> SceneSample {
     let dims = vec2<i32>(textureDimensions(scene_depth));
     let texel = clamp(vec2<i32>(uv * vec2<f32>(dims)), vec2<i32>(0), dims - vec2<i32>(1));
     let opaque_depth = textureLoad(scene_depth, texel, 0);
-    let valid = opaque_depth <= surface_depth + 0.0005;
-    return textureSampleLevel(scene_color, scene_samp, uv, 0.0).rgb * select(0.0, 1.0, valid);
+    if (opaque_depth <= 1e-6) {
+        return SceneSample(vec3<f32>(0.0), 0.0);
+    }
+    let ndc_xy = uv * vec2<f32>(2.0, -2.0) + vec2<f32>(-1.0, 1.0);
+    let opaque_h = frame.inv_view_proj * vec4<f32>(ndc_xy, 1.0 - opaque_depth, 1.0);
+    let opaque_rel = opaque_h.xyz / opaque_h.w;
+    let behind_water = length(opaque_rel) > length(surface_rel) + 0.05;
+    return SceneSample(textureSampleLevel(scene_color, scene_samp, uv, 0.0).rgb, select(0.0, 1.0, behind_water));
+}
+
+// Trace the physically reflected view ray against the opaque depth snapshot. This deliberately
+// projects every ray position instead of mirroring screen UVs: the latter is not a reflection and
+// produces the old angle/distance artifact. A hit must be in front of the ray in reversed-Z and
+// reconstruct close to it in camera-relative world space, rejecting foreground and depth-gap leaks.
+// Off-screen/missing data falls through to the environment reflection.
+fn reflected_scene(surface_rel: vec3<f32>, reflect_dir: vec3<f32>, normal_variation: f32) -> vec4<f32> {
+    let dims = vec2<i32>(textureDimensions(scene_depth));
+    var hit_color = vec3<f32>(0.0);
+    var hit_weight = 0.0;
+    var hit_distance = 0.0;
+
+    // Twenty coarse samples keep this viable in the forward water pass. Terrain and large opaque
+    // objects are the intended targets; thin geometry remains an environment-reflection fallback.
+    for (var i = 0; i < 20; i = i + 1) {
+        if (hit_weight == 0.0) {
+            let ray_distance = 2.0 + f32(i) * 10.0;
+            let ray_pos = surface_rel + reflect_dir * ray_distance;
+            let clip = frame.proj * frame.view * vec4<f32>(ray_pos, 1.0);
+            if (clip.w > 1e-5) {
+                let ndc = clip.xyz / clip.w;
+                let uv = ndc.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5);
+                if (all(uv > vec2<f32>(0.001)) && all(uv < vec2<f32>(0.999)) && ndc.z > 0.0 && ndc.z < 1.0) {
+                    let texel = clamp(vec2<i32>(uv * vec2<f32>(dims)), vec2<i32>(0), dims - vec2<i32>(1));
+                    let opaque_depth = textureLoad(scene_depth, texel, 0);
+                    let ray_depth = 1.0 - ndc.z;
+                    // Larger reversed depth is closer to the camera. A cleared texel has no scene
+                    // intersection, and geometry behind the traced ray must not be reflected.
+                    if (opaque_depth > 1e-6 && opaque_depth >= ray_depth) {
+                        let opaque_h = frame.inv_view_proj * vec4<f32>(ndc.xy, 1.0 - opaque_depth, 1.0);
+                        let opaque_rel = opaque_h.xyz / opaque_h.w;
+                        let thickness = 1.5 + ray_distance * 0.025;
+                        if (length(opaque_rel - ray_pos) <= thickness) {
+                            let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+                            hit_color = textureSampleLevel(scene_color, scene_samp, uv, 0.0).rgb;
+                            hit_weight = smoothstep(0.01, 0.07, edge);
+                            hit_distance = ray_distance;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Rapid normal changes are a cheap water-roughness proxy: blur-free SSR is unstable on crests,
+    // so leave those pixels to the filtered sky environment instead.
+    let roughness_fade = 1.0 - smoothstep(0.08, 0.30, normal_variation);
+    let distance_fade = 1.0 - smoothstep(120.0, 192.0, hit_distance);
+    return vec4<f32>(hit_color, hit_weight * roughness_fade * distance_fade);
 }
 
 @fragment
@@ -457,17 +519,19 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     } else {
         refl = mix(sun_ambient, fog_color, sun_up);
     }
+    let refl_dir = reflect(normalize(in.world_pos), n);
+    let normal_variation = length(dpdx(n)) + length(dpdy(n));
+    let ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
+    refl = mix(refl, ssr.rgb, ssr.a);
     let uv = scene_uv(in.clip.xy);
     // Refraction is strongest looking down. The normal offset is bounded in pixels so
     // choppy near water cannot pull foreground geometry across the shoreline.
     let refract_uv = clamp(uv + n.xz * (0.002 + 0.010 / (1.0 + water_depth)), vec2<f32>(0.001), vec2<f32>(0.999));
-    let refracted = refracted_scene(refract_uv, in.clip.z);
-    let refract_valid = select(0.0, 1.0, max(max(refracted.r, refracted.g), refracted.b) > 0.0);
-    let transmitted = mix(rgb, refracted, refract_valid * (1.0 - depth_tint) * (1.0 - fresnel));
+    let refracted = refracted_scene(refract_uv, in.world_pos);
+    let transmitted = mix(rgb, refracted.color, refracted.valid * (1.0 - depth_tint) * (1.0 - fresnel));
 
-    // A completed opaque snapshot is used for refraction above. Do not mirror it in screen
-    // space for reflections: without a reflected camera/clip plane that produces incorrect
-    // angles and distances. The environment reflection above remains geometrically stable.
+    // SSR augments, but never replaces, the environment: the snapshot cannot reflect off-screen
+    // content or transparent objects, and this renderer has no reflected-camera/clip-plane pass.
     rgb = mix(transmitted, refl, fresnel);
 
     // Sharp HDR sun glint — the reflected sun disc, on the same physical scale as the sky's now
@@ -516,7 +580,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let foam = clamp(foam_band * foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time) * wp.foam_intensity, 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
     // The compute source is thresholded, so calm water with no events or breaking crests remains clean.
-    let persistent_foam = clamp(foam_history_sample.r * (0.35 + foam_history_sample.b * 0.25), 0.0, 1.0);
+    let persistent_foam = clamp(foam_history_sample.r * (0.50 + foam_history_sample.b * 0.30), 0.0, 1.0);
     let combined_foam = max(foam, persistent_foam);
     // Foam is bright diffuse spray, not an emitter: light it by the sky ambient + direct sun (where
     // the water isn't shadowed) so it goes dim at night instead of glowing white in the dark.

@@ -336,6 +336,15 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
             pForce[0] = 0;
             pForce[1] = -G_CONST * GetMass();
             pForce[2] = 0;
+            if (playerControlled && _waterDepth > 0.0f)
+            {
+                // Use last frame's water contact to counter gravity without changing the
+                // legacy move state, collision queue, or the actor's position directly.
+                float immersion = _waterDepth * 4.0f;
+                saturate(immersion, 0.0f, 1.25f);
+                pForce[1] += G_CONST * GetMass() * immersion;
+                pForce[1] -= speed[1] * GetMass() * 3.0f;
+            }
             force += pForce;
 
             saturate(_angMomentum[0], -10, +10);
@@ -870,7 +879,7 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
             {
                 maxSafeDepth = 0.6f;
             }
-            if (_waterDepth > maxSafeDepth)
+            if (_waterDepth > maxSafeDepth && !playerControlled)
             {
                 float drown = (_waterDepth - maxSafeDepth) * (1.0f / 0.5f);
                 saturateMin(drown, 2);
@@ -886,6 +895,7 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
         // these values back into infantry simulation; the render path drains the bridge later.
         if (playerControlled)
         {
+            SetPlayerWaterDepth(_waterDepth);
             Vector3Val speed = Speed();
             const float horizontalSpeed = sqrt(speed.X() * speed.X() + speed.Z() * speed.Z());
             const bool inWater = _waterDepth > 0.05f;
@@ -929,6 +939,7 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
         }
         else
         {
+            SetPlayerWaterDepth(0.0f);
             _hydroWaterDepth = 0.0f;
         }
     } // if (!CheckPredictionFrozen())

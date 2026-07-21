@@ -922,24 +922,6 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
     // small/big explosion
     bool smallExplosion = !type->explosive;
     bool water = pos.Y() < _seaLevelWave + 0.01;
-    if (water)
-    {
-        HydroWaterInteractionEvent event{};
-        event.positionRadius[0] = pos.X();
-        event.positionRadius[1] = pos.Z();
-        event.positionRadius[2] = smallExplosion ? 0.65f : floatMin(floatMax(type->indirectHitRange * 0.35f, 1.5f), 8.0f);
-        event.positionRadius[3] = smallExplosion ? 0.22f : 0.70f;
-        event.velocityKind[0] = dir.X();
-        event.velocityKind[1] = dir.Z();
-        event.velocityKind[2] = dir.Y() * 8.0f;
-        event.velocityKind[3] = smallExplosion ? HydroWaterInteractionBullet : HydroWaterInteractionExplosion;
-        event.timeLifeFoamMass[1] = smallExplosion ? 0.7f : 1.8f;
-        event.timeLifeFoamMass[2] = smallExplosion ? 0.12f : 0.75f;
-        event.directionDepthFlags[0] = dir.X();
-        event.directionDepthFlags[1] = dir.Z();
-        event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse;
-        SubmitWaterInteraction(event);
-    }
     const float craterTimeCoef = 5;
     if (smallExplosion)
     {

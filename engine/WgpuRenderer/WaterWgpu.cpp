@@ -174,6 +174,10 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _params.foam_intensity = look.foamIntensity;
     _params.swash_amp = look.swashAmp;
     _params.swash_speed = look.swashSpeed;
+    // The fourth FFT control component is otherwise padding. The renderer receives no
+    // reliable head transform from legacy infantry, so use deep player immersion plus
+    // a downward look direction as the visual-only submersion signal.
+    _params.fft_control.w = GetPlayerWaterDepth() > 0.8f && camera->Direction().Y() < -0.20f ? 1.0f : 0.0f;
     wgr_water_set_params(_renderer, &_params);
 
     const Vector3 cameraPos = camera->Position();
