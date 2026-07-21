@@ -1,6 +1,7 @@
 #include <Poseidon/World/Entities/Infantry/SoldierOldCommon.hpp>
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Input/InputSubsystem.hpp>
+#include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 #include <Poseidon/Network/NetworkCustomAssets.hpp>
 #include <limits.h>
 #include <stdio.h>
@@ -302,6 +303,7 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
     if (!CheckPredictionFrozen())
     {
         Vector3 position = Position();
+        const bool playerControlled = Brain() && Brain()->IsPlayer();
 
         // simulate interaction with land
         Vector3 friction(VZero), torqueFriction(VZero);
@@ -860,7 +862,7 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
             RecalcPositions(moveTrans);
         }
 
-        if (_waterDepth > 0)
+        if (_waterDepth > 0 && !playerControlled)
         {
             _waterContact = true;
             float maxSafeDepth = 1.2f;
@@ -878,6 +880,54 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
         else
         {
             _waterContact = false;
+        }
+
+        // Rendering-only event production after collision/movement are complete. Do not feed
+        // these values back into infantry simulation; the render path drains the bridge later.
+        if (playerControlled)
+        {
+            Vector3Val speed = Speed();
+            const float horizontalSpeed = sqrt(speed.X() * speed.X() + speed.Z() * speed.Z());
+            const bool inWater = _waterDepth > 0.05f;
+            const uint32_t waterFlag = _waterDepth > 0.65f ? HydroWaterInteractionPlayerSwimming
+                                                            : HydroWaterInteractionPlayerWading;
+            if (inWater && _hydroWaterDepth <= 0.05f)
+            {
+                HydroWaterInteractionEvent event{};
+                event.positionRadius[0] = Position().X();
+                event.positionRadius[1] = Position().Z();
+                event.positionRadius[2] = 0.9f;
+                event.positionRadius[3] = 0.45f;
+                event.velocityKind[2] = speed.Y();
+                event.velocityKind[3] = HydroWaterInteractionPlayer;
+                event.timeLifeFoamMass[1] = 1.0f;
+                event.timeLifeFoamMass[2] = 0.5f;
+                event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse | waterFlag;
+                SubmitWaterInteraction(event);
+            }
+            if (inWater && horizontalSpeed > 0.15f)
+            {
+                HydroWaterInteractionEvent event{};
+                event.positionRadius[0] = Position().X();
+                event.positionRadius[1] = Position().Z();
+                event.positionRadius[2] = 0.5f + horizontalSpeed * 0.18f;
+                event.positionRadius[3] = 0.12f + horizontalSpeed * 0.035f;
+                event.velocityKind[0] = speed.X();
+                event.velocityKind[1] = speed.Z();
+                event.velocityKind[3] = HydroWaterInteractionContinuous;
+                event.timeLifeFoamMass[1] = 0.20f;
+                event.timeLifeFoamMass[2] = 0.20f;
+                event.directionDepthFlags[0] = speed.X() / horizontalSpeed;
+                event.directionDepthFlags[1] = speed.Z() / horizontalSpeed;
+                event.directionDepthFlags[2] = _waterDepth;
+                event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse | HydroWaterInteractionCapsule | waterFlag;
+                SubmitWaterInteraction(event);
+            }
+            _hydroWaterDepth = _waterDepth;
+        }
+        else
+        {
+            _hydroWaterDepth = 0.0f;
         }
     } // if (!CheckPredictionFrozen())
 

@@ -753,6 +753,29 @@ pub struct WgrWaterParams {
     pub foam_intensity: f32,
     pub swash_amp: f32,
     pub swash_speed: f32,
+    pub fft_control: WgrVec4,
+    pub fft_wind_sea: WgrVec4,
+    pub fft_cascade_lengths: WgrVec4,
+}
+
+pub const MAX_WATER_INTERACTIONS: usize = 48;
+#[repr(C, align(16))]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrWaterInteractionEvent {
+    pub position_radius: WgrVec4,
+    pub velocity_kind: WgrVec4,
+    pub time_life_foam_mass: WgrVec4,
+    pub direction_depth_flags: WgrVec4,
+}
+#[repr(C, align(16))]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrWaterInteractionParams {
+    pub domain: WgrVec4,
+    pub previous_domain: WgrVec4,
+    pub grid: WgrVec4,
+    pub physics: WgrVec4,
+    pub misc: WgrVec4,
+    pub weather: WgrVec4,
 }
 
 // One water node (shared grid mesh at world-xz `origin`, `size` wide, level `lod`).
@@ -860,9 +883,13 @@ const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 128);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 176);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrWaterInteractionEvent>() == 64);
+const _: () = assert!(std::mem::align_of::<WgrWaterInteractionEvent>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrWaterInteractionParams>() == 96);
+const _: () = assert!(std::mem::align_of::<WgrWaterInteractionParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrFrame>() == 560);
 
@@ -1325,6 +1352,26 @@ pub unsafe extern "C" fn wgr_water_set_params(
         let renderer = unsafe { &mut *renderer };
         let params = unsafe { *params };
         renderer.water_set_params(params);
+    }));
+}
+
+/// # Safety
+/// `renderer` must be live and `params` must point to one valid interaction parameter block.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_water_set_interaction_params(renderer: *mut WgrRenderer, params: *const WgrWaterInteractionParams) {
+    if renderer.is_null() || params.is_null() { return; }
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe { &mut *renderer }.water_set_interaction_params(unsafe { *params })));
+}
+
+/// # Safety
+/// `renderer` must be live; `events` must point to `count` records unless `count` is zero.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_water_submit_interactions(renderer: *mut WgrRenderer, events: *const WgrWaterInteractionEvent, count: u32) {
+    if renderer.is_null() || (events.is_null() && count != 0) { return; }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let count = (count as usize).min(MAX_WATER_INTERACTIONS);
+        let events = if count == 0 { &[] } else { unsafe { std::slice::from_raw_parts(events, count) } };
+        unsafe { &mut *renderer }.water_submit_interactions(events);
     }));
 }
 

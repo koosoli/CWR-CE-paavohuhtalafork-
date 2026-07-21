@@ -42,6 +42,9 @@ struct WaterParams {
     foam_intensity: f32, // foam brightness/coverage scale
     swash_amp: f32,      // m the near-shore waterline oscillates in/out (cosmetic)
     swash_speed: f32,    // swash cycles per second
+    fft_control: vec4<f32>, // enabled, seed, minimum geometry wavelength, pad
+    fft_wind_sea: vec4<f32>, // wind x/z, speed, sea state
+    fft_cascade_lengths: vec4<f32>, // stable world-space cascade lengths
 };
 
 // Must match GRID_N in water/mod.rs (and the terrain grid).
@@ -57,16 +60,29 @@ const GRID_N: f32 = 32.0;
 // for the Stage-4a real sky reflection: sampled in the reflected view direction (HDR path only).
 @group(1) @binding(2) var sky_env: texture_2d<f32>;
 @group(1) @binding(3) var sky_env_samp: sampler;
+@group(1) @binding(4) var interaction_field: texture_2d<f32>;
+@group(1) @binding(5) var interaction_samp: sampler;
+@group(1) @binding(6) var fft_displacement: texture_2d_array<f32>;
+@group(1) @binding(7) var fft_dynamics: texture_2d_array<f32>;
+@group(1) @binding(8) var fft_auxiliary: texture_2d_array<f32>;
+@group(1) @binding(9) var fft_samp: sampler;
+@group(1) @binding(10) var foam_history: texture_2d<f32>;
+@group(1) @binding(11) var foam_samp: sampler;
 
-// Hard-coded wave set (per-map authoring can come later). Each: dir.xy (un-normalised),
-// wavelength (m), amplitude (m). Gentle by design — the amplitudes sum to ~0.25 m, the
-// legacy maxWave, so crests never lift a hull off the flat buoyancy plane.
-const NUM_WAVES: i32 = 4;
-const WAVES = array<vec4<f32>, 4>(
-    vec4<f32>( 1.0,  0.15, 27.0, 0.110),
-    vec4<f32>( 0.6,  0.80, 15.0, 0.070),
-    vec4<f32>(-0.5,  0.90,  9.0, 0.045),
-    vec4<f32>( 0.9, -0.40,  5.5, 0.030),
+// Multi-band open-ocean carrier. The long swells establish the readable sea state,
+// while successively shorter cross-waves break up the regularity around the camera.
+// The forthcoming Hydro FFT backend replaces this analytic spectrum but samples through
+// the same CDLOD surface path, so the engine integration remains stable in the interim.
+const NUM_WAVES: i32 = 8;
+const WAVES = array<vec4<f32>, 8>(
+    vec4<f32>( 0.92,  0.38, 70.0, 1.100),
+    vec4<f32>( 0.42,  0.91, 39.0, 0.650),
+    vec4<f32>(-0.61,  0.79, 24.0, 0.380),
+    vec4<f32>( 0.97, -0.22, 15.0, 0.200),
+    vec4<f32>(-0.20, -0.98,  9.0, 0.120),
+    vec4<f32>( 0.70,  0.72,  5.0, 0.065),
+    vec4<f32>(-0.94,  0.34,  3.0, 0.035),
+    vec4<f32>( 0.20, -0.98,  1.8, 0.015),
 );
 const G: f32 = 9.81;      // gravity, for the deep-water dispersion omega = sqrt(g*k)
 const TWO_PI: f32 = 6.2831853;
@@ -145,6 +161,45 @@ fn gerstner_normal(p_in: vec2<f32>, dist: f32) -> vec3<f32> {
     return normalize(vec3<f32>(nx, 1.0 + ny, nz));
 }
 
+// Sample absolute xz so camera-relative rendering never changes FFT phase.
+fn fft_sample(xz: vec2<f32>, layer: i32) -> vec4<f32> {
+    let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
+    return textureSampleLevel(fft_displacement, fft_samp, fract(xz / length_m), layer, 0.0);
+}
+fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
+    var disp = vec3<f32>(0.0);
+    // The shortest cascade remains normal detail; longer bands displace CDLOD geometry.
+    for (var layer = 1; layer < 4; layer = layer + 1) {
+        disp = disp + fft_sample(xz, layer).xyz;
+    }
+    return disp * wave_fade(dist);
+}
+fn fft_normal(xz: vec2<f32>, dist: f32) -> vec3<f32> {
+    var slope = vec2<f32>(0.0);
+    for (var layer = 0; layer < 4; layer = layer + 1) {
+        let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
+        slope = slope + textureSampleLevel(fft_dynamics, fft_samp, fract(xz / length_m), layer, 0.0).xy;
+    }
+    return normalize(vec3<f32>(-slope.x * wave_fade(dist), 1.0, -slope.y * wave_fade(dist)));
+}
+
+// The interaction field follows the camera in a 256m domain. Outside it samples zero;
+// zero events therefore leave the established Gerstner-only path bit-for-bit unchanged.
+fn interaction_sample(xz: vec2<f32>) -> vec4<f32> {
+    let domain_origin = vec2<f32>(floor((frame.cam_pos.x - 128.0) / 4.0) * 4.0, floor((frame.cam_pos.z - 128.0) / 4.0) * 4.0);
+    let uv = (xz - domain_origin) / 256.0;
+    let inside = step(0.0, uv.x) * step(0.0, uv.y) * step(uv.x, 1.0) * step(uv.y, 1.0);
+    return textureSampleLevel(interaction_field, interaction_samp, clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0) * inside;
+}
+// Foam shares the interaction's snapped 256 m camera-relative domain, but its history is
+// reprojected by the compute pass so this stable world lookup does not swim with the camera.
+fn persistent_foam_sample(xz: vec2<f32>) -> vec4<f32> {
+    let domain_origin = vec2<f32>(floor((frame.cam_pos.x - 128.0) / 4.0) * 4.0, floor((frame.cam_pos.z - 128.0) / 4.0) * 4.0);
+    let uv = (xz - domain_origin) / 256.0;
+    let inside = step(0.0, uv.x) * step(0.0, uv.y) * step(uv.x, 1.0) * step(uv.y, 1.0);
+    return textureSampleLevel(foam_history, foam_samp, clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0) * inside;
+}
+
 struct VsOut {
     @builtin(position) clip: vec4<f32>,
     @location(0) world_pos: vec3<f32>, // camera-relative displaced position
@@ -177,8 +232,12 @@ fn vs_water(
     let grid_coarse = (round(gidx * 0.5) * 2.0) / GRID_N;
     let base_xz = origin + mix(grid, grid_coarse, morph_k) * size;
 
-    let disp = gerstner_disp(base_xz, dist);
-    let y = wp.sea_level + disp.y - grid_in.z * (size / GRID_N) * skirt_k;
+    var disp = gerstner_disp(base_xz, dist);
+    if (wp.fft_control.x > 0.5) {
+        disp = fft_geometry_disp(base_xz, dist);
+    }
+    let interaction = interaction_sample(base_xz);
+    let y = wp.sea_level + disp.y + interaction.r - grid_in.z * (size / GRID_N) * skirt_k;
     let world_rel = vec3<f32>(base_xz.x + disp.x, y, base_xz.y + disp.z) - frame.cam_pos.xyz;
 
     var out: VsOut;
@@ -261,7 +320,16 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let dwx = dpdx(in.world_pos);
     let dwy = dpdy(in.world_pos);
 
-    let n = gerstner_normal(in.base_xz, length(in.world_pos));
+    let interaction_cell = 1.0;
+    let h_l = interaction_sample(in.base_xz - vec2<f32>(interaction_cell, 0.0)).r;
+    let h_r = interaction_sample(in.base_xz + vec2<f32>(interaction_cell, 0.0)).r;
+    let h_d = interaction_sample(in.base_xz - vec2<f32>(0.0, interaction_cell)).r;
+    let h_u = interaction_sample(in.base_xz + vec2<f32>(0.0, interaction_cell)).r;
+    let interaction_normal = normalize(vec3<f32>(h_l - h_r, 2.0 * interaction_cell, h_d - h_u));
+    var n = gerstner_normal(in.base_xz, length(in.world_pos));
+    if (wp.fft_control.x > 0.5) {
+        n = fft_normal(in.base_xz, length(in.world_pos));
+    }
     let v = normalize(-in.world_pos);              // surface -> camera
     let l = normalize(-frame.sun_dir_world.xyz);   // surface -> sun
 
@@ -300,6 +368,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // column depth like Beer-Lambert extinction. Reconstructed from the (farthest-resolved) opaque
     // prepass depth. Colours/extinction are live WgrWaterParams (Water tab).
     let water_depth = seabed_depth(in.clip.xy, in.world_pos);
+    let interaction_mask = smoothstep(0.0, wp.coast_fade * 2.0, water_depth);
+    let interaction_strength = smoothstep(0.00001, 0.001, abs(h_l) + abs(h_r) + abs(h_d) + abs(h_u));
+    n = normalize(mix(n, interaction_normal, interaction_mask * interaction_strength));
     var shallow = wp.shallow_color.rgb;
     var deep = wp.deep_color.rgb;
     if (linear > 0.5) {
@@ -389,16 +460,20 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let ft = eff_depth / max(wp.foam_width, 1e-4);
     let foam_band = smoothstep(0.0, 0.25, ft) * (1.0 - smoothstep(0.25, 1.0, ft));
     let foam = clamp(foam_band * foam_noise(in.base_xz, wp.time) * wp.foam_intensity, 0.0, 1.0);
+    let foam_history_sample = persistent_foam_sample(in.base_xz);
+    // The compute source is thresholded, so calm water with no events or breaking crests remains clean.
+    let persistent_foam = clamp(foam_history_sample.r * (0.35 + foam_history_sample.b * 0.25), 0.0, 1.0);
+    let combined_foam = max(foam, persistent_foam);
     // Foam is bright diffuse spray, not an emitter: light it by the sky ambient + direct sun (where
     // the water isn't shadowed) so it goes dim at night instead of glowing white in the dark.
     let foam_color = sun_ambient * amb_ao + sun_diffuse * sun_vis;
-    rgb = mix(rgb, foam_color, foam);
+    rgb = mix(rgb, foam_color, combined_foam);
 
     // Base opacity, Fresnel-opaque at grazing angles (where real water is a mirror) so
     // the seabed only shows through looking down. A soft shoreline fade dissolves the water
     // to transparent as the (swash-moved) column depth -> 0, so the hard coast cut becomes a
     // gentle wash over the visible wet beach; foam forces opacity where it sits.
     let shore = smoothstep(0.0, wp.coast_fade, eff_depth);
-    let alpha = max(mix(wp.alpha, 1.0, fresnel) * shore, foam);
+    let alpha = max(mix(wp.alpha, 1.0, fresnel) * shore, combined_foam);
     return vec4<f32>(rgb, alpha);
 }

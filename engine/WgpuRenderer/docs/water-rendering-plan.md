@@ -24,6 +24,24 @@ stages around what they actually expose and promotes **coast look** to the front
 
 ## 0. Where we are today (verified 2026-07-11)
 
+### Hydro FFT Phase 1 (2026-07-21)
+
+The wgpu water path has a shared `128 x 128 x 4` inverse FFT backend in
+`rust/src/water/fft.rs`. Each frame evolves the deterministic wind spectrum,
+runs horizontal and vertical inverse stages for three RGBA32F complex packs,
+then composes RGBA16F displacement, slope/dynamics and auxiliary arrays before
+the water render pass. `water.wgsl` samples absolute world xz, preserving CWR's
+camera-relative CDLOD placement and geomorphing. Cascades 1-3 displace geometry;
+all four affect normals. `WGR_WATER_FFT=0` or unavailable backend setup retains
+the 8-band Gerstner carrier.
+
+`WgrWaterParams` is now 176 bytes. Its appended packed fields are
+`fft_control = { enabled, seed, min_geometry_wavelength, pad }`,
+`fft_wind_sea = { wind_x, wind_z, speed_mps, sea_state }`, and
+`fft_cascade_lengths = { length0, length1, length2, length3 }`. The current C++
+producer uses deterministic defaults; wire engine weather into `WaterWgpu::BuildQuadtree`
+when a stable renderer-facing wind source is available.
+
 ### 0.1 What Stage 1 shipped (the current water)
 
 `engine/WgpuRenderer/rust/src/water/` (`mod.rs` + `water.wgsl`) draws a flat CDLOD grid at the frame's

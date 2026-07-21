@@ -685,7 +685,19 @@ struct WgrWaterParams
     float foam_intensity;
     float swash_amp;
     float swash_speed;
+    /* Shared FFT ocean controls. fft_control = enabled, deterministic seed, minimum geometry
+     * wavelength, pad. fft_wind_sea = wind x/z, speed (m/s), sea state (0..1). The four
+     * cascade lengths are world metres and must remain stable across camera-origin changes. */
+    WgrVec4 fft_control;
+    WgrVec4 fft_wind_sea;
+    WgrVec4 fft_cascade_lengths;
 };
+
+constexpr uint32_t WGR_MAX_WATER_INTERACTIONS = 48;
+enum WgrWaterInteractionKind : uint32_t { WGR_WATER_INTERACTION_BULLET = 0, WGR_WATER_INTERACTION_OBJECT = 1, WGR_WATER_INTERACTION_PLAYER = 2, WGR_WATER_INTERACTION_EXPLOSION = 3, WGR_WATER_INTERACTION_FOOTSTEP = 4, WGR_WATER_INTERACTION_CONTINUOUS = 5 };
+enum WgrWaterInteractionFlags : uint32_t { WGR_WATER_INTERACTION_PENDING_IMPULSE = 1u << 0, WGR_WATER_INTERACTION_CAPSULE = 1u << 8, WGR_WATER_INTERACTION_PLAYER_WADING = 1u << 9, WGR_WATER_INTERACTION_PLAYER_SWIMMING = 1u << 10, WGR_WATER_INTERACTION_LEFT_SIDE = 1u << 11, WGR_WATER_INTERACTION_LARGE_BODY = 1u << 12 };
+struct alignas(16) WgrWaterInteractionEvent { WgrVec4 position_radius, velocity_kind, time_life_foam_mass, direction_depth_flags; };
+struct alignas(16) WgrWaterInteractionParams { WgrVec4 domain, previous_domain, grid, physics, misc, weather; };
 
 /* One water node instance: byte-identical to WgrTerrainNode (the shared grid mesh
  * placed at world-xz `origin`, `size` x `size`, level `lod`, morphing over the
@@ -816,9 +828,11 @@ static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match th
 static_assert(sizeof(WgrTerrainParams) == 64, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrWaterParams) == 128, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterParams) == 176, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 24, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterInteractionEvent) == 64 && alignof(WgrWaterInteractionEvent) == 16, "WgrWaterInteractionEvent must match Rust");
+static_assert(sizeof(WgrWaterInteractionParams) == 96 && alignof(WgrWaterInteractionParams) == 16, "WgrWaterInteractionParams must match Rust");
 static_assert(sizeof(WgrFrame) == 560, "WgrFrame layout must match the Rust #[repr(C)] struct");
 
 // --- Functions ---------------------------------------------------------------
@@ -977,6 +991,8 @@ extern "C"
     /* Set/refresh the water placement params (see WgrWaterParams). Cheap; called on
      * map load and each frame to update the animated `sea_level`. */
     WGR_API void wgr_water_set_params(WgrRenderer* renderer, const WgrWaterParams* params);
+    WGR_API void wgr_water_set_interaction_params(WgrRenderer* renderer, const WgrWaterInteractionParams* params);
+    WGR_API void wgr_water_submit_interactions(WgrRenderer* renderer, const WgrWaterInteractionEvent* events, uint32_t count);
 
     /* Render + present one frame. Returns 0 on success (incl. transient skipped
      * frames), negative on error. */

@@ -281,6 +281,21 @@ impl Bloom {
         );
     }
 
+    // The underwater compositor substitutes its scratch target for the finished scene.
+    pub fn set_source(&mut self, device: &wgpu::Device, scene_view: &wgpu::TextureView) {
+        if self.down_binds.is_empty() {
+            return;
+        }
+        self.down_binds[0] = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_bloom_scene_bind"), layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(scene_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+    }
+
     // mip0 of the finished pyramid — the bloom the tonemap adds to the scene.
     pub fn view(&self) -> Option<&wgpu::TextureView> {
         self.mip_views.first()

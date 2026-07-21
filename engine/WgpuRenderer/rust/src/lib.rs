@@ -11,12 +11,13 @@ mod water;
 mod bloom;
 mod exposure;
 mod tonemap;
+mod underwater;
 
 use crate::ffi::{
     WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrInstance, WgrMat4, WgrMeshVertex,
     WgrModelLod, WgrModelMaterial, WgrModelSection, WgrOverlayDraw, WgrOverlayVertex, WgrLight,
     WgrShadowCaster, WgrShadowPass, WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams,
-    WgrVec4, WgrVertex2D, WgrWaterBatch, WgrWaterNode, WgrWaterParams,
+    WgrVec4, WgrVertex2D, WgrWaterBatch, WgrWaterNode, WgrWaterParams, WgrWaterInteractionEvent, WgrWaterInteractionParams,
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::{Gfx3d, env_f32};
@@ -28,6 +29,7 @@ use crate::water::Water;
 use crate::bloom::Bloom;
 use crate::exposure::Exposure;
 use crate::tonemap::Tonemap;
+use crate::underwater::Underwater;
 
 // Offscreen HDR scene target format (see docs/hdr-pipeline-plan.md §0.2). Alpha kept
 // for blending; full float precision to avoid banding in dark skies at night.
@@ -79,6 +81,12 @@ pub struct Renderer {
     // and offscreen targets are built against it.
     sample_count: u32,
     tonemap: Option<Tonemap>,
+    underwater: Underwater,
+    // Scene-wide effect scratch. HDR writes here before the HDR post chain; LDR uses
+    // it as the scene target only on submerged frames, then composites to swapchain.
+    underwater_target: Option<(wgpu::Texture, wgpu::TextureView)>,
+    underwater_size: (u32, u32),
+    post_source_underwater: bool,
     // Bloom pyramid, built alongside the tonemap on the HDR path; the resolve adds it.
     bloom: Option<Bloom>,
     // Eye adaptation / auto-exposure; produces a 1x1 exposure scale the resolve applies.
@@ -384,6 +392,9 @@ impl Renderer {
             textures.white_view().clone(),
             &mut composer,
         );
+        let fft_storage_supported = [wgpu::TextureFormat::Rgba32Float, wgpu::TextureFormat::Rgba16Float]
+            .iter()
+            .all(|&format| adapter.get_texture_format_features(format).allowed_usages.contains(wgpu::TextureUsages::STORAGE_BINDING));
         let water = Water::new(
             &device,
             &queue,
@@ -391,8 +402,18 @@ impl Renderer {
             color_format,
             sample_count,
             &mut composer,
+            fft_storage_supported,
         );
+        if water.fft_enabled() {
+            log.log(log_level::INFO, "Hydro FFT ocean enabled: four 128x128 cascades");
+        } else {
+            log.log(
+                log_level::WARN,
+                "Hydro FFT ocean unavailable; using the analytic Gerstner fallback",
+            );
+        }
         let tonemap = hdr_enabled.then(|| Tonemap::new(&device, config.format));
+        let underwater = Underwater::new(&device, color_format);
         let bloom = hdr_enabled.then(|| Bloom::new(&device, HDR_FORMAT));
         let exposure = hdr_enabled.then(|| Exposure::new(&device, &queue));
         // The sky targets the scene color format (HDR target or swapchain), matching
@@ -425,6 +446,10 @@ impl Renderer {
             hdr_size: (0, 0),
             sample_count,
             tonemap,
+            underwater,
+            underwater_target: None,
+            underwater_size: (0, 0),
+            post_source_underwater: false,
             bloom,
             exposure,
             exposure_params: ffi::WgrExposure::default(),
@@ -518,10 +543,10 @@ impl Renderer {
 
     // Tonemap the HDR scene target onto `dst` (the swapchain). No-op if the tonemap
     // pass doesn't exist (LDR-direct path).
-    fn run_tonemap(&self, encoder: &mut wgpu::CommandEncoder, dst: &wgpu::TextureView) {
-        let Some(tonemap) = self.tonemap.as_ref() else {
+    fn run_tonemap(&mut self, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, dst: &wgpu::TextureView, underwater_time: Option<f32>) {
+        if self.tonemap.is_none() {
             return;
-        };
+        }
         // MSAA: resolve the multisampled scene colour into the single-sample HDR target the
         // post-processing chain (bloom/exposure/tonemap) samples. An empty load/store pass with a
         // resolve_target performs the resolve at pass end; StoreOp::Discard drops the now-unneeded
@@ -549,8 +574,33 @@ impl Renderer {
             drop(pass);
             encoder.pop_debug_group();
         }
+        let post_source = if let Some(time) = underwater_time {
+            // The compositor reads a single-sample reversed-Z depth target, including
+            // when the HDR scene colour was MSAA-resolved above.
+            self.gfx3d.resolve_water_depth(encoder);
+            self.ensure_underwater_target(self.config.width, self.config.height);
+            let target = &self.underwater_target.as_ref().expect("underwater target").1;
+            let depth = self.gfx3d.water_depth_view().expect("underwater depth target");
+            self.underwater.render(&self.device, &self.queue, encoder, source, depth, target, time);
+            target.clone()
+        } else {
+            source.clone()
+        };
+        let underwater = underwater_time.is_some();
+        if self.post_source_underwater != underwater {
+            let bloom_view = self.bloom.as_ref().and_then(|b| b.view()).unwrap_or(&post_source);
+            let scale_view = self.exposure.as_ref().map(|e| e.scale_view()).unwrap_or(&post_source);
+            self.tonemap.as_mut().expect("tonemap").set_source(&self.device, &post_source, bloom_view, scale_view);
+            if let Some(bloom) = self.bloom.as_mut() {
+                bloom.set_source(&self.device, &post_source);
+            }
+            if let Some(exposure) = self.exposure.as_mut() {
+                exposure.set_source(&self.device, &post_source);
+            }
+            self.post_source_underwater = underwater;
+        }
         // Live params from the ImGui Tonemap tab (seeded from WGR_* at startup).
-        tonemap.upload_params(&self.queue, &self.tonemap_params);
+        self.tonemap.as_ref().expect("tonemap").upload_params(&self.queue, &self.tonemap_params);
         // Build the bloom pyramid from the finished HDR scene (already includes aerial
         // perspective) so the resolve can add it. Skipped when intensity is 0 (the
         // resolve then adds bloom*0, so stale mip contents are harmless).
@@ -589,7 +639,7 @@ impl Renderer {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        tonemap.render(&mut pass);
+        self.tonemap.as_ref().expect("tonemap").render(&mut pass);
         drop(pass);
         encoder.pop_debug_group();
     }
@@ -685,6 +735,25 @@ impl Renderer {
         self.hdr = Some((texture, view));
         self.hdr_resolve = resolve;
         self.hdr_size = (width, height);
+        // ensure_hdr rebinds every HDR postprocess stage to the normal scene source.
+        self.post_source_underwater = false;
+    }
+
+    fn ensure_underwater_target(&mut self, width: u32, height: u32) {
+        if self.underwater_target.is_some() && self.underwater_size == (width, height) {
+            return;
+        }
+        let texture = self.device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_underwater_target"),
+            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 }, mip_level_count: 1,
+            sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: if self.hdr_enabled { HDR_FORMAT } else { self.config.format },
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+        self.underwater_target = Some((texture, view));
+        self.underwater_size = (width, height);
     }
 
     // `None` = skip this frame
@@ -792,15 +861,22 @@ impl Renderer {
         // GPU-driven rendering (Stage 3): upload the retained scene + this frame's cull
         // params from the main scene camera (the terrain camera, else the first 3D draw's).
         // No-op when disabled; inert until C++ registers a scene.
-        let gpu_main_cam = terrain_batches
+        let main_scene_cam = terrain_batches
             .first()
             .map(|b| b.camera as usize)
             .or_else(|| draws3d.first().map(|d| d.camera as usize))
+            .or_else(|| water_batches.first().map(|b| b.camera as usize))
             .unwrap_or(0);
-        if let Some(cam) = cameras.get(gpu_main_cam) {
+        if let Some(cam) = cameras.get(main_scene_cam) {
             self.gfx3d.prepare_cull(&self.device, &self.queue, cam, shadow);
         }
         self.ensure_hdr(self.config.width, self.config.height);
+        let underwater_time = self.water.underwater_params().and_then(|(sea_level, time)| {
+            cameras.get(main_scene_cam).and_then(|cam| (cam.cam_pos[1] < sea_level + 0.35).then_some(time))
+        });
+        if underwater_time.is_some() && !self.hdr_enabled {
+            self.ensure_underwater_target(self.config.width, self.config.height);
+        }
 
         let Some(frame) = self.acquire()? else {
             return Ok(());
@@ -812,11 +888,13 @@ impl Renderer {
         // Scene (3D/terrain/interleaved 2D) renders here: the HDR target when the HDR
         // path is on, else straight to the swapchain. TextureView clones are cheap
         // (Arc), so cloning avoids holding a borrow of self across the segment loop.
-        let scene_view = self
-            .hdr
-            .as_ref()
-            .map(|(_, v)| v.clone())
-            .unwrap_or_else(|| color.clone());
+        let scene_view = if self.hdr_enabled {
+            self.hdr.as_ref().expect("HDR target").1.clone()
+        } else if underwater_time.is_some() {
+            self.underwater_target.as_ref().expect("underwater target").1.clone()
+        } else {
+            color.clone()
+        };
         let depth = self
             .gfx3d
             .depth_view()
@@ -843,6 +921,10 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("wgr_frame"),
             });
+
+        // The local ripple field is independent of opaque depth and is consumed only by
+        // water, so update it once before any render pass records this frame's water draw.
+        self.water.update_interactions(&self.device, &mut encoder);
 
         // Compute skin bake runs first of all (docs/compute-skin-bake-plan.md): it writes
         // the shared skinned vertex buffer that the shadow cascades, the depth prepass, and
@@ -919,7 +1001,7 @@ impl Renderer {
                 .first()
                 .map(|b| b.camera as usize)
                 .or_else(|| draws3d.first().map(|d| d.camera as usize))
-                .unwrap_or(0);
+            .unwrap_or(main_scene_cam);
             if self.sky_debug {
                 let cur = (cameras.len(), main_cam);
                 if cur != self.sky_dbg_last {
@@ -1039,7 +1121,8 @@ impl Renderer {
         // `depth_write_off` = this is the prepassed segment's colour pass, so its opaque
         // set (objects + terrain) draws over the already-complete depth GreaterEqual/
         // write-off. False for post-ClearDepth segments (no prepass) and the 2D sub-pass.
-        let render_ops = |pass: &mut wgpu::RenderPass<'_>,
+        let render_ops = |renderer: &Renderer,
+                          pass: &mut wgpu::RenderPass<'_>,
                           sub: &[Plan3dOp],
                           display_2d: bool,
                           want_2d: bool,
@@ -1053,7 +1136,7 @@ impl Renderer {
                     Plan3dOp::Draw2D(arg) => {
                         st3d = crate::gfx3d::Pass3dState::default();
                         if let Some(b) = batches.get(*arg as usize) {
-                            self.gfx2d.draw_one(pass, &self.textures, b, display_2d);
+                            renderer.gfx2d.draw_one(pass, &renderer.textures, b, display_2d);
                         }
                     }
                     Plan3dOp::Draw3D {
@@ -1065,12 +1148,12 @@ impl Renderer {
                         if let Some(d) = draws3d.get(*draw as usize) {
                             let mode = crate::gfx3d::Pass3dMode::Color { depth_write_off };
                             if let crate::gfx3d::DrawKind::Indirect(off) = kind {
-                                self.gfx3d
-                                    .draw_indirect(pass, &self.textures, d, *off, &mut st3d, mode);
+                                renderer.gfx3d
+                                    .draw_indirect(pass, &renderer.textures, d, *off, &mut st3d, mode);
                             } else {
-                                self.gfx3d.draw_one(
+                                renderer.gfx3d.draw_one(
                                     pass,
-                                    &self.textures,
+                                    &renderer.textures,
                                     d,
                                     *base,
                                     *count,
@@ -1083,15 +1166,15 @@ impl Renderer {
                     Plan3dOp::Terrain(arg) => {
                         st3d = crate::gfx3d::Pass3dState::default();
                         if let (Some(b), Some(cam)) =
-                            (terrain_batches.get(*arg as usize), self.gfx3d.camera_bind())
+                            (terrain_batches.get(*arg as usize), renderer.gfx3d.camera_bind())
                         {
-                            let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                            let off = (b.camera as u64 * renderer.gfx3d.camera_stride()) as u32;
                             let kind = if depth_write_off {
                                 crate::terrain::TerrainPass::ColorNoWrite
                             } else {
                                 crate::terrain::TerrainPass::Color
                             };
-                            self.terrain
+                            renderer.terrain
                                 .draw(pass, cam, off, b.first_node, b.node_count, kind);
                         }
                     }
@@ -1222,7 +1305,7 @@ impl Renderer {
                 // frame's cull out_args — the cull dispatch already ran before the passes).
                 // Writes depth + view-space normals so the set gets early-Z + SSAO normals.
                 if !self.suppress_world_objects {
-                    let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
+                    let cam_off = (main_scene_cam as u64 * self.gfx3d.camera_stride()) as u32;
                     self.gfx3d
                         .draw_gpu_driven_prepass(&mut pp, &self.textures, cam_off);
                 }
@@ -1300,16 +1383,16 @@ impl Renderer {
                 // against the GPU-driven objects behind them, not the background, so the
                 // GPU-driven colour has to be present first (else the sky shows through).
                 if start == 0 && !self.suppress_world_objects {
-                    let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
+                    let cam_off = (main_scene_cam as u64 * self.gfx3d.camera_stride()) as u32;
                     self.gfx3d.draw_gpu_driven(&mut pass, &self.textures, cam_off);
                 }
-                render_ops(&mut pass, seg_ops, display_2d, false, prepassed);
+                render_ops(self, &mut pass, seg_ops, display_2d, false, prepassed);
                 // Debug cull-sphere wireframes (ImGui Culling tab) LAST in the sub-pass: their
                 // depth test is Always, but anything drawn after them (terrain in render_ops)
                 // would still overwrite their colour — so they must follow every world draw to
                 // actually show on top.
                 if start == 0 && !self.suppress_world_objects && self.cull_debug_draw {
-                    let cam_off = (gpu_main_cam as u64 * self.gfx3d.camera_stride()) as u32;
+                    let cam_off = (main_scene_cam as u64 * self.gfx3d.camera_stride()) as u32;
                     self.gfx3d.draw_cull_spheres(&mut pass, cam_off);
                 }
                 drop(pass);
@@ -1402,7 +1485,7 @@ impl Renderer {
                     occlusion_query_set: None,
                     multiview_mask: None,
                 });
-                render_ops(&mut pass, seg_ops, display_2d, true, false);
+                render_ops(self, &mut pass, seg_ops, display_2d, true, false);
                 drop(pass);
             }
 
@@ -1411,11 +1494,20 @@ impl Renderer {
             }
             // Scene->UI seam: resolve the HDR scene and switch to display-referred UI.
             if matches!(ops[end], Plan3dOp::Resolve) && self.tonemap.is_some() && !resolved {
-                self.run_tonemap(&mut encoder, &color);
+                let hdr_source = self.hdr_resolve.as_ref().map(|(_, v)| v.clone()).unwrap_or_else(|| scene_view.clone());
+                self.run_tonemap(&mut encoder, &hdr_source, &color, underwater_time);
                 resolved = true;
                 target = color.clone();
                 display_2d = true;
                 clear_color_next = false; // UI loads the tonemapped scene
+            } else if matches!(ops[end], Plan3dOp::Resolve) && underwater_time.is_some() && !resolved {
+                self.gfx3d.resolve_water_depth(&mut encoder);
+                let depth = self.gfx3d.water_depth_view().expect("underwater depth target");
+                self.underwater.render(&self.device, &self.queue, &mut encoder, &scene_view, depth, &color, underwater_time.expect("underwater time"));
+                resolved = true;
+                target = color.clone();
+                display_2d = true;
+                clear_color_next = false;
             }
             start = end + 1;
         }
@@ -1423,7 +1515,12 @@ impl Renderer {
         // Fallback: an HDR frame that never emitted the Resolve marker still needs
         // resolving so the scene reaches the swapchain.
         if self.tonemap.is_some() && !resolved {
-            self.run_tonemap(&mut encoder, &color);
+            let hdr_source = self.hdr_resolve.as_ref().map(|(_, v)| v.clone()).unwrap_or_else(|| scene_view.clone());
+            self.run_tonemap(&mut encoder, &hdr_source, &color, underwater_time);
+        } else if underwater_time.is_some() && !resolved {
+            self.gfx3d.resolve_water_depth(&mut encoder);
+            let depth = self.gfx3d.water_depth_view().expect("underwater depth target");
+            self.underwater.render(&self.device, &self.queue, &mut encoder, &scene_view, depth, &color, underwater_time.expect("underwater time"));
         }
 
         // Dev-panel overlay composites over the finished frame, no depth.
@@ -1572,6 +1669,14 @@ impl Renderer {
 
     fn water_set_params(&mut self, params: WgrWaterParams) {
         self.water.set_params(&self.queue, params);
+    }
+
+    fn water_set_interaction_params(&mut self, params: WgrWaterInteractionParams) {
+        self.water.set_interaction_params(&self.queue, params);
+    }
+
+    fn water_submit_interactions(&mut self, events: &[WgrWaterInteractionEvent]) {
+        self.water.submit_interactions(&self.queue, events);
     }
 
     fn terrain_set_params(&mut self, params: WgrTerrainParams) {

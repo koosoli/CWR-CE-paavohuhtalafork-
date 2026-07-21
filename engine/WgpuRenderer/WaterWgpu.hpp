@@ -55,6 +55,11 @@ class WaterWgpu : public IWaterRenderer
     // Static placement params (world_origin/terrain_grid/hm dims), captured on build;
     // sea_level is refreshed per frame.
     WgrWaterParams _params{};
+    WgrWaterInteractionParams _interaction{};
+    float _lastInteractionTime = 0.0f;
+    bool _haveInteractionDomain = false;
+    bool _interactionDemo = false;
+    int _lastInteractionDemoPulse = -1;
 
     // A node joins the water tree when its terrain min-height dips to or below this
     // world height (highest possible sea surface + a wave-crest margin).

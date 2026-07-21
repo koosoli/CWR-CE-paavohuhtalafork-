@@ -321,6 +321,21 @@ impl Exposure {
         queue.write_buffer(&self.params_buf, 0, bytemuck::bytes_of(params));
     }
 
+    // The underwater compositor substitutes its scratch target for the finished scene.
+    pub fn set_source(&mut self, device: &wgpu::Device, scene_view: &wgpu::TextureView) {
+        if self.reduce_binds.is_empty() {
+            return;
+        }
+        self.reduce_binds[0] = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_exposure_scene_bind"), layout: &self.reduce_layout,
+            entries: &[
+                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(scene_view) },
+                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
+                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+            ],
+        });
+    }
+
     // The stable 1x1 exposure-scale view the tonemap samples.
     pub fn scale_view(&self) -> &wgpu::TextureView {
         &self.current_view

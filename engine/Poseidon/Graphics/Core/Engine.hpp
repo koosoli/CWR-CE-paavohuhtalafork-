@@ -1163,8 +1163,8 @@ class Engine : public IGraphicsEngine
     struct WaterSettings
     {
         bool enabled = true;         // draw the GPU water surface (off = seabed only, for A/B)
-        float waveAmp = 0.56f;       // overall wave amplitude scale (gentle; buoyancy is flat)
-        float waveChoppy = 0.18f;    // horizontal steepness of the crests
+        float waveAmp = 0.20f;       // overall amplitude of the multi-band open-ocean carrier
+        float waveChoppy = 0.08f;    // horizontal steepness of the crests
         float waveSpeed = 1.47f;     // wave animation speed
         float waveScale = 1.09f;     // wavelength scale (>1 = larger, farther-apart waves)
         // Distance detail LOD: wave detail flattens between these (metres), killing the

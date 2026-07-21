@@ -4,12 +4,14 @@
 #include "EngineWgpu.hpp"
 
 #include <Poseidon/Core/Global.hpp>
+#include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
 #include <Poseidon/World/Terrain/LandscapeShared.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -39,6 +41,7 @@ WaterWgpu::WaterWgpu(EngineWgpu& engine, WgrRenderer* renderer) : _engine(engine
     // >= 1 keeps at least the map; 3 gives ~one map width of ocean past each edge,
     // which comfortably clears the far plane/fog on the stock maps.
     _extentFactor = std::max(1.0f, EnvFloat("WGR_WATER_EXTENT", 3.0f));
+    _interactionDemo = EnvFloat("WGR_WATER_INTERACTION_DEMO", 0.0f) > 0.5f;
 }
 
 void WaterWgpu::BuildQuadtree(const Landscape& land)
@@ -95,6 +98,12 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     _params.sea_level = land.GetSeaLevel();
     _params.hm_width = static_cast<uint32_t>(range);
     _params.hm_height = static_cast<uint32_t>(range);
+    // Weather does not currently expose a renderer-facing wind vector. Keep this deterministic
+    // until the environment weather service is threaded here.
+    _params.fft_control = {1.0f, 1337.0f, 12.0f, 0.0f};
+    _params.fft_wind_sea = {0.82f, 0.57f, 6.0f, 0.08f};
+    _params.fft_cascade_lengths = {48.0f, 144.0f, 432.0f, 1296.0f};
+    _haveInteractionDomain = false;
 }
 
 bool WaterWgpu::RebuildIfNeeded(const Landscape& land)
@@ -163,6 +172,61 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _params.swash_amp = look.swashAmp;
     _params.swash_speed = look.swashSpeed;
     wgr_water_set_params(_renderer, &_params);
+
+    const Vector3 cameraPos = camera->Position();
+    constexpr float interactionSize = 256.0f;
+    const float originX = std::floor((cameraPos.X() - interactionSize * 0.5f) / 4.0f) * 4.0f;
+    const float originZ = std::floor((cameraPos.Z() - interactionSize * 0.5f) / 4.0f) * 4.0f;
+    const float now = _params.time;
+    const float dt = std::clamp(now - _lastInteractionTime, 0.0f, 1.0f / 30.0f);
+    const bool reset = !_haveInteractionDomain || std::abs(originX - _interaction.domain.x) > interactionSize * 0.5f || std::abs(originZ - _interaction.domain.y) > interactionSize * 0.5f;
+    _interaction.previous_domain = _haveInteractionDomain ? _interaction.domain : WgrVec4{originX, originZ, interactionSize, 1.0f / interactionSize};
+    _interaction.domain = {originX, originZ, interactionSize, 1.0f / interactionSize};
+    _interaction.grid = {256.0f, dt, 0.0f, reset ? 1.0f : 0.0f};
+    _interaction.physics = {12.0f, 1.6f, 0.35f, 1.2f};
+    _interaction.misc = {0.0f, now, 0.0f, 0.0f};
+    _interaction.weather = {0.0f, std::clamp(1.0f - look.waveAmp * 0.45f, 0.15f, 1.0f), 0.0f, 0.0f};
+    wgr_water_set_interaction_params(_renderer, &_interaction);
+    std::array<WgrWaterInteractionEvent, WGR_MAX_WATER_INTERACTIONS> events{};
+    uint32_t eventCount = 0;
+    if (_interactionDemo)
+    {
+        const int pulse = static_cast<int>(std::floor(now / 3.0f));
+        if (pulse != _lastInteractionDemoPulse)
+        {
+            const Vector3 direction = camera->Direction();
+            WgrWaterInteractionEvent& event = events[eventCount++];
+            event.position_radius = {cameraPos.X() + direction.X() * 14.0f, cameraPos.Z() + direction.Z() * 14.0f,
+                                     1.7f, 0.30f};
+            event.velocity_kind = {direction.X() * 2.0f, direction.Z() * 2.0f, -4.0f,
+                                   static_cast<float>(WGR_WATER_INTERACTION_OBJECT)};
+            event.time_life_foam_mass = {0.0f, 1.6f, 0.35f, 0.0f};
+            event.direction_depth_flags = {direction.X(), direction.Z(), 0.0f,
+                                           static_cast<float>(WGR_WATER_INTERACTION_PENDING_IMPULSE)};
+            _lastInteractionDemoPulse = pulse;
+        }
+    }
+    std::array<HydroWaterInteractionEvent, HydroMaxWaterInteractions> submitted{};
+    const uint32_t submittedCount = DrainWaterInteractions(submitted.data(), HydroMaxWaterInteractions);
+    for (uint32_t i = 0; i < submittedCount && eventCount < WGR_MAX_WATER_INTERACTIONS; ++i)
+    {
+        const HydroWaterInteractionEvent& source = submitted[i];
+        WgrWaterInteractionEvent& event = events[eventCount++];
+        event.position_radius = {source.positionRadius[0], source.positionRadius[1], source.positionRadius[2],
+                                 source.positionRadius[3]};
+        event.velocity_kind = {source.velocityKind[0], source.velocityKind[1], source.velocityKind[2],
+                               source.velocityKind[3]};
+        event.time_life_foam_mass = {source.timeLifeFoamMass[0], source.timeLifeFoamMass[1],
+                                     source.timeLifeFoamMass[2], source.timeLifeFoamMass[3]};
+        event.direction_depth_flags = {source.directionDepthFlags[0], source.directionDepthFlags[1],
+                                       source.directionDepthFlags[2], source.directionDepthFlags[3]};
+    }
+    if (eventCount != 0)
+    {
+        wgr_water_submit_interactions(_renderer, events.data(), eventCount);
+    }
+    _lastInteractionTime = now;
+    _haveInteractionDomain = true;
 
     // Water clips to the whole (over-sized) tree, not the engine's land draw-distance
     // rect: the ocean should reach the horizon, past where terrain stops. Frustum
