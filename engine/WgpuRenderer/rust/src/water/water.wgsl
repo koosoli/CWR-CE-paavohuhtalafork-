@@ -496,7 +496,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Fresnel toward the horizon/sky tint (a cheap reflection stand-in until Stage 4's real sky
     // reflection): near-grazing water lightens and reads reflective.
     let ndv = max(dot(n, v), 0.0);
-    let f0 = 0.02;
+    let f0 = 0.035;
     // max() guards pow() against a tiny negative base from normalize() rounding (NaN).
     let fresnel = f0 + (1.0 - f0) * pow(max(1.0 - ndv, 0.0), 5.0);
     // Stage 4a: reflect the REAL sky. Sample the sky env map (disc-free atmosphere radiance) in the
@@ -532,7 +532,10 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
 
     // SSR augments, but never replaces, the environment: the snapshot cannot reflect off-screen
     // content or transparent objects, and this renderer has no reflected-camera/clip-plane pass.
-    rgb = mix(transmitted, refl, fresnel);
+    // Slightly boost the physically small water F0 so the sky and valid SSR detail
+    // remain legible on the engine's low-contrast terrain palette.
+    let reflection_weight = clamp(fresnel * 1.45 + 0.025, 0.0, 1.0);
+    rgb = mix(transmitted, refl, reflection_weight);
 
     // Sharp HDR sun glint — the reflected sun disc, on the same physical scale as the sky's now
     // eye-searing sun. sun_diffuse is the solar IRRADIANCE (the scale that drives the sky); an
@@ -584,7 +587,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let foam = clamp(foam_band * foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time) * wp.foam_intensity * (1.0 + shore_break * 0.75), 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
     // The compute source is thresholded, so calm water with no events or breaking crests remains clean.
-    let persistent_foam = clamp(foam_history_sample.r * (0.40 + foam_history_sample.b * 0.22), 0.0, 1.0);
+    let persistent_foam = clamp(foam_history_sample.r * (0.52 + foam_history_sample.b * 0.30), 0.0, 1.0);
     let combined_foam = max(foam, persistent_foam);
     // Foam is bright diffuse spray, not an emitter: light it by the sky ambient + direct sun (where
     // the water isn't shadowed) so it goes dim at night instead of glowing white in the dark.

@@ -921,7 +921,6 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
 
     // small/big explosion
     bool smallExplosion = !type->explosive;
-    bool water = pos.Y() < _seaLevelWave + 0.01;
     const float craterTimeCoef = 5;
     if (smallExplosion)
     {
@@ -954,7 +953,10 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
             }
             else
             {
-                crater = new Crater(shape, VehicleTypes.New("crater"), timeToLive, scale * 0.5, false, false, water);
+                // The legacy water-crater variant dereferences invalid effect state for
+                // projectile/vehicle explosions. Use the normal crater path until a
+                // dedicated Hydro splash effect replaces it.
+                crater = new Crater(shape, VehicleTypes.New("crater"), timeToLive, scale * 0.5, false, false, false);
                 Matrix4 transform;
                 Matrix4 toWorld = directHit->WorldTransform();
                 Vector3Val wDir = toWorld.Rotate(rDir);
@@ -982,7 +984,7 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
             transform.SetPosition(pos);
 
             Crater* crater =
-                new Crater(shape, VehicleTypes.New("crater"), timeToLive, scale * 0.5, false, false, water);
+                new Crater(shape, VehicleTypes.New("crater"), timeToLive, scale * 0.5, false, false, false);
             crater->SetTransform(transform);
             crater->SetAlpha(alpha);
             GLOB_WORLD->AddAnimal(crater);
@@ -1022,7 +1024,7 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
 
                 // create vehicle
                 Crater* crater =
-                    new Crater(shape, VehicleTypes.New("crater"), timeToLive, scale * 0.5, true, false, water);
+                    new Crater(shape, VehicleTypes.New("crater"), timeToLive, scale * 0.5, true, false, false);
                 crater->SetTransform(transform);
                 crater->SetAlpha(alpha);
                 GLOB_WORLD->AddAnimal(crater);

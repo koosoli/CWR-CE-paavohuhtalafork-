@@ -358,9 +358,9 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
                 const float waveTime = Glob.time.toFloat();
                 const float swell = sin(pos.X() * 0.025f + pos.Z() * 0.014f + waveTime * 0.52f) * 0.35f +
                                     sin(pos.X() * -0.041f + pos.Z() * 0.029f - waveTime * 0.79f) * 0.15f;
-                pForce[1] += swell * GetMass() * 3.40f;
-                pForce[0] += cos(pos.Z() * 0.018f + waveTime * 0.46f) * GetMass() * 0.38f;
-                pForce[2] += sin(pos.X() * 0.021f - waveTime * 0.41f) * GetMass() * 0.38f;
+                pForce[1] += swell * GetMass() * 6.00f;
+                pForce[0] += cos(pos.Z() * 0.018f + waveTime * 0.46f) * GetMass() * 0.70f;
+                pForce[2] += sin(pos.X() * 0.021f - waveTime * 0.41f) * GetMass() * 0.70f;
             }
             force += pForce;
 

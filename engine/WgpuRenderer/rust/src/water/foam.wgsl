@@ -23,7 +23,7 @@ fn fft_source(world: vec2<f32>) -> f32 {
         let auxiliary = textureSampleLevel(fft_auxiliary, field_sampler, uv, layer, 0.0);
         let crest = max(displacement.w, auxiliary.y);
         let compression = max(auxiliary.x, 0.0);
-        source = max(source, smoothstep(0.06, 0.22, crest) * smoothstep(0.005, 0.03, compression));
+        source = max(source, smoothstep(0.03, 0.14, crest) * smoothstep(0.002, 0.012, compression));
     }
     return source;
 }
@@ -49,11 +49,11 @@ fn foam_update(@builtin(global_invocation_id) id: vec3<u32>) {
     let source = max(fft, aeration);
     // Keep breakers visible briefly, but do not let repeated shallow/coastal sources
     // turn into a permanent white band.
-    let decayed = history.r * exp(-dt * 4.0);
-    let injection = 1.0 - exp(-source * dt * 0.85);
+    let decayed = history.r * exp(-dt * 4.5);
+    let injection = 1.0 - exp(-source * dt * 1.40);
     let coverage = 1.0 - (1.0 - decayed) * (1.0 - injection);
     let age = mix(min(history.g + dt * 0.08, 1.0), 0.0, clamp(injection * 2.0, 0.0, 1.0));
-    let stored_aeration = max(history.b * exp(-dt * 4.5), aeration);
+    let stored_aeration = max(history.b * exp(-dt * 4.8), aeration);
     let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
     textureStore(next_foam, vec2<i32>(id.xy), vec4<f32>(coverage * smoothstep(0.002, 0.018, edge), age, stored_aeration, 0.0));
 }
