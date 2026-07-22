@@ -45,6 +45,19 @@ fn sky_sh_wgsl_validates() {
     .expect("sky_sh.wgsl validate");
 }
 
+// Offline guard for the over-scene cloud composite shader (separate module, own binding namespace).
+#[test]
+fn cloud_composite_wgsl_validates() {
+    let module = naga::front::wgsl::parse_str(include_str!("cloud_composite.wgsl"))
+        .expect("cloud_composite.wgsl parse");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("cloud_composite.wgsl validate");
+}
+
 // LUT resolutions. Transmittance is smooth in both axes; multiscatter is very
 // low-frequency, so a tiny map suffices (its build is the expensive one).
 const TRANSMITTANCE_W: u32 = 256;
@@ -66,6 +79,91 @@ const ENV_W: u32 = 256;
 const ENV_H: u32 = 128;
 const ENV_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
+// Cloud shape/detail noise: a tileable 3D texture sampled (Repeat) by the cloud march instead of
+// evaluating analytic fBm per step. This is BOTH the perf fix (one texture tap vs ~dozens of hash
+// evals) AND the moire fix (the old fract()-based hash lost precision at planet-scale / unbounded
+// wind*time coordinates; a Repeat-sampled texture wraps at full precision). R = low-frequency
+// shape fBm, G = higher-frequency detail fBm; all octave frequencies are powers of two that divide
+// the texture size so the volume tiles seamlessly. 128^3 RGBA8 = 8 MB, generated once at startup.
+const NOISE_N: u32 = 128;
+const NOISE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
+
+// Small integer hash -> u32 (Wang-style), for the tileable value-noise lattice.
+fn cloud_hash(mut a: u32) -> u32 {
+    a = (a ^ 61) ^ (a >> 16);
+    a = a.wrapping_add(a << 3);
+    a ^= a >> 4;
+    a = a.wrapping_mul(0x27d4_eb2d);
+    a ^= a >> 15;
+    a
+}
+
+// Lattice value in [0,1) at integer cell (x,y,z), wrapped by `period` so the noise tiles.
+fn cloud_lattice(x: i32, y: i32, z: i32, period: i32) -> f32 {
+    let xi = x.rem_euclid(period) as u32;
+    let yi = y.rem_euclid(period) as u32;
+    let zi = z.rem_euclid(period) as u32;
+    let h = cloud_hash(xi.wrapping_mul(1619) ^ yi.wrapping_mul(31337) ^ zi.wrapping_mul(6971));
+    (h as f32) / (u32::MAX as f32)
+}
+
+// Tileable value noise at (u,v,w) in [0,1) with `freq` cells across the volume (freq must divide
+// NOISE_N). Smoothstep-weighted trilinear interpolation of the wrapped lattice.
+fn cloud_vnoise(u: f32, v: f32, w: f32, freq: i32) -> f32 {
+    let f = freq as f32;
+    let (px, py, pz) = (u * f, v * f, w * f);
+    let (ix, iy, iz) = (px.floor(), py.floor(), pz.floor());
+    let (fx, fy, fz) = (px - ix, py - iy, pz - iz);
+    let sx = fx * fx * (3.0 - 2.0 * fx);
+    let sy = fy * fy * (3.0 - 2.0 * fy);
+    let sz = fz * fz * (3.0 - 2.0 * fz);
+    let (x0, y0, z0) = (ix as i32, iy as i32, iz as i32);
+    let c = |dx: i32, dy: i32, dz: i32| cloud_lattice(x0 + dx, y0 + dy, z0 + dz, freq);
+    let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+    let x00 = lerp(c(0, 0, 0), c(1, 0, 0), sx);
+    let x10 = lerp(c(0, 1, 0), c(1, 1, 0), sx);
+    let x01 = lerp(c(0, 0, 1), c(1, 0, 1), sx);
+    let x11 = lerp(c(0, 1, 1), c(1, 1, 1), sx);
+    lerp(lerp(x00, x10, sy), lerp(x01, x11, sy), sz)
+}
+
+// Tileable fBm normalised to [0,1]. base_freq and each octave (x2) must divide NOISE_N.
+fn cloud_fbm(u: f32, v: f32, w: f32, base_freq: i32, octaves: i32) -> f32 {
+    let mut sum = 0.0;
+    let mut amp = 0.5;
+    let mut freq = base_freq;
+    let mut norm = 0.0;
+    for _ in 0..octaves {
+        sum += amp * cloud_vnoise(u, v, w, freq);
+        norm += amp;
+        freq *= 2;
+        amp *= 0.5;
+    }
+    sum / norm
+}
+
+// Bake the RGBA8 cloud noise volume: R = shape (freq 4,8,16), G = detail (freq 8,16,32).
+fn generate_cloud_noise() -> Vec<u8> {
+    let n = NOISE_N as usize;
+    let mut data = vec![0u8; n * n * n * 4];
+    let inv = 1.0 / NOISE_N as f32;
+    for z in 0..n {
+        for y in 0..n {
+            for x in 0..n {
+                let u = (x as f32 + 0.5) * inv;
+                let v = (y as f32 + 0.5) * inv;
+                let w = (z as f32 + 0.5) * inv;
+                let shape = cloud_fbm(u, v, w, 4, 3);
+                let detail = cloud_fbm(u, v, w, 8, 3);
+                let i = (z * n * n + y * n + x) * 4;
+                data[i] = (shape.clamp(0.0, 1.0) * 255.0) as u8;
+                data[i + 1] = (detail.clamp(0.0, 1.0) * 255.0) as u8;
+            }
+        }
+    }
+    data
+}
+
 // GPU uniform for the sky pass: the pushed WgrSky (8 vec4) plus the reconstructed
 // inverse view-projection and an output-mode block. Must match `Sky` in sky.wgsl.
 #[repr(C)]
@@ -83,8 +181,14 @@ struct SkyUniform {
     night_zenith: [f32; 4],
     night_horizon: [f32; 4],
     night_params: [f32; 4],
+    // Cloud shell params (mirror WgrSky::cloud0/1/2/3). See sky.wgsl's Sky struct.
+    cloud0: [f32; 4],
+    cloud1: [f32; 4],
+    cloud2: [f32; 4],
+    cloud3: [f32; 4],
     // x = linear output (1 = write linear radiance for the tonemap resolve; 0 =
-    // self-tonemap for the LDR-direct path). y/z/w reserved.
+    // self-tonemap for the LDR-direct path). y/z/w reserved. (The full-vs-cheap cloud
+    // split is by entry point — fs_sky vs fs_sky_env — not a runtime flag.)
     output: [f32; 4],
     // xyz = absolute world camera position, so cs_froxel can turn a marched camera-
     // relative offset into a world position for the terrain sun-shadow mask lookup.
@@ -125,6 +229,10 @@ pub struct Sky {
     #[allow(dead_code)]
     env_tex: wgpu::Texture,
     env_view: wgpu::TextureView,
+    // Tileable 3D cloud noise, sampled by the cloud march (bound into sky_bind). Held to keep the
+    // texture alive (the view/sampler are owned by the bind group).
+    #[allow(dead_code)]
+    cloud_noise_tex: wgpu::Texture,
     // SH-9 projection of the env map into diffuse sky irradiance (sky_sh.wgsl). Computed each frame
     // after the env bake; the buffer is lent to the camera group so lit meshes + terrain read it.
     sh_pipeline: wgpu::ComputePipeline,
@@ -152,6 +260,18 @@ pub struct Sky {
     csm_cmp_sampler: wgpu::Sampler,
     csm_ubo: wgpu::Buffer,
     uniform_buf: wgpu::Buffer,
+    // Phase 1 depth-aware over-scene clouds: fs_cloud marches at LOW RES into cloud_lo (bounding at
+    // the resolved scene depth via group(1)), then cloud_composite blends it over the lit scene.
+    // cloud_lo resizes with the scene. Only used on the HDR (linear) path.
+    cloud_pipeline: wgpu::RenderPipeline,
+    cloud_depth_layout: wgpu::BindGroupLayout,
+    cloud_lo_tex: Option<wgpu::Texture>,
+    cloud_lo_view: Option<wgpu::TextureView>,
+    cloud_lo_size: (u32, u32),
+    cloud_composite_pipeline: wgpu::RenderPipeline,
+    cloud_composite_layout: wgpu::BindGroupLayout,
+    cloud_composite_bind: Option<wgpu::BindGroup>,
+    cloud_composite_sampler: wgpu::Sampler,
     // 1 = scene target is the linear HDR texture (tonemap resolves later); 0 =
     // LDR-direct, so the sky self-tonemaps. Fixed at construction with the format.
     linear: f32,
@@ -161,7 +281,12 @@ pub struct Sky {
 }
 
 impl Sky {
-    pub fn new(device: &wgpu::Device, color_format: wgpu::TextureFormat, sample_count: u32) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        color_format: wgpu::TextureFormat,
+        sample_count: u32,
+    ) -> Self {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgr_sky_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sky.wgsl").into()),
@@ -205,9 +330,34 @@ impl Sky {
             label: Some("wgr_sky_multiscatter_layout"),
             entries: &[uniform_entry(0), sampler_entry, tex_entry(2)],
         });
+        // Cloud noise: a 3D texture at binding 4 + its own Repeat sampler at binding 6 (binding 5 is
+        // the froxel storage image in the shared module). Only fs_sky / fs_sky_env reference these.
+        let cloud_tex_entry = wgpu::BindGroupLayoutEntry {
+            binding: 4,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D3,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let cloud_sampler_entry = wgpu::BindGroupLayoutEntry {
+            binding: 6,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        };
         let sky_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_sky_layout"),
-            entries: &[uniform_entry(0), sampler_entry, tex_entry(2), tex_entry(3)],
+            entries: &[
+                uniform_entry(0),
+                sampler_entry,
+                tex_entry(2),
+                tex_entry(3),
+                cloud_tex_entry,
+                cloud_sampler_entry,
+            ],
         });
         // Only the main sky pass draws into the (MSAA) scene target; the transmittance +
         // multiscatter LUTs are single-sample offscreen renders, so each pipeline takes its
@@ -383,6 +533,42 @@ impl Sky {
             ..Default::default()
         });
 
+        // Tileable 3D cloud noise, baked once and uploaded. Repeat sampler so the march can sample
+        // arbitrarily far / wind-scrolled coordinates without the analytic-hash precision moire.
+        let cloud_noise_tex = device.create_texture_with_data(
+            queue,
+            &wgpu::TextureDescriptor {
+                label: Some("wgr_sky_cloud_noise"),
+                size: wgpu::Extent3d {
+                    width: NOISE_N,
+                    height: NOISE_N,
+                    depth_or_array_layers: NOISE_N,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D3,
+                format: NOISE_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            },
+            wgpu::util::TextureDataOrder::LayerMajor,
+            &generate_cloud_noise(),
+        );
+        let cloud_noise_view = cloud_noise_tex.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("wgr_sky_cloud_noise_view"),
+            dimension: Some(wgpu::TextureViewDimension::D3),
+            ..Default::default()
+        });
+        let cloud_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_sky_cloud_sampler"),
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::Repeat,
+            address_mode_w: wgpu::AddressMode::Repeat,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         let uniform_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("wgr_sky_uniform"),
             contents: bytemuck::bytes_of(&SkyUniform::zeroed()),
@@ -434,6 +620,14 @@ impl Sky {
                 wgpu::BindGroupEntry {
                     binding: 3,
                     resource: wgpu::BindingResource::TextureView(&multiscatter_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&cloud_noise_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&cloud_sampler),
                 },
             ],
         });
@@ -633,6 +827,147 @@ impl Sky {
             ],
         });
 
+        // ---- Phase 1: depth-aware over-scene cloud pass + composite ----
+        // fs_cloud: low-res march (group(0) = the sky bind; group(1) = the resolved scene depth).
+        let cloud_depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_cloud_depth_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 6,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+                count: None,
+            }],
+        });
+        let cloud_pipeline = {
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgr_cloud"),
+                bind_group_layouts: &[Some(&sky_layout), Some(&cloud_depth_layout)],
+                immediate_size: 0,
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("wgr_cloud"),
+                layout: Some(&pl),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState::default(), // low-res buffer is single-sample
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_cloud"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: crate::HDR_FORMAT,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+
+        // cloud_composite: upsample the low-res buffer + premultiplied blend over the MSAA scene.
+        let composite_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgr_cloud_composite_shader"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("cloud_composite.wgsl").into()),
+        });
+        let cloud_composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_cloud_composite_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // Full-res resolved scene depth, for the depth-aware (bilateral) upsample.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let cloud_composite_pipeline = {
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgr_cloud_composite"),
+                bind_group_layouts: &[Some(&cloud_composite_layout)],
+                immediate_size: 0,
+            });
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("wgr_cloud_composite"),
+                layout: Some(&pl),
+                vertex: wgpu::VertexState {
+                    module: &composite_shader,
+                    entry_point: Some("vs_main"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: None,
+                multisample: wgpu::MultisampleState {
+                    count: sample_count,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &composite_shader,
+                    entry_point: Some("fs_main"),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: color_format,
+                        // out = inscatter*1 + scene*src.a (src.a = cloud transmittance).
+                        blend: Some(wgpu::BlendState {
+                            color: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::One,
+                                dst_factor: wgpu::BlendFactor::SrcAlpha,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                            alpha: wgpu::BlendComponent {
+                                src_factor: wgpu::BlendFactor::Zero,
+                                dst_factor: wgpu::BlendFactor::One,
+                                operation: wgpu::BlendOperation::Add,
+                            },
+                        }),
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let cloud_composite_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_cloud_composite_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+
         let linear = if color_format == crate::HDR_FORMAT { 1.0 } else { 0.0 };
 
         Self {
@@ -641,6 +976,16 @@ impl Sky {
             env_pipeline,
             env_tex,
             env_view,
+            cloud_noise_tex,
+            cloud_pipeline,
+            cloud_depth_layout,
+            cloud_lo_tex: None,
+            cloud_lo_view: None,
+            cloud_lo_size: (0, 0),
+            cloud_composite_pipeline,
+            cloud_composite_layout,
+            cloud_composite_bind: None,
+            cloud_composite_sampler,
             sh_pipeline,
             sh_bind,
             sh_buf,
@@ -695,6 +1040,10 @@ impl Sky {
             night_zenith: sky.night_zenith,
             night_horizon: sky.night_horizon,
             night_params: sky.night_params,
+            cloud0: sky.cloud0,
+            cloud1: sky.cloud1,
+            cloud2: sky.cloud2,
+            cloud3: sky.cloud3,
             output: [self.linear, 0.0, 0.0, 0.0],
             cam_pos,
         };
@@ -756,6 +1105,111 @@ impl Sky {
         pass.set_pipeline(&self.sky_pipeline);
         pass.set_bind_group(0, &self.sky_bind, &[]);
         pass.draw(0..3, 0..1);
+    }
+
+    // Clouds are drawn only on the HDR path (the composite blends linear radiance over the HDR scene)
+    // and when coverage is non-zero. lib.rs gates the cloud pass + composite on this.
+    pub fn clouds_active(&self, sky: &WgrSky) -> bool {
+        self.linear > 0.5 && sky.cloud0[0] > 0.001
+    }
+
+    // Phase 1: march the clouds at LOW RES into cloud_lo, bounding each ray at the resolved scene
+    // depth so they occlude terrain / envelop the camera. (Re)allocates cloud_lo at half the scene
+    // size on resize and rebuilds the composite bind. `upload` + `render_luts` must have run first.
+    // depth_view is the single-sample resolved prepass depth (gfx3d.depth_sample_view()).
+    pub fn render_cloud(
+        &mut self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        depth_view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) {
+        let lo = (width.div_ceil(2).max(1), height.div_ceil(2).max(1));
+        if self.cloud_lo_size != lo || self.cloud_lo_view.is_none() {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgr_cloud_lo"),
+                size: wgpu::Extent3d {
+                    width: lo.0,
+                    height: lo.1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: crate::HDR_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.cloud_lo_tex = Some(tex);
+            self.cloud_lo_view = Some(view);
+            self.cloud_lo_size = lo;
+        }
+        // The composite bind carries the low-res cloud buffer + the full-res scene depth (for the
+        // bilateral upsample). The depth view is regenerated every frame, so rebuild the bind here
+        // (cheap) rather than only on resize.
+        self.cloud_composite_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_cloud_composite_bind"),
+            layout: &self.cloud_composite_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(self.cloud_lo_view.as_ref().unwrap()),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.cloud_composite_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: wgpu::BindingResource::TextureView(depth_view),
+                },
+            ],
+        }));
+        // group(1): the resolved scene depth, rebuilt each frame (the depth view is regenerated).
+        let depth_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_cloud_depth_bind"),
+            layout: &self.cloud_depth_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 6,
+                resource: wgpu::BindingResource::TextureView(depth_view),
+            }],
+        });
+        let lo_view = self.cloud_lo_view.as_ref().unwrap();
+        encoder.push_debug_group("wgr_cloud");
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wgr_cloud"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: lo_view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.cloud_pipeline);
+        pass.set_bind_group(0, &self.sky_bind, &[]);
+        pass.set_bind_group(1, &depth_bind, &[]);
+        pass.draw(0..3, 0..1);
+        drop(pass);
+        encoder.pop_debug_group();
+    }
+
+    // Composite the upsampled low-res clouds over the lit scene (premultiplied blend) in an
+    // already-begun render pass targeting scene_view. Must run after render_cloud on the same frame.
+    pub fn composite_cloud(&self, pass: &mut wgpu::RenderPass<'_>) {
+        if let Some(bind) = self.cloud_composite_bind.as_ref() {
+            pass.set_pipeline(&self.cloud_composite_pipeline);
+            pass.set_bind_group(0, bind, &[]);
+            pass.draw(0..3, 0..1);
+        }
     }
 
     // Bake the disc-free sky radiance into the reflection env map (equirect) for this frame. Reuses

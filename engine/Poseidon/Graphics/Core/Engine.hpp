@@ -1122,6 +1122,30 @@ class Engine : public IGraphicsEngine
         // like the tonemap grade. Off = hold the Sky tab's manually edited values so the
         // atmosphere sliders can be tuned. The toggle knobs above are always live.
         bool autoToD = true;                               // interpolate atmosphere from the ToD presets
+
+        // Volumetric clouds (plan Stage 5): a raymarched cloud shell composited into the
+        // procedural sky (so clouds also appear in water reflections + SH ambient). Coverage
+        // spans isolated cumulus (low) to a solid overcast deck (high). Coverage also dims the
+        // directional sun / lifts ambient on the CPU side (PushFrame), so overcast reads flat.
+        // Off by default (coverage 0) so the clear-sky look is unchanged until authored.
+        float cloudCoverage = 0.0f;                        // 0 = clear .. 1 = full overcast
+        float cloudDensity = 0.06f;                        // extinction (1/m); higher = more opaque
+        float cloudBottom = 1200.0f;                       // cloud layer base altitude ASL (m)
+        float cloudTop = 3500.0f;                          // cloud layer top altitude ASL (m)
+        float cloudWind[2] = {8.0f, 2.0f};                 // horizontal scroll velocity (m/s)
+        // Anti-repetition: shape + detail tiles sampled at INCOMMENSURATE world sizes so the visual
+        // period is far longer than either; a large-scale weather field drifts coverage across the
+        // sky; a domain warp breaks grid regularity. Sizes are world metres (scale = 1/size).
+        float cloudShapeSize = 9300.0f;                    // base shape tile (m) — large = less tiling
+        float cloudDetailSize = 1700.0f;                   // detail tile (m) — incommensurate with shape
+        float cloudWeatherSize = 16000.0f;                 // coverage-drift field size (m)
+        float cloudWeatherAmount = 0.4f;                   // how much weather varies local coverage (0 = uniform)
+        float cloudWarpSize = 6000.0f;                     // domain-warp field size (m)
+        float cloudWarpAmount = 900.0f;                    // domain-warp displacement (m)
+        float cloudHgG = 0.35f;                            // forward-scatter anisotropy (silver lining)
+        float cloudPowder = 1.0f;                          // Beer-Powder dark-edge strength (0..1)
+        float cloudAmbient = 1.0f;                         // sky-ambient fill scale on the shadowed sides
+        float cloudMaxDist = 60000.0f;                     // march / visibility cap (m); keep <= ~80 km
     };
     // True on backends with a procedural sky pass (wgpu); gates the ImGui Sky tab.
     virtual bool SupportsSky() const { return false; }

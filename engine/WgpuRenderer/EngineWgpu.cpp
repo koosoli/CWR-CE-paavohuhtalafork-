@@ -945,6 +945,29 @@ void EngineWgpu::NextFrame()
             skyLit = 1.0f;
         }
 
+        // Cloud coverage makes the sun light diffuse: dim the directional beam toward ZERO and lift
+        // the flat ambient as overcast rises, so a fully overcast sky has no sharp directional sun
+        // (and, below, no sharp shadow map). smoothstep so thin clouds barely dim. `cloudDim` is
+        // hoisted so it also fades the shadow darkness. The terrain/object ambient greys via the
+        // env->SH bake (clouds are in the env map) so the ambient lift here is modest.
+        float cloudDim = 0.0f;
+        if (_sky.enabled && _sky.cloudCoverage > 0.0f)
+        {
+            // Saturate by ~0.8 coverage: the sky reads as fully overcast there, so the light should
+            // be fully diffuse by then too (higher coverage only thickens the deck).
+            const float ct = std::clamp((_sky.cloudCoverage - 0.1f) / (0.8f - 0.1f), 0.0f, 1.0f);
+            cloudDim = ct * ct * (3.0f - 2.0f * ct); // smoothstep(0.1, 0.8, coverage)
+            // Overcast leaves only a faint directional core (5%); the rest becomes ambient.
+            const float sunFactor = 1.0f - 0.95f * cloudDim;
+            sunLin[0] *= sunFactor;
+            sunLin[1] *= sunFactor;
+            sunLin[2] *= sunFactor;
+            const float ambBoost = 1.0f + 0.5f * cloudDim;
+            ambLin[0] *= ambBoost;
+            ambLin[1] *= ambBoost;
+            ambLin[2] *= ambBoost;
+        }
+
         // Frame-global point/spot lights for the GPU-lit paths (objects + terrain).
         // Mirrors GL33's UploadVSLights, but ONE scene-wide list instead of a
         // per-draw selection: gather the scene's point/spot lights, colours
@@ -990,11 +1013,17 @@ void EngineWgpu::NextFrame()
         }
         const float lightCount = static_cast<float>(_lights.size());
 
-        const float shadowStrength = GetShadowFactor() / 256.0f;
+        // Cloud cover fades the cascade shadow toward none (in lockstep with the directional-sun
+        // dimming above), so a fully overcast sky casts no sharp sun shadows. (Terrain self-shadow
+        // and the froxel aerial shadow are separate paths — a fuller pass is deferred.)
+        const float shadowStrength = (GetShadowFactor() / 256.0f) * (1.0f - cloudDim);
         const bool shadowActive = _smCascadesValid && !_shadowCasters.empty();
         // Sun-faded darkness (GL33 parity): full daylight uses tuning.darkness,
-        // dusk ramps toward 1 (no darkening) as the sun sets.
-        const float darkness = 1.0f - _smSunFactor * (1.0f - _smTuning.darkness);
+        // dusk ramps toward 1 (no darkening) as the sun sets. Cloud cover also ramps it toward 1
+        // (1 = no shadow darkening) so an overcast sky casts no sharp cascade shadows — the sun is
+        // diffuse, so its shadow should soften out in lockstep with the directional-sun dimming.
+        float darkness = 1.0f - _smSunFactor * (1.0f - _smTuning.darkness);
+        darkness = darkness + (1.0f - darkness) * cloudDim;
 
         std::vector<WgrCamera> cameras(_cameras.size());
         for (size_t i = 0; i < _cameras.size(); i++)
@@ -2800,6 +2829,16 @@ void EngineWgpu::PushRenderParams()
     // Blend band expressed as sun_dir.y (= sin elevation) so the shader compares directly.
     p.sky.night_params = {std::sin(_sky.nightStartDeg * deg2rad), std::sin(_sky.nightEndDeg * deg2rad),
                           _sky.nightIntensity, 0.0f};
+    // Cloud look. cloud1.xy = wind WORLD offset is a runtime field (filled by PushSkyRuntime), so
+    // only the shape/detail scales (z,w) are look fields here; scale = 1/size (guard size > 0).
+    const float shapeScale = 1.0f / (_sky.cloudShapeSize > 1.0f ? _sky.cloudShapeSize : 1.0f);
+    const float detailScale = 1.0f / (_sky.cloudDetailSize > 1.0f ? _sky.cloudDetailSize : 1.0f);
+    const float weatherScale = 1.0f / (_sky.cloudWeatherSize > 1.0f ? _sky.cloudWeatherSize : 1.0f);
+    const float warpScale = 1.0f / (_sky.cloudWarpSize > 1.0f ? _sky.cloudWarpSize : 1.0f);
+    p.sky.cloud0 = {_sky.cloudCoverage, _sky.cloudDensity, _sky.cloudBottom, _sky.cloudTop};
+    p.sky.cloud1 = {0.0f, 0.0f, shapeScale, detailScale};
+    p.sky.cloud2 = {_sky.cloudHgG, _sky.cloudPowder, _sky.cloudAmbient, _sky.cloudMaxDist};
+    p.sky.cloud3 = {weatherScale, _sky.cloudWeatherAmount, warpScale, _sky.cloudWarpAmount};
 
     // Long-distance terrain sun-shadow (wgpu-only); strength 0 = disabled. The renderer
     // diffs this sub-block so a per-frame push doesn't re-run the sweep.
@@ -2907,7 +2946,16 @@ void EngineWgpu::PushSkyRuntime()
     rt.sun_dir = {_skySunDir.X(), _skySunDir.Y(), _skySunDir.Z(), 0.0f};
     rt.moon_dir = {_skyMoonDir.X(), _skyMoonDir.Y(), _skyMoonDir.Z(), _skyMoonPhase};
     rt.fog_color = {_skyFog[0], _skyFog[1], _skyFog[2], fogFar};
-    rt.misc = {_skyNight, camAlt, 0.0f, 0.0f};
+    // misc.zw = cloud wind WORLD offset (metres) = windVel * time, wrapped to a large period in
+    // DOUBLE precision so it stays bounded (the shader scales it into the noise coord and the Repeat
+    // sampler wraps; a bounded offset keeps that coord precise however long the world has run). The
+    // wrap reseat is a sub-tile shift once per ~kWindWrap/speed seconds (hours) — imperceptible.
+    // Reuses the scene sim clock the terrain/water animation runs on, so clouds pause with the sim.
+    constexpr double kWindWrap = 100000.0; // m
+    const double cloudT = static_cast<double>(Glob.time.toFloat());
+    double windX = std::fmod(static_cast<double>(_sky.cloudWind[0]) * cloudT, kWindWrap);
+    double windZ = std::fmod(static_cast<double>(_sky.cloudWind[1]) * cloudT, kWindWrap);
+    rt.misc = {_skyNight, camAlt, static_cast<float>(windX), static_cast<float>(windZ)};
     wgr_set_sky_runtime(_renderer, &rt);
 }
 
