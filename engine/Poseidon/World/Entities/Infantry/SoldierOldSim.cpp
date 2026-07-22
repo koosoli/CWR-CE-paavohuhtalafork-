@@ -2,6 +2,7 @@
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Input/InputSubsystem.hpp>
 #include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
+#include <Poseidon/World/Terrain/WaterSurfaceQuery.hpp>
 #include <Poseidon/Network/NetworkCustomAssets.hpp>
 #include <limits.h>
 #include <stdio.h>
@@ -336,31 +337,42 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
             pForce[0] = 0;
             pForce[1] = -G_CONST * GetMass();
             pForce[2] = 0;
-            if (playerControlled && (_waterDepth > 0.0f || _waterContact))
+            if (playerControlled && _waterBuoyancyContact)
             {
-                // Use last frame's water contact to counter gravity without changing the
-                // legacy move state, collision queue, or the actor's position directly.
-                float immersion = _waterDepth * 4.0f;
-                if (_waterContact)
-                {
-                    // A floating player can have zero fresh penetration for one frame.
-                    // Keep their buoyancy and wave response continuous across that contact.
-                    saturateMax(immersion, 0.95f);
-                }
-                saturate(immersion, 0.0f, 1.25f);
-                pForce[1] += G_CONST * GetMass() * immersion;
-                pForce[1] -= speed[1] * GetMass() * 3.0f;
-
-                // The GPU FFT is visual-only, so give the swimming player a small stable
-                // carrier swell here instead of snapping their position to render waves.
-                // This stays far below normal player input/ground collision forces.
-                Vector3Val pos = Position();
                 const float waveTime = Glob.time.toFloat();
-                const float swell = sin(pos.X() * 0.025f + pos.Z() * 0.014f + waveTime * 0.52f) * 0.35f +
-                                    sin(pos.X() * -0.041f + pos.Z() * 0.029f - waveTime * 0.79f) * 0.15f;
-                pForce[1] += swell * GetMass() * 6.00f;
-                pForce[0] += cos(pos.Z() * 0.018f + waveTime * 0.46f) * GetMass() * 0.70f;
-                pForce[2] += sin(pos.X() * 0.021f - waveTime * 0.41f) * GetMass() * 0.70f;
+                const float seaLevel = GLOB_LAND->GetSeaLevel();
+                Vector3 forward = Direction();
+                forward[1] = 0.0f;
+                if (forward.SquareSize() < 0.01f)
+                    forward = VForward;
+                else
+                    forward.Normalize();
+                Vector3Val pos = Position();
+                const WaterSurfaceSample center = QueryWaterSurface(pos.X(), pos.Z(), waveTime, seaLevel);
+                const WaterSurfaceSample front = QueryWaterSurface(pos.X() + forward.X() * 0.65f,
+                                                                     pos.Z() + forward.Z() * 0.65f, waveTime, seaLevel);
+                const WaterSurfaceSample back = QueryWaterSurface(pos.X() - forward.X() * 0.65f,
+                                                                    pos.Z() - forward.Z() * 0.65f, waveTime, seaLevel);
+                const float forwardSlope = (front.height - back.height) / 1.30f;
+                Vector3 waterNormal(center.normalX, center.normalY, center.normalZ);
+                const float normalForward = waterNormal.X() * forward.X() + waterNormal.Z() * forward.Z();
+                waterNormal += forward * (-forwardSlope - normalForward);
+                waterNormal.Normalize();
+                const float localPlaneRoughness = sqrt(1.0f - waterNormal.Y() * waterNormal.Y()) / waterNormal.Y();
+                const float waterPlaneY = (front.height + center.height + back.height) * (1.0f / 3.0f);
+                float immersion = waterPlaneY - pos.Y() + 0.75f;
+                saturate(immersion, 0.0f, 1.35f);
+
+                // Spring-damper buoyancy follows the local CPU water plane; it never snaps
+                // position or alters legacy move/freefall state. The normal-derived roughness
+                // modestly increases drag on steeper water without affecting player input.
+                pForce[1] += GetMass() * (16.0f * immersion - speed[1] * 5.0f);
+                const float waterVelocityX = (front.velocityX + center.velocityX + back.velocityX) * (1.0f / 3.0f);
+                const float waterVelocityZ = (front.velocityZ + center.velocityZ + back.velocityZ) * (1.0f / 3.0f);
+                const float waterRoughness = (front.roughness + center.roughness + back.roughness) * (1.0f / 3.0f);
+                const float drag = 2.5f + (waterRoughness + localPlaneRoughness * 0.5f) * 3.0f;
+                pForce[0] -= (speed[0] - waterVelocityX) * GetMass() * drag;
+                pForce[2] -= (speed[2] - waterVelocityZ) * GetMass() * drag;
             }
             force += pForce;
 
@@ -906,6 +918,21 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
         else
         {
             _waterContact = false;
+        }
+
+        if (playerControlled)
+        {
+            const WaterSurfaceSample water = QueryWaterSurface(Position().X(), Position().Z(), Glob.time.toFloat(),
+                                                                GLOB_LAND->GetSeaLevel());
+            const float planeOffset = water.height - Position().Y();
+            // Separate enter/exit thresholds prevent buoyancy from chattering at crests while
+            // collision remains the authority for whether this location contains water.
+            _waterBuoyancyContact = _waterBuoyancyContact ? (_waterDepth > 0.01f || planeOffset > -0.20f)
+                                                           : (_waterDepth > 0.08f && planeOffset > -0.05f);
+        }
+        else
+        {
+            _waterBuoyancyContact = false;
         }
 
         // Rendering-only event production after collision/movement are complete. Do not feed

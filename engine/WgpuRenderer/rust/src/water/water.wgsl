@@ -73,6 +73,10 @@ const GRID_N: f32 = 32.0;
 // sampled from the colour target currently being blended into.
 @group(1) @binding(12) var scene_color: texture_2d<f32>;
 @group(1) @binding(13) var scene_samp: sampler;
+@group(1) @binding(14) var planar_color: texture_2d<f32>;
+@group(1) @binding(15) var planar_samp: sampler;
+struct PlanarParams { full_vp: mat4x4<f32>, valid: vec4<f32> };
+@group(1) @binding(16) var<uniform> planar: PlanarParams;
 
 // Multi-band open-ocean carrier. The long swells establish the readable sea state,
 // while successively shorter cross-waves break up the regularity around the camera.
@@ -173,8 +177,10 @@ fn fft_sample(xz: vec2<f32>, layer: i32) -> vec4<f32> {
 }
 fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
     var disp = vec3<f32>(0.0);
-    // The shortest cascade remains normal detail; longer bands displace CDLOD geometry.
-    for (var layer = 1; layer < 4; layer = layer + 1) {
+    // The JONSWAP wind peak sits in the shortest 48 m cascade at the default
+    // wind speed. It must contribute to geometry as well as normals or the
+    // visible ocean stays flat while only its shading ripples.
+    for (var layer = 0; layer < 4; layer = layer + 1) {
         disp = disp + fft_sample(xz, layer).xyz;
     }
     return disp * wave_fade(dist);
@@ -331,6 +337,64 @@ fn foam_noise(p_world: vec2<f32>, t: f32) -> f32 {
     return v;
 }
 
+// A small shading-only ripple field. Rotating each octave avoids aligned fBm cells;
+// exponential shaping preserves fine crest definition without changing displacement.
+fn micro_fbm(p: vec2<f32>, t: f32) -> f32 {
+    let p0 = p + vec2<f32>(0.11, -0.07) * t;
+    let p1 = vec2<f32>(p0.x * 0.81 - p0.y * 0.59, p0.x * 0.59 + p0.y * 0.81);
+    let p2 = vec2<f32>(p0.x * 0.36 + p0.y * 0.93, -p0.x * 0.93 + p0.y * 0.36);
+    let p3 = vec2<f32>(p0.x * 0.97 - p0.y * 0.24, p0.x * 0.24 + p0.y * 0.97);
+    var value = 0.52 * vnoise(p0);
+    value = value + 0.27 * vnoise(p1 * 2.07 + vec2<f32>(19.1, 7.3));
+    value = value + 0.14 * vnoise(p2 * 4.19 + vec2<f32>(3.7, 31.9));
+    value = value + 0.07 * vnoise(p3 * 8.47 + vec2<f32>(43.3, 13.7));
+    let signed_value = value * 2.0 - 1.0;
+    return 0.5 + 0.5 * sign(signed_value) * pow(abs(signed_value), 1.35);
+}
+
+fn micro_normal(xz: vec2<f32>, dist: f32, water_depth: f32, base_normal: vec3<f32>, fft_slope_variance: f32) -> vec3<f32> {
+    let p0 = xz * 0.48;
+    // Domain warp breaks up the otherwise regular fBm cells without introducing a texture.
+    let warp = vec2<f32>(vnoise(p0 * 0.23 + vec2<f32>(11.0, 5.0)),
+                         vnoise(p0 * 0.23 + vec2<f32>(37.0, 23.0))) - vec2<f32>(0.5);
+    let p = p0 + warp * 0.45;
+    let e = 0.035;
+    let slope = vec2<f32>(
+        micro_fbm(p + vec2<f32>(e, 0.0), wp.time) - micro_fbm(p - vec2<f32>(e, 0.0), wp.time),
+        micro_fbm(p + vec2<f32>(0.0, e), wp.time) - micro_fbm(p - vec2<f32>(0.0, e), wp.time)
+    ) / (2.0 * e);
+    let distance_fade = wave_fade(dist);
+    let coast_fade = smoothstep(max(wp.coast_fade, 0.1), max(wp.coast_fade * 3.0, 0.3), water_depth);
+    let steep_fade = 1.0 - smoothstep(0.10, 0.38, 1.0 - base_normal.y);
+    let fft_roughness_fade = 1.0 - smoothstep(0.035, 0.20, fft_slope_variance);
+    let strength = 0.050 * distance_fade * coast_fade * steep_fade * fft_roughness_fade;
+    return normalize(vec3<f32>(base_normal.x - slope.x * strength, base_normal.y, base_normal.z - slope.y * strength));
+}
+
+// `spec_power` predates the microfacet path. Convert its Blinn-Phong sharpness to
+// a conservative perceptual roughness floor, then let the resolved wave variance
+// and shading-only ripple perturbation broaden the lobe rather than sharpen it.
+fn water_roughness(spec_power: f32, fft_slope_variance: f32, base_normal: vec3<f32>, shading_normal: vec3<f32>) -> f32 {
+    let legacy_floor = sqrt(2.0 / max(spec_power + 2.0, 2.0));
+    let fft_slope = sqrt(clamp(fft_slope_variance, 0.0, 0.25));
+    let micro_slope = length(shading_normal.xz - base_normal.xz);
+    return clamp(legacy_floor + fft_slope * 0.26 + micro_slope * 0.35, 0.075, 0.32);
+}
+
+fn safe_normalize3(x: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    let length_sq = dot(x, x);
+    return select(fallback, x * inverseSqrt(max(length_sq, 1e-8)), length_sq > 1e-8);
+}
+
+fn schlick_fresnel(f0: f32, cosine: f32) -> f32 {
+    return f0 + (1.0 - f0) * pow(max(1.0 - cosine, 0.0), 5.0);
+}
+
+fn smith_schlick_g1(ndx: f32, roughness: f32) -> f32 {
+    let k = (roughness + 1.0) * (roughness + 1.0) * 0.125;
+    return ndx / max(ndx * (1.0 - k) + k, 1e-4);
+}
+
 // Equirect lookup into the sky reflection env map. Matches fs_sky_env's convention in sky.wgsl:
 // u = azimuth (atan2(z, x)/2pi + 0.5, U-wrapped), v = 0 at zenith .. 1 at nadir (acos(y)/pi).
 // `dir` is a world-space direction. Returns linear sky radiance.
@@ -416,6 +480,20 @@ fn reflected_scene(surface_rel: vec3<f32>, reflect_dir: vec3<f32>, normal_variat
     return vec4<f32>(hit_color, hit_weight * roughness_fade * distance_fade);
 }
 
+// Project the reflected absolute surface point through the mirrored camera. This is
+// intentionally not a flipped main-screen UV: parallax follows the reflected camera.
+fn planar_reflection(surface_rel: vec3<f32>) -> vec4<f32> {
+    if (planar.valid.x < 0.5) { return vec4<f32>(0.0); }
+    let absolute = surface_rel + frame.cam_pos.xyz;
+    let mirrored = vec3<f32>(absolute.x, 2.0 * wp.sea_level - absolute.y, absolute.z);
+    let clip = planar.full_vp * vec4<f32>(mirrored, 1.0);
+    if (clip.w <= 1e-5) { return vec4<f32>(0.0); }
+    let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
+    let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
+    let valid = smoothstep(0.0, 0.03, edge);
+    return vec4<f32>(textureSampleLevel(planar_color, planar_samp, clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0).rgb, valid);
+}
+
 @fragment
 fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Receiver-plane derivatives for the CSM bias must be taken in uniform control flow.
@@ -476,6 +554,25 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let interaction_mask = smoothstep(0.0, wp.coast_fade * 2.0, water_depth);
     let interaction_strength = smoothstep(0.00001, 0.001, abs(h_l) + abs(h_r) + abs(h_d) + abs(h_u));
     n = normalize(mix(n, interaction_normal, interaction_mask * interaction_strength));
+    var fft_slope_variance = 0.0;
+    var fft_crest = 0.0;
+    var fft_compression = 0.0;
+    var fft_curvature = 0.0;
+    if (wp.fft_control.x > 0.5) {
+        for (var layer = 0; layer < 4; layer = layer + 1) {
+            let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
+            let uv = fract(in.base_xz / length_m);
+            let auxiliary = textureSampleLevel(fft_auxiliary, fft_samp, uv, layer, 0.0);
+            fft_slope_variance = fft_slope_variance + auxiliary.w;
+            fft_crest = max(fft_crest, textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0).w);
+            fft_compression = max(fft_compression, auxiliary.y);
+            fft_curvature = max(fft_curvature, auxiliary.z);
+        }
+    }
+    // Applied after all physical/interactions normals, so micro ripples alter only final shading.
+    let base_normal = n;
+    n = micro_normal(in.base_xz, length(in.world_pos), water_depth, n, fft_slope_variance);
+    let roughness = water_roughness(wp.spec_power, fft_slope_variance, base_normal, n);
     var shallow = wp.shallow_color.rgb;
     var deep = wp.deep_color.rgb;
     if (linear > 0.5) {
@@ -498,7 +595,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let ndv = max(dot(n, v), 0.0);
     let f0 = 0.035;
     // max() guards pow() against a tiny negative base from normalize() rounding (NaN).
-    let fresnel = f0 + (1.0 - f0) * pow(max(1.0 - ndv, 0.0), 5.0);
+    let fresnel = schlick_fresnel(f0, ndv);
     // Stage 4a: reflect the REAL sky. Sample the sky env map (disc-free atmosphere radiance) in the
     // reflected view direction — so night water reflects a genuinely dark sky, and only the fragments
     // that geometrically reflect toward the sun/horizon pick up its glow (no uniform pink wash). The
@@ -523,6 +620,10 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let normal_variation = length(dpdx(n)) + length(dpdy(n));
     let ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
     refl = mix(refl, ssr.rgb, ssr.a);
+    let planar_refl = planar_reflection(in.world_pos);
+    // SSR has the highest-detail on-screen hit; planar fills its off-screen holes,
+    // then the atmosphere remains the final fallback.
+    refl = mix(refl, planar_refl.rgb, planar_refl.a * (1.0 - ssr.a));
     let uv = scene_uv(in.clip.xy);
     // Refraction is strongest looking down. The normal offset is bounded in pixels so
     // choppy near water cannot pull foreground geometry across the shoreline.
@@ -537,20 +638,35 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let reflection_weight = clamp(fresnel * 1.45 + 0.025, 0.0, 1.0);
     rgb = mix(transmitted, refl, reflection_weight);
 
-    // Sharp HDR sun glint — the reflected sun disc, on the same physical scale as the sky's now
-    // eye-searing sun. sun_diffuse is the solar IRRADIANCE (the scale that drives the sky); an
-    // ENERGY-NORMALISED Blinn-Phong lobe spreads it over the highlight, so a tighter lobe (higher
-    // spec_power) concentrates the same energy into a brighter, searing core instead of the old
-    // flat irradiance-scale smear. Fresnel-weighted (microfacet v.h): a specular reflection of the
-    // sun is Fresnel-modulated — water barely glints at normal incidence and hard along the grazing
-    // glitter path. spec_intensity is now an artist trim (was the raw peak scale). Un-clamped so the
-    // bloom pass catches it; the sun is occluded in shadow, so the glint vanishes there.
-    let h = normalize(l + v);
+    // Energy-normalized GGX sunlight. The NDF is broadened by resolved FFT slope
+    // variance and micro-ripples, preventing a temporally unstable pin-prick glint.
+    // Keep the legacy intensity as a restrained trim: its old default targeted the
+    // much lower Blinn-Phong peak, while GGX retains a physically sharper core.
+    let h = safe_normalize3(l + v, n);
     let ndh = max(dot(n, h), 0.0);
-    let spec_fresnel = f0 + (1.0 - f0) * pow(max(1.0 - dot(v, h), 0.0), 5.0);
-    let spec_norm = (wp.spec_power + 2.0) / (8.0 * PI);
-    let spec = pow(ndh, wp.spec_power) * spec_norm * spec_fresnel * wp.spec_intensity * sun_vis;
-    rgb = rgb + sun_diffuse * spec;
+    let vdh = max(dot(v, h), 0.0);
+    let ggx_alpha = roughness * roughness;
+    let alpha_sq = ggx_alpha * ggx_alpha;
+    let d_base = max(ndh * ndh * (alpha_sq - 1.0) + 1.0, 1e-6);
+    let distribution = alpha_sq / (PI * d_base * d_base);
+    let visibility = smith_schlick_g1(ndl, roughness) * smith_schlick_g1(ndv, roughness);
+    let specular = distribution * visibility * schlick_fresnel(f0, vdh) /
+        max(4.0 * ndl * ndv, 1e-4);
+    let sun_specular = specular * ndl * wp.spec_intensity * 0.12 * sun_vis;
+    rgb = rgb + sun_diffuse * sun_specular;
+
+    // Focused, backlit crests transmit a little direct sunlight. Curvature and
+    // horizontal compression reject broad swells; sufficient column depth rejects
+    // the shoreline foam band. This is direct-light scattering, not emission.
+    let crest_shape = smoothstep(0.025, 0.09, fft_crest) *
+        smoothstep(0.008, 0.030, fft_compression) *
+        smoothstep(0.0015, 0.014, fft_curvature);
+    let view_xz = safe_normalize3(vec3<f32>(v.x, 0.0, v.z), vec3<f32>(0.0, 0.0, 1.0)).xz;
+    let light_xz = safe_normalize3(vec3<f32>(l.x, 0.0, l.z), vec3<f32>(0.0, 0.0, -1.0)).xz;
+    let backlit = smoothstep(0.10, 0.70, dot(view_xz, -light_xz));
+    let crest_depth = smoothstep(0.35, 1.5, min(water_depth, DEEP));
+    let crest_scatter = crest_shape * backlit * crest_depth * sun_vis * 0.035;
+    rgb = rgb + sun_diffuse * crest_scatter;
 
     // Artistic darkening of shadowed water for readability (dims the ambient/sky term
     // too, which the pure sun-removal above does not). 0 = physical (sun-only).
@@ -589,9 +705,27 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // The compute source is thresholded, so calm water with no events or breaking crests remains clean.
     let persistent_foam = clamp(foam_history_sample.r * (0.52 + foam_history_sample.b * 0.30), 0.0, 1.0);
     let combined_foam = max(foam, persistent_foam);
-    // Foam is bright diffuse spray, not an emitter: light it by the sky ambient + direct sun (where
-    // the water isn't shadowed) so it goes dim at night instead of glowing white in the dark.
-    let foam_color = sun_ambient * amb_ao + sun_diffuse * sun_vis;
+    // Bubbles form a broad, rough dielectric layer: mostly sky/sun-lit diffuse scattering with
+    // only a subdued dielectric highlight. This is material response, never an emissive overlay.
+    var foam_color = vec3<f32>(0.0);
+    if (combined_foam > 0.0) {
+        let foam_normal = normalize(mix(n, vec3<f32>(0.0, 1.0, 0.0), 0.72));
+        let foam_ndl = max(dot(foam_normal, l), 0.0);
+        let foam_ndv = max(dot(foam_normal, v), 0.0);
+        let foam_h = safe_normalize3(l + v, foam_normal);
+        let foam_ndh = max(dot(foam_normal, foam_h), 0.0);
+        let foam_vdh = max(dot(v, foam_h), 0.0);
+        let foam_roughness = 0.72;
+        let foam_alpha_sq = pow(foam_roughness, 4.0);
+        let foam_d_base = max(foam_ndh * foam_ndh * (foam_alpha_sq - 1.0) + 1.0, 1e-6);
+        let foam_distribution = foam_alpha_sq / (PI * foam_d_base * foam_d_base);
+        let foam_visibility = smith_schlick_g1(foam_ndl, foam_roughness) * smith_schlick_g1(foam_ndv, foam_roughness);
+        let foam_specular = foam_distribution * foam_visibility * schlick_fresnel(0.02, foam_vdh) /
+            max(4.0 * foam_ndl * foam_ndv, 1e-4) * foam_ndl * sun_vis;
+        let foam_albedo = vec3<f32>(0.88, 0.92, 0.94);
+        let foam_diffuse = (sun_ambient * amb_ao + sun_diffuse * foam_ndl * sun_vis) * (foam_albedo / PI);
+        foam_color = foam_diffuse + sun_diffuse * foam_specular * 0.08;
+    }
     rgb = mix(rgb, foam_color, combined_foam);
 
     // Base opacity, Fresnel-opaque at grazing angles (where real water is a mirror) so

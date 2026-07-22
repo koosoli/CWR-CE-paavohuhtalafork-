@@ -21,9 +21,20 @@ fn fft_source(world: vec2<f32>) -> f32 {
         let uv = fract(world / scale);
         let displacement = textureSampleLevel(fft_displacement, field_sampler, uv, layer, 0.0);
         let auxiliary = textureSampleLevel(fft_auxiliary, field_sampler, uv, layer, 0.0);
-        let crest = max(displacement.w, auxiliary.y);
-        let compression = max(auxiliary.x, 0.0);
-        source = max(source, smoothstep(0.03, 0.14, crest) * smoothstep(0.002, 0.012, compression));
+        // auxiliary = (J, max(1-J, 0), positive curvature, slope magnitude squared).
+        // Require geometric convergence and a steep crest together: this excludes broad
+        // low-curvature compression from becoming a persistent coastal carpet.
+        let crest = displacement.w;
+        let compression = auxiliary.y;
+        let curvature = auxiliary.z;
+        let steepness = sqrt(max(auxiliary.w, 0.0));
+        // The C++ calm sea is deliberately only 0.08, so these gates begin above
+        // numerical texture noise but still admit its occasional focused crest.
+        let breaker = smoothstep(0.008, 0.026, compression)
+            * smoothstep(0.025, 0.090, crest)
+            * smoothstep(0.020, 0.090, steepness)
+            * smoothstep(0.0015, 0.012, curvature);
+        source = max(source, breaker);
     }
     return source;
 }
@@ -49,8 +60,8 @@ fn foam_update(@builtin(global_invocation_id) id: vec3<u32>) {
     let source = max(fft, aeration);
     // Keep breakers visible briefly, but do not let repeated shallow/coastal sources
     // turn into a permanent white band.
-    let decayed = history.r * exp(-dt * 4.5);
-    let injection = 1.0 - exp(-source * dt * 1.40);
+    let decayed = history.r * exp(-dt * 5.5);
+    let injection = 1.0 - exp(-source * dt * 0.85);
     let coverage = 1.0 - (1.0 - decayed) * (1.0 - injection);
     let age = mix(min(history.g + dt * 0.08, 1.0), 0.0, clamp(injection * 2.0, 0.0, 1.0));
     let stored_aeration = max(history.b * exp(-dt * 4.8), aeration);

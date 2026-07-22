@@ -447,7 +447,8 @@ impl CameraGroup {
         // NOT the raw C-ABI size. Keep the three in sync (see prepare's camera upload + frame.wgsl).
         let bind_size = std::mem::size_of::<WgrCamera>() as u64
             + 64
-            + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64;
+            + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64
+            + 16;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_3d_camera_layout"),
             entries: &[
@@ -600,10 +601,10 @@ impl CameraGroup {
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        let align = device
-            .limits()
-            .min_uniform_buffer_offset_alignment
-            .max(bind_size as u32) as u64;
+        // Dynamic uniform offsets must be multiples of the device alignment. The
+        // camera block itself is larger than that alignment, so round its size UP to
+        // the next alignment multiple instead of using its raw size as the alignment.
+        let align = device.limits().min_uniform_buffer_offset_alignment as u64;
         CameraGroup {
             layout,
             sampler,
@@ -3085,6 +3086,9 @@ impl Gfx3d {
         sky_sh_buf: &wgpu::Buffer,
         skyvis_view: &wgpu::TextureView,
         foliage: &crate::ffi::WgrFoliage,
+        // (camera index, sea level). Only the reflected camera uses this conservative
+        // above-water clip; main cameras retain their existing behaviour.
+        reflection_clip: Option<(usize, f32)>,
     ) {
         // Lend the terrain heightmap + its sampling params to the mesh conform group
         // (group 4) so vs_main can conform ClipLand vegetation to SurfaceY per vertex.
@@ -3138,6 +3142,16 @@ impl Gfx3d {
                     buf,
                     base + std::mem::size_of::<WgrCamera>() as u64 + 64,
                     bytemuck::bytes_of(foliage),
+                );
+                let clip = match reflection_clip {
+                    Some((reflected_index, sea)) if i == reflected_index => [0.0, 1.0, 0.0, -sea],
+                    _ => [0.0; 4],
+                };
+                queue.write_buffer(
+                    buf,
+                    base + std::mem::size_of::<WgrCamera>() as u64 + 64
+                        + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64,
+                    bytemuck::cast_slice(&clip),
                 );
             }
         }

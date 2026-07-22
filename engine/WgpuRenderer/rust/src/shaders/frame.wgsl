@@ -51,6 +51,9 @@ struct Frame {
     foliage: vec4<f32>,
     foliageb: vec4<f32>,
     foliagec: vec4<f32>,
+    // xyz = plane normal, w = offset; zero normal disables clipping. This is appended
+    // by Rust, keeping WgrCamera's C++ ABI unchanged.
+    clip_plane: vec4<f32>,
 };
 
 // One frame-global point or spot light. Positions are ABSOLUTE world space so a

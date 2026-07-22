@@ -31,6 +31,10 @@ pub struct Water {
     env_sampler: wgpu::Sampler,
     scene_view: wgpu::TextureView,
     scene_sampler: wgpu::Sampler,
+    planar_view: wgpu::TextureView,
+    planar_sampler: wgpu::Sampler,
+    planar_params: wgpu::Buffer,
+    planar_gen: u64,
     interaction: Interaction,
     fft: Option<Fft>,
     foam: Option<Foam>,
@@ -140,6 +144,12 @@ impl Water {
                     ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
                 wgpu::BindGroupLayoutEntry { binding: 13, visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 14, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture { sample_type: wgpu::TextureSampleType::Float { filterable: true }, view_dimension: wgpu::TextureViewDimension::D2, multisampled: false }, count: None },
+                wgpu::BindGroupLayoutEntry { binding: 15, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering), count: None },
+                wgpu::BindGroupLayoutEntry { binding: 16, visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Uniform, has_dynamic_offset: false, min_binding_size: wgpu::BufferSize::new(80) }, count: None },
             ],
         });
 
@@ -240,6 +250,20 @@ impl Water {
             address_mode_v: wgpu::AddressMode::ClampToEdge, mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear, ..Default::default()
         });
+        let planar_view = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_water_dummy_planar"), size: wgpu::Extent3d { width: 1, height: 1, depth_or_array_layers: 1 },
+            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba16Float, usage: wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+        }).create_view(&Default::default());
+        let planar_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_water_planar_sampler"), address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge, mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear, ..Default::default()
+        });
+        let planar_params = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wgr_water_planar_params"), contents: bytemuck::cast_slice(&[0.0f32; 20]),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let interaction = Interaction::new(device, composer);
         let fft_fallback_view = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_water_fft_fallback"),
@@ -286,6 +310,9 @@ impl Water {
             foam.as_ref().map_or(&foam_sampler, |f| f.sampler()),
             &scene_view,
             &scene_sampler,
+            &planar_view,
+            &planar_sampler,
+            &planar_params,
         );
 
         let (grid_vbuf, grid_ibuf, grid_index_count) = build_grid(device);
@@ -400,6 +427,10 @@ impl Water {
             env_sampler,
             scene_view,
             scene_sampler,
+            planar_view,
+            planar_sampler,
+            planar_params,
+            planar_gen: u64::MAX,
             interaction,
             fft,
             foam,
@@ -463,6 +494,9 @@ impl Water {
             self.foam.as_ref().map_or(&self.foam_sampler, |f| f.sampler()),
             &self.scene_view,
             &self.scene_sampler,
+            &self.planar_view,
+            &self.planar_sampler,
+            &self.planar_params,
         );
     }
 
@@ -472,6 +506,9 @@ impl Water {
             params.fft_control[0] = 0.0;
         }
         queue.write_buffer(&self.params_ubo, 0, bytemuck::bytes_of(&params));
+        if let Some(fft) = &mut self.fft {
+            fft.set_params(&params);
+        }
         self.have_params = true;
         self.last_params = Some(params);
     }
@@ -514,6 +551,20 @@ impl Water {
         self.scene_view = scene.clone();
         self.scene_gen = view_gen;
         self.rebuild_group1(device);
+    }
+
+    // A separate completed reflected-camera target. Validity is explicit because black
+    // reflected pixels are legitimate at night and must not be confused with a dummy.
+    pub fn set_planar_view(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, planar: &wgpu::TextureView, view_gen: u64, full_vp: [f32; 16], valid: bool) {
+        let mut params = [0.0f32; 20];
+        params[..16].copy_from_slice(&full_vp);
+        params[16] = if valid { 1.0 } else { 0.0 };
+        queue.write_buffer(&self.planar_params, 0, bytemuck::cast_slice(&params));
+        if self.planar_gen != view_gen {
+            self.planar_view = planar.clone();
+            self.planar_gen = view_gen;
+            self.rebuild_group1(device);
+        }
     }
 
     pub fn prepare(
@@ -590,6 +641,9 @@ fn build_group1(
     foam_sampler: &wgpu::Sampler,
     scene: &wgpu::TextureView,
     scene_sampler: &wgpu::Sampler,
+    planar: &wgpu::TextureView,
+    planar_sampler: &wgpu::Sampler,
+    planar_params: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgr_water_group1_bind"),
@@ -621,6 +675,9 @@ fn build_group1(
             wgpu::BindGroupEntry { binding: 11, resource: wgpu::BindingResource::Sampler(foam_sampler) },
             wgpu::BindGroupEntry { binding: 12, resource: wgpu::BindingResource::TextureView(scene) },
             wgpu::BindGroupEntry { binding: 13, resource: wgpu::BindingResource::Sampler(scene_sampler) },
+            wgpu::BindGroupEntry { binding: 14, resource: wgpu::BindingResource::TextureView(planar) },
+            wgpu::BindGroupEntry { binding: 15, resource: wgpu::BindingResource::Sampler(planar_sampler) },
+            wgpu::BindGroupEntry { binding: 16, resource: planar_params.as_entire_binding() },
         ],
     })
 }
@@ -689,4 +746,47 @@ fn build_grid(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32) {
         usage: wgpu::BufferUsages::INDEX,
     });
     (vbuf, ibuf, indices.len() as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn ggx_water_lobe_is_finite_and_broadens_with_slope_variance() {
+        let roughness = |variance: f32, micro_slope: f32| {
+            let legacy_floor = (2.0_f32 / 242.0).sqrt();
+            (legacy_floor + variance.clamp(0.0, 0.25).sqrt() * 0.26 + micro_slope * 0.35)
+                .clamp(0.075, 0.32)
+        };
+        let ggx = |roughness: f32| {
+            let alpha_sq = roughness.powi(4);
+            let d_base = (1.0_f32 * (alpha_sq - 1.0) + 1.0).max(1e-6);
+            alpha_sq / (std::f32::consts::PI * d_base * d_base)
+        };
+
+        let calm = roughness(0.0, 0.0);
+        let rough = roughness(0.20, 0.04);
+        assert!((0.075..=0.32).contains(&calm));
+        assert!((0.075..=0.32).contains(&rough));
+        assert!(rough > calm);
+        assert!(ggx(calm).is_finite() && ggx(rough).is_finite());
+        assert!(ggx(rough) < ggx(calm));
+    }
+
+    #[test]
+    fn foam_material_is_rough_diffuse_with_subdued_dielectric_specular() {
+        let ggx = |roughness: f32, ndh: f32| {
+            let alpha_sq = roughness.powi(4);
+            let base = (ndh * ndh * (alpha_sq - 1.0) + 1.0).max(1e-6);
+            alpha_sq / (std::f32::consts::PI * base * base)
+        };
+        let foam_roughness = 0.72;
+        let foam_f0 = 0.02;
+        let diffuse = 0.94 / std::f32::consts::PI;
+        let specular = ggx(foam_roughness, 1.0) * foam_f0 * 0.08;
+
+        assert!(foam_roughness > 0.5);
+        assert!(specular.is_finite() && diffuse.is_finite());
+        assert!(specular < diffuse * 0.1);
+        assert!(ggx(foam_roughness, 0.7) > ggx(foam_roughness, 0.2));
+    }
 }

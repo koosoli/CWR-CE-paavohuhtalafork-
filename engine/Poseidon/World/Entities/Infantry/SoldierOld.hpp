@@ -553,6 +553,7 @@ class Man: public Person
 
 	float _waterDepth;
 	float _hydroWaterDepth;
+	bool _waterBuoyancyContact;
 
 	Foundation::Time _whenKilled;
 	Foundation::Time _lastMovementTime;

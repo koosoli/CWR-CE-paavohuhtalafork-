@@ -190,6 +190,11 @@ override linear: f32 = 0.0;
 
 @fragment
 fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
+    // The reflected pass keeps only terrain on/above the global water plane. Fragment
+    // clipping is conservative for a displaced heightfield and avoids an oblique matrix.
+    if (dot(frame.clip_plane.xyz, in.world_pos + frame.cam_pos.xyz) + frame.clip_plane.w < 0.0) {
+        discard;
+    }
     // Receiver-plane derivatives must run in uniform control flow.
     let dwx = dpdx(in.world_pos);
     let dwy = dpdy(in.world_pos);

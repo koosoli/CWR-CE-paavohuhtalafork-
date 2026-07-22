@@ -26,7 +26,7 @@ stages around what they actually expose and promotes **coast look** to the front
 
 ### Hydro FFT Phase 1 (2026-07-21)
 
-The wgpu water path has a shared `128 x 128 x 4` inverse FFT backend in
+The wgpu water path has a shared `256 x 256 x 4` inverse FFT backend in
 `rust/src/water/fft.rs`. Each frame evolves the deterministic wind spectrum,
 runs horizontal and vertical inverse stages for three RGBA32F complex packs,
 then composes RGBA16F displacement, slope/dynamics and auxiliary arrays before
@@ -41,6 +41,25 @@ The FFT phase expanded `WgrWaterParams` to 176 bytes. Its appended packed fields
 `fft_cascade_lengths = { length0, length1, length2, length3 }`. The current C++
 producer uses deterministic defaults; wire engine weather into `WaterWgpu::BuildQuadtree`
 when a stable renderer-facing wind source is available.
+
+### Hydro FFT Phase 2 spectrum character (2026-07-22)
+
+The `256 x 256 x 4` persistent-`h0` path partitions spectral energy between cascades with
+complementary smooth log-frequency bands. Adjacent cascades blend at the geometric mean of
+their fundamental frequencies, so a frequency contributes a total weight of one rather than
+being independently energised by every overlapping FFT domain. The longest cascade retains
+the low-frequency side of this partition.
+
+`fft_spectrum_init.wgsl` also derives a deterministic, seed-selected cross-swell direction
+and lower peak frequency from the existing wind/sea inputs. Its lobe is deliberately capped at
+12% of the base radial spectrum and includes small opposing and transverse tails. This changes
+only persistent `h0` construction; deep-water evolution, layouts, resolution, C++ defaults,
+and `wave_amp` stay unchanged.
+
+This is controlled procedural character, not artist-controlled dual JONSWAP: there are no
+separate swell direction, period, or energy controls, and the seed must change to choose a
+different swell. It is intentionally conservative to preserve the requested visual wave-height
+budget.
 
 ### Hydro v6 shallow/coastal flow (2026-07-21)
 

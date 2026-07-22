@@ -387,6 +387,10 @@ void LoadAndApplyGraphicsConfig()
     if (cfg.Normalize(env))
         LOG_INFO(Graphics, "LoadGraphicsConfig: normalized invalid fields (not persisted)");
 
+    // The in-game Graphics page is currently unavailable. Keep its established Ultra
+    // bundle active at every boot while leaving per-user display knobs untouched.
+    cfg.qualityPreset = GraphicsConfig::PresetUltra;
+    cfg.ApplyPresetToTiers(cfg.qualityPreset);
     ApplyGraphicsConfigToEngine(cfg);
 
     LOG_DEBUG(Graphics,
@@ -637,6 +641,10 @@ int GameApplication::RunAfterArgumentParsing()
 
     if (!InitializeWorld())
         return 1;
+
+    // Scene-owned tier settings (terrain grid, object LOD, shadows and cloudlets)
+    // need a live world. Reapply the forced Ultra bundle after InitializeWorld.
+    LoadAndApplyGraphicsConfig();
 
     if (!InitializeSound())
         return 1;
