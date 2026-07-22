@@ -16,9 +16,9 @@ mod cull;
 mod hiz;
 
 use crate::ffi::{
-    DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE, WgrBlend, WgrCamera,
-    WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrInstance, WgrLight, WgrMat4, WgrMeshVertex,
-    WgrModelLod, WgrModelMaterial, WgrModelSection, WgrShadowCaster, WgrShadowPass, WgrVec4,
+    WgrBlend, WgrCamera, WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrInstance, WgrLight,
+    WgrMat4, WgrMeshVertex, WgrModelLod, WgrModelMaterial, WgrModelSection, WgrShadowCaster,
+    WgrShadowPass, WgrVec4, DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE,
 };
 use crate::textures::SharedTextures;
 
@@ -486,9 +486,9 @@ impl CameraGroup {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Storage { read_only: true },
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<crate::ffi::WgrLight>() as u64,
-                        ),
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                            crate::ffi::WgrLight,
+                        >() as u64),
                     },
                     count: None,
                 },
@@ -518,9 +518,9 @@ impl CameraGroup {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<crate::terrain::TerrainShadowMap>() as u64,
-                        ),
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                            crate::terrain::TerrainShadowMap,
+                        >() as u64),
                     },
                     count: None,
                 },
@@ -915,9 +915,9 @@ impl ConformGroup {
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<crate::terrain::TerrainConformParams>() as u64,
-                        ),
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                            crate::terrain::TerrainConformParams,
+                        >() as u64),
                     },
                     count: None,
                 },
@@ -1004,7 +1004,7 @@ impl ConformGroup {
 // multisampled depth (bound as texture_depth_multisampled_2d) to a single-sample Depth32Float
 // target that the Hi-Z build (+ future SSAO / depth-based water opacity) can sample like the 1x
 // depth aspect. Present only when sample_count > 1.
-struct DepthResolve {
+pub(crate) struct DepthResolve {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
     // Per-size: the resolved depth target's view (both the resolve pass' depth attachment and the
@@ -1016,7 +1016,7 @@ struct DepthResolve {
 impl DepthResolve {
     // `reduce_far` picks the per-sample reduction: false = nearest (Hi-Z occlusion), true = farthest
     // (the true seabed for water depth — skips A2C foliage/rotor edges that would ring as foam).
-    fn new(device: &wgpu::Device, sample_count: u32, reduce_far: bool) -> Self {
+    pub(crate) fn new(device: &wgpu::Device, sample_count: u32, reduce_far: bool) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgr_depth_resolve"),
             source: wgpu::ShaderSource::Wgsl(include_str!("depth_resolve.wgsl").into()),
@@ -1085,7 +1085,7 @@ impl DepthResolve {
 
     // (Re)allocate the resolved depth target for `w x h` and bind `src` (the MSAA depth's DepthOnly
     // aspect view) as the resolve source. Returns a clone of the resolved view for depth_sample_view.
-    fn resize(
+    pub(crate) fn resize(
         &mut self,
         device: &wgpu::Device,
         w: u32,
@@ -1121,7 +1121,7 @@ impl DepthResolve {
 
     // Record the resolve pass (MSAA depth -> single-sample). Recorded after the prepass depth is
     // complete and before the Hi-Z build reads the resolved view.
-    fn resolve(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub(crate) fn resolve(&self, encoder: &mut wgpu::CommandEncoder) {
         let (Some(view), Some(bind)) = (self.view.as_ref(), self.bind.as_ref()) else {
             return;
         };
@@ -1310,6 +1310,9 @@ pub struct Gfx3d {
     cull_inputs: cull::CullInputs,
     cull: cull::CullState,
     gpu_pipeline: wgpu::RenderPipeline,
+    // Mirrored-view variant of gpu_pipeline. Reflection reverses triangle winding, so it
+    // deliberately uses the opposite front face while retaining back-face culling.
+    gpu_reflection_pipeline: wgpu::RenderPipeline,
     // Depth+normal prepass variant of gpu_pipeline (vs_gpu / fs_gpu_prepass): writes depth +
     // the view-space normal G-buffer so the GPU-driven set participates in the prepass.
     gpu_prepass_pipeline: wgpu::RenderPipeline,
@@ -1318,6 +1321,7 @@ pub struct Gfx3d {
     gpu_shadow_pipeline: wgpu::RenderPipeline,
     gpu_group1_layout: wgpu::BindGroupLayout,
     gpu_group1_bind: Option<wgpu::BindGroup>,
+    gpu_reflection_group1_bind: Option<wgpu::BindGroup>,
     // Color-pass draw bind (instances + the OCCLUSION view's records + materials). Same layout
     // as gpu_group1_bind, only the records differ (the occlusion-culled color set vs the main
     // prepass set). None when occlusion is off; then the color draw reuses gpu_group1_bind.
@@ -1607,7 +1611,9 @@ impl Gfx3d {
         // opts out. Drives both the shader coverage path and alpha_to_coverage_enabled on the
         // cutout colour + prepass pipelines (per-draw and GPU-driven).
         let foliage_a2c = sample_count > 1
-            && std::env::var("WGR_FOLIAGE_A2C").map(|v| v != "0").unwrap_or(true);
+            && std::env::var("WGR_FOLIAGE_A2C")
+                .map(|v| v != "0")
+                .unwrap_or(true);
 
         // GPU-driven rendering (Stage 3): retained scene + cull compute + the opaque draw
         // pipeline. Groups 0/2/3 (camera, bindless textures, samplers) are shared with the
@@ -1625,6 +1631,20 @@ impl Gfx3d {
             surface_format,
             sample_count,
             foliage_a2c,
+            wgpu::FrontFace::Cw,
+        );
+        let (gpu_reflection_pipeline, _) = cull::build_gpu_pipeline(
+            device,
+            composer,
+            &cameras.layout,
+            &gpu_group1_layout,
+            &textures.bindless_layout,
+            &textures.sampler_array_layout,
+            &conform.layout,
+            surface_format,
+            sample_count,
+            foliage_a2c,
+            wgpu::FrontFace::Ccw,
         );
         // GPU-driven cascade shadow depth pipeline (§6 multi-view): the retained set cast into
         // each cascade's depth map. Group 0 is the shadow pass UBO (light-VP), so it shares the
@@ -1649,7 +1669,8 @@ impl Gfx3d {
         );
         // MSAA depth resolves: built only when the scene is multisampled. Reduce the MSAA depth to
         // single-sample textures — nearest for the Hi-Z build, farthest for water's seabed depth.
-        let depth_resolve = (sample_count > 1).then(|| DepthResolve::new(device, sample_count, false));
+        let depth_resolve =
+            (sample_count > 1).then(|| DepthResolve::new(device, sample_count, false));
         let depth_resolve_far =
             (sample_count > 1).then(|| DepthResolve::new(device, sample_count, true));
 
@@ -1687,7 +1708,9 @@ impl Gfx3d {
             // GPU Hi-Z occlusion: default on when GPU-driven is on (the point of this feature),
             // opt-out via WGR_GPU_OCCLUSION=0; also toggleable live from the ImGui Culling tab.
             occlusion_enabled: gpu_driven_enabled
-                && std::env::var("WGR_GPU_OCCLUSION").map(|v| v != "0").unwrap_or(true),
+                && std::env::var("WGR_GPU_OCCLUSION")
+                    .map(|v| v != "0")
+                    .unwrap_or(true),
             shadow_pass_ubo,
             shadow_caster_ssbo,
             shadow_plan: Vec::new(),
@@ -1721,10 +1744,12 @@ impl Gfx3d {
             cull_inputs: cull::CullInputs::default(),
             cull,
             gpu_pipeline,
+            gpu_reflection_pipeline,
             gpu_prepass_pipeline,
             gpu_shadow_pipeline,
             gpu_group1_layout,
             gpu_group1_bind: None,
+            gpu_reflection_group1_bind: None,
             gpu_shadow_group1: Vec::new(),
             cull_debug_pipeline,
             cull_debug_layout,
@@ -1865,7 +1890,11 @@ impl Gfx3d {
         // sky-irradiance ambient — a transparent surface isn't a diffuse reflector, and a full sky
         // wash blows out cockpit glass (and spikes auto-exposure). Only Alpha; Additive effects and
         // the opaque/cutout GPU-driven set stay at the default 0.
-        let translucent = if key.blend == WgrBlend::Alpha as u8 { 1.0 } else { 0.0 };
+        let translucent = if key.blend == WgrBlend::Alpha as u8 {
+            1.0
+        } else {
+            0.0
+        };
         let constants = [
             ("alpha_ref", alpha_ref),
             ("is_shadow", is_shadow),
@@ -2122,7 +2151,8 @@ impl Gfx3d {
             let key: MeshKey = KeyData::from_ffi(handle).into();
             // Return the mesh's pool ranges to the free-list so a later load reuses them.
             if let Some(mesh) = self.meshes.remove(key) {
-                self.pool.free(&mesh.alloc, mesh.vert_count, mesh.index_count);
+                self.pool
+                    .free(&mesh.alloc, mesh.vert_count, mesh.index_count);
             }
             // Drop any cached skin-bake bind that referenced this mesh's skin buffer.
             self.bake_bind_cache.remove(&key);
@@ -2344,7 +2374,11 @@ impl Gfx3d {
                 cp.set_bind_group(0, bind, &[]);
                 last_mesh = Some(g.mesh);
             }
-            cp.set_bind_group(1, params_bind, &[(i as u64 * self.skin_bake_params.stride) as u32]);
+            cp.set_bind_group(
+                1,
+                params_bind,
+                &[(i as u64 * self.skin_bake_params.stride) as u32],
+            );
             let threads = g.vert_count * g.instance_count;
             cp.dispatch_workgroups(threads.div_ceil(64), 1, 1);
         }
@@ -2798,13 +2832,17 @@ impl Gfx3d {
         if count == 0 || (casters.is_empty() && !gpu_shadows) {
             return;
         }
-        let (Some(target), Some(pass_bind)) =
-            (self.shadow_target.as_ref(), self.shadow_pass_ubo.bind.as_ref())
-        else {
+        let (Some(target), Some(pass_bind)) = (
+            self.shadow_target.as_ref(),
+            self.shadow_pass_ubo.bind.as_ref(),
+        ) else {
             return;
         };
         // CPU caster resources (absent when this frame has no CPU casters).
-        let cpu = self.shadow_pipelines.as_ref().zip(self.shadow_caster_bind.as_ref());
+        let cpu = self
+            .shadow_pipelines
+            .as_ref()
+            .zip(self.shadow_caster_bind.as_ref());
 
         for c in 0..count.min(target.layers) as usize {
             let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -2835,66 +2873,66 @@ impl Gfx3d {
                 (cpu, self.conform.bind.as_ref(), self.shadow_plan.get(c))
             {
                 for bucket in plan {
-                let caster = &casters[bucket.repr as usize];
-                let Some(mesh) = self.meshes.get(KeyData::from_ffi(caster.mesh).into()) else {
-                    continue;
-                };
-                let alpha = caster.alpha_ref > 0.0;
-                // Baked casters route through the rigid pipeline reading skinned_vbuf at
-                // base_vertex (identity world in the SSBO); `skin` = the VS-skinning fallback.
-                let baked = if caster.palette_slot != NO_PALETTE {
-                    self.baked_base_vertex(caster.palette_slot)
-                } else {
-                    None
-                };
-                let skin = if caster.palette_slot != NO_PALETTE && baked.is_none() {
-                    mesh.skin.as_ref()
-                } else {
-                    None
-                };
-                rp.set_pipeline(pipes.get(skin.is_some(), alpha));
-                if let Some(skin) = skin {
-                    let Some(palette_bind) = self.palette.bind.as_ref() else {
+                    let caster = &casters[bucket.repr as usize];
+                    let Some(mesh) = self.meshes.get(KeyData::from_ffi(caster.mesh).into()) else {
                         continue;
                     };
+                    let alpha = caster.alpha_ref > 0.0;
+                    // Baked casters route through the rigid pipeline reading skinned_vbuf at
+                    // base_vertex (identity world in the SSBO); `skin` = the VS-skinning fallback.
+                    let baked = if caster.palette_slot != NO_PALETTE {
+                        self.baked_base_vertex(caster.palette_slot)
+                    } else {
+                        None
+                    };
+                    let skin = if caster.palette_slot != NO_PALETTE && baked.is_none() {
+                        mesh.skin.as_ref()
+                    } else {
+                        None
+                    };
+                    rp.set_pipeline(pipes.get(skin.is_some(), alpha));
+                    if let Some(skin) = skin {
+                        let Some(palette_bind) = self.palette.bind.as_ref() else {
+                            continue;
+                        };
+                        rp.set_bind_group(
+                            1,
+                            palette_bind,
+                            &[(caster.palette_slot as u64 * self.palette.stride) as u32],
+                        );
+                        rp.set_vertex_buffer(1, skin.slice(..));
+                    } else {
+                        // Whole-buffer storage bound once; each instance's slot travels as
+                        // base_instance (read via @builtin(instance_index)) — no dynamic offset.
+                        rp.set_bind_group(1, caster_bind, &[]);
+                    }
                     rp.set_bind_group(
-                        1,
-                        palette_bind,
-                        &[(caster.palette_slot as u64 * self.palette.stride) as u32],
+                        2,
+                        textures.texture_bind(if alpha { caster.texture_id } else { 0 }),
+                        &[],
                     );
-                    rp.set_vertex_buffer(1, skin.slice(..));
-                } else {
-                    // Whole-buffer storage bound once; each instance's slot travels as
-                    // base_instance (read via @builtin(instance_index)) — no dynamic offset.
-                    rp.set_bind_group(1, caster_bind, &[]);
-                }
-                rp.set_bind_group(
-                    2,
-                    textures.texture_bind(if alpha { caster.texture_id } else { 0 }),
-                    &[],
-                );
-                rp.set_bind_group(3, textures.sampler_bind(caster.sampler.index()), &[]);
-                rp.set_bind_group(4, conform_bind, &[]);
-                // Baked casters pull baked verts from the shared skinned buffer at the
-                // baked slice offset; rigid/VS-skinned pull from the geometry pool at the
-                // mesh's vbase. Sliced to that byte offset with base_vertex 0 (as in
-                // draw_one); the index buffer is always the pool's Uint32 ibuf, its range
-                // offset by the mesh's ibase.
-                let (vbuf, vert_off) = match baked {
-                    Some(bv) if self.skinned_vbuf.is_some() => (
-                        self.skinned_vbuf.as_ref().unwrap(),
-                        bv as u64 * BAKED_VERT_SIZE,
-                    ),
-                    _ => (self.pool.vbuf(), mesh.alloc.vbase as u64 * BAKED_VERT_SIZE),
-                };
-                rp.set_vertex_buffer(0, vbuf.slice(vert_off..));
-                rp.set_index_buffer(self.pool.ibuf().slice(..), wgpu::IndexFormat::Uint32);
-                let first = mesh.alloc.ibase + caster.index_begin;
-                rp.draw_indexed(
-                    first..(first + caster.index_count),
-                    0,
-                    bucket.base..(bucket.base + bucket.count),
-                );
+                    rp.set_bind_group(3, textures.sampler_bind(caster.sampler.index()), &[]);
+                    rp.set_bind_group(4, conform_bind, &[]);
+                    // Baked casters pull baked verts from the shared skinned buffer at the
+                    // baked slice offset; rigid/VS-skinned pull from the geometry pool at the
+                    // mesh's vbase. Sliced to that byte offset with base_vertex 0 (as in
+                    // draw_one); the index buffer is always the pool's Uint32 ibuf, its range
+                    // offset by the mesh's ibase.
+                    let (vbuf, vert_off) = match baked {
+                        Some(bv) if self.skinned_vbuf.is_some() => (
+                            self.skinned_vbuf.as_ref().unwrap(),
+                            bv as u64 * BAKED_VERT_SIZE,
+                        ),
+                        _ => (self.pool.vbuf(), mesh.alloc.vbase as u64 * BAKED_VERT_SIZE),
+                    };
+                    rp.set_vertex_buffer(0, vbuf.slice(vert_off..));
+                    rp.set_index_buffer(self.pool.ibuf().slice(..), wgpu::IndexFormat::Uint32);
+                    let first = mesh.alloc.ibase + caster.index_begin;
+                    rp.draw_indexed(
+                        first..(first + caster.index_count),
+                        0,
+                        bucket.base..(bucket.base + bucket.count),
+                    );
                 }
             }
 
@@ -3149,7 +3187,8 @@ impl Gfx3d {
                 };
                 queue.write_buffer(
                     buf,
-                    base + std::mem::size_of::<WgrCamera>() as u64 + 64
+                    base + std::mem::size_of::<WgrCamera>() as u64
+                        + 64
                         + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64,
                     bytemuck::cast_slice(&clip),
                 );
@@ -3454,7 +3493,10 @@ impl Gfx3d {
         let mut args: Vec<DrawIndexedIndirectArgs> = Vec::new();
         for op in ops.iter_mut() {
             let Plan3dOp::Draw3D {
-                draw, base, count, kind,
+                draw,
+                base,
+                count,
+                kind,
             } = op
             else {
                 continue;
@@ -3893,16 +3935,26 @@ impl Gfx3d {
                         eprintln!(
                             "[wgr] SECTION OVERFLOW sec {k}: mesh {:#x} index_count={} but \
                              section wants [{}, {}) (vbase={} ibase={} vert_count={})",
-                            s.mesh, mesh.index_count, s.index_begin, end,
-                            mesh.alloc.vbase, mesh.alloc.ibase, mesh.vert_count,
+                            s.mesh,
+                            mesh.index_count,
+                            s.index_begin,
+                            end,
+                            mesh.alloc.vbase,
+                            mesh.alloc.ibase,
+                            mesh.vert_count,
                         );
                     }
                     if debug && k < 8 {
                         eprintln!(
                             "[wgr] sec {k}: mesh {:#x} vbase={} first_index={} idx_count={} \
                              variant={} | mesh vert_count={} index_count={} local_begin={}",
-                            s.mesh, mesh.alloc.vbase, mesh.alloc.ibase + s.index_begin,
-                            s.index_count, s.variant, mesh.vert_count, mesh.index_count,
+                            s.mesh,
+                            mesh.alloc.vbase,
+                            mesh.alloc.ibase + s.index_begin,
+                            s.index_count,
+                            s.variant,
+                            mesh.vert_count,
+                            mesh.index_count,
                             s.index_begin,
                         );
                     }
@@ -3957,7 +4009,13 @@ impl Gfx3d {
     // group-1 bind if a buffer grew. No-op when GPU-driven rendering is off.
     // Store the engine's per-frame cull + LOD inputs (objectsZ / Camera::Left() /
     // Scene::_lodInvWidth / pixel_limit) for the next prepare_cull. Cheap; called once/frame.
-    pub fn set_cull_inputs(&mut self, objects_z: f32, lod_scale: f32, lod_inv_width: f32, pixel_limit: f32) {
+    pub fn set_cull_inputs(
+        &mut self,
+        objects_z: f32,
+        lod_scale: f32,
+        lod_inv_width: f32,
+        pixel_limit: f32,
+    ) {
         self.cull_inputs = cull::CullInputs {
             objects_z,
             lod_scale,
@@ -3972,6 +4030,7 @@ impl Gfx3d {
         queue: &wgpu::Queue,
         cam: &WgrCamera,
         shadow: &WgrShadowPass,
+        reflected_cam: Option<&WgrCamera>,
     ) {
         if !self.gpu_driven_enabled {
             return;
@@ -3982,8 +4041,23 @@ impl Gfx3d {
         let view = glam::Mat4::from_cols_array(&cam.view);
         let proj = glam::Mat4::from_cols_array(&cam.proj);
         let cam_pos = glam::Vec3::new(cam.cam_pos[0], cam.cam_pos[1], cam.cam_pos[2]);
-        self.cull
-            .set_params(cull::params_from_camera(view, proj, cam_pos, self.cull_inputs));
+        self.cull.set_params(cull::params_from_camera(
+            view,
+            proj,
+            cam_pos,
+            self.cull_inputs,
+        ));
+        if let Some(cam) = reflected_cam {
+            let view = glam::Mat4::from_cols_array(&cam.view);
+            let proj = glam::Mat4::from_cols_array(&cam.proj);
+            let pos = glam::Vec3::new(cam.cam_pos[0], cam.cam_pos[1], cam.cam_pos[2]);
+            self.cull.set_reflection_params(
+                device,
+                cull::params_from_camera(view, proj, pos, self.cull_inputs),
+            );
+        } else {
+            self.cull.clear_reflection_view();
+        }
         // Color-pass Hi-Z occlusion view (§5): (re)size the pyramid to the depth target and set
         // the color params (same frustum/LOD as the main view + the occlusion tail). set_hiz(None)
         // when off leaves color_active() false, so the color draw falls back to the main args.
@@ -4012,8 +4086,10 @@ impl Gfx3d {
         let scam = glam::Vec3::new(shadow.cam_pos[0], shadow.cam_pos[1], shadow.cam_pos[2]);
         for c in 0..n_cascades {
             let lvp = glam::Mat4::from_cols_array(&shadow.light_vp[c]);
-            self.cull
-                .set_shadow_params(c, cull::params_from_shadow_cascade(lvp, scam, self.cull_inputs));
+            self.cull.set_shadow_params(
+                c,
+                cull::params_from_shadow_cascade(lvp, scam, self.cull_inputs),
+            );
         }
         let grew = self.cull.prepare(device, queue);
         if grew || self.gpu_group1_bind.is_none() || self.gpu_shadow_group1.len() != n_cascades {
@@ -4055,6 +4131,30 @@ impl Gfx3d {
                 },
             ],
         }));
+        self.gpu_reflection_group1_bind = self.cull.reflection_out_records().map(|rec| {
+            device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("wgr_gpu_driven_reflection_group1_bind"),
+                layout: &self.gpu_group1_layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: inst.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: rec.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: mat.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: crown.as_entire_binding(),
+                    },
+                ],
+            })
+        });
         // Color-pass draw bind: instances + the occlusion view's records + shared materials.
         // Only when the color view is live (occlusion active); else the color draw reuses the
         // main bind. Same layout as gpu_group1_bind.
@@ -4063,10 +4163,22 @@ impl Gfx3d {
                 label: Some("wgr_gpu_driven_color_group1_bind"),
                 layout: &self.gpu_group1_layout,
                 entries: &[
-                    wgpu::BindGroupEntry { binding: 0, resource: inst.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 1, resource: crec.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 2, resource: mat.as_entire_binding() },
-                    wgpu::BindGroupEntry { binding: 3, resource: crown.as_entire_binding() },
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: inst.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: crec.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 2,
+                        resource: mat.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 3,
+                        resource: crown.as_entire_binding(),
+                    },
                 ],
             })
         });
@@ -4097,10 +4209,22 @@ impl Gfx3d {
                     label: Some("wgr_gpu_driven_shadow_group1_bind"),
                     layout: &self.gpu_group1_layout,
                     entries: &[
-                        wgpu::BindGroupEntry { binding: 0, resource: inst.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 1, resource: rec.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 2, resource: mat.as_entire_binding() },
-                        wgpu::BindGroupEntry { binding: 3, resource: crown.as_entire_binding() },
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: inst.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: rec.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: mat.as_entire_binding(),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 3,
+                            resource: crown.as_entire_binding(),
+                        },
                     ],
                 })
             });
@@ -4144,6 +4268,12 @@ impl Gfx3d {
             return;
         }
         self.cull.dispatch(encoder);
+    }
+
+    pub fn cull_dispatch_reflection(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.gpu_driven_enabled {
+            self.cull.dispatch_reflection(encoder);
+        }
     }
 
     // Whether the color-pass Hi-Z occlusion path is live this frame: GPU-driven on, occlusion
@@ -4267,9 +4397,42 @@ impl Gfx3d {
                 self.cull.color_counter_buf(),
             )
         } else {
-            (self.cull.out_args(), self.gpu_group1_bind.as_ref(), self.cull.counter_buf())
+            (
+                self.cull.out_args(),
+                self.gpu_group1_bind.as_ref(),
+                self.cull.counter_buf(),
+            )
         };
-        self.draw_gpu_driven_impl(pass, textures, cam_off, &self.gpu_pipeline, args, group1, counters);
+        self.draw_gpu_driven_impl(
+            pass,
+            textures,
+            cam_off,
+            &self.gpu_pipeline,
+            args,
+            group1,
+            counters,
+        );
+    }
+
+    // Draw only the reflected view's independently culled retained opaque scene. The mirrored
+    // pipeline flips its front face; the normal main-camera args and bind are never reused.
+    pub fn draw_gpu_driven_reflection(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        textures: &SharedTextures,
+        cam_off: u32,
+    ) {
+        self.draw_gpu_driven_impl(
+            pass,
+            textures,
+            cam_off,
+            &self.gpu_reflection_pipeline,
+            self.cull.reflection_out_args(),
+            self.gpu_reflection_group1_bind.as_ref(),
+            self.cull
+                .reflection_counter_buf()
+                .unwrap_or(self.cull.counter_buf()),
+        );
     }
 
     // GPU-driven depth+normal PREPASS draw (fs_gpu_prepass): the MAIN (frustum-only, occluder)
@@ -4431,13 +4594,13 @@ pub enum Pass3dMode {
 // everything tracked here.
 #[derive(Default)]
 pub struct Pass3dState {
-    pipeline: Option<usize>,   // last render pipeline (pointer identity)
+    pipeline: Option<usize>, // last render pipeline (pointer identity)
     last_skinned: Option<bool>,
     cam_off: Option<u32>,
-    group1_plain: bool,        // plain group-1 (world/material) currently bound
-    skinned_off: Option<u32>,  // skinned group-1 palette offset currently bound
-    bindless: bool,            // groups 2/3 (bindless textures + sampler array) bound
-    conform: bool,             // group-4 conform heightmap currently bound
+    group1_plain: bool,         // plain group-1 (world/material) currently bound
+    skinned_off: Option<u32>,   // skinned group-1 palette offset currently bound
+    bindless: bool,             // groups 2/3 (bindless textures + sampler array) bound
+    conform: bool,              // group-4 conform heightmap currently bound
     vbuf: Option<(usize, u64)>, // vertex buffer at slot 0 (pointer identity + slice byte offset)
     ibuf: Option<usize>,        // index buffer (pointer identity)
 }

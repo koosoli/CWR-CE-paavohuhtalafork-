@@ -23,7 +23,7 @@ pub struct Atmosphere {
     pub ground_albedo: Vec3,
     pub planet_r: f32,
     pub atmos_h: f32,
-    pub ozone: f32,        // strength multiplier (control.w)
+    pub ozone: f32, // strength multiplier (control.w)
     pub sun_intensity: f32,
 }
 
@@ -169,10 +169,7 @@ impl Atmosphere {
                     let hit_p = pos + ray * t_max;
                     let up = hit_p.normalize();
                     let ndl = up.dot(sun).max(0.0);
-                    lum += trans
-                        * self.ground_albedo
-                        * ndl
-                        * self.transmittance(hit_p, sun)
+                    lum += trans * self.ground_albedo * ndl * self.transmittance(hit_p, sun)
                         / std::f32::consts::PI;
                 }
                 lum_total += lum * inv_samples;
@@ -245,8 +242,14 @@ mod tests {
         let a = Atmosphere::default();
         let sun = dir_from(70.0, 0.0);
         let c = a.radiance(Vec3::Y, sun);
-        println!("daytime zenith rgb = {c:?}  (B/R = {:.3})", c.z / (c.x + 1e-12));
-        assert!(c.z > c.x, "daytime zenith should be blue-dominant (B>R): {c:?}");
+        println!(
+            "daytime zenith rgb = {c:?}  (B/R = {:.3})",
+            c.z / (c.x + 1e-12)
+        );
+        assert!(
+            c.z > c.x,
+            "daytime zenith should be blue-dominant (B>R): {c:?}"
+        );
     }
 
     #[test]
@@ -256,8 +259,14 @@ mod tests {
         // Look just above the horizon toward the sun.
         let view = dir_from(3.0, 0.0);
         let c = a.radiance(view, sun);
-        println!("sunset toward-sun rgb = {c:?}  (R/B = {:.3})", c.x / (c.z + 1e-12));
-        assert!(c.x > c.z, "sunset toward the sun should be red-dominant (R>B): {c:?}");
+        println!(
+            "sunset toward-sun rgb = {c:?}  (R/B = {:.3})",
+            c.x / (c.z + 1e-12)
+        );
+        assert!(
+            c.x > c.z,
+            "sunset toward the sun should be red-dominant (R>B): {c:?}"
+        );
     }
 
     #[test]
@@ -265,11 +274,20 @@ mod tests {
         // Sun 4 deg below the horizon: the blue hour.
         let sun = dir_from(-4.0, 0.0);
         let with_oz = Atmosphere::default();
-        let no_oz = Atmosphere { ozone: 0.0, ..Atmosphere::default() };
+        let no_oz = Atmosphere {
+            ozone: 0.0,
+            ..Atmosphere::default()
+        };
         let c_oz = with_oz.radiance(Vec3::Y, sun);
         let c_no = no_oz.radiance(Vec3::Y, sun);
-        println!("twilight zenith  ozone=1: {c_oz:?}  B/G={:.3}", bg_ratio(c_oz));
-        println!("twilight zenith  ozone=0: {c_no:?}  B/G={:.3}", bg_ratio(c_no));
+        println!(
+            "twilight zenith  ozone=1: {c_oz:?}  B/G={:.3}",
+            bg_ratio(c_oz)
+        );
+        println!(
+            "twilight zenith  ozone=0: {c_no:?}  B/G={:.3}",
+            bg_ratio(c_no)
+        );
         // Objective: ozone must raise the blue-to-green ratio (undo the green cast).
         assert!(
             bg_ratio(c_oz) > bg_ratio(c_no),
@@ -286,7 +304,10 @@ mod tests {
         let a = Atmosphere::default();
         let sun = dir_from(-4.0, 0.0);
         let c = a.radiance(Vec3::Y, sun);
-        assert!(c.z > c.y, "twilight zenith should be blue-dominant (B>G): {c:?}");
+        assert!(
+            c.z > c.y,
+            "twilight zenith should be blue-dominant (B>G): {c:?}"
+        );
     }
 
     #[test]
@@ -302,7 +323,12 @@ mod tests {
             let lum = 0.2126 * c.x + 0.7152 * c.y + 0.0722 * c.z;
             println!(
                 "{elev:5.1}  {:.3e}  {:.3e}  {:.3e}  {:.3e}  {:.3}  {:.3}",
-                c.x, c.y, c.z, lum, c.z / (c.y + 1e-30), c.z / (c.x + 1e-30)
+                c.x,
+                c.y,
+                c.z,
+                lum,
+                c.z / (c.y + 1e-30),
+                c.z / (c.x + 1e-30)
             );
         }
     }
@@ -312,9 +338,16 @@ mod tests {
         // Print a sweep so we can read off how much ozone the blue hour needs.
         let sun = dir_from(-4.0, 0.0);
         for oz in [0.0f32, 0.5, 1.0, 2.0, 3.0, 4.0] {
-            let a = Atmosphere { ozone: oz, ..Atmosphere::default() };
+            let a = Atmosphere {
+                ozone: oz,
+                ..Atmosphere::default()
+            };
             let c = a.radiance(Vec3::Y, sun);
-            println!("ozone={oz:.1}  zenith={c:?}  B/G={:.3}  B/R={:.3}", c.z / (c.y + 1e-12), c.z / (c.x + 1e-12));
+            println!(
+                "ozone={oz:.1}  zenith={c:?}  B/G={:.3}  B/R={:.3}",
+                c.z / (c.y + 1e-12),
+                c.z / (c.x + 1e-12)
+            );
         }
     }
 }

@@ -146,8 +146,17 @@ mod tests {
             "water/interaction.wgsl",
         );
         compose(include_str!("../water/foam.wgsl"), "water/foam.wgsl");
-        compose(include_str!("../water/fft_spectrum.wgsl"), "water/fft_spectrum.wgsl");
-        compose(include_str!("../water/fft_stage.wgsl"), "water/fft_stage.wgsl");
-        compose(include_str!("../water/fft_compose.wgsl"), "water/fft_compose.wgsl");
+        compose(
+            include_str!("../water/fft_spectrum.wgsl"),
+            "water/fft_spectrum.wgsl",
+        );
+        compose(
+            include_str!("../water/fft_stage.wgsl"),
+            "water/fft_stage.wgsl",
+        );
+        compose(
+            include_str!("../water/fft_compose.wgsl"),
+            "water/fft_compose.wgsl",
+        );
     }
 }

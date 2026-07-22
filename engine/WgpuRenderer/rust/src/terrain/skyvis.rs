@@ -41,7 +41,9 @@ impl Default for SkyvisOptions {
 // Deterministic integer hash -> [0,1) (no RNG, so the bake stays reproducible/cacheable). Bit-mixed
 // so it stays well-distributed at large world coordinates (the sin(dot)*large one-liner collapses).
 fn hash2(x: u32, y: u32) -> f32 {
-    let mut n = x.wrapping_mul(1597334677).wrapping_add(y.wrapping_mul(3812015801));
+    let mut n = x
+        .wrapping_mul(1597334677)
+        .wrapping_add(y.wrapping_mul(3812015801));
     n = (n ^ (n >> 15)).wrapping_mul(2246822519);
     n ^= n >> 13;
     (n & 0x00ff_ffff) as f32 / (0x0100_0000 as f32)
@@ -145,9 +147,9 @@ pub fn compute(
             for i in 0..k {
                 let phi = sector * (i as f32) + rot;
                 let (dz, dx) = phi.sin_cos(); // dx = cos, dz = sin (unit xz azimuth)
-                // Per-(texel, direction) radial jitter: shift the geometric march's start so the
-                // discrete sample distances differ between neighbours, breaking the concentric
-                // banding a fixed step sequence would stamp everywhere.
+                                              // Per-(texel, direction) radial jitter: shift the geometric march's start so the
+                                              // discrete sample distances differ between neighbours, breaking the concentric
+                                              // banding a fixed step sequence would stamp everywhere.
                 let j = hash2(
                     ox.wrapping_add(i.wrapping_mul(7919)),
                     oy.wrapping_add(i.wrapping_mul(104729)),

@@ -115,45 +115,58 @@ impl Exposure {
             ],
         });
 
-        let make = |label: &str,
-                    layout: &wgpu::BindGroupLayout,
-                    fs: &str,
-                    format: wgpu::TextureFormat| {
-            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-                label: Some(label),
-                bind_group_layouts: &[Some(layout)],
-                immediate_size: 0,
-            });
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&pl),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_main"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: None,
-                multisample: wgpu::MultisampleState::default(),
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fs),
-                    targets: &[Some(wgpu::ColorTargetState {
-                        format,
-                        blend: None,
-                        write_mask: wgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
+        let make =
+            |label: &str, layout: &wgpu::BindGroupLayout, fs: &str, format: wgpu::TextureFormat| {
+                let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                    label: Some(label),
+                    bind_group_layouts: &[Some(layout)],
+                    immediate_size: 0,
+                });
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&pl),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_main"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: None,
+                    multisample: wgpu::MultisampleState::default(),
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(fs),
+                        targets: &[Some(wgpu::ColorTargetState {
+                            format,
+                            blend: None,
+                            write_mask: wgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
 
-        let lum_first = make("wgr_exposure_first", &reduce_layout, "fs_lum_first", LUM_FORMAT);
-        let lum_down = make("wgr_exposure_down", &reduce_layout, "fs_lum_down", LUM_FORMAT);
-        let adapt = make("wgr_exposure_adapt", &adapt_layout, "fs_adapt", SCALE_FORMAT);
+        let lum_first = make(
+            "wgr_exposure_first",
+            &reduce_layout,
+            "fs_lum_first",
+            LUM_FORMAT,
+        );
+        let lum_down = make(
+            "wgr_exposure_down",
+            &reduce_layout,
+            "fs_lum_down",
+            LUM_FORMAT,
+        );
+        let adapt = make(
+            "wgr_exposure_adapt",
+            &adapt_layout,
+            "fs_adapt",
+            SCALE_FORMAT,
+        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("wgr_exposure_sampler"),
@@ -235,7 +248,13 @@ impl Exposure {
 
     // Build the luminance pyramid (full chain to 1x1) for the scene size, and the
     // reduction + adapt bind groups. `scene_view` is the linear HDR target.
-    pub fn resize(&mut self, device: &wgpu::Device, width: u32, height: u32, scene_view: &wgpu::TextureView) {
+    pub fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        width: u32,
+        height: u32,
+        scene_view: &wgpu::TextureView,
+    ) {
         let base_w = (width / 2).max(1);
         let base_h = (height / 2).max(1);
         // Full mip chain so the last mip is exactly 1x1: floor(log2(max))+1.
@@ -270,7 +289,11 @@ impl Exposure {
 
         let reduce_binds: Vec<wgpu::BindGroup> = (0..mip_count)
             .map(|i| {
-                let src = if i == 0 { scene_view } else { &mip_views[i - 1] };
+                let src = if i == 0 {
+                    scene_view
+                } else {
+                    &mip_views[i - 1]
+                };
                 device.create_bind_group(&wgpu::BindGroupDescriptor {
                     label: Some("wgr_exposure_reduce_bind"),
                     layout: &self.reduce_layout,
@@ -327,11 +350,21 @@ impl Exposure {
             return;
         }
         self.reduce_binds[0] = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wgr_exposure_scene_bind"), layout: &self.reduce_layout,
+            label: Some("wgr_exposure_scene_bind"),
+            layout: &self.reduce_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(scene_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scene_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.params_buf.as_entire_binding(),
+                },
             ],
         });
     }
@@ -375,7 +408,8 @@ impl Exposure {
         slice.map_async(wgpu::MapMode::Read, move |r| {
             let _ = tx.send(r);
         });
-        if device.poll(wgpu::PollType::wait_indefinitely()).is_err() || !matches!(rx.recv(), Ok(Ok(())))
+        if device.poll(wgpu::PollType::wait_indefinitely()).is_err()
+            || !matches!(rx.recv(), Ok(Ok(())))
         {
             return 1.0;
         }
@@ -410,7 +444,11 @@ impl Exposure {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(if i == 0 { &self.lum_first } else { &self.lum_down });
+            pass.set_pipeline(if i == 0 {
+                &self.lum_first
+            } else {
+                &self.lum_down
+            });
             pass.set_bind_group(0, &self.reduce_binds[i], &[]);
             pass.draw(0..3, 0..1);
         }

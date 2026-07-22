@@ -1,10 +1,10 @@
 use std::ffi::c_void;
 use std::os::raw::c_char;
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::panic::{catch_unwind, AssertUnwindSafe};
 
-use crate::Renderer;
-use crate::log::{LogSink, log_level};
+use crate::log::{log_level, LogSink};
 use crate::textures::TextureFormat;
+use crate::Renderer;
 
 pub type WgrVec2 = glam::Vec2;
 pub type WgrVec3 = glam::Vec3;
@@ -184,10 +184,10 @@ pub struct WgrDraw3D {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WgrLight {
-    pub pos: WgrVec4,     // xyz = world-absolute position, w = start-attenuation distance
+    pub pos: WgrVec4, // xyz = world-absolute position, w = start-attenuation distance
     pub diffuse: WgrVec4, // rgb = diffuse * nightEffect
     pub ambient: WgrVec4, // rgb = ambient * nightEffect
-    pub dir: WgrVec4,     // xyz = beam direction (spot), w = isSpot (1) else 0
+    pub dir: WgrVec4, // xyz = beam direction (spot), w = isSpot (1) else 0
 }
 
 // --- GPU-driven retained scene (docs/gpu-culling-and-depth-plan.md Stage 3b) ---
@@ -265,15 +265,15 @@ pub struct WgrInstance {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WgrTonemap {
-    pub exposure: f32,    // linear pre-curve multiplier
-    pub mode: f32,        // 0 = passthrough (clamp), 1 = Hable
-    pub encode: f32,      // 0 = write as-is, 1 = linear->sRGB encode
-    pub temperature: f32, // white balance warm(+)/cool(-)
-    pub tint: f32,        // white balance magenta(+)/green(-)
-    pub contrast: f32,    // post-curve contrast (1 = neutral)
-    pub saturation: f32,  // post-curve saturation (1 = neutral)
-    pub lift: f32,        // shadow lift (0 = neutral)
-    pub gain: f32,        // post-curve overall multiply (1 = neutral)
+    pub exposure: f32,        // linear pre-curve multiplier
+    pub mode: f32,            // 0 = passthrough (clamp), 1 = Hable
+    pub encode: f32,          // 0 = write as-is, 1 = linear->sRGB encode
+    pub temperature: f32,     // white balance warm(+)/cool(-)
+    pub tint: f32,            // white balance magenta(+)/green(-)
+    pub contrast: f32,        // post-curve contrast (1 = neutral)
+    pub saturation: f32,      // post-curve saturation (1 = neutral)
+    pub lift: f32,            // shadow lift (0 = neutral)
+    pub gain: f32,            // post-curve overall multiply (1 = neutral)
     pub bloom_intensity: f32, // linear weight of the bloom added to the scene (0 = off)
     pub bloom_threshold: f32, // bloom soft-knee centre (scene-referred luminance)
     pub bloom_knee: f32,      // bloom soft-knee half-width
@@ -364,7 +364,7 @@ pub struct WgrSky {
     // instead of the physical model's near-black. Blended in by sun altitude.
     // w = camera altitude above sea level (m): the aerial/sky raymarch starts here, so a
     // wrong value makes the march dive below the terrain when flying (huge fake density).
-    pub night_zenith: WgrVec4,  // xyz = night radiance at the zenith, w = camera altitude (m)
+    pub night_zenith: WgrVec4, // xyz = night radiance at the zenith, w = camera altitude (m)
     pub night_horizon: WgrVec4, // xyz = night radiance at the horizon
     // x = sun_dir.y at/above which it is full day (night = 0), y = sun_dir.y at/below
     // which it is full night (night = 1), z = night intensity, w = far-fade range (m):
@@ -421,14 +421,14 @@ impl Default for WgrSky {
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct WgrSkyLook {
-    pub rayleigh: WgrVec4,      // xyz = scattering coeff (1/m); w = scale height (m)
-    pub mie: WgrVec4,           // x = coeff, y = g, z = scale height (m), w = turbidity
-    pub ground_sun: WgrVec4,    // xyz = ground albedo; w = sun radiance scale (sunIntensity)
-    pub params: WgrVec4,        // x = sun angular radius (rad), y = exposure, z = planet radius (m), w = atmosphere (m)
-    pub control: WgrVec4,       // x = enabled, y = view samples, z = light samples, w = ozone
-    pub night_zenith: WgrVec4,  // xyz = night radiance at the zenith; w = horizon-haze strength
+    pub rayleigh: WgrVec4,     // xyz = scattering coeff (1/m); w = scale height (m)
+    pub mie: WgrVec4,          // x = coeff, y = g, z = scale height (m), w = turbidity
+    pub ground_sun: WgrVec4,   // xyz = ground albedo; w = sun radiance scale (sunIntensity)
+    pub params: WgrVec4, // x = sun angular radius (rad), y = exposure, z = planet radius (m), w = atmosphere (m)
+    pub control: WgrVec4, // x = enabled, y = view samples, z = light samples, w = ozone
+    pub night_zenith: WgrVec4, // xyz = night radiance at the zenith; w = horizon-haze strength
     pub night_horizon: WgrVec4, // xyz = night radiance at the horizon; w = aerial-shadow strength
-    pub night_params: WgrVec4,  // x = full-day sun_dir.y, y = full-night sun_dir.y, z = night intensity, w = pad
+    pub night_params: WgrVec4, // x = full-day sun_dir.y, y = full-night sun_dir.y, z = night intensity, w = pad
     // Cloud look (mirrors WgrSky::cloud0/1/2/3; cloud1.xy = wind offset is runtime, ignored here).
     pub cloud0: WgrVec4, // x = coverage, y = extinction (1/m), z = bottom (m), w = top (m)
     pub cloud1: WgrVec4, // x/y unused (runtime wind offset), z = shape scale (1/m), w = detail scale (1/m)
@@ -478,7 +478,12 @@ pub struct WgrTerrainSunShadow {
 
 impl Default for WgrTerrainSunShadow {
     fn default() -> Self {
-        Self { strength: 1.0, scale: 2, max_steps: 512, penumbra_deg: 1.0 }
+        Self {
+            strength: 1.0,
+            scale: 2,
+            max_steps: 512,
+            penumbra_deg: 1.0,
+        }
     }
 }
 
@@ -528,12 +533,12 @@ pub struct WgrFoliage {
     pub ambient_boost: f32,  // SH ambient multiplier for foliage (1 = off), distance-faded
     pub normal_bend: f32,    // BUSH spherical-normal blend (0 = geometric, 1 = full radial)
     pub crown_y_offset: f32, // BUSH crown-centre Y lift for the spherical normal
-    pub fill_fade_end: f32,  // camera distance (m) by which the SSS fill + ambient boost fade (0 = off)
+    pub fill_fade_end: f32, // camera distance (m) by which the SSS fill + ambient boost fade (0 = off)
     // Cheap GI: scale foliage sky-ambient by the terrain's light level (1 - terrain sun-shadow) so
     // shadowed foliage stops glowing. 0 = off; residual at full shadow is (1 - gi_strength).
     pub gi_strength: f32,
-    pub tree_bend: f32,      // TREE spherical-normal blend (leaf sections only; trunk keeps its normal)
-    pub tree_crown_y: f32,   // TREE crown-centre Y lift (larger than a bush — centre sits mid-trunk)
+    pub tree_bend: f32, // TREE spherical-normal blend (leaf sections only; trunk keeps its normal)
+    pub tree_crown_y: f32, // TREE crown-centre Y lift (larger than a bush — centre sits mid-trunk)
     pub _pad2: f32,
 }
 
@@ -1302,7 +1307,10 @@ pub unsafe extern "C" fn wgr_set_cull_params(
 /// # Safety
 /// `renderer` must be live.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_set_suppress_world_objects(renderer: *mut WgrRenderer, suppress: bool) {
+pub unsafe extern "C" fn wgr_set_suppress_world_objects(
+    renderer: *mut WgrRenderer,
+    suppress: bool,
+) {
     if renderer.is_null() {
         return;
     }
@@ -1381,19 +1389,36 @@ pub unsafe extern "C" fn wgr_water_set_params(
 /// # Safety
 /// `renderer` must be live and `params` must point to one valid interaction parameter block.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_water_set_interaction_params(renderer: *mut WgrRenderer, params: *const WgrWaterInteractionParams) {
-    if renderer.is_null() || params.is_null() { return; }
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe { &mut *renderer }.water_set_interaction_params(unsafe { *params })));
+pub unsafe extern "C" fn wgr_water_set_interaction_params(
+    renderer: *mut WgrRenderer,
+    params: *const WgrWaterInteractionParams,
+) {
+    if renderer.is_null() || params.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &mut *renderer }.water_set_interaction_params(unsafe { *params })
+    }));
 }
 
 /// # Safety
 /// `renderer` must be live; `events` must point to `count` records unless `count` is zero.
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn wgr_water_submit_interactions(renderer: *mut WgrRenderer, events: *const WgrWaterInteractionEvent, count: u32) {
-    if renderer.is_null() || (events.is_null() && count != 0) { return; }
+pub unsafe extern "C" fn wgr_water_submit_interactions(
+    renderer: *mut WgrRenderer,
+    events: *const WgrWaterInteractionEvent,
+    count: u32,
+) {
+    if renderer.is_null() || (events.is_null() && count != 0) {
+        return;
+    }
     let _ = catch_unwind(AssertUnwindSafe(|| {
         let count = (count as usize).min(MAX_WATER_INTERACTIONS);
-        let events = if count == 0 { &[] } else { unsafe { std::slice::from_raw_parts(events, count) } };
+        let events = if count == 0 {
+            &[]
+        } else {
+            unsafe { std::slice::from_raw_parts(events, count) }
+        };
         unsafe { &mut *renderer }.water_submit_interactions(events);
     }));
 }

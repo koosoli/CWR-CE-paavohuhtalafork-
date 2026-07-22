@@ -223,7 +223,14 @@ impl GeometryPool {
         let cap = self.valloc.cap;
         let new_cap = cap.saturating_mul(2).max(cap + n);
         let new_buf = Self::make_vbuf(device, new_cap);
-        Self::copy_prefix(device, queue, &self.vbuf, &new_buf, cap as u64 * VERT_SIZE, "v");
+        Self::copy_prefix(
+            device,
+            queue,
+            &self.vbuf,
+            &new_buf,
+            cap as u64 * VERT_SIZE,
+            "v",
+        );
         self.vbuf = new_buf;
         self.valloc.grow(new_cap);
         self.epoch += 1;
@@ -237,7 +244,14 @@ impl GeometryPool {
         let cap = self.ialloc.cap;
         let new_cap = cap.saturating_mul(2).max(cap + n);
         let new_buf = Self::make_ibuf(device, new_cap);
-        Self::copy_prefix(device, queue, &self.ibuf, &new_buf, cap as u64 * INDEX_SIZE, "i");
+        Self::copy_prefix(
+            device,
+            queue,
+            &self.ibuf,
+            &new_buf,
+            cap as u64 * INDEX_SIZE,
+            "i",
+        );
         self.ibuf = new_buf;
         self.ialloc.grow(new_cap);
         self.epoch += 1;

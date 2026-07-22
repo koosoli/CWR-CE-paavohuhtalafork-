@@ -1,35 +1,38 @@
+mod bloom;
+mod exposure;
 mod ffi;
 mod gfx2d;
 mod gfx3d;
 mod handles;
 mod log;
+mod planar_mips;
 mod shaders;
 mod sky;
 mod terrain;
 mod textures;
-mod water;
-mod bloom;
-mod exposure;
 mod tonemap;
 mod underwater;
+mod water;
 
+use crate::bloom::Bloom;
+use crate::exposure::Exposure;
 use crate::ffi::{
-    WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrInstance, WgrMat4, WgrMeshVertex,
-    WgrModelLod, WgrModelMaterial, WgrModelSection, WgrOverlayDraw, WgrOverlayVertex, WgrLight,
-    WgrShadowCaster, WgrShadowPass, WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams,
-    WgrVec4, WgrVertex2D, WgrWaterBatch, WgrWaterNode, WgrWaterParams, WgrWaterInteractionEvent, WgrWaterInteractionParams,
+    WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrInstance, WgrLight, WgrMat4, WgrMeshVertex,
+    WgrModelLod, WgrModelMaterial, WgrModelSection, WgrOverlayDraw, WgrOverlayVertex,
+    WgrShadowCaster, WgrShadowPass, WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams, WgrVec4,
+    WgrVertex2D, WgrWaterBatch, WgrWaterInteractionEvent, WgrWaterInteractionParams, WgrWaterNode,
+    WgrWaterParams,
 };
 use crate::gfx2d::Gfx2d;
-use crate::gfx3d::{Gfx3d, env_f32};
-use crate::log::{LogSink, log_level};
+use crate::gfx3d::{env_f32, Gfx3d};
+use crate::log::{log_level, LogSink};
+use crate::planar_mips::PlanarMips;
 use crate::sky::Sky;
 use crate::terrain::Terrain;
 use crate::textures::{SharedTextures, TextureData, TextureFormat};
-use crate::water::Water;
-use crate::bloom::Bloom;
-use crate::exposure::Exposure;
 use crate::tonemap::Tonemap;
 use crate::underwater::Underwater;
+use crate::water::Water;
 
 // Offscreen HDR scene target format (see docs/hdr-pipeline-plan.md §0.2). Alpha kept
 // for blending; full float precision to avoid banding in dark skies at night.
@@ -40,8 +43,12 @@ struct PlanarTarget {
     color_view: wgpu::TextureView,
     _sampled: wgpu::Texture,
     sampled_view: wgpu::TextureView,
+    mip_views: Vec<wgpu::TextureView>,
     _depth: wgpu::Texture,
     depth_view: wgpu::TextureView,
+    // Always a single-sample DepthOnly view: clouds use it for their depth-aware march.
+    depth_sample_view: wgpu::TextureView,
+    depth_resolve: Option<crate::gfx3d::DepthResolve>,
     size: (u32, u32),
 }
 
@@ -89,7 +96,7 @@ pub struct Renderer {
     // Single-sample opaque-scene snapshot consumed by water before it writes HDR.
     water_scene: Option<(wgpu::Texture, wgpu::TextureView)>,
     planar: Option<PlanarTarget>,
-    planar_frame: u64,
+    planar_mips: PlanarMips,
     hdr_size: (u32, u32),
     // MSAA sample count of the scene targets (1 = off). Fixed at startup (WGR_MSAA); pipelines
     // and offscreen targets are built against it.
@@ -285,24 +292,36 @@ impl Renderer {
         // gamma-naive fallback and looks broken. WGR_HDR=0 still forces it off for A/B.
         // When on, the scene subsystems target the offscreen HDR format and a tonemap pass
         // resolves to the swapchain; the overlay pipeline always targets the swapchain format.
-        let prepass_enabled = std::env::var("WGR_PREPASS").map(|v| v != "0").unwrap_or(true);
+        let prepass_enabled = std::env::var("WGR_PREPASS")
+            .map(|v| v != "0")
+            .unwrap_or(true);
         // Compute skin bake is OPT-IN (default off): it is correct + validated but pure
         // overhead until GPU-driven rendering consumes the baked rigid geometry (VS skinning
         // is ~free for OFP's low-poly characters, so amortizing it saves nothing measurable).
         // WGR_SKIN_BAKE=1 re-enables it so the path stays exercisable. See
         // docs/compute-skin-bake-plan.md + docs/gpu-culling-and-depth-plan.md.
-        let skin_bake_enabled = std::env::var("WGR_SKIN_BAKE").map(|v| v != "0").unwrap_or(false);
+        let skin_bake_enabled = std::env::var("WGR_SKIN_BAKE")
+            .map(|v| v != "0")
+            .unwrap_or(false);
         // Indirect draw is default-on when the adapter supports it; WGR_INDIRECT=0 forces
         // the direct draw_one path for A/B. Disabled outright without INDIRECT_FIRST_INSTANCE.
         let indirect_enabled = indirect_first_instance
-            && std::env::var("WGR_INDIRECT").map(|v| v != "0").unwrap_or(true);
+            && std::env::var("WGR_INDIRECT")
+                .map(|v| v != "0")
+                .unwrap_or(true);
         // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3). Default-on now
         // that the path is built up; inert until C++ registers a retained scene (Stage 3b-3),
         // and needs first_instance for its indirect args. WGR_GPU_DRIVEN=0 forces it off.
         let gpu_driven_enabled = indirect_first_instance
-            && std::env::var("WGR_GPU_DRIVEN").map(|v| v != "0").unwrap_or(true);
+            && std::env::var("WGR_GPU_DRIVEN")
+                .map(|v| v != "0")
+                .unwrap_or(true);
         let hdr_enabled = std::env::var("WGR_HDR").map(|v| v != "0").unwrap_or(true);
-        let color_format = if hdr_enabled { HDR_FORMAT } else { config.format };
+        let color_format = if hdr_enabled {
+            HDR_FORMAT
+        } else {
+            config.format
+        };
         // MSAA (WGR_MSAA, default 4x). Requires the HDR path: the multisampled scene colour is
         // resolved to a single-sample HDR target the tonemap samples, and WebGPU has no depth
         // resolve_target, so the LDR-direct-to-swapchain path stays 1x. Clamped to what the
@@ -342,7 +361,10 @@ impl Renderer {
             log.log(log_level::INFO, "wgpu HDR path enabled (WGR_HDR)");
         }
         if !prepass_enabled {
-            log.log(log_level::INFO, "wgpu depth prepass disabled (WGR_PREPASS=0)");
+            log.log(
+                log_level::INFO,
+                "wgpu depth prepass disabled (WGR_PREPASS=0)",
+            );
         }
         if skin_bake_enabled {
             log.log(
@@ -372,7 +394,13 @@ impl Renderer {
         // One composer, pre-loaded with the shared shader modules, shared by the
         // 3D subsystems that #import them.
         let mut composer = shaders::build_composer();
-        let gfx2d = Gfx2d::new(&device, &textures, color_format, config.format, sample_count);
+        let gfx2d = Gfx2d::new(
+            &device,
+            &textures,
+            color_format,
+            config.format,
+            sample_count,
+        );
         let gfx3d = Gfx3d::new(
             &device,
             &textures,
@@ -406,9 +434,17 @@ impl Renderer {
             textures.white_view().clone(),
             &mut composer,
         );
-        let fft_storage_supported = [wgpu::TextureFormat::Rgba32Float, wgpu::TextureFormat::Rgba16Float]
-            .iter()
-            .all(|&format| adapter.get_texture_format_features(format).allowed_usages.contains(wgpu::TextureUsages::STORAGE_BINDING));
+        let fft_storage_supported = [
+            wgpu::TextureFormat::Rgba32Float,
+            wgpu::TextureFormat::Rgba16Float,
+        ]
+        .iter()
+        .all(|&format| {
+            adapter
+                .get_texture_format_features(format)
+                .allowed_usages
+                .contains(wgpu::TextureUsages::STORAGE_BINDING)
+        });
         let water = Water::new(
             &device,
             &queue,
@@ -419,7 +455,10 @@ impl Renderer {
             fft_storage_supported,
         );
         if water.fft_enabled() {
-            log.log(log_level::INFO, "Hydro FFT ocean enabled: four 128x128 cascades");
+            log.log(
+                log_level::INFO,
+                "Hydro FFT ocean enabled: four 256x256 cascades",
+            );
         } else {
             log.log(
                 log_level::WARN,
@@ -429,6 +468,7 @@ impl Renderer {
         let tonemap = hdr_enabled.then(|| Tonemap::new(&device, config.format));
         let underwater = Underwater::new(&device, color_format);
         let bloom = hdr_enabled.then(|| Bloom::new(&device, HDR_FORMAT));
+        let planar_mips = PlanarMips::new(&device, HDR_FORMAT);
         let exposure = hdr_enabled.then(|| Exposure::new(&device, &queue));
         // The sky targets the scene color format (HDR target or swapchain), matching
         // the scene pipelines, and self-tonemaps when that is an LDR-direct swapchain.
@@ -459,7 +499,7 @@ impl Renderer {
             hdr_resolve: None,
             water_scene: None,
             planar: None,
-            planar_frame: 0,
+            planar_mips,
             hdr_size: (0, 0),
             sample_count,
             tonemap,
@@ -569,7 +609,13 @@ impl Renderer {
 
     // Tonemap the HDR scene target onto `dst` (the swapchain). No-op if the tonemap
     // pass doesn't exist (LDR-direct path).
-    fn run_tonemap(&mut self, encoder: &mut wgpu::CommandEncoder, source: &wgpu::TextureView, dst: &wgpu::TextureView, underwater_time: Option<f32>) {
+    fn run_tonemap(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        source: &wgpu::TextureView,
+        dst: &wgpu::TextureView,
+        underwater_time: Option<f32>,
+    ) {
         if self.tonemap.is_none() {
             return;
         }
@@ -605,18 +651,46 @@ impl Renderer {
             // when the HDR scene colour was MSAA-resolved above.
             self.gfx3d.resolve_water_depth(encoder);
             self.ensure_underwater_target(self.config.width, self.config.height);
-            let target = &self.underwater_target.as_ref().expect("underwater target").1;
-            let depth = self.gfx3d.water_depth_view().expect("underwater depth target");
-            self.underwater.render(&self.device, &self.queue, encoder, source, depth, target, time);
+            let target = &self
+                .underwater_target
+                .as_ref()
+                .expect("underwater target")
+                .1;
+            let depth = self
+                .gfx3d
+                .water_depth_view()
+                .expect("underwater depth target");
+            self.underwater.render(
+                &self.device,
+                &self.queue,
+                encoder,
+                source,
+                depth,
+                target,
+                time,
+            );
             target.clone()
         } else {
             source.clone()
         };
         let underwater = underwater_time.is_some();
         if self.post_source_underwater != underwater {
-            let bloom_view = self.bloom.as_ref().and_then(|b| b.view()).unwrap_or(&post_source);
-            let scale_view = self.exposure.as_ref().map(|e| e.scale_view()).unwrap_or(&post_source);
-            self.tonemap.as_mut().expect("tonemap").set_source(&self.device, &post_source, bloom_view, scale_view);
+            let bloom_view = self
+                .bloom
+                .as_ref()
+                .and_then(|b| b.view())
+                .unwrap_or(&post_source);
+            let scale_view = self
+                .exposure
+                .as_ref()
+                .map(|e| e.scale_view())
+                .unwrap_or(&post_source);
+            self.tonemap.as_mut().expect("tonemap").set_source(
+                &self.device,
+                &post_source,
+                bloom_view,
+                scale_view,
+            );
             if let Some(bloom) = self.bloom.as_mut() {
                 bloom.set_source(&self.device, &post_source);
             }
@@ -626,7 +700,10 @@ impl Renderer {
             self.post_source_underwater = underwater;
         }
         // Live params from the ImGui Tonemap tab (seeded from WGR_* at startup).
-        self.tonemap.as_ref().expect("tonemap").upload_params(&self.queue, &self.tonemap_params);
+        self.tonemap
+            .as_ref()
+            .expect("tonemap")
+            .upload_params(&self.queue, &self.tonemap_params);
         // Build the bloom pyramid from the finished HDR scene (already includes aerial
         // perspective) so the resolve can add it. Skipped when intensity is 0 (the
         // resolve then adds bloom*0, so stale mip contents are harmless).
@@ -695,7 +772,9 @@ impl Renderer {
         let usage = if msaa {
             wgpu::TextureUsages::RENDER_ATTACHMENT
         } else {
-            wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_SRC
+            wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC
         };
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_hdr_target"),
@@ -727,7 +806,8 @@ impl Renderer {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: HDR_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let v = t.create_view(&wgpu::TextureViewDescriptor::default());
@@ -735,13 +815,22 @@ impl Renderer {
         });
         let water_scene_texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_water_scene_snapshot"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
             format: HDR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_DST,
             view_formats: &[],
         });
-        let water_scene_view = water_scene_texture.create_view(&wgpu::TextureViewDescriptor::default());
+        let water_scene_view =
+            water_scene_texture.create_view(&wgpu::TextureViewDescriptor::default());
         // The single-sample view the post-processing chain reads (resolve target under MSAA,
         // else the scene target directly).
         let sample_view = resolve.as_ref().map(|(_, v)| v).unwrap_or(&view).clone();
@@ -781,9 +870,19 @@ impl Renderer {
         }
         let texture = self.device.create_texture(&wgpu::TextureDescriptor {
             label: Some("wgr_underwater_target"),
-            size: wgpu::Extent3d { width, height, depth_or_array_layers: 1 }, mip_level_count: 1,
-            sample_count: 1, dimension: wgpu::TextureDimension::D2,
-            format: if self.hdr_enabled { HDR_FORMAT } else { self.config.format },
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: if self.hdr_enabled {
+                HDR_FORMAT
+            } else {
+                self.config.format
+            },
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -793,24 +892,101 @@ impl Renderer {
     }
 
     fn ensure_planar_target(&mut self) {
-        let size = ((self.config.width.max(2) + 1) / 2, (self.config.height.max(2) + 1) / 2);
-        if self.planar.as_ref().is_some_and(|p| p.size == size) { return; }
+        let size = (
+            (self.config.width.max(2) + 1) / 2,
+            (self.config.height.max(2) + 1) / 2,
+        );
+        if self.planar.as_ref().is_some_and(|p| p.size == size) {
+            return;
+        }
+        let mip_count = PlanarMips::mip_count(size.0, size.1);
         let color = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("wgr_planar_color_msaa"), size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: self.sample_count, dimension: wgpu::TextureDimension::D2, format: HDR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | if self.sample_count == 1 { wgpu::TextureUsages::TEXTURE_BINDING } else { wgpu::TextureUsages::empty() }, view_formats: &[],
+            label: Some("wgr_planar_color_msaa"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: self.sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                | if self.sample_count == 1 {
+                    wgpu::TextureUsages::TEXTURE_BINDING
+                } else {
+                    wgpu::TextureUsages::empty()
+                },
+            view_formats: &[],
         });
         let sampled = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("wgr_planar_color"), size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2, format: HDR_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING, view_formats: &[],
+            label: Some("wgr_planar_color"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: mip_count,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: HDR_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
         });
         let depth = self.device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("wgr_planar_depth"), size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
-            mip_level_count: 1, sample_count: self.sample_count, dimension: wgpu::TextureDimension::D2, format: crate::gfx3d::DEPTH_FORMAT,
-            usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[],
+            label: Some("wgr_planar_depth"),
+            size: wgpu::Extent3d {
+                width: size.0,
+                height: size.1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: self.sample_count,
+            dimension: wgpu::TextureDimension::D2,
+            format: crate::gfx3d::DEPTH_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
         });
-        self.planar = Some(PlanarTarget { color_view: color.create_view(&Default::default()), _color: color, sampled_view: sampled.create_view(&Default::default()), _sampled: sampled, depth_view: depth.create_view(&Default::default()), _depth: depth, size });
+        let depth_view = depth.create_view(&Default::default());
+        let depth_aspect = depth.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("wgr_planar_depth_sample"),
+            aspect: wgpu::TextureAspect::DepthOnly,
+            ..Default::default()
+        });
+        let (depth_sample_view, depth_resolve) = if self.sample_count > 1 {
+            let mut resolve =
+                crate::gfx3d::DepthResolve::new(&self.device, self.sample_count, true);
+            let view = resolve.resize(&self.device, size.0, size.1, &depth_aspect);
+            (view, Some(resolve))
+        } else {
+            (depth_aspect, None)
+        };
+        let mip_views: Vec<_> = (0..mip_count)
+            .map(|level| sampled.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("wgr_planar_color_mip"),
+                base_mip_level: level,
+                mip_level_count: Some(1),
+                dimension: Some(wgpu::TextureViewDimension::D2),
+                ..Default::default()
+            }))
+            .collect();
+        let color_view = if self.sample_count > 1 {
+            color.create_view(&Default::default())
+        } else {
+            mip_views[0].clone()
+        };
+        self.planar = Some(PlanarTarget {
+            color_view,
+            _color: color,
+            sampled_view: sampled.create_view(&Default::default()),
+            _sampled: sampled,
+            mip_views,
+            depth_view,
+            depth_sample_view,
+            depth_resolve,
+            _depth: depth,
+            size,
+        });
     }
 
     // `None` = skip this frame
@@ -900,10 +1076,16 @@ impl Renderer {
         // Append a private reflected camera to the GPU upload only. It never crosses the
         // C++ ABI and has no cascade data: main-camera shadow matrices are not valid after
         // a mirror transform.
-        let water_camera = water_batches.first().map(|batch| batch.camera as usize).unwrap_or(main_scene_cam);
+        let water_camera = water_batches
+            .first()
+            .map(|batch| batch.camera as usize)
+            .unwrap_or(main_scene_cam);
         let planar_sea = self.water.underwater_params().map(|p| p.0);
-        let planar_active = planar_sea.is_some() && !water_batches.is_empty()
-            && cameras.get(water_camera).is_some_and(|c| c.cam_pos[1] >= planar_sea.unwrap());
+        let planar_active = planar_sea.is_some()
+            && !water_batches.is_empty()
+            && cameras
+                .get(water_camera)
+                .is_some_and(|c| c.cam_pos[1] >= planar_sea.unwrap());
         let mut prepared_cameras = cameras.to_vec();
         let mut reflected_vp = [0.0f32; 16];
         let reflected_camera = if planar_active {
@@ -913,14 +1095,23 @@ impl Renderer {
             reflected.shadow = unsafe { std::mem::zeroed() };
             let mirror = glam::Mat4::from_scale(glam::Vec3::new(1.0, -1.0, 1.0));
             let view = glam::Mat4::from_cols_array(&reflected.view);
+            // The sky/cloud projection convention is camera-relative and includes its
+            // own vertical screen mapping, so retain the matched reflected basis used
+            // by the reflected terrain and cloud passes.
             reflected.view = (mirror * view * mirror).to_cols_array();
             let full_vp = glam::Mat4::from_cols_array(&reflected.proj)
                 * glam::Mat4::from_cols_array(&reflected.view)
-                * glam::Mat4::from_translation(-glam::Vec3::from_array([reflected.cam_pos[0], reflected.cam_pos[1], reflected.cam_pos[2]]));
+                * glam::Mat4::from_translation(-glam::Vec3::from_array([
+                    reflected.cam_pos[0],
+                    reflected.cam_pos[1],
+                    reflected.cam_pos[2],
+                ]));
             reflected_vp = full_vp.to_cols_array();
             prepared_cameras.push(reflected);
             Some(prepared_cameras.len() - 1)
-        } else { None };
+        } else {
+            None
+        };
         self.gfx3d.prepare(
             &self.device,
             &self.queue,
@@ -944,20 +1135,30 @@ impl Renderer {
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
-        self.water
-            .prepare(&self.device, &self.queue, water_nodes);
+        self.water.prepare(&self.device, &self.queue, water_nodes);
         // GPU-driven rendering (Stage 3): upload the retained scene + this frame's cull
         // params from the main scene camera (the terrain camera, else the first 3D draw's).
         // No-op when disabled; inert until C++ registers a scene.
         if let Some(cam) = cameras.get(main_scene_cam) {
-            self.gfx3d.prepare_cull(&self.device, &self.queue, cam, shadow);
+            self.gfx3d.prepare_cull(
+                &self.device,
+                &self.queue,
+                cam,
+                shadow,
+                reflected_camera.map(|i| &prepared_cameras[i]),
+            );
         }
         self.ensure_hdr(self.config.width, self.config.height);
-        let underwater_time = self.water.underwater_params().and_then(|(sea_level, time, player_submerged)| {
-            // Use the water draw camera, not an unrelated terrain/scene batch. The visual
-            // submersion boundary is the actual camera crossing the gameplay sea plane.
-            cameras.get(water_camera).and_then(|cam| (player_submerged || cam.cam_pos[1] < sea_level).then_some(time))
-        });
+        let underwater_time =
+            self.water
+                .underwater_params()
+                .and_then(|(sea_level, time, player_submerged)| {
+                    // Use the water draw camera, not an unrelated terrain/scene batch. The visual
+                    // submersion boundary is the actual camera crossing the gameplay sea plane.
+                    cameras.get(water_camera).and_then(|cam| {
+                        (player_submerged || cam.cam_pos[1] < sea_level).then_some(time)
+                    })
+                });
         if underwater_time.is_some() && !self.hdr_enabled {
             self.ensure_underwater_target(self.config.width, self.config.height);
         }
@@ -975,7 +1176,11 @@ impl Renderer {
         let scene_view = if self.hdr_enabled {
             self.hdr.as_ref().expect("HDR target").1.clone()
         } else if underwater_time.is_some() {
-            self.underwater_target.as_ref().expect("underwater target").1.clone()
+            self.underwater_target
+                .as_ref()
+                .expect("underwater target")
+                .1
+                .clone()
         } else {
             color.clone()
         };
@@ -1006,51 +1211,160 @@ impl Renderer {
                 label: Some("wgr_frame"),
             });
 
-        // Update the half-resolution reflected target every other visible above-water frame.
-        // It contains sky plus clipped opaque terrain only: CPU object matrices are already
-        // camera-relative to the main camera and GPU-driven args are culled for it, so replaying
-        // either here would be geometrically wrong without a multi-view scene submission ABI.
-        self.planar_frame = self.planar_frame.wrapping_add(1);
+        // Update the half-resolution reflected target every visible above-water frame. Reusing
+        // it while the camera moves causes clouds to lag behind the projected water lookup.
+        // CPU draw-stream matrices are main-camera-relative, but retained GPU-driven instances
+        // are absolute-world transforms and receive an independent reflected cull below.
         if let Some(reflected_index) = reflected_camera {
-            let needs_initial_update = self.planar.is_none();
             self.ensure_planar_target();
-            let update = needs_initial_update || self.planar_frame % 2 == 0;
             let planar = self.planar.as_ref().expect("planar target");
-            if update {
+            {
                 let cam = &prepared_cameras[reflected_index];
                 let view = glam::DMat4::from_cols_array(&cam.view.map(f64::from));
                 let proj = glam::DMat4::from_cols_array(&cam.proj.map(f64::from));
                 let m = (view.inverse() * proj.inverse()).as_mat4().to_cols_array();
-                let ivp = [[m[0],m[1],m[2],m[3]],[m[4],m[5],m[6],m[7]],[m[8],m[9],m[10],m[11]],[m[12],m[13],m[14],m[15]]];
-                self.sky.upload(&self.queue, &self.sky_params, ivp, cam.cam_pos, &shadow_mapping, &cam.shadow);
+                let ivp = [
+                    [m[0], m[1], m[2], m[3]],
+                    [m[4], m[5], m[6], m[7]],
+                    [m[8], m[9], m[10], m[11]],
+                    [m[12], m[13], m[14], m[15]],
+                ];
+                self.sky.upload(
+                    &self.queue,
+                    &self.sky_params,
+                    ivp,
+                    cam.cam_pos,
+                    &shadow_mapping,
+                    &cam.shadow,
+                );
                 // Sky has no depth-stencil state, so it must not share the terrain pass's
                 // depth attachment. Render it first, then depth-test reflected terrain over it.
                 let mut sky_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("wgr_planar_reflection_sky"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &planar.color_view, depth_slice: None, resolve_target: (self.sample_count > 1).then_some(&planar.sampled_view), ops: wgpu::Operations { load: wgpu::LoadOp::Clear(wgpu::Color::BLACK), store: wgpu::StoreOp::Store } })],
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &planar.color_view,
+                        depth_slice: None,
+                        resolve_target: (self.sample_count > 1).then_some(&planar.mip_views[0]),
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
                     depth_stencil_attachment: None,
-                    timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 self.sky.render(&mut sky_pass);
                 drop(sky_pass);
                 let mut terrain_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("wgr_planar_reflection_terrain"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment { view: &planar.color_view, depth_slice: None, resolve_target: (self.sample_count > 1).then_some(&planar.sampled_view), ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store } })],
-                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment { view: &planar.depth_view, depth_ops: Some(wgpu::Operations { load: wgpu::LoadOp::Clear(0.0), store: wgpu::StoreOp::Store }), stencil_ops: None }),
-                    timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &planar.color_view,
+                        depth_slice: None,
+                        resolve_target: (self.sample_count > 1).then_some(&planar.mip_views[0]),
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &planar.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Clear(0.0),
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
                 });
                 if let Some(bind) = self.gfx3d.camera_bind() {
                     let off = (reflected_index as u64 * self.gfx3d.camera_stride()) as u32;
                     for batch in terrain_batches {
-                        self.terrain.draw(&mut terrain_pass, bind, off, batch.first_node, batch.node_count, crate::terrain::TerrainPass::Color);
+                        self.terrain.draw(
+                            &mut terrain_pass,
+                            bind,
+                            off,
+                            batch.first_node,
+                            batch.node_count,
+                            crate::terrain::TerrainPass::Color,
+                        );
                     }
                 }
                 drop(terrain_pass);
+                self.gfx3d.cull_dispatch_reflection(&mut encoder);
+                let mut object_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("wgr_planar_reflection_objects"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: &planar.color_view,
+                        depth_slice: None,
+                        resolve_target: (self.sample_count > 1).then_some(&planar.mip_views[0]),
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                        view: &planar.depth_view,
+                        depth_ops: Some(wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        }),
+                        stencil_ops: None,
+                    }),
+                    timestamp_writes: None,
+                    occlusion_query_set: None,
+                    multiview_mask: None,
+                });
+                let off = (reflected_index as u64 * self.gfx3d.camera_stride()) as u32;
+                self.gfx3d
+                    .draw_gpu_driven_reflection(&mut object_pass, &self.textures, off);
+                drop(object_pass);
+                if let Some(resolve) = planar.depth_resolve.as_ref() {
+                    resolve.resolve(&mut encoder);
+                }
+                if self.sky.clouds_active(&self.sky_params) {
+                    self.sky.render_cloud(
+                        &self.device,
+                        &mut encoder,
+                        &planar.depth_sample_view,
+                        planar.size.0,
+                        planar.size.1,
+                    );
+                    let mut cloud_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("wgr_planar_reflection_cloud_composite"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &planar.color_view,
+                            depth_slice: None,
+                            resolve_target: (self.sample_count > 1).then_some(&planar.mip_views[0]),
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        timestamp_writes: None,
+                        occlusion_query_set: None,
+                        multiview_mask: None,
+                    });
+                    self.sky.composite_cloud(&mut cloud_pass);
+                    drop(cloud_pass);
+                }
+                self.planar_mips
+                    .render(&self.device, &mut encoder, &planar.mip_views);
             }
             let planar = self.planar.as_ref().expect("planar target");
-            let sample = if self.sample_count > 1 { &planar.sampled_view } else { &planar.color_view };
             let generation = planar.size.0 as u64 | ((planar.size.1 as u64) << 32);
-            self.water.set_planar_view(&self.device, &self.queue, sample, generation, reflected_vp, true);
+            self.water.set_planar_view(
+                &self.device,
+                &self.queue,
+                &planar.sampled_view,
+                generation,
+                reflected_vp,
+                true,
+            );
         }
 
         // The local ripple field is independent of opaque depth and is consumed only by
@@ -1132,7 +1446,7 @@ impl Renderer {
                 .first()
                 .map(|b| b.camera as usize)
                 .or_else(|| draws3d.first().map(|d| d.camera as usize))
-            .unwrap_or(main_scene_cam);
+                .unwrap_or(main_scene_cam);
             if self.sky_debug {
                 let cur = (cameras.len(), main_cam);
                 if cur != self.sky_dbg_last {
@@ -1267,7 +1581,9 @@ impl Renderer {
                     Plan3dOp::Draw2D(arg) => {
                         st3d = crate::gfx3d::Pass3dState::default();
                         if let Some(b) = batches.get(*arg as usize) {
-                            renderer.gfx2d.draw_one(pass, &renderer.textures, b, display_2d);
+                            renderer
+                                .gfx2d
+                                .draw_one(pass, &renderer.textures, b, display_2d);
                         }
                     }
                     Plan3dOp::Draw3D {
@@ -1279,8 +1595,14 @@ impl Renderer {
                         if let Some(d) = draws3d.get(*draw as usize) {
                             let mode = crate::gfx3d::Pass3dMode::Color { depth_write_off };
                             if let crate::gfx3d::DrawKind::Indirect(off) = kind {
-                                renderer.gfx3d
-                                    .draw_indirect(pass, &renderer.textures, d, *off, &mut st3d, mode);
+                                renderer.gfx3d.draw_indirect(
+                                    pass,
+                                    &renderer.textures,
+                                    d,
+                                    *off,
+                                    &mut st3d,
+                                    mode,
+                                );
                             } else {
                                 renderer.gfx3d.draw_one(
                                     pass,
@@ -1296,16 +1618,18 @@ impl Renderer {
                     }
                     Plan3dOp::Terrain(arg) => {
                         st3d = crate::gfx3d::Pass3dState::default();
-                        if let (Some(b), Some(cam)) =
-                            (terrain_batches.get(*arg as usize), renderer.gfx3d.camera_bind())
-                        {
+                        if let (Some(b), Some(cam)) = (
+                            terrain_batches.get(*arg as usize),
+                            renderer.gfx3d.camera_bind(),
+                        ) {
                             let off = (b.camera as u64 * renderer.gfx3d.camera_stride()) as u32;
                             let kind = if depth_write_off {
                                 crate::terrain::TerrainPass::ColorNoWrite
                             } else {
                                 crate::terrain::TerrainPass::Color
                             };
-                            renderer.terrain
+                            renderer
+                                .terrain
                                 .draw(pass, cam, off, b.first_node, b.node_count, kind);
                         }
                     }
@@ -1515,7 +1839,8 @@ impl Renderer {
                 // GPU-driven colour has to be present first (else the sky shows through).
                 if start == 0 && !self.suppress_world_objects {
                     let cam_off = (main_scene_cam as u64 * self.gfx3d.camera_stride()) as u32;
-                    self.gfx3d.draw_gpu_driven(&mut pass, &self.textures, cam_off);
+                    self.gfx3d
+                        .draw_gpu_driven(&mut pass, &self.textures, cam_off);
                 }
                 render_ops(self, &mut pass, seg_ops, display_2d, false, prepassed);
                 // Debug cull-sphere wireframes (ImGui Culling tab) LAST in the sub-pass: their
@@ -1549,9 +1874,15 @@ impl Renderer {
                 }
                 // Freeze the completed scene before water writes `target`. Sampling this
                 // separate texture is legal; sampling the active colour attachment is not.
-                if let (true, Some((hdr_texture, hdr_view)), Some((snapshot_texture, snapshot_view))) =
-                    (self.hdr_enabled, self.hdr.as_ref(), self.water_scene.as_ref())
-                {
+                if let (
+                    true,
+                    Some((hdr_texture, hdr_view)),
+                    Some((snapshot_texture, snapshot_view)),
+                ) = (
+                    self.hdr_enabled,
+                    self.hdr.as_ref(),
+                    self.water_scene.as_ref(),
+                ) {
                     if self.sample_count > 1 {
                         let pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                             label: Some("wgr_water_scene_resolve"),
@@ -1559,7 +1890,10 @@ impl Renderer {
                                 view: hdr_view,
                                 depth_slice: None,
                                 resolve_target: Some(snapshot_view),
-                                ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                                ops: wgpu::Operations {
+                                    load: wgpu::LoadOp::Load,
+                                    store: wgpu::StoreOp::Store,
+                                },
                             })],
                             depth_stencil_attachment: None,
                             timestamp_writes: None,
@@ -1569,13 +1903,28 @@ impl Renderer {
                         drop(pass);
                     } else {
                         encoder.copy_texture_to_texture(
-                            wgpu::TexelCopyTextureInfo { texture: hdr_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                            wgpu::TexelCopyTextureInfo { texture: snapshot_texture, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
-                            wgpu::Extent3d { width: self.config.width, height: self.config.height, depth_or_array_layers: 1 },
+                            wgpu::TexelCopyTextureInfo {
+                                texture: hdr_texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::TexelCopyTextureInfo {
+                                texture: snapshot_texture,
+                                mip_level: 0,
+                                origin: wgpu::Origin3d::ZERO,
+                                aspect: wgpu::TextureAspect::All,
+                            },
+                            wgpu::Extent3d {
+                                width: self.config.width,
+                                height: self.config.height,
+                                depth_or_array_layers: 1,
+                            },
                         );
                     }
                     let scene_gen = self.hdr_size.0 as u64 ^ ((self.hdr_size.1 as u64) << 32);
-                    self.water.set_scene_view(&self.device, snapshot_view, scene_gen);
+                    self.water
+                        .set_scene_view(&self.device, snapshot_view, scene_gen);
                 }
                 // Lend Sky's reflection env map to water (Stage 4a). The env texture never resizes,
                 // so gen 0 binds it once; a no-op thereafter.
@@ -1694,16 +2043,34 @@ impl Renderer {
             }
             // Scene->UI seam: resolve the HDR scene and switch to display-referred UI.
             if matches!(ops[end], Plan3dOp::Resolve) && self.tonemap.is_some() && !resolved {
-                let hdr_source = self.hdr_resolve.as_ref().map(|(_, v)| v.clone()).unwrap_or_else(|| scene_view.clone());
+                let hdr_source = self
+                    .hdr_resolve
+                    .as_ref()
+                    .map(|(_, v)| v.clone())
+                    .unwrap_or_else(|| scene_view.clone());
                 self.run_tonemap(&mut encoder, &hdr_source, &color, underwater_time);
                 resolved = true;
                 target = color.clone();
                 display_2d = true;
                 clear_color_next = false; // UI loads the tonemapped scene
-            } else if matches!(ops[end], Plan3dOp::Resolve) && underwater_time.is_some() && !resolved {
+            } else if matches!(ops[end], Plan3dOp::Resolve)
+                && underwater_time.is_some()
+                && !resolved
+            {
                 self.gfx3d.resolve_water_depth(&mut encoder);
-                let depth = self.gfx3d.water_depth_view().expect("underwater depth target");
-                self.underwater.render(&self.device, &self.queue, &mut encoder, &scene_view, depth, &color, underwater_time.expect("underwater time"));
+                let depth = self
+                    .gfx3d
+                    .water_depth_view()
+                    .expect("underwater depth target");
+                self.underwater.render(
+                    &self.device,
+                    &self.queue,
+                    &mut encoder,
+                    &scene_view,
+                    depth,
+                    &color,
+                    underwater_time.expect("underwater time"),
+                );
                 resolved = true;
                 target = color.clone();
                 display_2d = true;
@@ -1715,12 +2082,27 @@ impl Renderer {
         // Fallback: an HDR frame that never emitted the Resolve marker still needs
         // resolving so the scene reaches the swapchain.
         if self.tonemap.is_some() && !resolved {
-            let hdr_source = self.hdr_resolve.as_ref().map(|(_, v)| v.clone()).unwrap_or_else(|| scene_view.clone());
+            let hdr_source = self
+                .hdr_resolve
+                .as_ref()
+                .map(|(_, v)| v.clone())
+                .unwrap_or_else(|| scene_view.clone());
             self.run_tonemap(&mut encoder, &hdr_source, &color, underwater_time);
         } else if underwater_time.is_some() && !resolved {
             self.gfx3d.resolve_water_depth(&mut encoder);
-            let depth = self.gfx3d.water_depth_view().expect("underwater depth target");
-            self.underwater.render(&self.device, &self.queue, &mut encoder, &scene_view, depth, &color, underwater_time.expect("underwater time"));
+            let depth = self
+                .gfx3d
+                .water_depth_view()
+                .expect("underwater depth target");
+            self.underwater.render(
+                &self.device,
+                &self.queue,
+                &mut encoder,
+                &scene_view,
+                depth,
+                &color,
+                underwater_time.expect("underwater time"),
+            );
         }
 
         // Dev-panel overlay composites over the finished frame, no depth.
@@ -1841,7 +2223,13 @@ impl Renderer {
     }
 
     // Push the engine's per-frame cull + LOD inputs (the real Scene::LevelFromDistance2 values).
-    fn set_cull_inputs(&mut self, objects_z: f32, lod_scale: f32, lod_inv_width: f32, pixel_limit: f32) {
+    fn set_cull_inputs(
+        &mut self,
+        objects_z: f32,
+        lod_scale: f32,
+        lod_inv_width: f32,
+        pixel_limit: f32,
+    ) {
         self.gfx3d
             .set_cull_inputs(objects_z, lod_scale, lod_inv_width, pixel_limit);
     }
@@ -1925,7 +2313,13 @@ impl Renderer {
             .set_jitter_map(&self.device, &self.queue, width, height, offsets);
     }
 
-    fn terrain_set_sun_shadow(&mut self, strength: f32, scale: u32, max_steps: u32, penumbra_deg: f32) {
+    fn terrain_set_sun_shadow(
+        &mut self,
+        strength: f32,
+        scale: u32,
+        max_steps: u32,
+        penumbra_deg: f32,
+    ) {
         self.terrain
             .set_sun_shadow_params(&self.device, strength, scale, max_steps, penumbra_deg);
     }

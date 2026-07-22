@@ -1128,7 +1128,7 @@ class Engine : public IGraphicsEngine
         // spans isolated cumulus (low) to a solid overcast deck (high). Coverage also dims the
         // directional sun / lifts ambient on the CPU side (PushFrame), so overcast reads flat.
         // Off by default (coverage 0) so the clear-sky look is unchanged until authored.
-        float cloudCoverage = 0.0f;                        // 0 = clear .. 1 = full overcast
+        float cloudCoverage = 0.42f;                       // 0 = clear .. 1 = full overcast
         float cloudDensity = 0.06f;                        // extinction (1/m); higher = more opaque
         float cloudBottom = 1200.0f;                       // cloud layer base altitude ASL (m)
         float cloudTop = 3500.0f;                          // cloud layer top altitude ASL (m)
@@ -1198,7 +1198,7 @@ class Engine : public IGraphicsEngine
         float warpAmp = 2.52f;       // low-frequency domain warp (m) that de-tiles the field
         float specPower = 11.0f;     // sun-glint sharpness
         float specIntensity = 3.82f; // sun-glint brightness (HDR, blooms)
-        float alpha = 0.65f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
+        float alpha = 0.88f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
         // Sun shadow: terrain heightfield + CSM occlusion removes the sun glint and
         // direct-sun sheen where the water is shadowed; shadowDim additionally darkens
         // the whole shadowed surface (0 = physical sun-only removal, 1 = strong artistic).
@@ -1214,7 +1214,7 @@ class Engine : public IGraphicsEngine
         // Coast foam + swash (Stage 2c): a churning foam band at the waterline, and a gentle
         // oscillation of the near-shore water edge in/out over the wet beach. Cosmetic only.
         float foamWidth = 1.12f;   // m of column depth the foam band spans (peaks ~1/4 in)
-        float foamIntensity = 0.16f;// foam brightness / coverage
+        float foamIntensity = 0.55f;// foam brightness / coverage
         float swashAmp = 0.47f;    // m the near-shore waterline oscillates in/out
         float swashSpeed = 0.018f; // swash cycles per second (very slow = long, lazy wash)
         // Terrain-side wet/intertidal band: near-flat ground just above the (swash-moved) sea

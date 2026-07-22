@@ -361,6 +361,20 @@ std::string GraphicsConfigPath()
     return GamePaths::Instance().UserDir() + "graphics.cfg";
 }
 
+void ConfigureWgpuUltraEnvironment()
+{
+    // Renderer creation reads these once. Keep the process-level profile explicit
+    // while the in-game Graphics page remains unavailable.
+    _putenv_s("WGR_HDR", "1");
+    _putenv_s("WGR_MSAA", "4");
+    _putenv_s("WGR_PREPASS", "1");
+    _putenv_s("WGR_INDIRECT", "1");
+    _putenv_s("WGR_GPU_DRIVEN", "1");
+    _putenv_s("WGR_GPU_WATER", "1");
+    _putenv_s("WGR_WATER_FFT", "1");
+    _putenv_s("WGR_SHADOW_MAPS", "1");
+}
+
 // Eager-write defaults (autodetected) if the file is missing, then
 // apply the cfg values to the live engine.  Normalize-but-don't-
 // persist mirrors AudioConfig + DisplayConfig.
@@ -391,6 +405,9 @@ void LoadAndApplyGraphicsConfig()
     // bundle active at every boot while leaving per-user display knobs untouched.
     cfg.qualityPreset = GraphicsConfig::PresetUltra;
     cfg.ApplyPresetToTiers(cfg.qualityPreset);
+    cfg.msaaSamples = 4;
+    cfg.alphaToCoverage = true;
+    cfg.renderScale = 1.0f;
     ApplyGraphicsConfigToEngine(cfg);
 
     LOG_DEBUG(Graphics,
@@ -623,6 +640,8 @@ int GameApplication::RunAfterArgumentParsing()
 
     if (!ReadConfiguration())
         return 0;
+
+    ConfigureWgpuUltraEnvironment();
 
     if (!InitializeGraphicsEngine())
         return 1;

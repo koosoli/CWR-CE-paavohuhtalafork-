@@ -329,12 +329,16 @@ fn vnoise(p: vec2<f32>) -> f32 {
     let d = hash2(i + vec2<f32>(1.0, 1.0));
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
-// Two octaves scrolling in different directions so the foam churns rather than sitting still.
+// Four decorrelated world-space octaves make foam visibly cellular rather than a broad,
+// smooth brightness wash. It is shared by coast foam, persistent breakers, and spray flecks.
 const FOAM_FREQ: f32 = 0.35; // spatial frequency (per metre)
 fn foam_noise(p_world: vec2<f32>, t: f32) -> f32 {
-    var v = 0.6 * vnoise(p_world * FOAM_FREQ + vec2<f32>(t * 0.6, t * 0.2));
-    v = v + 0.4 * vnoise(p_world * FOAM_FREQ * 2.1 - vec2<f32>(t * 0.3, t * 0.5));
-    return v;
+    let p = p_world * FOAM_FREQ;
+    var v = 0.46 * vnoise(p + vec2<f32>(t * 0.60, t * 0.20));
+    v = v + 0.27 * vnoise(vec2<f32>(p.x * 1.83 - p.y * 0.72, p.x * 0.72 + p.y * 1.83) - vec2<f32>(t * 0.30, t * 0.50));
+    v = v + 0.18 * vnoise(vec2<f32>(p.x * 3.91 + p.y * 0.41, -p.x * 0.41 + p.y * 3.91) + vec2<f32>(t * 0.44, -t * 0.17));
+    v = v + 0.09 * vnoise(p * 7.37 + vec2<f32>(17.3, 41.7) + vec2<f32>(-t * 0.18, t * 0.37));
+    return smoothstep(0.36, 0.68, v);
 }
 
 // A small shading-only ripple field. Rotating each octave avoids aligned fBm cells;
@@ -480,18 +484,39 @@ fn reflected_scene(surface_rel: vec3<f32>, reflect_dir: vec3<f32>, normal_variat
     return vec4<f32>(hit_color, hit_weight * roughness_fade * distance_fade);
 }
 
-// Project the reflected absolute surface point through the mirrored camera. This is
-// intentionally not a flipped main-screen UV: parallax follows the reflected camera.
-fn planar_reflection(surface_rel: vec3<f32>) -> vec4<f32> {
+// Project a point through the reflected camera. This is intentionally not a flipped
+// main-screen UV: parallax follows the reflected camera.
+fn planar_project(mirrored: vec3<f32>) -> vec3<f32> {
+    let clip = planar.full_vp * vec4<f32>(mirrored, 1.0);
+    if (clip.w <= 1e-5) { return vec3<f32>(0.0); }
+    return vec3<f32>(clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5), 1.0);
+}
+
+// Project the stable mean-water plane through the mirrored camera. The reflected
+// camera already mirrors the world; wave slope perturbs this plane lookup below.
+// Mirroring the already displaced surface point makes cloud reflections slide as the
+// camera pitches.
+fn planar_reflection(surface_rel: vec3<f32>, surface_normal: vec3<f32>, roughness: f32) -> vec4<f32> {
     if (planar.valid.x < 0.5) { return vec4<f32>(0.0); }
     let absolute = surface_rel + frame.cam_pos.xyz;
-    let mirrored = vec3<f32>(absolute.x, 2.0 * wp.sea_level - absolute.y, absolute.z);
-    let clip = planar.full_vp * vec4<f32>(mirrored, 1.0);
-    if (clip.w <= 1e-5) { return vec4<f32>(0.0); }
-    let uv = clip.xy / clip.w * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5);
-    let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
-    let valid = smoothstep(0.0, 0.03, edge);
-    return vec4<f32>(textureSampleLevel(planar_color, planar_samp, clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0).rgb, valid);
+    let plane_point = vec3<f32>(absolute.x, wp.sea_level, absolute.z);
+    let projection = planar_project(plane_point);
+    if (projection.z < 0.5) { return vec4<f32>(0.0); }
+    let uv = projection.xy;
+    let texel = 1.0 / vec2<f32>(textureDimensions(planar_color));
+    // The reflected camera already accounts for the world-space planar parallax.
+    // Do not add a normal-projected UV warp here: it makes cloud features crawl over
+    // a fixed water point as the player pitches. Surface roughness is handled by the
+    // filtered mip chain below instead.
+    let distorted_uv = clamp(uv, texel, vec2<f32>(1.0) - texel);
+    let edge = min(min(distorted_uv.x, distorted_uv.y), min(1.0 - distorted_uv.x, 1.0 - distorted_uv.y));
+    let valid = smoothstep(max(texel.x, texel.y), 0.03, edge);
+    // The planar target is a real filtered mip pyramid. Map perceptual roughness
+    // quadratically so calm water remains sharp while foam uses a broad footprint.
+    let max_mip = f32(textureNumLevels(planar_color) - 1u);
+    let reflection_lod = roughness * roughness * max_mip;
+    let color = textureSampleLevel(planar_color, planar_samp, distorted_uv, reflection_lod).rgb;
+    return vec4<f32>(color, valid);
 }
 
 @fragment
@@ -620,16 +645,24 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let normal_variation = length(dpdx(n)) + length(dpdy(n));
     let ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
     refl = mix(refl, ssr.rgb, ssr.a);
-    let planar_refl = planar_reflection(in.world_pos);
+    let planar_refl = planar_reflection(in.world_pos, base_normal, roughness);
     // SSR has the highest-detail on-screen hit; planar fills its off-screen holes,
-    // then the atmosphere remains the final fallback.
-    refl = mix(refl, planar_refl.rgb, planar_refl.a * (1.0 - ssr.a));
+    // then the atmosphere remains the final fallback. Retain a small projected-planar
+    // contribution at stable SSR hits so the half-res wave deformation is not hidden.
+    refl = mix(refl, planar_refl.rgb, planar_refl.a * (1.0 - ssr.a * 0.80));
     let uv = scene_uv(in.clip.xy);
     // Refraction is strongest looking down. The normal offset is bounded in pixels so
     // choppy near water cannot pull foreground geometry across the shoreline.
-    let refract_uv = clamp(uv + n.xz * (0.002 + 0.010 / (1.0 + water_depth)), vec2<f32>(0.001), vec2<f32>(0.999));
+    // Distort the visible seabed through the same resolved surface normal. The offset
+    // is strongest in clear shallows, then fades as water-body absorption takes over.
+    let refraction_strength = (0.003 + 0.013 / (1.0 + water_depth)) *
+        (1.0 - 0.35 * smoothstep(1.5, 8.0, water_depth));
+    let refract_uv = clamp(uv + n.xz * refraction_strength, vec2<f32>(0.001), vec2<f32>(0.999));
     let refracted = refracted_scene(refract_uv, in.world_pos);
-    let transmitted = mix(rgb, refracted.color, refracted.valid * (1.0 - depth_tint) * (1.0 - fresnel));
+    // Retain a visible water body even in the clearest shallows; this avoids a
+    // glass-like surface while leaving the refracted seabed readable.
+    let transmission = (1.0 - depth_tint) * 0.76 * (1.0 - fresnel);
+    let transmitted = mix(rgb, refracted.color, refracted.valid * transmission);
 
     // SSR augments, but never replaces, the environment: the snapshot cannot reflect off-screen
     // content or transparent objects, and this renderer has no reflected-camera/clip-plane pass.
@@ -688,6 +721,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // out over the wet beach. The body colour keeps the true depth so it doesn't flicker.
     let swash = sin(TWO_PI * wp.time * wp.swash_speed);
     let eff_depth = water_depth + swash * wp.swash_amp;
+    let spray_wind = normalize(wp.fft_wind_sea.xy + vec2<f32>(0.0001, 0.0));
     // The depth field already includes displaced water height. Use the local crest to
     // concentrate the otherwise restrained shore foam at wave arrivals on the beach.
     let surface_wave = in.world_pos.y + frame.cam_pos.y - wp.sea_level;
@@ -699,12 +733,36 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // is clipped by the beach — the deep side already faded. Foam also fades to 0 right at the
     // edge, so the water there is transparent (soft wash over wet sand) rather than opaque white.
     let ft = eff_depth / max(wp.foam_width, 1e-4);
-    let foam_band = smoothstep(0.0, 0.25, ft) * (1.0 - smoothstep(0.25, 1.0, ft));
-    let foam = clamp(foam_band * foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time) * wp.foam_intensity * (1.0 + shore_break * 0.75), 0.0, 1.0);
+    let foam_band = smoothstep(0.0, 0.12, ft) * (1.0 - smoothstep(0.45, 1.35, ft));
+    let coast_noise = foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time);
+    // `coast_flow` is the reconstructed water-depth gradient toward land. Build elongated
+    // streaks perpendicular to that direction so wash follows the actual shoreline contour.
+    let shoreward = normalize(coast_flow + spray_wind * 0.001);
+    let shoreline_tangent = vec2<f32>(-shoreward.y, shoreward.x);
+    let shoreline_streak = vnoise(vec2<f32>(
+        dot(in.base_xz, shoreline_tangent) * 0.74 + wp.time * 0.16,
+        dot(in.base_xz, shoreward) * 0.19 - wp.time * 0.38
+    ));
+    let coast_pattern = max(coast_noise, smoothstep(0.59, 0.78, shoreline_streak));
+    let foam = clamp(foam_band * (0.18 + coast_pattern * 0.82) * wp.foam_intensity *
+        (1.0 + shore_break * 1.15), 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
     // The compute source is thresholded, so calm water with no events or breaking crests remains clean.
     let persistent_foam = clamp(foam_history_sample.r * (0.52 + foam_history_sample.b * 0.30), 0.0, 1.0);
-    let combined_foam = max(foam, persistent_foam);
+    // Immediate sparse whitecaps bridge the time before the persistent history builds.
+    // Every gate is required, preventing a broad bright layer on ordinary wind waves.
+    let breaker_foam = smoothstep(0.014, 0.050, fft_crest) *
+        smoothstep(0.002, 0.012, fft_compression) *
+        smoothstep(0.0004, 0.004, fft_curvature) *
+        smoothstep(0.012, 0.060, sqrt(max(fft_slope_variance, 0.0))) *
+        foam_noise(in.base_xz * 1.8, wp.time) * 0.55;
+    // Sparse short-lived flecks sell wind-torn shore break and whitecap spindrift
+    // without a separate particle system or a broad white surface layer.
+    let spray_flecks = (foam_band * shore_break + breaker_foam) *
+        smoothstep(0.78, 0.93, foam_noise(in.base_xz * 4.6 + spray_wind * wp.time * 1.8, wp.time)) * 0.26;
+    let foam_structure = foam_noise(in.base_xz * 2.7 + spray_wind * wp.time * 0.45, wp.time);
+    let combined_foam = clamp((max(foam, max(persistent_foam, breaker_foam)) + spray_flecks) *
+        mix(0.46, 1.0, foam_structure), 0.0, 1.0);
     // Bubbles form a broad, rough dielectric layer: mostly sky/sun-lit diffuse scattering with
     // only a subdued dielectric highlight. This is material response, never an emissive overlay.
     var foam_color = vec3<f32>(0.0);

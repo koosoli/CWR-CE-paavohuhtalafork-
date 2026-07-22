@@ -86,9 +86,9 @@ pub struct TerrainShadowMap {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct TerrainConformParams {
-    pub origin: glam::Vec2,  // world xz of heightmap texel (0,0)
-    pub terrain_grid: f32,   // world metres per heightmap texel
-    pub enabled: f32,        // 1 when a heightmap is loaded, else 0
+    pub origin: glam::Vec2, // world xz of heightmap texel (0,0)
+    pub terrain_grid: f32,  // world metres per heightmap texel
+    pub enabled: f32,       // 1 when a heightmap is loaded, else 0
     pub hm_width: u32,
     pub hm_height: u32,
     pub _pad: [u32; 2],
@@ -711,8 +711,13 @@ impl Terrain {
                 cache: None,
             })
         };
-        let pipeline =
-            make_pipeline("wgr_terrain_pipeline", "fs_terrain", &fs_constants, surface_format, true);
+        let pipeline = make_pipeline(
+            "wgr_terrain_pipeline",
+            "fs_terrain",
+            &fs_constants,
+            surface_format,
+            true,
+        );
         let pipeline_no_write = make_pipeline(
             "wgr_terrain_pipeline_no_write",
             "fs_terrain",
@@ -743,7 +748,11 @@ impl Terrain {
             skyvis_view,
             sky_vis_strength,
             sky_vis_floor,
-            sky_vis_debug: if std::env::var("WGR_SKY_VIS_DEBUG").is_ok() { 1.0 } else { 0.0 },
+            sky_vis_debug: if std::env::var("WGR_SKY_VIS_DEBUG").is_ok() {
+                1.0
+            } else {
+                0.0
+            },
             sky_vis_contrast: env_f32("WGR_SKY_VIS_CONTRAST", 6.5),
             skyvis_opts: skyvis::SkyvisOptions {
                 k_azimuths: 12,
@@ -958,9 +967,10 @@ impl Terrain {
         if scale != self.shadow_scale {
             self.shadow_scale = scale;
             if self.have_heightmap {
-                let (mw, mh) =
-                    shadow_mask_dims(self.hm_width, self.hm_height, scale, self.max_dim);
-                let hview = self.heightmap.create_view(&wgpu::TextureViewDescriptor::default());
+                let (mw, mh) = shadow_mask_dims(self.hm_width, self.hm_height, scale, self.max_dim);
+                let hview = self
+                    .heightmap
+                    .create_view(&wgpu::TextureViewDescriptor::default());
                 let mask = create_shadow_mask(device, mw, mh);
                 let mview = mask.create_view(&wgpu::TextureViewDescriptor::default());
                 self.group1_bind = make_group1(
@@ -1034,8 +1044,13 @@ impl Terrain {
         let Some(src) = &self.skyvis_src else {
             return;
         };
-        let (sv_w, sv_h, sv) =
-            skyvis::compute(&src.heights, src.w, src.h, src.terrain_grid, self.skyvis_opts);
+        let (sv_w, sv_h, sv) = skyvis::compute(
+            &src.heights,
+            src.w,
+            src.h,
+            src.terrain_grid,
+            self.skyvis_opts,
+        );
         let sv_bytes: Vec<u8> = sv
             .iter()
             .map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8)

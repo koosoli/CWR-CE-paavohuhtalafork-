@@ -301,6 +301,9 @@ pub struct CullState {
     // Per-cascade shadow views (§6 multi-view). Length = active cascade count this frame
     // (set by set_shadow_view_count); each shares the tables/instances above.
     shadow_views: Vec<ShadowCullView>,
+    // The planar mirror has its own frustum/outputs. It shares retained scene data only;
+    // never the main camera's cull records or indirect arguments.
+    reflection_view: Option<ShadowCullView>,
 
     // Color-pass occlusion view (§5 Hi-Z). Same retained tables/instances, its own params
     // (occlusion tail) + args/records/counters, run by the `main_occlude` pipeline against the
@@ -434,10 +437,18 @@ impl CullState {
             bind_group_layouts: &[Some(&occlude_layout)],
             immediate_size: 0,
         });
-        let occlude_count_pipeline = make_pl("wgr_cull_occlude_count", &occlude_pl_layout, "count_occlude");
-        let occlude_emit_pipeline = make_pl("wgr_cull_occlude_emit", &occlude_pl_layout, "emit_args");
-        let occlude_scatter_pipeline =
-            make_pl("wgr_cull_occlude_scatter", &occlude_pl_layout, "scatter_occlude");
+        let occlude_count_pipeline = make_pl(
+            "wgr_cull_occlude_count",
+            &occlude_pl_layout,
+            "count_occlude",
+        );
+        let occlude_emit_pipeline =
+            make_pl("wgr_cull_occlude_emit", &occlude_pl_layout, "emit_args");
+        let occlude_scatter_pipeline = make_pl(
+            "wgr_cull_occlude_scatter",
+            &occlude_pl_layout,
+            "scatter_occlude",
+        );
 
         let params_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_cull_params"),
@@ -500,9 +511,14 @@ impl CullState {
             params_buf,
             variant_capacity: DEFAULT_VARIANT_CAPACITY,
             params: CullParamsGpu::zeroed(),
-            debug_flags: if std::env::var("WGR_CULL_NO_FRUSTUM").is_ok() { 1 } else { 0 },
+            debug_flags: if std::env::var("WGR_CULL_NO_FRUSTUM").is_ok() {
+                1
+            } else {
+                0
+            },
             bind: None,
             shadow_views: Vec::new(),
+            reflection_view: None,
             occlude_count_pipeline,
             occlude_emit_pipeline,
             occlude_scatter_pipeline,
@@ -656,6 +672,18 @@ impl CullState {
         }
     }
 
+    pub fn set_reflection_params(&mut self, device: &wgpu::Device, mut params: CullParamsGpu) {
+        params.debug_flags = self.debug_flags;
+        let view = self
+            .reflection_view
+            .get_or_insert_with(|| ShadowCullView::new(device));
+        view.params = params;
+    }
+
+    pub fn clear_reflection_view(&mut self) {
+        self.reflection_view = None;
+    }
+
     fn mark_static_dirty(&mut self, slot: u32) {
         self.static_dirty = Some(match self.static_dirty {
             Some((lo, hi)) => (lo.min(slot), hi.max(slot)),
@@ -674,8 +702,18 @@ impl CullState {
             grew |= upload_slice(device, queue, &mut self.model_buf, &self.models);
             grew |= upload_slice(device, queue, &mut self.lod_buf, &self.lods);
             grew |= upload_slice(device, queue, &mut self.section_buf, &self.sections);
-            grew |= upload_slice(device, queue, &mut self.section_mat_buf, &self.section_materials);
-            grew |= upload_slice(device, queue, &mut self.crown_centre_buf, &self.crown_centres);
+            grew |= upload_slice(
+                device,
+                queue,
+                &mut self.section_mat_buf,
+                &self.section_materials,
+            );
+            grew |= upload_slice(
+                device,
+                queue,
+                &mut self.crown_centre_buf,
+                &self.crown_centres,
+            );
             self.tables_dirty = false;
         }
 
@@ -765,7 +803,11 @@ impl CullState {
             if shared_grew || view_grew || self.shadow_views[i].bind.is_none() {
                 let bind = {
                     let v = &self.shadow_views[i];
-                    match (v.out_args.as_ref(), v.out_records.as_ref(), v.sec_count.as_ref()) {
+                    match (
+                        v.out_args.as_ref(),
+                        v.out_records.as_ref(),
+                        v.sec_count.as_ref(),
+                    ) {
                         (Some(a), Some(r), Some(sc)) => {
                             self.build_view_bind(device, &v.params_buf, a, &v.counter_buf, r, sc)
                         }
@@ -774,6 +816,41 @@ impl CullState {
                 };
                 self.shadow_views[i].bind = bind;
             }
+        }
+
+        let reflection_rebuild = if let Some(v) = self.reflection_view.as_mut() {
+            let view_grew = ensure_view_outputs(
+                device,
+                self.variant_capacity,
+                sections_len,
+                &mut v.out_args,
+                &mut v.out_records,
+                &mut v.out_args_cap,
+                &mut v.sec_count,
+                &mut v.sec_count_cap,
+            );
+            finalize(&mut v.params);
+            queue.write_buffer(&v.params_buf, 0, bytemuck::bytes_of(&v.params));
+            grew |= view_grew;
+            shared_grew || view_grew || v.bind.is_none()
+        } else {
+            false
+        };
+        if reflection_rebuild {
+            let bind = {
+                let v = self.reflection_view.as_ref().unwrap();
+                match (
+                    v.out_args.as_ref(),
+                    v.out_records.as_ref(),
+                    v.sec_count.as_ref(),
+                ) {
+                    (Some(a), Some(r), Some(sc)) => {
+                        self.build_view_bind(device, &v.params_buf, a, &v.counter_buf, r, sc)
+                    }
+                    _ => None,
+                }
+            };
+            self.reflection_view.as_mut().unwrap().bind = bind;
         }
 
         // Color-occlusion view (§5): only prepared when a Hi-Z view is set (occlusion active).
@@ -791,7 +868,11 @@ impl CullState {
             );
             grew |= color_grew;
             finalize(&mut self.color_params);
-            queue.write_buffer(&self.color_params_buf, 0, bytemuck::bytes_of(&self.color_params));
+            queue.write_buffer(
+                &self.color_params_buf,
+                0,
+                bytemuck::bytes_of(&self.color_params),
+            );
             if shared_grew || color_grew || self.color_bind.is_none() {
                 self.rebuild_color_bind(device);
             }
@@ -802,13 +883,22 @@ impl CullState {
     }
 
     fn rebuild_bind(&mut self, device: &wgpu::Device) {
-        let (Some(args), Some(records), Some(sec)) =
-            (self.out_args.as_ref(), self.out_records.as_ref(), self.sec_count.as_ref())
-        else {
+        let (Some(args), Some(records), Some(sec)) = (
+            self.out_args.as_ref(),
+            self.out_records.as_ref(),
+            self.sec_count.as_ref(),
+        ) else {
             self.bind = None;
             return;
         };
-        self.bind = self.build_view_bind(device, &self.params_buf, args, &self.counter_buf, records, sec);
+        self.bind = self.build_view_bind(
+            device,
+            &self.params_buf,
+            args,
+            &self.counter_buf,
+            records,
+            sec,
+        );
     }
 
     // Build the color-occlusion bind (occlude_layout): the color view's own params/args/
@@ -832,7 +922,8 @@ impl CullState {
             self.model_buf.buf.as_ref(),
             self.lod_buf.buf.as_ref(),
             self.section_buf.buf.as_ref(),
-        ) else {
+        )
+        else {
             self.color_bind = None;
             return;
         };
@@ -840,16 +931,46 @@ impl CullState {
             label: Some("wgr_cull_color_bind"),
             layout: &self.occlude_layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: self.color_params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: inst.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: models.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: lods.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: sections.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: args.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: self.color_counter_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: records.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 8, resource: wgpu::BindingResource::TextureView(hiz) },
-                wgpu::BindGroupEntry { binding: 9, resource: sec.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: self.color_params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: inst.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: models.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: lods.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: sections.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: args.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: self.color_counter_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: records.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(hiz),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: sec.as_entire_binding(),
+                },
             ],
         }));
     }
@@ -902,9 +1023,11 @@ impl CullState {
 
     // Record the main-view cull. No-op until prepare() has run with instances present.
     pub fn dispatch(&self, encoder: &mut wgpu::CommandEncoder) {
-        let (Some(bind), Some(args), Some(sec)) =
-            (self.bind.as_ref(), self.out_args.as_ref(), self.sec_count.as_ref())
-        else {
+        let (Some(bind), Some(args), Some(sec)) = (
+            self.bind.as_ref(),
+            self.out_args.as_ref(),
+            self.sec_count.as_ref(),
+        ) else {
             return;
         };
         if self.params.instance_count == 0 {
@@ -934,14 +1057,43 @@ impl CullState {
         let Some(view) = self.shadow_views.get(i) else {
             return;
         };
-        let (Some(bind), Some(args), Some(sec)) =
-            (view.bind.as_ref(), view.out_args.as_ref(), view.sec_count.as_ref())
-        else {
+        let (Some(bind), Some(args), Some(sec)) = (
+            view.bind.as_ref(),
+            view.out_args.as_ref(),
+            view.sec_count.as_ref(),
+        ) else {
             return;
         };
         self.record_collapse(
             encoder,
             "wgr_cull_shadow",
+            bind,
+            args,
+            &view.counter_buf,
+            sec,
+            &self.count_pipeline,
+            &self.emit_pipeline,
+            &self.scatter_pipeline,
+        );
+    }
+
+    pub fn dispatch_reflection(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.params.instance_count == 0 {
+            return;
+        }
+        let Some(view) = self.reflection_view.as_ref() else {
+            return;
+        };
+        let (Some(bind), Some(args), Some(sec)) = (
+            view.bind.as_ref(),
+            view.out_args.as_ref(),
+            view.sec_count.as_ref(),
+        ) else {
+            return;
+        };
+        self.record_collapse(
+            encoder,
+            "wgr_cull_reflection",
             bind,
             args,
             &view.counter_buf,
@@ -1005,11 +1157,29 @@ impl CullState {
     }
 
     pub fn shadow_out_records(&self, i: usize) -> Option<&wgpu::Buffer> {
-        self.shadow_views.get(i).and_then(|v| v.out_records.as_ref())
+        self.shadow_views
+            .get(i)
+            .and_then(|v| v.out_records.as_ref())
     }
 
     pub fn shadow_counter_buf(&self, i: usize) -> Option<&wgpu::Buffer> {
         self.shadow_views.get(i).map(|v| &v.counter_buf)
+    }
+
+    pub fn reflection_out_args(&self) -> Option<&wgpu::Buffer> {
+        self.reflection_view
+            .as_ref()
+            .and_then(|v| v.out_args.as_ref())
+    }
+
+    pub fn reflection_out_records(&self) -> Option<&wgpu::Buffer> {
+        self.reflection_view
+            .as_ref()
+            .and_then(|v| v.out_records.as_ref())
+    }
+
+    pub fn reflection_counter_buf(&self) -> Option<&wgpu::Buffer> {
+        self.reflection_view.as_ref().map(|v| &v.counter_buf)
     }
 
     // Build a cull bind group for one VIEW: its own params/args/counters/records, but the
@@ -1037,15 +1207,42 @@ impl CullState {
             label: Some("wgr_cull_bind"),
             layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: params_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 1, resource: inst.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 2, resource: models.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 3, resource: lods.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 4, resource: sections.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 5, resource: out_args.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 6, resource: counter_buf.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 7, resource: out_records.as_entire_binding() },
-                wgpu::BindGroupEntry { binding: 9, resource: sec_count.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: params_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: inst.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: models.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: lods.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: sections.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: out_args.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: counter_buf.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: out_records.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: sec_count.as_entire_binding(),
+                },
             ],
         }))
     }
@@ -1145,7 +1342,12 @@ impl Default for CullInputs {
 // Build this frame's cull params from the main camera + the engine's LOD inputs. `view` must be
 // the engine's camera-relative view (translation zeroed, as PushSceneCamera hands over); all six
 // frustum planes are then extracted directly from `proj * view` (see frustum_planes).
-pub fn params_from_camera(view: Mat4, proj: Mat4, cam_pos: Vec3, inputs: CullInputs) -> CullParamsGpu {
+pub fn params_from_camera(
+    view: Mat4,
+    proj: Mat4,
+    cam_pos: Vec3,
+    inputs: CullInputs,
+) -> CullParamsGpu {
     let mut p = CullParamsGpu::zeroed();
     p.frustum = frustum_planes(proj * view);
     p.cam_pos = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
@@ -1188,7 +1390,11 @@ pub fn params_from_camera_occlude(
 // but the radial DISTANCE cull is disabled (objects_z2 = +inf): the cascade side planes bound
 // the set laterally and the shared sub-pixel cull drops tiny far casters, so the main camera's
 // draw distance must not clip casters the far cascades still cover.
-pub fn params_from_shadow_cascade(light_vp: Mat4, cam_pos: Vec3, inputs: CullInputs) -> CullParamsGpu {
+pub fn params_from_shadow_cascade(
+    light_vp: Mat4,
+    cam_pos: Vec3,
+    inputs: CullInputs,
+) -> CullParamsGpu {
     let mut p = CullParamsGpu::zeroed();
     p.frustum = frustum_planes(light_vp);
     p.cam_pos = [cam_pos.x, cam_pos.y, cam_pos.z, 0.0];
@@ -1241,6 +1447,7 @@ pub fn build_gpu_pipeline(
     surface_format: wgpu::TextureFormat,
     sample_count: u32,
     foliage_a2c: bool,
+    front_face: wgpu::FrontFace,
 ) -> (wgpu::RenderPipeline, wgpu::RenderPipeline) {
     let module = crate::shaders::make_module(
         device,
@@ -1280,7 +1487,10 @@ pub fn build_gpu_pipeline(
     // A2C, the colour shader decides coverage per-fragment (cutout -> sharpened, opaque -> 1.0);
     // `a2c` just tells it the pipeline has alpha_to_coverage enabled. Module-level override, so
     // it's valid to hand to both stages of this module.
-    let constants = [("linear", linear), ("a2c", if foliage_a2c { 1.0 } else { 0.0 })];
+    let constants = [
+        ("linear", linear),
+        ("a2c", if foliage_a2c { 1.0 } else { 0.0 }),
+    ];
     let depth_stencil = wgpu::DepthStencilState {
         format: super::DEPTH_FORMAT,
         depth_write_enabled: Some(true),
@@ -1290,7 +1500,7 @@ pub fn build_gpu_pipeline(
     };
     let primitive = wgpu::PrimitiveState {
         topology: wgpu::PrimitiveTopology::TriangleList,
-        front_face: wgpu::FrontFace::Cw,
+        front_face,
         cull_mode: Some(wgpu::Face::Back),
         ..Default::default()
     };
@@ -1663,11 +1873,20 @@ mod tests {
 
         // Near plane (index 4) points along +X (engine forward), through the camera origin.
         let near = p.frustum[4];
-        assert!(near[0] > 0.9, "near normal must be +X (engine forward), got {near:?}");
+        assert!(
+            near[0] > 0.9,
+            "near normal must be +X (engine forward), got {near:?}"
+        );
         let dot = |pl: [f32; 4], v: Vec3| pl[0] * v.x + pl[1] * v.y + pl[2] * v.z + pl[3];
         // Camera-relative (world - cam_pos): in front of +X is inside, behind is out.
-        assert!(dot(near, Vec3::new(20.0, 0.0, 0.0) - cam_pos) >= 0.0, "front inside near");
-        assert!(dot(near, Vec3::new(-20.0, 0.0, 0.0) - cam_pos) < 0.0, "behind outside near");
+        assert!(
+            dot(near, Vec3::new(20.0, 0.0, 0.0) - cam_pos) >= 0.0,
+            "front inside near"
+        );
+        assert!(
+            dot(near, Vec3::new(-20.0, 0.0, 0.0) - cam_pos) < 0.0,
+            "behind outside near"
+        );
     }
 
     // The decisive guard: every plane from frustum_planes must AGREE with the actual projection,
@@ -1698,9 +1917,8 @@ mod tests {
                     for gz in 1..=12 {
                         let p = Vec3::new(gx as f32 * 3.0, gy as f32 * 3.0, gz as f32 * 4.0);
                         let clip = m * p.extend(1.0);
-                        let ndc_visible = clip.w > 1e-3
-                            && clip.x.abs() <= clip.w
-                            && clip.y.abs() <= clip.w;
+                        let ndc_visible =
+                            clip.w > 1e-3 && clip.x.abs() <= clip.w && clip.y.abs() <= clip.w;
                         if ndc_visible {
                             assert!(
                                 inside(&planes, p),
@@ -1711,10 +1929,16 @@ mod tests {
                 }
             }
             // Behind the camera must be culled (near plane must face the right way).
-            assert!(!inside(&planes, dir * -10.0), "behind-camera point kept (dir {dir:?})");
+            assert!(
+                !inside(&planes, dir * -10.0),
+                "behind-camera point kept (dir {dir:?})"
+            );
             // 90 deg off the view axis (straight out the camera's right) must be culled by a side.
             let right = dir.cross(Vec3::Y).normalize();
-            assert!(!inside(&planes, right * 50.0), "side point kept (dir {dir:?})");
+            assert!(
+                !inside(&planes, right * 50.0),
+                "side point kept (dir {dir:?})"
+            );
         }
     }
 
@@ -1738,7 +1962,7 @@ mod tests {
         // Straight ahead, well inside the view.
         assert!(inside(&planes, target - eye)); // rel (0,0,-10)
         assert!(inside(&planes, Vec3::new(0.0, 0.0, 5.0) - eye)); // rel (0,0,-5)
-        // Behind the camera -> outside the near plane. rel (0,0,10).
+                                                                  // Behind the camera -> outside the near plane. rel (0,0,10).
         assert!(!inside(&planes, Vec3::new(0.0, 0.0, 20.0) - eye));
         // Far to the side, in front -> outside a side plane. rel (100,0,-10) / (0,100,-10).
         assert!(!inside(&planes, Vec3::new(100.0, 0.0, 0.0) - eye));
@@ -1762,7 +1986,12 @@ mod tests {
         pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor::default())).ok()
     }
 
-    fn read_u32s(device: &wgpu::Device, queue: &wgpu::Queue, buf: &wgpu::Buffer, len: u64) -> Vec<u32> {
+    fn read_u32s(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        buf: &wgpu::Buffer,
+        len: u64,
+    ) -> Vec<u32> {
         let bytes = len * 4;
         let staging = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("readback"),
@@ -1770,7 +1999,8 @@ mod tests {
             usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
             mapped_at_creation: false,
         });
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         enc.copy_buffer_to_buffer(buf, 0, &staging, 0, bytes);
         queue.submit(std::iter::once(enc.finish()));
         let slice = staging.slice(..);
@@ -1797,12 +2027,32 @@ mod tests {
 
         // 1 model, 2 LODs (finest -> section 0, next -> section 1), variant 0.
         let sections = [
-            SectionGpu { first_index: 0, index_count: 3, base_vertex: 0, variant: 0 },
-            SectionGpu { first_index: 3, index_count: 3, base_vertex: 0, variant: 0 },
+            SectionGpu {
+                first_index: 0,
+                index_count: 3,
+                base_vertex: 0,
+                variant: 0,
+            },
+            SectionGpu {
+                first_index: 3,
+                index_count: 3,
+                base_vertex: 0,
+                variant: 0,
+            },
         ];
         let lods = [
-            LodGpu { resolution: 0.0, section_base: 0, section_count: 1, is_decal: 0 },
-            LodGpu { resolution: 10.0, section_base: 1, section_count: 1, is_decal: 0 },
+            LodGpu {
+                resolution: 0.0,
+                section_base: 0,
+                section_count: 1,
+                is_decal: 0,
+            },
+            LodGpu {
+                resolution: 10.0,
+                section_base: 1,
+                section_count: 1,
+                is_decal: 0,
+            },
         ];
         let materials = [SectionMaterialGpu::zeroed(); 2];
         let model = cull.register_model(1.0, &lods, &sections, &materials);
@@ -1837,7 +2087,8 @@ mod tests {
         cull.set_params(params);
 
         cull.prepare(&device, &queue);
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         cull.dispatch(&mut enc);
         queue.submit(std::iter::once(enc.finish()));
 
@@ -1859,8 +2110,16 @@ mod tests {
         let rec_slot = a[4] as u64;
         let slots = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64;
         let recs = read_u32s(&device, &queue, cull.out_records().unwrap(), slots * 2);
-        assert_eq!(recs[rec_slot as usize * 2], front, "record.instance == visible slot");
-        assert_eq!(recs[rec_slot as usize * 2 + 1], 1, "record.section == LOD1 section id");
+        assert_eq!(
+            recs[rec_slot as usize * 2],
+            front,
+            "record.instance == visible slot"
+        );
+        assert_eq!(
+            recs[rec_slot as usize * 2 + 1],
+            1,
+            "record.section == LOD1 section id"
+        );
     }
 
     // Multi-view (§6): a shadow-cascade view culls the SAME retained scene against its own
@@ -1877,12 +2136,32 @@ mod tests {
         let mut cull = CullState::new(&device);
 
         let sections = [
-            SectionGpu { first_index: 0, index_count: 3, base_vertex: 0, variant: 0 },
-            SectionGpu { first_index: 3, index_count: 3, base_vertex: 0, variant: 0 },
+            SectionGpu {
+                first_index: 0,
+                index_count: 3,
+                base_vertex: 0,
+                variant: 0,
+            },
+            SectionGpu {
+                first_index: 3,
+                index_count: 3,
+                base_vertex: 0,
+                variant: 0,
+            },
         ];
         let lods = [
-            LodGpu { resolution: 0.0, section_base: 0, section_count: 1, is_decal: 0 },
-            LodGpu { resolution: 10.0, section_base: 1, section_count: 1, is_decal: 0 },
+            LodGpu {
+                resolution: 0.0,
+                section_base: 0,
+                section_count: 1,
+                is_decal: 0,
+            },
+            LodGpu {
+                resolution: 10.0,
+                section_base: 1,
+                section_count: 1,
+                is_decal: 0,
+            },
         ];
         let materials = [SectionMaterialGpu::zeroed(); 2];
         let model = cull.register_model(1.0, &lods, &sections, &materials);
@@ -1925,7 +2204,8 @@ mod tests {
         cull.set_shadow_params(0, params_from_shadow_cascade(proj * view, eye, inputs));
 
         cull.prepare(&device, &queue);
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         cull.dispatch(&mut enc);
         cull.dispatch_shadow(&mut enc, 0);
         queue.submit(std::iter::once(enc.finish()));
@@ -1945,9 +2225,22 @@ mod tests {
         // The shadow record resolves to the front instance + LOD 1's section.
         let rec_slot = live[0][4] as u64;
         let slots = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64;
-        let recs = read_u32s(&device, &queue, cull.shadow_out_records(0).unwrap(), slots * 2);
-        assert_eq!(recs[rec_slot as usize * 2], front, "shadow record.instance == front slot");
-        assert_eq!(recs[rec_slot as usize * 2 + 1], 1, "shadow record.section == LOD1 section id");
+        let recs = read_u32s(
+            &device,
+            &queue,
+            cull.shadow_out_records(0).unwrap(),
+            slots * 2,
+        );
+        assert_eq!(
+            recs[rec_slot as usize * 2],
+            front,
+            "shadow record.instance == front slot"
+        );
+        assert_eq!(
+            recs[rec_slot as usize * 2 + 1],
+            1,
+            "shadow record.section == LOD1 section id"
+        );
     }
 
     #[test]
@@ -1965,11 +2258,21 @@ mod tests {
     // A constant-value Hi-Z pyramid (all mips filled with `value`), so whichever mip the
     // occlusion test picks reads the same depth — lets the test drive the reversed-Z comparison
     // deterministically without a real depth reduction.
-    fn const_hiz(device: &wgpu::Device, queue: &wgpu::Queue, w: u32, h: u32, value: f32) -> wgpu::TextureView {
+    fn const_hiz(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        w: u32,
+        h: u32,
+        value: f32,
+    ) -> wgpu::TextureView {
         let mips = 32 - w.max(h).max(1).leading_zeros();
         let tex = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("test_hiz"),
-            size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 },
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
             mip_level_count: mips,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
@@ -1994,7 +2297,11 @@ mod tests {
                     bytes_per_row: Some(mw * 4),
                     rows_per_image: Some(mh),
                 },
-                wgpu::Extent3d { width: mw, height: mh, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: mw,
+                    height: mh,
+                    depth_or_array_layers: 1,
+                },
             );
         }
         tex.create_view(&wgpu::TextureViewDescriptor::default())
@@ -2012,8 +2319,18 @@ mod tests {
         };
         let mut cull = CullState::new(&device);
 
-        let sections = [SectionGpu { first_index: 0, index_count: 3, base_vertex: 0, variant: 0 }];
-        let lods = [LodGpu { resolution: 0.0, section_base: 0, section_count: 1, is_decal: 0 }];
+        let sections = [SectionGpu {
+            first_index: 0,
+            index_count: 3,
+            base_vertex: 0,
+            variant: 0,
+        }];
+        let lods = [LodGpu {
+            resolution: 0.0,
+            section_base: 0,
+            section_count: 1,
+            is_decal: 0,
+        }];
         let materials = [SectionMaterialGpu::zeroed(); 1];
         let model = cull.register_model(1.0, &lods, &sections, &materials);
         cull.instance_add(InstanceGpu {
@@ -2043,44 +2360,90 @@ mod tests {
         main.lod_inv_width = 1.0;
         main.pixel_limit = 0.0;
         cull.set_params(main);
-        let inputs = CullInputs { objects_z: 1000.0, lod_scale: 1.0, lod_inv_width: 1.0, pixel_limit: 0.0 };
+        let inputs = CullInputs {
+            objects_z: 1000.0,
+            lod_scale: 1.0,
+            lod_inv_width: 1.0,
+            pixel_limit: 0.0,
+        };
 
         let live_color_count = |cull: &CullState| -> usize {
             let words = super::ARG_WORDS;
             let total = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64 * words;
             let raw = read_u32s(&device, &queue, cull.color_out_args().unwrap(), total);
-            raw.chunks_exact(words as usize).filter(|a| a[1] != 0).count()
+            raw.chunks_exact(words as usize)
+                .filter(|a| a[1] != 0)
+                .count()
         };
 
         // FAR Hi-Z (reversed-Z 0 everywhere): nothing occludes -> the instance draws.
         cull.set_hiz(Some(const_hiz(&device, &queue, 64, 64, 0.0)));
-        cull.set_color_params(params_from_camera_occlude(view, proj, eye, inputs, [64.0, 64.0], 7, true));
+        cull.set_color_params(params_from_camera_occlude(
+            view,
+            proj,
+            eye,
+            inputs,
+            [64.0, 64.0],
+            7,
+            true,
+        ));
         cull.prepare(&device, &queue);
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         cull.dispatch_color(&mut enc);
         queue.submit(std::iter::once(enc.finish()));
-        assert_eq!(live_color_count(&cull), 1, "FAR Hi-Z must not occlude the visible instance");
+        assert_eq!(
+            live_color_count(&cull),
+            1,
+            "FAR Hi-Z must not occlude the visible instance"
+        );
 
         // NEAR Hi-Z (reversed-Z 1 everywhere): a wall right in front -> the instance is occluded.
         cull.set_hiz(Some(const_hiz(&device, &queue, 64, 64, 1.0)));
-        cull.set_color_params(params_from_camera_occlude(view, proj, eye, inputs, [64.0, 64.0], 7, true));
+        cull.set_color_params(params_from_camera_occlude(
+            view,
+            proj,
+            eye,
+            inputs,
+            [64.0, 64.0],
+            7,
+            true,
+        ));
         cull.prepare(&device, &queue);
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         cull.dispatch_color(&mut enc);
         queue.submit(std::iter::once(enc.finish()));
-        assert_eq!(live_color_count(&cull), 0, "NEAR Hi-Z must occlude the instance");
+        assert_eq!(
+            live_color_count(&cull),
+            0,
+            "NEAR Hi-Z must occlude the instance"
+        );
 
         // MID Hi-Z (reversed-Z 0.5 = a mid-depth wall). The instance sits near the far end
         // (distance 10, near 0.1 -> reversed depth ~0.01), so a mid-depth occluder is IN FRONT of
         // it -> occluded. This is the discriminating case for the reverse_z remap: without it the
         // test would use the FORWARD depth (~0.99), read 0.99 < 0.5 = false, and wrongly draw.
         cull.set_hiz(Some(const_hiz(&device, &queue, 64, 64, 0.5)));
-        cull.set_color_params(params_from_camera_occlude(view, proj, eye, inputs, [64.0, 64.0], 7, true));
+        cull.set_color_params(params_from_camera_occlude(
+            view,
+            proj,
+            eye,
+            inputs,
+            [64.0, 64.0],
+            7,
+            true,
+        ));
         cull.prepare(&device, &queue);
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         cull.dispatch_color(&mut enc);
         queue.submit(std::iter::once(enc.finish()));
-        assert_eq!(live_color_count(&cull), 0, "a mid-depth occluder must hide the far instance (reverse_z)");
+        assert_eq!(
+            live_color_count(&cull),
+            0,
+            "a mid-depth occluder must hide the far instance (reverse_z)"
+        );
     }
 
     // Instancing collapse (§3.6): many instances that select the SAME LOD section must produce
@@ -2097,12 +2460,32 @@ mod tests {
 
         // 2 LODs: LOD0 -> section 0 (coarse, near), LOD1 -> section 1 (fine, farther). variant 0.
         let sections = [
-            SectionGpu { first_index: 0, index_count: 3, base_vertex: 0, variant: 0 },
-            SectionGpu { first_index: 3, index_count: 3, base_vertex: 0, variant: 0 },
+            SectionGpu {
+                first_index: 0,
+                index_count: 3,
+                base_vertex: 0,
+                variant: 0,
+            },
+            SectionGpu {
+                first_index: 3,
+                index_count: 3,
+                base_vertex: 0,
+                variant: 0,
+            },
         ];
         let lods = [
-            LodGpu { resolution: 0.0, section_base: 0, section_count: 1, is_decal: 0 },
-            LodGpu { resolution: 10.0, section_base: 1, section_count: 1, is_decal: 0 },
+            LodGpu {
+                resolution: 0.0,
+                section_base: 0,
+                section_count: 1,
+                is_decal: 0,
+            },
+            LodGpu {
+                resolution: 10.0,
+                section_base: 1,
+                section_count: 1,
+                is_decal: 0,
+            },
         ];
         let materials = [SectionMaterialGpu::zeroed(); 2];
         let model = cull.register_model(1.0, &lods, &sections, &materials);
@@ -2143,15 +2526,23 @@ mod tests {
         cull.set_params(params);
 
         cull.prepare(&device, &queue);
-        let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         cull.dispatch(&mut enc);
         queue.submit(std::iter::once(enc.finish()));
 
         let words = super::ARG_WORDS;
         let total = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64 * words;
         let raw = read_u32s(&device, &queue, cull.out_args().unwrap(), total);
-        let live: Vec<&[u32]> = raw.chunks_exact(words as usize).filter(|a| a[1] != 0).collect();
-        assert_eq!(live.len(), 2, "one instanced draw per surviving section (not per pair)");
+        let live: Vec<&[u32]> = raw
+            .chunks_exact(words as usize)
+            .filter(|a| a[1] != 0)
+            .collect();
+        assert_eq!(
+            live.len(),
+            2,
+            "one instanced draw per surviving section (not per pair)"
+        );
 
         let slots_cap = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64;
         let recs = read_u32s(&device, &queue, cull.out_records().unwrap(), slots_cap * 2);
@@ -2178,8 +2569,14 @@ mod tests {
             base
         };
 
-        let a_far = live.iter().find(|a| a[2] == 3).expect("section 1 arg (5 collapsed)");
-        let a_near = live.iter().find(|a| a[2] == 0).expect("section 0 arg (3 collapsed)");
+        let a_far = live
+            .iter()
+            .find(|a| a[2] == 3)
+            .expect("section 1 arg (5 collapsed)");
+        let a_near = live
+            .iter()
+            .find(|a| a[2] == 0)
+            .expect("section 0 arg (3 collapsed)");
         let base_far = check(a_far, 5, 3, 1, &far_slots);
         let base_near = check(a_near, 3, 0, 0, &near_slots);
         // Runs are disjoint (contiguous carving, no overlap).

@@ -1,6 +1,8 @@
 use crate::ffi::WgrWaterInteractionParams;
 
-const FOAM_RESOLUTION: u32 = 256;
+// Persistent foam covers the 256 m interaction domain at 0.25 m/texel. The interaction
+// injection field remains 256² (1 m/texel), avoiding a fourfold event-raster cost.
+const FOAM_RESOLUTION: u32 = 1024;
 
 pub struct Foam {
     params: wgpu::Buffer,
@@ -9,6 +11,19 @@ pub struct Foam {
     bind_groups: [[wgpu::BindGroup; 2]; 2],
     pipeline: wgpu::ComputePipeline,
     current: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FOAM_RESOLUTION;
+
+    #[test]
+    fn persistent_history_is_quarter_meter_over_the_interaction_domain() {
+        const INTERACTION_DOMAIN_METERS: u32 = 256;
+        assert_eq!(FOAM_RESOLUTION, 1024);
+        assert_eq!(FOAM_RESOLUTION / INTERACTION_DOMAIN_METERS, 4);
+        assert_eq!(FOAM_RESOLUTION / 8, 128);
+    }
 }
 
 impl Foam {

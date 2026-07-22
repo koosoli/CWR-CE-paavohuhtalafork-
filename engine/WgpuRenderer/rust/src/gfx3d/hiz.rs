@@ -171,7 +171,12 @@ impl HiZ {
     // `depth_view` MUST be a depth-aspect view of the post-prepass depth target. Recorded after
     // the prepass render pass closes and before the color-pass cull dispatch (wgpu barriers the
     // storage writes -> the cull's textureLoads). No-op until ensure() allocated the pyramid.
-    pub fn build(&self, device: &wgpu::Device, encoder: &mut wgpu::CommandEncoder, depth_view: &wgpu::TextureView) {
+    pub fn build(
+        &self,
+        device: &wgpu::Device,
+        encoder: &mut wgpu::CommandEncoder,
+        depth_view: &wgpu::TextureView,
+    ) {
         let Some(_tex) = self.tex.as_ref() else {
             return;
         };

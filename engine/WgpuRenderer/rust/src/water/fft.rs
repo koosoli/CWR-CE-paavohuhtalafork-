@@ -567,9 +567,8 @@ mod tests {
     }
 
     fn cascade_bands(k: f32, lengths: [f32; 4]) -> [f32; 4] {
-        let split = |lower: usize, upper: usize| {
-            (TAU / lengths[lower] * TAU / lengths[upper]).sqrt()
-        };
+        let split =
+            |lower: usize, upper: usize| (TAU / lengths[lower] * TAU / lengths[upper]).sqrt();
         let low_to_mid_low = cascade_transition(k, split(2, 3));
         let mid_low_to_mid_high = cascade_transition(k, split(1, 2));
         let mid_high_to_high = cascade_transition(k, split(0, 1));
@@ -583,7 +582,11 @@ mod tests {
 
     fn swell_angle(seed: u32) -> f32 {
         let random = (hash(seed ^ 0x68bc_21eb) & 0x00ff_ffff) as f32 / 16_777_216.0;
-        let sign = if hash(seed ^ 0x02e5_be93) & 1 == 0 { 1.0 } else { -1.0 };
+        let sign = if hash(seed ^ 0x02e5_be93) & 1 == 0 {
+            1.0
+        } else {
+            -1.0
+        };
         sign * (0.45 + (0.95 - 0.45) * random)
     }
 
@@ -640,7 +643,10 @@ mod tests {
     ) -> [f32; 2] {
         let first = complex_mul(h0, phase);
         let second = complex_mul(conjugate(h0_opposite), conjugate(phase));
-        [-(first[1] - second[1]) * omega, (first[0] - second[0]) * omega]
+        [
+            -(first[1] - second[1]) * omega,
+            (first[0] - second[0]) * omega,
+        ]
     }
 
     fn horizontal_jacobian_derivatives(
@@ -751,8 +757,8 @@ mod tests {
         assert!((derivatives[1] + 1.2).abs() < 1e-6);
         assert!((derivatives[2] - 1.6).abs() < 1e-6);
 
-        let jacobian = (1.0 + derivatives[0]) * (1.0 + derivatives[2])
-            - derivatives[1] * derivatives[1];
+        let jacobian =
+            (1.0 + derivatives[0]) * (1.0 + derivatives[2]) - derivatives[1] * derivatives[1];
         assert!((jacobian - 3.5).abs() < 1e-6);
     }
 

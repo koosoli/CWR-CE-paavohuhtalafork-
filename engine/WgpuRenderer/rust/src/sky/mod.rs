@@ -322,14 +322,16 @@ impl Sky {
 
         // Per-pass layouts: transmittance reads only the uniform; multiscatter also
         // reads the transmittance LUT; the main pass reads both LUTs.
-        let transmittance_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgr_sky_transmittance_layout"),
-            entries: &[uniform_entry(0)],
-        });
-        let multiscatter_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgr_sky_multiscatter_layout"),
-            entries: &[uniform_entry(0), sampler_entry, tex_entry(2)],
-        });
+        let transmittance_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgr_sky_transmittance_layout"),
+                entries: &[uniform_entry(0)],
+            });
+        let multiscatter_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgr_sky_multiscatter_layout"),
+                entries: &[uniform_entry(0), sampler_entry, tex_entry(2)],
+            });
         // Cloud noise: a 3D texture at binding 4 + its own Repeat sampler at binding 6 (binding 5 is
         // the froxel storage image in the shared module). Only fs_sky / fs_sky_env reference these.
         let cloud_tex_entry = wgpu::BindGroupLayoutEntry {
@@ -416,7 +418,8 @@ impl Sky {
             LUT_FORMAT,
             1,
         );
-        let sky_pipeline = make_pipeline("wgr_sky", &sky_layout, "fs_sky", color_format, sample_count);
+        let sky_pipeline =
+            make_pipeline("wgr_sky", &sky_layout, "fs_sky", color_format, sample_count);
         // Env-map bake: same group(0) layout as the sky pass, single-sample, LUT_FORMAT target.
         let env_pipeline = make_pipeline("wgr_sky_env", &sky_layout, "fs_sky_env", ENV_FORMAT, 1);
         let env_tex = device.create_texture(&wgpu::TextureDescriptor {
@@ -516,13 +519,22 @@ impl Sky {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: LUT_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             tex.create_view(&wgpu::TextureViewDescriptor::default())
         };
-        let transmittance_view = make_lut("wgr_sky_transmittance_lut", TRANSMITTANCE_W, TRANSMITTANCE_H);
-        let multiscatter_view = make_lut("wgr_sky_multiscatter_lut", MULTISCATTER_SIZE, MULTISCATTER_SIZE);
+        let transmittance_view = make_lut(
+            "wgr_sky_transmittance_lut",
+            TRANSMITTANCE_W,
+            TRANSMITTANCE_H,
+        );
+        let multiscatter_view = make_lut(
+            "wgr_sky_multiscatter_lut",
+            MULTISCATTER_SIZE,
+            MULTISCATTER_SIZE,
+        );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("wgr_sky_lut_sampler"),
@@ -705,60 +717,63 @@ impl Sky {
         // uniform, so cs_froxel can occlude the fog by terrain. The mask is Terrain-owned and
         // lent by view (regenerated on heightmap change), so this bind rebuilds each frame in
         // render_froxel; the sampler + mapping buffer are owned here and created once.
-        let froxel_shadow_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgr_sky_froxel_shadow_layout"),
-            entries: &[
-                compute_tex(0),
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<crate::terrain::TerrainShadowMap>() as u64,
-                        ),
+        let froxel_shadow_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgr_sky_froxel_shadow_layout"),
+                entries: &[
+                    compute_tex(0),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
                     },
-                    count: None,
-                },
-                // Cascade shadow depth (D2Array) + comparison sampler + the cascade matrices,
-                // so cs_froxel occludes the fog by objects/terrain casters for crisp shafts.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 3,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2Array,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                                crate::terrain::TerrainShadowMap,
+                            >()
+                                as u64),
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 4,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 5,
-                    visibility: wgpu::ShaderStages::COMPUTE,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: wgpu::BufferSize::new(
-                            std::mem::size_of::<crate::ffi::WgrCameraShadow>() as u64,
-                        ),
+                    // Cascade shadow depth (D2Array) + comparison sampler + the cascade matrices,
+                    // so cs_froxel occludes the fog by objects/terrain casters for crisp shafts.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 4,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                                crate::ffi::WgrCameraShadow,
+                            >()
+                                as u64),
+                        },
+                        count: None,
+                    },
+                ],
+            });
         let csm_cmp_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("wgr_sky_froxel_csm_sampler"),
             compare: Some(wgpu::CompareFunction::LessEqual),
@@ -829,19 +844,20 @@ impl Sky {
 
         // ---- Phase 1: depth-aware over-scene cloud pass + composite ----
         // fs_cloud: low-res march (group(0) = the sky bind; group(1) = the resolved scene depth).
-        let cloud_depth_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgr_cloud_depth_layout"),
-            entries: &[wgpu::BindGroupLayoutEntry {
-                binding: 6,
-                visibility: wgpu::ShaderStages::FRAGMENT,
-                ty: wgpu::BindingType::Texture {
-                    sample_type: wgpu::TextureSampleType::Depth,
-                    view_dimension: wgpu::TextureViewDimension::D2,
-                    multisampled: false,
-                },
-                count: None,
-            }],
-        });
+        let cloud_depth_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgr_cloud_depth_layout"),
+                entries: &[wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                }],
+            });
         let cloud_pipeline = {
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("wgr_cloud"),
@@ -880,38 +896,39 @@ impl Sky {
             label: Some("wgr_cloud_composite_shader"),
             source: wgpu::ShaderSource::Wgsl(include_str!("cloud_composite.wgsl").into()),
         });
-        let cloud_composite_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("wgr_cloud_composite_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+        let cloud_composite_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgr_cloud_composite_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-                // Full-res resolved scene depth, for the depth-aware (bilateral) upsample.
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
                     },
-                    count: None,
-                },
-            ],
-        });
+                    // Full-res resolved scene depth, for the depth-aware (bilateral) upsample.
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
+                        },
+                        count: None,
+                    },
+                ],
+            });
         let cloud_composite_pipeline = {
             let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("wgr_cloud_composite"),
@@ -968,7 +985,11 @@ impl Sky {
             ..Default::default()
         });
 
-        let linear = if color_format == crate::HDR_FORMAT { 1.0 } else { 0.0 };
+        let linear = if color_format == crate::HDR_FORMAT {
+            1.0
+        } else {
+            0.0
+        };
 
         Self {
             sky_pipeline,
@@ -1063,11 +1084,21 @@ impl Sky {
         }
         self.lut_dirty = false;
         encoder.push_debug_group("wgr_sky_luts");
-        self.lut_pass(encoder, "wgr_sky_transmittance", &self.transmittance_pipeline,
-                      &self.transmittance_bind, &self.transmittance_view);
+        self.lut_pass(
+            encoder,
+            "wgr_sky_transmittance",
+            &self.transmittance_pipeline,
+            &self.transmittance_bind,
+            &self.transmittance_view,
+        );
         // Multiscatter samples the transmittance LUT just rendered, so it runs after.
-        self.lut_pass(encoder, "wgr_sky_multiscatter", &self.multiscatter_pipeline,
-                      &self.multiscatter_bind, &self.multiscatter_view);
+        self.lut_pass(
+            encoder,
+            "wgr_sky_multiscatter",
+            &self.multiscatter_pipeline,
+            &self.multiscatter_bind,
+            &self.multiscatter_view,
+        );
         encoder.pop_debug_group();
     }
 
@@ -1138,7 +1169,8 @@ impl Sky {
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
                 format: crate::HDR_FORMAT,
-                usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             });
             let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
@@ -1155,7 +1187,9 @@ impl Sky {
             entries: &[
                 wgpu::BindGroupEntry {
                     binding: 0,
-                    resource: wgpu::BindingResource::TextureView(self.cloud_lo_view.as_ref().unwrap()),
+                    resource: wgpu::BindingResource::TextureView(
+                        self.cloud_lo_view.as_ref().unwrap(),
+                    ),
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,

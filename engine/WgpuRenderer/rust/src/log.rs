@@ -1,4 +1,4 @@
-use std::ffi::{CString, c_void};
+use std::ffi::{c_void, CString};
 use std::os::raw::c_char;
 
 #[allow(dead_code)]
