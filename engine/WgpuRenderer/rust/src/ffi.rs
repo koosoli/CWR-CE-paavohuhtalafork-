@@ -1609,6 +1609,33 @@ pub unsafe extern "C" fn wgr_get_exposure_scale(renderer: *mut WgrRenderer) -> f
     renderer.exposure_scale()
 }
 
+/// WTR-002 — copy the latest completed-frame GPU pass timings into `out_ms` (milliseconds
+/// per region, indexed by `WgrGpuTimerRegion`; -1 = the pass never ran / is reserved).
+/// Non-blocking (values are harvested asynchronously each frame). Returns the region
+/// count written (min of WGR_GPU_TIMER_REGION_COUNT and `out_len`), or 0 when the
+/// renderer is null or the adapter lacks timestamp queries.
+///
+/// # Safety
+/// `renderer` must be a live `WgrRenderer` or null; `out_ms` must point to at least
+/// `out_len` floats, or be null (in which case 0 is returned).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_get_gpu_timings(
+    renderer: *mut WgrRenderer,
+    out_ms: *mut f32,
+    out_len: u32,
+) -> u32 {
+    if renderer.is_null() || out_ms.is_null() || out_len == 0 {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &*renderer };
+        let out = unsafe { std::slice::from_raw_parts_mut(out_ms, out_len as usize) };
+        let count = renderer.gpu_timings(out);
+        count.min(out_len)
+    }))
+    .unwrap_or(0)
+}
+
 /// Push the consolidated ImGui-tweakable render params (tonemap, exposure, sky look, terrain
 /// sun-shadow, sky-visibility) in one block. Fans out to the per-subsystem state; the terrain
 /// setters are diffed against the last block so a per-frame push doesn't thrash the sweep/scan.

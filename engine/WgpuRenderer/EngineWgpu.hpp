@@ -152,6 +152,12 @@ class EngineWgpu : public EngineDummy
     // Live look, read by WaterWgpu::DrawWater when building the per-frame water UBO.
     const WaterSettings& WaterLook() const { return _waterLook; }
 
+    // WTR-002 — GPU water-pipeline pass timings, read back from wgr_get_gpu_timings
+    // (non-blocking; the Rust side harvests asynchronously). Names follow the
+    // WgrGpuTimerRegion index contract.
+    int GetWaterGpuTimings(float* outMs, int maxCount) const override;
+    const char* GetWaterGpuTimingName(int region) const override;
+
     // GPU-driven cull DEBUG (ImGui Culling tab): only meaningful when GPU-driven is on.
     bool SupportsCullDebug() const override { return _renderer != nullptr && _gpuDriven; }
     CullDebugSettings GetCullDebugSettings() const override { return _cullDebug; }

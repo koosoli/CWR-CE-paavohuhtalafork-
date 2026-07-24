@@ -702,13 +702,40 @@ impl Water {
         &mut self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
+        timers: &crate::gpu_timers::GpuTimers,
     ) {
-        if let Some(fft) = &mut self.fft {
-            fft.dispatch(encoder);
+        use crate::gpu_timers::Region;
+        // WTR-001 — deterministic water freeze. The dev-only `Engine::WaterSettings::Freeze`
+        // block is packed by WaterWgpu into WgrWaterParams.fft_control.z as a WGR_WATER_FREEZE_*
+        // bit mask. Skipping the dispatch entirely (rather than running it against time=const and
+        // dt=0) keeps the captured frame truly frozen without the GPU cost; the choice is a perf
+        // optimization on top of `freezeTime`, not a correctness lever — set_params already
+        // substitutes the right UBO values, so the masked-out passes would be no-ops anyway.
+        const FREEZE_FFT: u32 = 1 << 0;
+        const FREEZE_INTERACTION: u32 = 1 << 1;
+        const FREEZE_FOAM: u32 = 1 << 2;
+        let freeze_mask: u32 = self
+            .last_params
+            .map(|p| p.fft_control[2].to_bits())
+            .unwrap_or(0);
+        if (freeze_mask & FREEZE_FFT) == 0 {
+            if let Some(fft) = &mut self.fft {
+                fft.dispatch(encoder, timers);
+            }
         }
-        self.interaction.dispatch(encoder);
-        if let Some(foam) = &mut self.foam {
-            foam.dispatch(encoder, self.interaction.current());
+        if (freeze_mask & FREEZE_INTERACTION) == 0 {
+            // WTR-002 — injection + propagation are one fused kernel today, so a single
+            // bracket covers both spec rows (the split lands with the interaction rework).
+            timers.begin(encoder, Region::Interaction);
+            self.interaction.dispatch(encoder);
+            timers.end(encoder, Region::Interaction);
+        }
+        if (freeze_mask & FREEZE_FOAM) == 0 {
+            if let Some(foam) = &mut self.foam {
+                timers.begin(encoder, Region::Foam);
+                foam.dispatch(encoder, self.interaction.current());
+                timers.end(encoder, Region::Foam);
+            }
         }
         self.rebuild_group1(device);
     }
@@ -1030,5 +1057,39 @@ mod tests {
 
         let planar_weight = 1.0 - 1.0 * 0.80;
         assert!(planar_weight > 0.0 && planar_weight < 1.0);
+    }
+
+    // WTR-001 — the deterministic-freeze mask is bit-cast into WgrWaterParams.fft_control[2].
+    // The legacy authored default (12.0 m minimum geometry wavelength) is preserved when no
+    // freeze is requested: its bit pattern's low three bits are clean so it cannot accidentally
+    // match a freeze bit, but encoding any non-zero mask rewrites the lane as the bit-cast u32.
+    // This test locks both halves of the contract (legacy-safe + mask-decodable).
+    #[test]
+    fn freeze_mask_decodes_from_fft_control_z_without_breaking_legacy_default() {
+        use bytemuck::Zeroable;
+        const FREEZE_FFT: u32 = 1 << 0;
+        const FREEZE_INTERACTION: u32 = 1 << 1;
+        const FREEZE_FOAM: u32 = 1 << 2;
+
+        // The legacy authored default is no freeze: 12.0f, whose IEEE-754 bits have low 3 bits
+        // all zero (verified here so a re-encoded mask never collides with it via coincidence).
+        let legacy_default = 12.0f32;
+        assert_eq!(legacy_default.to_bits() & (FREEZE_FFT | FREEZE_INTERACTION | FREEZE_FOAM), 0);
+
+        // Encoding the all-freeze mask via the same std::mem::transmute-style path WaterWgpu uses
+        // (bit-cast of the u32 mask to f32) yields a float whose .to_bits() returns the mask, so
+        // Water::update_interactions round-trips the bits faithfully.
+        let mut params = crate::ffi::WgrWaterParams::zeroed();
+        params.fft_control[2] = f32::from_bits(FREEZE_FFT | FREEZE_INTERACTION | FREEZE_FOAM);
+        let decoded = params.fft_control[2].to_bits();
+        assert_eq!(decoded & FREEZE_FFT, FREEZE_FFT);
+        assert_eq!(decoded & FREEZE_INTERACTION, FREEZE_INTERACTION);
+        assert_eq!(decoded & FREEZE_FOAM, FREEZE_FOAM);
+
+        // A masked-out (skipped) dispatch reads as the bit being ON; a normal frame reads as OFF.
+        let normal = 0u32;
+        assert_eq!(normal & FREEZE_FFT, 0);
+        assert_eq!(normal & FREEZE_INTERACTION, 0);
+        assert_eq!(normal & FREEZE_FOAM, 0);
     }
 }

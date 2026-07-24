@@ -697,7 +697,12 @@ struct WgrWaterParams
     float swash_speed;
     /* Shared FFT ocean controls. fft_control = enabled, deterministic seed, minimum geometry
      * wavelength, pad. fft_wind_sea = wind x/z, speed (m/s), sea state (0..1). The four
-     * cascade lengths are world metres and must remain stable across camera-origin changes. */
+     * cascade lengths are world metres and must remain stable across camera-origin changes.
+     * WTR-001 — the "minimum geometry wavelength" lane (fft_control.z) was set once by the
+     * C++ ctor to 12.0f but never read on the Rust/shader side, so it is repurposed as the
+     * WTR freeze mask: WGR_WATER_FREEZE_* bits OR-ed together. 0.0 (no freeze) preserves the
+     * legacy default (a harmless constant float the shaders ignore); the Rust side reads the
+     * float's bit pattern as the mask only for its own dispatch skip, never as a wavelength. */
     WgrVec4 fft_control;
     WgrVec4 fft_wind_sea;
     WgrVec4 fft_cascade_lengths;
@@ -708,6 +713,48 @@ struct WgrWaterParams
 };
 
 constexpr uint32_t WGR_MAX_WATER_INTERACTIONS = 48;
+
+/* WTR-001 — deterministic water freeze mask, OR-ed into WgrWaterParams.fft_control.z.
+ * The freeze flags reflect the dev-only `Engine::WaterSettings::Freeze` block (the Water
+ * tab's Debug section). The Rust side reads the float's bit pattern in
+ * `Water::update_interactions` and skips the matching dispatch, so a frozen frame repeats
+ * its last water state instead of advancing through a no-advancement compute pass. */
+enum WgrWaterFreezeBits : uint32_t
+{
+    WGR_WATER_FREEZE_FFT = 1u << 0,           // skip Fft::dispatch (spectrum holds at last h0/time)
+    WGR_WATER_FREEZE_INTERACTION = 1u << 1,    // skip Interaction::dispatch
+    WGR_WATER_FREEZE_FOAM = 1u << 2,          // skip Foam::dispatch
+};
+
+/* WTR-002 — GPU timestamp regions, the index contract of wgr_get_gpu_timings (mirrors
+ * `Region` in rust/src/gpu_timers.rs — append only, never reorder). Regions marked
+ * "reserved" name spec rows whose standalone pass doesn't exist yet; they always report
+ * -1 ms ("n/a") so the tab rows + ABI are already in place when those passes land.
+ * SSR/refraction are fragment work inside WATER_DRAW; caustics ride UNDERWATER_COMPOSITE. */
+enum WgrGpuTimerRegion : uint32_t
+{
+    WGR_GPU_TIMER_SPECTRUM_INIT = 0,        // h0 spectrum generation (spectrum-dirty frames only)
+    WGR_GPU_TIMER_SPECTRUM_EVOLVE = 1,      // per-frame spectrum evolution
+    WGR_GPU_TIMER_FFT_HORIZONTAL = 2,       // FFT butterfly stages, axis 0
+    WGR_GPU_TIMER_FFT_VERTICAL = 3,         // FFT butterfly stages, axis 1
+    WGR_GPU_TIMER_FFT_COMPOSE = 4,          // displacement/dynamics/auxiliary composition
+    WGR_GPU_TIMER_INTERACTION = 5,          // injection + propagation (one fused kernel today)
+    WGR_GPU_TIMER_FOAM = 6,                 // persistent foam update
+    WGR_GPU_TIMER_WHITEWATER = 7,           // reserved — no whitewater pass yet
+    WGR_GPU_TIMER_PLANAR_SKY = 8,           // planar reflection: sky
+    WGR_GPU_TIMER_PLANAR_TERRAIN = 9,       // planar reflection: terrain
+    WGR_GPU_TIMER_PLANAR_OBJECTS = 10,      // planar reflection: reflected cull + objects
+    WGR_GPU_TIMER_PLANAR_CLOUDS = 11,       // planar reflection: cloud march + composite
+    WGR_GPU_TIMER_PLANAR_MIPS = 12,         // planar reflection mip generation
+    WGR_GPU_TIMER_WATER_SSR = 13,           // reserved — in-shader inside WATER_DRAW
+    WGR_GPU_TIMER_WATER_REFRACTION = 14,    // reserved — in-shader inside WATER_DRAW
+    WGR_GPU_TIMER_WATER_DRAW = 15,          // water surface pass (includes SSR + refraction)
+    WGR_GPU_TIMER_UNDERWATER_FROXEL = 16,   // reserved — no underwater froxel pass yet
+    WGR_GPU_TIMER_UNDERWATER_COMPOSITE = 17, // fullscreen underwater compositor (incl. caustics)
+    WGR_GPU_TIMER_CAUSTICS = 18,            // reserved — rides the underwater/water shaders
+    WGR_GPU_TIMER_REGION_COUNT = 19,
+};
+
 enum WgrWaterKind : uint32_t { WGR_WATER_KIND_OCEAN = 0, WGR_WATER_KIND_RIVER = 1 };
 enum WgrWaterInteractionKind : uint32_t { WGR_WATER_INTERACTION_BULLET = 0, WGR_WATER_INTERACTION_OBJECT = 1, WGR_WATER_INTERACTION_PLAYER = 2, WGR_WATER_INTERACTION_EXPLOSION = 3, WGR_WATER_INTERACTION_FOOTSTEP = 4, WGR_WATER_INTERACTION_CONTINUOUS = 5 };
 enum WgrWaterInteractionFlags : uint32_t { WGR_WATER_INTERACTION_PENDING_IMPULSE = 1u << 0, WGR_WATER_INTERACTION_CAPSULE = 1u << 8, WGR_WATER_INTERACTION_PLAYER_WADING = 1u << 9, WGR_WATER_INTERACTION_PLAYER_SWIMMING = 1u << 10, WGR_WATER_INTERACTION_LEFT_SIDE = 1u << 11, WGR_WATER_INTERACTION_LARGE_BODY = 1u << 12 };
@@ -1015,6 +1062,13 @@ extern "C"
 
     /* Debug: read back the current auto-exposure scale (blocking GPU sync; dev panel only). */
     WGR_API float wgr_get_exposure_scale(WgrRenderer* renderer);
+
+    /* WTR-002 — copy the latest completed-frame GPU pass timings into `out_ms`
+     * (milliseconds per region, indexed by WgrGpuTimerRegion; -1 = pass never ran /
+     * reserved). Non-blocking — values are harvested asynchronously by the renderer
+     * each frame. Returns the region count written (min of WGR_GPU_TIMER_REGION_COUNT
+     * and out_len), or 0 when the adapter lacks timestamp queries. */
+    WGR_API uint32_t wgr_get_gpu_timings(WgrRenderer* renderer, float* out_ms, uint32_t out_len);
 
     /* Push the consolidated ImGui-tweakable render params (tonemap, exposure, sky look,
      * terrain sun-shadow, sky-visibility) in one block. The two terrain setters are diffed

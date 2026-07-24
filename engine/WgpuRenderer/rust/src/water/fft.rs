@@ -511,22 +511,52 @@ impl Fft {
             self.spectrum_dirty = true;
         }
     }
-    pub fn dispatch(&mut self, encoder: &mut wgpu::CommandEncoder) {
-        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("wgr_water_fft"),
-            timestamp_writes: None,
-        });
+    pub fn dispatch(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        timers: &crate::gpu_timers::GpuTimers,
+    ) {
+        use crate::gpu_timers::Region;
+        // WTR-002 — each FFT phase runs in its own compute pass so the encoder-level
+        // timestamps bracket exactly one phase (spectrum init / evolve / horizontal /
+        // vertical / compose). Pass splitting adds no barriers beyond those wgpu already
+        // inserts between the dependent storage writes, so the GPU work is unchanged.
+        fn compute<'e>(
+            encoder: &'e mut wgpu::CommandEncoder,
+            label: &str,
+        ) -> wgpu::ComputePass<'e> {
+            encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some(label),
+                timestamp_writes: None,
+            })
+        }
         if self.spectrum_dirty {
+            timers.begin(encoder, Region::SpectrumInit);
+            let mut pass = compute(encoder, "wgr_water_fft_spectrum_init");
             pass.set_pipeline(&self.h0_init_pipeline);
             pass.set_bind_group(0, &self.h0_init_bind, &[]);
             pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
+            drop(pass);
+            timers.end(encoder, Region::SpectrumInit);
             self.spectrum_dirty = false;
         }
-        pass.set_pipeline(&self.spectrum_pipeline);
-        pass.set_bind_group(0, &self.spectrum_bind, &[]);
-        pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
-        pass.set_pipeline(&self.stage_pipeline);
+        timers.begin(encoder, Region::SpectrumEvolve);
+        {
+            let mut pass = compute(encoder, "wgr_water_fft_spectrum_evolve");
+            pass.set_pipeline(&self.spectrum_pipeline);
+            pass.set_bind_group(0, &self.spectrum_bind, &[]);
+            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
+        }
+        timers.end(encoder, Region::SpectrumEvolve);
         for axis in 0..2 {
+            let (region, label) = if axis == 0 {
+                (Region::FftHorizontal, "wgr_water_fft_horizontal")
+            } else {
+                (Region::FftVertical, "wgr_water_fft_vertical")
+            };
+            timers.begin(encoder, region);
+            let mut pass = compute(encoder, label);
+            pass.set_pipeline(&self.stage_pipeline);
             for stage in 0..FFT_STAGES {
                 for pack in 0..3 {
                     let index = ((axis * FFT_STAGES + stage) * 3 + pack) as usize;
@@ -538,10 +568,17 @@ impl Fft {
                     pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
                 }
             }
+            drop(pass);
+            timers.end(encoder, region);
         }
-        pass.set_pipeline(&self.compose_pipeline);
-        pass.set_bind_group(0, &self.compose_bind, &[]);
-        pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
+        timers.begin(encoder, Region::FftCompose);
+        {
+            let mut pass = compute(encoder, "wgr_water_fft_compose");
+            pass.set_pipeline(&self.compose_pipeline);
+            pass.set_bind_group(0, &self.compose_bind, &[]);
+            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
+        }
+        timers.end(encoder, Region::FftCompose);
     }
 }
 

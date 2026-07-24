@@ -2069,6 +2069,84 @@ void DrawWaterTab()
     changed |= ImGui::SliderFloat("Wet darkening", &s.wetDarken, 0.3f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("Albedo multiplier for wet sand (lower = darker). 1 = off.");
 
+    // WTR-001 — deterministic water debug controls (dev / capture / A-B / shader-diff use only).
+    // All freezes are renderer-local substitutions: they replace the UBO time/dt/seed the water,
+    // interaction, foam, cloud, and underwater caustic shaders see, WITHOUT touching Glob.time
+    // (gameplay + net clock) or any non-water subsystem other than the cloud wind offset (which
+    // rides the same water sim clock by design). Leave "Freeze time" off to retain live animation.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Debug (WTR-001 — deterministic capture / A-B)");
+    ImGui::SetItemTooltip("Holds the water-sim clock, FFT, interaction solver, foam, or clouds "
+                          "at a fixed value so the same frame reproduces across launches for "
+                          "before/after captures and shader-diff work. Dev-only.");
+    auto& fz = s.freeze;
+    bool freezeFft = fz.freezeFft;
+    if (ImGui::Checkbox("Freeze FFT##bool", &freezeFft))
+    {
+        fz.freezeFft = freezeFft;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Skip Fft::dispatch: the wave-spectrum holds at its last computed state. "
+                          "Combine with Freeze time to capture one frame's spectrum exactly.");
+    bool freezeInteraction = fz.freezeInteraction;
+    if (ImGui::Checkbox("Freeze interaction solver##bool", &freezeInteraction))
+    {
+        fz.freezeInteraction = freezeInteraction;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("dt = 0 + skip Interaction::dispatch: the local ripple field holds its "
+                          "last state (no decay, no propagation, no event injection).");
+    bool freezeFoam = fz.freezeFoam;
+    if (ImGui::Checkbox("Freeze foam##bool", &freezeFoam))
+    {
+        fz.freezeFoam = freezeFoam;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Skip Foam::dispatch: persistent foam stops advection + ageing at the "
+                          "last state (use with Freeze time so the advecting surface velocity is 0).");
+    bool freezeClouds = fz.freezeClouds;
+    if (ImGui::Checkbox("Freeze clouds##bool", &freezeClouds))
+    {
+        fz.freezeClouds = freezeClouds;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Hold the cloud wind world offset at fixed time, so the cloud shell does "
+                          "not drift between captures. Implicit when Freeze time is on.");
+    bool freezeWeather = fz.freezeWeather;
+    if (ImGui::Checkbox("Freeze weather##bool", &freezeWeather))
+    {
+        fz.freezeWeather = freezeWeather;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Reserve bit for future weather threading (no per-frame weather "
+                          "recomputation today). Implicit when Freeze time is on, since the "
+                          "interaction weather vector recomputes off the frozen time.");
+    bool freezeTime = fz.freezeTime;
+    if (ImGui::Checkbox("Freeze water-sim clock##bool", &freezeTime))
+    {
+        fz.freezeTime = freezeTime;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Hold the water-sim clock passed to the FFT, interaction, foam and "
+                          "underwater caustic shaders at fixed time. Clouds honour this too.");
+    changed |= ImGui::SliderFloat("Fixed time (s)", &fz.fixedTime, 0.0f, 3600.0f, "%.2f");
+    ImGui::SetItemTooltip("Seconds (replaces Glob.time when Freeze time or Freeze clouds is on). "
+                          "One value keeps the four sim clocks (water, interaction, cloud, "
+                          "underwater caustic) coherent for a single reproducible test frame.");
+    changed |= ImGui::SliderInt("FFT seed override", &fz.fftSeed, -1, 0x00ff'ffff);
+    ImGui::SetItemTooltip("Replaces fft_control[1] (authored default 1337). -1 = use 1337 (no "
+                          "swap). Any non-negative value rewrites the spectrum's random field on "
+                          "the next dispatch; two runs with the same seed reproduce h0 bit-for-bit.");
+    changed |= ImGui::SliderFloat("Fixed delta (s)", &fz.fixedDelta, 0.0f, 1.0f / 30.0f, "%.4f");
+    ImGui::SetItemTooltip("Fixes the interaction-solver step regardless of render FPS (0 = use the "
+                          "live frame delta clamped to 1/30). For WTR-063 fixed-timestep validation; "
+                          "leave 0 for capture mode (Freeze interaction is the standard freeze).");
+    changed |= ImGui::SliderInt("Camera path frame", &fz.cameraPathFrame, -1, 100000);
+    ImGui::SetItemTooltip("WTR-001 foundation only: when >= 0 the renderer tags each frame's water "
+                          "UBO digest with this integer so two runs compare frame-by-frame. The "
+                          "camera-path recorder itself is a separate WTR-004 work package; here we "
+                          "expose just the integer index for manual capture-then-replay audits.");
+
     if (ImGui::Button("Reset to defaults"))
     {
         s = decltype(s){};
@@ -2097,6 +2175,43 @@ void DrawWaterTab()
     ImGui::InputText("##waterPreset", preset, sizeof(preset), ImGuiInputTextFlags_ReadOnly);
     if (ImGui::Button("Copy preset to clipboard"))
         ImGui::SetClipboardText(preset);
+
+    // WTR-002 — per-region GPU pass timings (timestamp queries; the renderer harvests the
+    // readback asynchronously, so values lag the displayed frame by the ring depth, ~2-3
+    // frames). "n/a" rows are reserved spec slots (no standalone pass yet) or passes that
+    // haven't run since launch (e.g. frozen dispatches, spectrum init after the first frame).
+    ImGui::Separator();
+    ImGui::TextUnformatted("GPU timings (WTR-002)");
+    float gpuMs[32];
+    const int gpuRegions = GEngine->GetWaterGpuTimings(gpuMs, 32);
+    if (gpuRegions <= 0)
+    {
+        ImGui::TextDisabled("Unavailable (adapter lacks TIMESTAMP_QUERY / non-wgpu backend).");
+    }
+    else if (ImGui::BeginTable("wtrGpuTimings", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+    {
+        float gpuTotal = 0.0f;
+        for (int i = 0; i < gpuRegions; ++i)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(GEngine->GetWaterGpuTimingName(i));
+            ImGui::TableNextColumn();
+            if (gpuMs[i] < 0.0f)
+                ImGui::TextDisabled("n/a");
+            else
+            {
+                ImGui::Text("%.3f ms", gpuMs[i]);
+                gpuTotal += gpuMs[i];
+            }
+        }
+        ImGui::EndTable();
+        ImGui::Text("Measured total: %.3f ms", gpuTotal);
+        ImGui::SetItemTooltip("Sum of the rows above (last completed frame). Not the water "
+                              "pipeline's wall-clock cost: passes may overlap on the GPU and "
+                              "reserved rows are folded into their host pass (SSR/refraction "
+                              "inside Water draw, caustics inside Underwater composite).");
+    }
 }
 void DrawMouseTab()
 {

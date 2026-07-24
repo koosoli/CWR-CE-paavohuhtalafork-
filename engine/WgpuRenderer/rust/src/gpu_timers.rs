@@ -1,0 +1,294 @@
+// WTR-002 — GPU timestamp instrumentation. Encoder-level timestamp brackets around the
+// named water-pipeline regions (spectrum/FFT phases, interaction, foam, planar reflection,
+// water draw, underwater composite), resolved into a small round-robin readback ring and
+// harvested non-blocking one-or-more frames later. The master plan gates any FFT rework on
+// these timings existing ("Do not replace the FFT implementation before these timings exist").
+//
+// Design notes:
+// * Uses TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS so brackets are written on the
+//   COMMAND ENCODER between passes — no pass descriptor changes, and one bracket can cover
+//   multi-pass regions (planar clouds = march + composite, the planar mip chain, the split
+//   FFT phases). Both features are adapter-gated like `partially_bound`: absent => every
+//   method is a no-op and the FFI reports 0 regions.
+// * `begin`/`end` take `&self` (the written mask is a Cell) so brackets can be dropped into
+//   `render_frame` next to existing disjoint field borrows without threading `&mut self`.
+// * Readback never blocks the frame: resolve+copy goes into the frame's encoder, map_async
+//   is requested after submit, and results are drained with a non-blocking poll the next
+//   time round. A saturated ring simply skips that frame's sample.
+// * Regions the spec names but that have no standalone GPU pass yet (whitewater, SSR,
+//   refraction, underwater froxel, caustics) hold reserved indices reporting -1 ("n/a"),
+//   so the FFI ABI and the Water-tab rows are already in place when those passes land.
+//   SSR + refraction are currently fragment-shader work inside the water draw, so their
+//   cost is included in WaterDraw; caustics ride the underwater composite shader.
+
+use std::cell::Cell;
+use std::sync::mpsc;
+
+/// One timed region. The discriminants are the FFI index contract mirrored by
+/// `WgrGpuTimerRegion` in wgpu_renderer.hpp — append only, never reorder.
+/// Reserved variants are never constructed yet (their passes don't exist), but they
+/// hold their FFI slots — hence the allow.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+#[repr(u32)]
+pub enum Region {
+    SpectrumInit = 0,      // h0 spectrum generation (only on spectrum-dirty frames)
+    SpectrumEvolve = 1,    // per-frame spectrum evolution
+    FftHorizontal = 2,     // FFT butterfly stages, axis 0
+    FftVertical = 3,       // FFT butterfly stages, axis 1
+    FftCompose = 4,        // displacement/dynamics/auxiliary composition
+    Interaction = 5,       // injection + propagation (one fused kernel today)
+    Foam = 6,              // persistent foam update
+    Whitewater = 7,        // reserved — no whitewater pass exists yet
+    PlanarSky = 8,         // planar reflection: sky
+    PlanarTerrain = 9,     // planar reflection: terrain
+    PlanarObjects = 10,    // planar reflection: reflected cull + GPU-driven objects
+    PlanarClouds = 11,     // planar reflection: cloud march + composite
+    PlanarMips = 12,       // planar reflection mip generation
+    WaterSsr = 13,         // reserved — SSR is in-shader inside WaterDraw today
+    WaterRefraction = 14,  // reserved — refraction is in-shader inside WaterDraw today
+    WaterDraw = 15,        // the water surface pass (includes SSR + refraction cost)
+    UnderwaterFroxel = 16, // reserved — no underwater froxel pass exists yet
+    UnderwaterComposite = 17, // fullscreen underwater compositor (includes caustics cost)
+    Caustics = 18,         // reserved — caustics ride the underwater/water shaders today
+}
+
+/// Region count — the FFI getter's element contract (WGR_GPU_TIMER_REGION_COUNT).
+pub const REGION_COUNT: usize = 19;
+
+const QUERY_COUNT: u32 = (REGION_COUNT * 2) as u32;
+const BUFFER_SIZE: u64 = QUERY_COUNT as u64 * wgpu::QUERY_SIZE as u64;
+// Three slots ride out double/triple-buffered presentation without ever blocking.
+const RING_SLOTS: usize = 3;
+
+enum SlotState {
+    Idle,
+    // Copied into by this frame's encoder; map_async is requested after submit.
+    Pending { written: u32 },
+    // map_async requested; the channel resolves once the GPU copy completes.
+    InFlight {
+        written: u32,
+        rx: mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>,
+    },
+}
+
+struct Slot {
+    buf: wgpu::Buffer,
+    state: SlotState,
+}
+
+struct Inner {
+    query_set: wgpu::QuerySet,
+    resolve_buf: wgpu::Buffer,
+    slots: Vec<Slot>,
+    // Nanoseconds per timestamp tick (Queue::get_timestamp_period).
+    period: f32,
+    // Bitmask of regions bracketed since begin_frame (Cell: written from `&self`).
+    written: Cell<u32>,
+    // Latest harvested per-region duration in ms; -1 = never measured (pass absent).
+    latest_ms: [f32; REGION_COUNT],
+}
+
+pub struct GpuTimers {
+    inner: Option<Inner>,
+}
+
+impl GpuTimers {
+    /// `enabled` = the device was created with TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS.
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, enabled: bool) -> Self {
+        if !enabled {
+            return Self { inner: None };
+        }
+        let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+            label: Some("wgr_gpu_timers"),
+            ty: wgpu::QueryType::Timestamp,
+            count: QUERY_COUNT,
+        });
+        let resolve_buf = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_gpu_timers_resolve"),
+            size: BUFFER_SIZE,
+            usage: wgpu::BufferUsages::QUERY_RESOLVE | wgpu::BufferUsages::COPY_SRC,
+            mapped_at_creation: false,
+        });
+        let slots = (0..RING_SLOTS)
+            .map(|i| Slot {
+                buf: device.create_buffer(&wgpu::BufferDescriptor {
+                    label: Some(&format!("wgr_gpu_timers_readback_{i}")),
+                    size: BUFFER_SIZE,
+                    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                    mapped_at_creation: false,
+                }),
+                state: SlotState::Idle,
+            })
+            .collect();
+        Self {
+            inner: Some(Inner {
+                query_set,
+                resolve_buf,
+                slots,
+                period: queue.get_timestamp_period(),
+                written: Cell::new(0),
+                latest_ms: [-1.0; REGION_COUNT],
+            }),
+        }
+    }
+
+    pub fn enabled(&self) -> bool {
+        self.inner.is_some()
+    }
+
+    /// Reset the per-frame written mask. Call once after the frame encoder is created.
+    pub fn begin_frame(&self) {
+        if let Some(inner) = &self.inner {
+            inner.written.set(0);
+        }
+    }
+
+    /// Open a region bracket. Must be called OUTSIDE any render/compute pass (the
+    /// timestamp is written on the encoder itself).
+    pub fn begin(&self, encoder: &mut wgpu::CommandEncoder, region: Region) {
+        if let Some(inner) = &self.inner {
+            encoder.write_timestamp(&inner.query_set, region as u32 * 2);
+        }
+    }
+
+    /// Close a region bracket and mark it measured this frame.
+    pub fn end(&self, encoder: &mut wgpu::CommandEncoder, region: Region) {
+        if let Some(inner) = &self.inner {
+            encoder.write_timestamp(&inner.query_set, region as u32 * 2 + 1);
+            inner.written.set(inner.written.get() | (1u32 << region as u32));
+        }
+    }
+
+    /// Record the query resolve + copy into a free ring slot. Call at the end of the
+    /// frame encoder, before submit. Skips silently when nothing was bracketed or the
+    /// ring is saturated (the sample for this frame is simply dropped).
+    pub fn resolve(&mut self, encoder: &mut wgpu::CommandEncoder) {
+        let Some(inner) = &mut self.inner else {
+            return;
+        };
+        let written = inner.written.get();
+        if written == 0 {
+            return;
+        }
+        let Some(slot) = inner
+            .slots
+            .iter_mut()
+            .find(|s| matches!(s.state, SlotState::Idle))
+        else {
+            return;
+        };
+        // Queries never bracketed this frame (reserved regions, frozen/absent passes) have
+        // never been reset on the backend, and resolving an unavailable query can wedge the
+        // device (observed: Vulkan device loss during --check — get_current_texture
+        // validation errors + destroyed readback buffers). Stamp every unwritten pair at
+        // "now" so the full-range resolve below only ever touches available queries;
+        // harvest ignores these zero-duration dummies via the written mask.
+        for region in 0..REGION_COUNT as u32 {
+            if written & (1u32 << region) == 0 {
+                encoder.write_timestamp(&inner.query_set, region * 2);
+                encoder.write_timestamp(&inner.query_set, region * 2 + 1);
+            }
+        }
+        encoder.resolve_query_set(&inner.query_set, 0..QUERY_COUNT, &inner.resolve_buf, 0);
+        encoder.copy_buffer_to_buffer(&inner.resolve_buf, 0, &slot.buf, 0, BUFFER_SIZE);
+        slot.state = SlotState::Pending { written };
+    }
+
+    /// Kick map_async on freshly copied slots and drain completed ones (non-blocking).
+    /// Call once per frame after queue.submit.
+    pub fn harvest(&mut self, device: &wgpu::Device) {
+        let Some(inner) = &mut self.inner else {
+            return;
+        };
+        for slot in &mut inner.slots {
+            if let SlotState::Pending { written } = slot.state {
+                let (tx, rx) = mpsc::channel();
+                slot.buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                    let _ = tx.send(r);
+                });
+                slot.state = SlotState::InFlight { written, rx };
+            }
+        }
+        // Non-blocking maintenance so completed map_asyncs from previous frames fire.
+        let _ = device.poll(wgpu::PollType::Poll);
+        for slot in &mut inner.slots {
+            let SlotState::InFlight { written, rx } = &slot.state else {
+                continue;
+            };
+            match rx.try_recv() {
+                Ok(Ok(())) => {
+                    let written = *written;
+                    {
+                        let data = slot.buf.slice(..).get_mapped_range();
+                        // Read ticks byte-wise: mapped data has no u64 alignment guarantee.
+                        let tick = |i: usize| {
+                            u64::from_le_bytes(data[i * 8..i * 8 + 8].try_into().unwrap())
+                        };
+                        for region in 0..REGION_COUNT {
+                            if written & (1u32 << region) == 0 {
+                                continue;
+                            }
+                            let start = tick(region * 2);
+                            let end = tick(region * 2 + 1);
+                            let ns = end.saturating_sub(start) as f64 * inner.period as f64;
+                            inner.latest_ms[region] = (ns / 1.0e6) as f32;
+                        }
+                    }
+                    slot.buf.unmap();
+                    slot.state = SlotState::Idle;
+                }
+                Ok(Err(_)) | Err(mpsc::TryRecvError::Disconnected) => {
+                    // Mapping failed (device loss etc.) — recycle the slot, keep last values.
+                    slot.state = SlotState::Idle;
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+        }
+    }
+
+    /// Copy the latest harvested per-region ms into `out` (-1 = never measured).
+    /// Returns REGION_COUNT when timers exist, 0 when the adapter lacks the features.
+    pub fn timings(&self, out: &mut [f32]) -> u32 {
+        let Some(inner) = &self.inner else {
+            return 0;
+        };
+        for (dst, src) in out.iter_mut().zip(inner.latest_ms.iter()) {
+            *dst = *src;
+        }
+        REGION_COUNT as u32
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The FFI index contract: WgrGpuTimerRegion in wgpu_renderer.hpp mirrors these
+    // discriminants and DebugOverlay's name table is ordered by them. Locking the
+    // count + a few pinned indices catches accidental reordering on either side.
+    #[test]
+    fn region_indices_stay_ffi_stable() {
+        assert_eq!(REGION_COUNT, 19);
+        assert_eq!(Region::SpectrumInit as u32, 0);
+        assert_eq!(Region::FftCompose as u32, 4);
+        assert_eq!(Region::Interaction as u32, 5);
+        assert_eq!(Region::PlanarSky as u32, 8);
+        assert_eq!(Region::WaterDraw as u32, 15);
+        assert_eq!(Region::Caustics as u32, 18);
+        // Every region's begin/end pair fits the query set.
+        assert!(QUERY_COUNT as usize == REGION_COUNT * 2);
+        // A u32 written mask covers all regions.
+        assert!(REGION_COUNT <= 32);
+    }
+
+    // A disabled timer (adapter without the features) must be a total no-op that
+    // still satisfies the FFI contract by reporting 0 regions.
+    #[test]
+    fn disabled_timers_report_zero_regions() {
+        let timers = GpuTimers { inner: None };
+        assert!(!timers.enabled());
+        let mut out = [0.0f32; REGION_COUNT];
+        assert_eq!(timers.timings(&mut out), 0);
+    }
+}

@@ -3,6 +3,7 @@ mod exposure;
 mod ffi;
 mod gfx2d;
 mod gfx3d;
+mod gpu_timers;
 mod handles;
 mod log;
 mod planar_mips;
@@ -25,6 +26,7 @@ use crate::ffi::{
 };
 use crate::gfx2d::Gfx2d;
 use crate::gfx3d::{env_f32, Gfx3d};
+use crate::gpu_timers::{GpuTimers, Region as TimerRegion};
 use crate::log::{log_level, LogSink};
 use crate::planar_mips::PlanarMips;
 use crate::sky::Sky;
@@ -83,6 +85,9 @@ pub struct Renderer {
     gfx3d: Gfx3d,
     terrain: Terrain,
     water: Water,
+    // WTR-002 — GPU timestamp brackets around the water-pipeline passes (inert when the
+    // adapter lacks TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS).
+    gpu_timers: GpuTimers,
     // HDR pipeline (docs/hdr-pipeline-plan.md). When enabled, the 3D/terrain/2D
     // scene renders into `hdr` (linear once Stage 2 lands) and `tonemap` resolves it
     // to the swapchain; the dev overlay + (later) screen-space UI composite after.
@@ -238,6 +243,18 @@ impl Renderer {
         let mdic_avail = adapter.features() & wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
         let multi_draw_count = !mdic_avail.is_empty();
 
+        // WTR-002 — GPU timestamp instrumentation. Encoder-level brackets need BOTH
+        // TIMESTAMP_QUERY and TIMESTAMP_QUERY_INSIDE_ENCODERS; adapter-gated exactly like
+        // `partially_bound` (absent => the timers are inert and the FFI reports 0 regions).
+        let ts_features =
+            wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
+        let ts_enabled = adapter.features().contains(ts_features);
+        let ts_request = if ts_enabled {
+            ts_features
+        } else {
+            wgpu::Features::empty()
+        };
+
         // Bindless object textures (docs/bindless-textures-plan.md): one binding_array
         // covering all live object textures. Cap chosen so a non-PARTIALLY_BOUND adapter
         // doesn't pad an enormous array (a level with more unique textures overflows to
@@ -266,7 +283,8 @@ impl Renderer {
                 | bindless
                 | partially_bound
                 | indirect_avail
-                | mdic_avail,
+                | mdic_avail
+                | ts_request,
             required_limits,
             ..Default::default()
         }))
@@ -473,6 +491,19 @@ impl Renderer {
         // The sky targets the scene color format (HDR target or swapchain), matching
         // the scene pipelines, and self-tonemaps when that is an LDR-direct swapchain.
         let sky = Sky::new(&device, &queue, color_format, sample_count);
+        // WTR-002 — the timestamp query set + readback ring (inert when unsupported).
+        let gpu_timers = GpuTimers::new(&device, &queue, ts_enabled);
+        if gpu_timers.enabled() {
+            log.log(
+                log_level::INFO,
+                "WTR-002 GPU timestamp instrumentation enabled",
+            );
+        } else {
+            log.log(
+                log_level::WARN,
+                "adapter lacks TIMESTAMP_QUERY(_INSIDE_ENCODERS); WTR-002 GPU timings unavailable",
+            );
+        }
         // Seed live params from the env knobs so behaviour is unchanged until the
         // ImGui tab pushes its own values (env_f32's >0 filter is fine for scales;
         // env_f32_opt keeps a 0 for the mode/encode toggles).
@@ -494,6 +525,7 @@ impl Renderer {
             gfx3d,
             terrain,
             water,
+            gpu_timers,
             hdr_enabled,
             hdr: None,
             hdr_resolve: None,
@@ -607,6 +639,13 @@ impl Renderer {
             .unwrap_or(1.0)
     }
 
+    // WTR-002 — copy the latest completed-frame GPU timings into `out` (ms per region;
+    // -1 = never measured / pass absent). Returns the region count, 0 when unsupported.
+    // Non-blocking: values are harvested by render_frame, this is a plain copy.
+    fn gpu_timings(&self, out: &mut [f32]) -> u32 {
+        self.gpu_timers.timings(out)
+    }
+
     // Tonemap the HDR scene target onto `dst` (the swapchain). No-op if the tonemap
     // pass doesn't exist (LDR-direct path).
     fn run_tonemap(
@@ -660,6 +699,10 @@ impl Renderer {
                 .gfx3d
                 .water_depth_view()
                 .expect("underwater depth target");
+            // WTR-002 — the compositor shader also evaluates the caustics, so that cost
+            // rides this bracket until a dedicated caustics pass exists.
+            self.gpu_timers
+                .begin(encoder, TimerRegion::UnderwaterComposite);
             self.underwater.render(
                 &self.device,
                 &self.queue,
@@ -669,6 +712,8 @@ impl Renderer {
                 target,
                 time,
             );
+            self.gpu_timers
+                .end(encoder, TimerRegion::UnderwaterComposite);
             target.clone()
         } else {
             source.clone()
@@ -1210,6 +1255,8 @@ impl Renderer {
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
                 label: Some("wgr_frame"),
             });
+        // WTR-002 — new frame, new set of timestamp brackets.
+        self.gpu_timers.begin_frame();
 
         // Update the half-resolution reflected target every visible above-water frame. Reusing
         // it while the camera moves causes clouds to lag behind the projected water lookup.
@@ -1239,6 +1286,7 @@ impl Renderer {
                 );
                 // Sky has no depth-stencil state, so it must not share the terrain pass's
                 // depth attachment. Render it first, then depth-test reflected terrain over it.
+                self.gpu_timers.begin(&mut encoder, TimerRegion::PlanarSky);
                 let mut sky_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("wgr_planar_reflection_sky"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1257,6 +1305,9 @@ impl Renderer {
                 });
                 self.sky.render(&mut sky_pass);
                 drop(sky_pass);
+                self.gpu_timers.end(&mut encoder, TimerRegion::PlanarSky);
+                self.gpu_timers
+                    .begin(&mut encoder, TimerRegion::PlanarTerrain);
                 let mut terrain_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("wgr_planar_reflection_terrain"),
                     color_attachments: &[Some(wgpu::RenderPassColorAttachment {
@@ -1294,6 +1345,11 @@ impl Renderer {
                     }
                 }
                 drop(terrain_pass);
+                self.gpu_timers.end(&mut encoder, TimerRegion::PlanarTerrain);
+                // The bracket includes the reflected cull dispatch: it exists solely to
+                // produce this pass's indirect args, so it is part of the planar-objects cost.
+                self.gpu_timers
+                    .begin(&mut encoder, TimerRegion::PlanarObjects);
                 self.gfx3d.cull_dispatch_reflection(&mut encoder);
                 let mut object_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                     label: Some("wgr_planar_reflection_objects"),
@@ -1322,10 +1378,13 @@ impl Renderer {
                 self.gfx3d
                     .draw_gpu_driven_reflection(&mut object_pass, &self.textures, off);
                 drop(object_pass);
+                self.gpu_timers.end(&mut encoder, TimerRegion::PlanarObjects);
                 if let Some(resolve) = planar.depth_resolve.as_ref() {
                     resolve.resolve(&mut encoder);
                 }
                 if self.sky.clouds_active(&self.sky_params) {
+                    self.gpu_timers
+                        .begin(&mut encoder, TimerRegion::PlanarClouds);
                     self.sky.render_cloud(
                         &self.device,
                         &mut encoder,
@@ -1351,9 +1410,12 @@ impl Renderer {
                     });
                     self.sky.composite_cloud(&mut cloud_pass);
                     drop(cloud_pass);
+                    self.gpu_timers.end(&mut encoder, TimerRegion::PlanarClouds);
                 }
+                self.gpu_timers.begin(&mut encoder, TimerRegion::PlanarMips);
                 self.planar_mips
                     .render(&self.device, &mut encoder, &planar.mip_views);
+                self.gpu_timers.end(&mut encoder, TimerRegion::PlanarMips);
             }
             let planar = self.planar.as_ref().expect("planar target");
             let generation = planar.size.0 as u64 | ((planar.size.1 as u64) << 32);
@@ -1369,7 +1431,8 @@ impl Renderer {
 
         // The local ripple field is independent of opaque depth and is consumed only by
         // water, so update it once before any render pass records this frame's water draw.
-        self.water.update_interactions(&self.device, &mut encoder);
+        self.water
+            .update_interactions(&self.device, &mut encoder, &self.gpu_timers);
 
         // Compute skin bake runs first of all (docs/compute-skin-bake-plan.md): it writes
         // the shared skinned vertex buffer that the shadow cascades, the depth prepass, and
@@ -1931,6 +1994,9 @@ impl Renderer {
                 self.water
                     .set_env_view(&self.device, self.sky.env_view(), 0);
                 if let Some(cam) = self.gfx3d.camera_bind() {
+                    // WTR-002 — the water draw includes the in-shader SSR + refraction cost
+                    // (they are fragment work, not separable passes; see gpu_timers.rs).
+                    self.gpu_timers.begin(&mut encoder, TimerRegion::WaterDraw);
                     encoder.push_debug_group("wgr_water");
                     let mut wpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                         label: Some("wgr_water_pass"),
@@ -1963,6 +2029,7 @@ impl Renderer {
                     }
                     drop(wpass);
                     encoder.pop_debug_group();
+                    self.gpu_timers.end(&mut encoder, TimerRegion::WaterDraw);
                 }
             }
 
@@ -2062,6 +2129,8 @@ impl Renderer {
                     .gfx3d
                     .water_depth_view()
                     .expect("underwater depth target");
+                self.gpu_timers
+                    .begin(&mut encoder, TimerRegion::UnderwaterComposite);
                 self.underwater.render(
                     &self.device,
                     &self.queue,
@@ -2071,6 +2140,8 @@ impl Renderer {
                     &color,
                     underwater_time.expect("underwater time"),
                 );
+                self.gpu_timers
+                    .end(&mut encoder, TimerRegion::UnderwaterComposite);
                 resolved = true;
                 target = color.clone();
                 display_2d = true;
@@ -2094,6 +2165,8 @@ impl Renderer {
                 .gfx3d
                 .water_depth_view()
                 .expect("underwater depth target");
+            self.gpu_timers
+                .begin(&mut encoder, TimerRegion::UnderwaterComposite);
             self.underwater.render(
                 &self.device,
                 &self.queue,
@@ -2103,6 +2176,8 @@ impl Renderer {
                 &color,
                 underwater_time.expect("underwater time"),
             );
+            self.gpu_timers
+                .end(&mut encoder, TimerRegion::UnderwaterComposite);
         }
 
         // Dev-panel overlay composites over the finished frame, no depth.
@@ -2135,8 +2210,13 @@ impl Renderer {
             encoder.pop_debug_group();
         }
 
+        // WTR-002 — resolve this frame's timestamp brackets into a readback slot (recorded
+        // last so every bracket above is covered), then after submit kick/drain the
+        // non-blocking readbacks.
+        self.gpu_timers.resolve(&mut encoder);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        self.gpu_timers.harvest(&self.device);
         Ok(())
     }
 

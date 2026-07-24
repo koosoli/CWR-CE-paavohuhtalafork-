@@ -1221,7 +1221,43 @@ class Engine : public IGraphicsEngine
         // level reads as damp sand (darker albedo), registering with the water's edge. Shared
         // by the terrain shader via WgrTerrainParams. wetDarken = 1 disables it.
         float wetHeight = 0.26f;   // m above sea level the damp band reaches
-        float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening / off)
+        float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
+
+        // WTR-001 — deterministic water debug controls (dev-only; the Water tab "Debug" section).
+        // All freezes are renderer-local: they override the UBO time/dt the shader sees, without
+        // touching Glob.time (gameplay / net clock) or any non-water subsystem other than the cloud
+        // wind offset + underwater caustic clock (which ride the same water sim clock by design).
+        // Use these to make a single frame reproducible across launches for before/after captures
+        // and shader-diff work (WTR-002 GPU timestamps and WTR-003 debug views rely on this).
+        struct Freeze
+        {
+            // Master switches (each gate is independent so subsystems can be frozen in combination).
+            bool freezeTime = false;          // hold the water-sim clock at fixedTime
+            bool freezeFft = false;           // skip Fft::dispatch (the spectrum holds at its last state)
+            bool freezeInteraction = false;    // skip Interaction::dispatch (dt forced to 0 beforehand)
+            bool freezeFoam = false;          // skip Foam::dispatch
+            bool freezeClouds = false;        // hold the cloud wind world offset at fixedTime
+            bool freezeWeather = false;       // hold the rain/calmness weather vector sent to the
+                                             // interaction solver (no per-frame recomputation today,
+                                             // but reserved so future weather threading stays A/B-safe)
+            // Fixed sim time (seconds) substituted for Glob.time when any freeze*that uses the clock
+            // is enabled. One value drives water waves, interaction now-impulse, cloud wind offset,
+            // and the underwater caustic clock, so all four stay coherent for a single test frame.
+            float fixedTime = 0.0f;
+            // Deterministic FFT random seed override (replaces fft_control[1]; -1 = use the
+            // authored 1337 default so the spectrum only re-seeds when the user asks for it).
+            // Toggling the value (even back) rewrites h0 on the next Fft::dispatch.
+            int fftSeed = -1;
+            // Fixed delta time (seconds) for the interaction solver when freezeInteraction is OFF.
+            // 0 = use the live frame delta clamped to 1/30 (existing behaviour). Non-zero fixes the
+            // simulation step so the ripple solver runs at the same rate regardless of render fps.
+            float fixedDelta = 0.0f;
+            // Repeatable-camera-path foundation (WTR-001: smallest necessary scaffolding). The full
+            // camera-path recorder is a separate work package; here we expose a single integer that,
+            // when >= 0, the renderer logs each frame along with the water UBO digest so two runs are
+            // comparable frame-by-frame. The actual camera-driver work is WTR-Test-* (WTR-004).
+            int cameraPathFrame = -1;
+        } freeze;
     };
     // True on backends with a GPU water renderer (wgpu with water enabled); gates the tab.
     virtual bool SupportsWater() const { return false; }
@@ -1265,6 +1301,14 @@ class Engine : public IGraphicsEngine
     // §12d: is proxy `proxyIndex` at parent LOD `level` drawn by the GPU retained scene (as a child
     // instance)? Object::DrawProxies skips it if so, to avoid double-drawing the furniture.
     virtual bool GpuDrivenProxy(const Object* /*parent*/, int /*level*/, int /*proxyIndex*/) const { return false; }
+
+    // WTR-002 — GPU water-pipeline pass timings (Water tab, dev-only). Copies up to maxCount
+    // per-region times in milliseconds into outMs (indexed by the renderer's fixed region
+    // contract; -1 = pass never ran / reserved slot) and returns the region count, or 0 when
+    // the backend has no GPU timers. Names come from GetWaterGpuTimingName so the overlay
+    // stays backend-agnostic. APPENDED at the class end (vtable-slot note above).
+    virtual int GetWaterGpuTimings(float* /*outMs*/, int /*maxCount*/) const { return 0; }
+    virtual const char* GetWaterGpuTimingName(int /*region*/) const { return ""; }
 
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy

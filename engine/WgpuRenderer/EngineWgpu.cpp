@@ -2738,6 +2738,40 @@ float EngineWgpu::GetAutoExposureScale() const
     return _renderer ? wgr_get_exposure_scale(_renderer) : 1.0f;
 }
 
+int EngineWgpu::GetWaterGpuTimings(float* outMs, int maxCount) const
+{
+    if (!_renderer || !outMs || maxCount <= 0)
+        return 0;
+    return (int)wgr_get_gpu_timings(_renderer, outMs, (uint32_t)maxCount);
+}
+
+const char* EngineWgpu::GetWaterGpuTimingName(int region) const
+{
+    // Ordered by WgrGpuTimerRegion — the wgr_get_gpu_timings index contract (append only).
+    static const char* const kNames[WGR_GPU_TIMER_REGION_COUNT] = {
+        "Spectrum init",         // WGR_GPU_TIMER_SPECTRUM_INIT (spectrum-dirty frames only)
+        "Spectrum evolve",       // WGR_GPU_TIMER_SPECTRUM_EVOLVE
+        "FFT horizontal",        // WGR_GPU_TIMER_FFT_HORIZONTAL
+        "FFT vertical",          // WGR_GPU_TIMER_FFT_VERTICAL
+        "FFT compose",           // WGR_GPU_TIMER_FFT_COMPOSE
+        "Interaction (inject+propagate)", // WGR_GPU_TIMER_INTERACTION (one fused kernel today)
+        "Foam update",           // WGR_GPU_TIMER_FOAM
+        "Whitewater",            // WGR_GPU_TIMER_WHITEWATER (reserved — no pass yet)
+        "Planar: sky",           // WGR_GPU_TIMER_PLANAR_SKY
+        "Planar: terrain",       // WGR_GPU_TIMER_PLANAR_TERRAIN
+        "Planar: objects",       // WGR_GPU_TIMER_PLANAR_OBJECTS (incl. reflected cull)
+        "Planar: clouds",        // WGR_GPU_TIMER_PLANAR_CLOUDS
+        "Planar: mips",          // WGR_GPU_TIMER_PLANAR_MIPS
+        "Water SSR",             // WGR_GPU_TIMER_WATER_SSR (reserved — in-shader in Water draw)
+        "Water refraction",      // WGR_GPU_TIMER_WATER_REFRACTION (reserved — in-shader in Water draw)
+        "Water draw",            // WGR_GPU_TIMER_WATER_DRAW (incl. SSR + refraction cost)
+        "Underwater froxel",     // WGR_GPU_TIMER_UNDERWATER_FROXEL (reserved — no pass yet)
+        "Underwater composite",  // WGR_GPU_TIMER_UNDERWATER_COMPOSITE (incl. caustics)
+        "Caustics",              // WGR_GPU_TIMER_CAUSTICS (reserved — rides the shaders)
+    };
+    return (region >= 0 && region < (int)WGR_GPU_TIMER_REGION_COUNT) ? kNames[region] : "";
+}
+
 void EngineWgpu::UpdateAutoTonemap()
 {
     if (!_renderer || !_hdrEnabled || !_tonemapAuto)
@@ -2951,8 +2985,13 @@ void EngineWgpu::PushSkyRuntime()
     // sampler wraps; a bounded offset keeps that coord precise however long the world has run). The
     // wrap reseat is a sub-tile shift once per ~kWindWrap/speed seconds (hours) — imperceptible.
     // Reuses the scene sim clock the terrain/water animation runs on, so clouds pause with the sim.
+    // WTR-001 — when the Water tab Debug "Freeze clouds" switch is on, substitute the water debug
+    // fixed time so the cloud shell holds at the same world offset as the test frame (the wind
+    // formula is otherwise driven by Glob.time, which freezes in lockstep via the freezeTime bit).
     constexpr double kWindWrap = 100000.0; // m
-    const double cloudT = static_cast<double>(Glob.time.toFloat());
+    const double cloudT = (_waterLook.freeze.freezeClouds || _waterLook.freeze.freezeTime)
+                             ? static_cast<double>(_waterLook.freeze.fixedTime)
+                             : static_cast<double>(Glob.time.toFloat());
     double windX = std::fmod(static_cast<double>(_sky.cloudWind[0]) * cloudT, kWindWrap);
     double windZ = std::fmod(static_cast<double>(_sky.cloudWind[1]) * cloudT, kWindWrap);
     rt.misc = {_skyNight, camAlt, static_cast<float>(windX), static_cast<float>(windZ)};

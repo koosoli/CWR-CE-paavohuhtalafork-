@@ -4,6 +4,7 @@
 #include "EngineWgpu.hpp"
 
 #include <Poseidon/Core/Global.hpp>
+#include <Poseidon/Foundation/Framework/Log.hpp>
 #include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
@@ -15,6 +16,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring> // memcpy — packs the WTR freeze mask into WgrWaterParams.fft_control.z
 
 namespace Poseidon
 {
@@ -150,11 +152,17 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         return;
     }
 
+    // WTR-001 — deterministic water debug. All freeze switches substitute a fixed value for the
+    // variable the shader reads, so the same test frame produces the same UBO (and the same
+    // h0/random stream) every launch. Glob.time itself is NOT mutated — only the value handed to
+    // the water/cloud/underwater shaders — so gameplay and net time are untouched.
+    const Engine::WaterSettings::Freeze& fz = look.freeze;
+
     // Refresh the animated sea level + wave clock + live look every frame; the whole
     // plane rides at this height (no mesh regeneration — the legacy path re-levelled
     // cached vertices), and the Gerstner waves advance off `time` in the shader.
     _params.sea_level = land.GetSeaLevel();
-    _params.time = Glob.time.toFloat();
+    _params.time = fz.freezeTime ? fz.fixedTime : Glob.time.toFloat();
     _params.wave_amp = look.waveAmp;
     _params.wave_choppy = look.waveChoppy;
     _params.wave_speed = look.waveSpeed;
@@ -178,14 +186,53 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // reliable head transform from legacy infantry, so use deep player immersion plus
     // a downward look direction as the visual-only submersion signal.
     _params.fft_control.w = GetPlayerWaterDepth() > 0.80f && camera->Direction().Y() < -0.20f ? 1.0f : 0.0f;
+    // WTR-001 — deterministic FFT seed. The authored default (1337.0, set in BuildQuadtree)
+    // already keeps the random field stable across frames; allow the dev tab to override it,
+    // so a frozen frame is reproducible regardless of seq-of-edits to the spectrum. Setting a
+    // non-negative value rewrites fft_control[1]; -1 keeps the authored 1337 (no swap).
+    if (fz.fftSeed >= 0)
+    {
+        _params.fft_control.y = static_cast<float>(fz.fftSeed);
+    }
+    // WTR-001 — freeze dispatch mask packed into fft_control.z. The Rust side reads the float's
+    // bits as the WGR_WATER_FREEZE_* mask and skips the matching compute dispatch. Encoding is
+    // bit-cast so the shaders still see a normal IEEE float (0.0 with no bits = no freeze).
+    uint32_t freezeMask = 0u;
+    if (fz.freezeFft) { freezeMask |= WGR_WATER_FREEZE_FFT; }
+    if (fz.freezeInteraction) { freezeMask |= WGR_WATER_FREEZE_INTERACTION; }
+    if (fz.freezeFoam) { freezeMask |= WGR_WATER_FREEZE_FOAM; }
+    float freezeBits = 0.0f;
+    std::memcpy(&freezeBits, &freezeMask, sizeof(freezeBits));
+    _params.fft_control.z = freezeBits;
     wgr_water_set_params(_renderer, &_params);
 
     const Vector3 cameraPos = camera->Position();
+    // WTR-001 — repeatable-camera-path foundation. When the Water tab sets a frame tag (>= 0),
+    // log it with an FNV-1a digest of the exact UBO bytes just uploaded plus the camera pose,
+    // so two launches can be diffed frame-by-frame from the log alone (the acceptance evidence
+    // for "the same test frame should reproduce the same result between launches").
+    if (fz.cameraPathFrame >= 0)
+    {
+        uint32_t digest = 2166136261u; // FNV-1a 32-bit offset basis
+        const auto* bytes = reinterpret_cast<const unsigned char*>(&_params);
+        for (size_t i = 0; i < sizeof(_params); ++i)
+        {
+            digest = (digest ^ bytes[i]) * 16777619u;
+        }
+        LOG_INFO(Graphics,
+                 "WTR-001 camPath frame={} waterUboDigest={:08x} cam=({:.3f},{:.3f},{:.3f}) dir=({:.3f},{:.3f},{:.3f})",
+                 fz.cameraPathFrame, digest, cameraPos.X(), cameraPos.Y(), cameraPos.Z(),
+                 camera->Direction().X(), camera->Direction().Y(), camera->Direction().Z());
+    }
     constexpr float interactionSize = 256.0f;
     const float originX = std::floor((cameraPos.X() - interactionSize * 0.5f) / 4.0f) * 4.0f;
     const float originZ = std::floor((cameraPos.Z() - interactionSize * 0.5f) / 4.0f) * 4.0f;
     const float now = _params.time;
-    const float dt = std::clamp(now - _lastInteractionTime, 0.0f, 1.0f / 30.0f);
+    // WTR-001 — fixed/frozen interaction delta. When freezeInteraction is on we send dt = 0 so
+    // the wave field holds its last state, then skip the dispatch entirely (below). Otherwise
+    // use fixedDelta when set, falling back to the live frame delta clamped to 1/30.
+    const float rawDt = fz.freezeInteraction ? 0.0f : (fz.fixedDelta > 0.0f ? fz.fixedDelta : (now - _lastInteractionTime));
+    const float dt = std::clamp(rawDt, 0.0f, 1.0f / 30.0f);
     const bool reset = !_haveInteractionDomain || std::abs(originX - _interaction.domain.x) > interactionSize * 0.5f || std::abs(originZ - _interaction.domain.y) > interactionSize * 0.5f;
     _interaction.previous_domain = _haveInteractionDomain ? _interaction.domain : WgrVec4{originX, originZ, interactionSize, 1.0f / interactionSize};
     _interaction.domain = {originX, originZ, interactionSize, 1.0f / interactionSize};
