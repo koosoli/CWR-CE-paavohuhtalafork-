@@ -46,6 +46,7 @@ struct WaterParams {
     fft_wind_sea: vec4<f32>, // wind x/z, speed, sea state
     fft_cascade_lengths: vec4<f32>, // stable world-space cascade lengths
     flow_direction_speed: vec4<f32>, // x/z direction, m/s, water kind (0 ocean, 1 river)
+    debug_params: vec4<f32>, // WTR-003: x = debug view index (0 = normal), yzw reserved
 };
 
 // Must match GRID_N in water/mod.rs (and the terrain grid).
@@ -519,6 +520,70 @@ fn planar_reflection(surface_rel: vec3<f32>, surface_normal: vec3<f32>, roughnes
     return vec4<f32>(color, valid);
 }
 
+// WTR-003 — water debug views. When wp.debug_params.x is non-zero the fragment shader
+// replaces its lit output with the selected diagnostic (see WgrWaterDebugView). Views are
+// aggregated over the four FFT cascades; the interaction/foam fields read zero outside the
+// 256 m camera domain. Views whose backing pass does not exist yet (underwater froxel /
+// in-scattering, god rays, caustics, whitewater) fall through to black.
+fn dbg_heat(v: f32, scale: f32) -> vec3<f32> {
+    let t = clamp(v / max(scale, 1e-5), 0.0, 1.0);
+    return vec3<f32>(t, 0.25 + 0.5 * t, 1.0 - t);
+}
+fn dbg_signed(v: f32, scale: f32) -> vec3<f32> {
+    let t = clamp(abs(v) / max(scale, 1e-5), 0.0, 1.0);
+    return select(vec3<f32>(0.25, 0.55, 1.0) * t, vec3<f32>(1.0, 0.45, 0.20) * t, v >= 0.0);
+}
+fn debug_view(view: i32, base_xz: vec2<f32>, world_rel: vec3<f32>, water_depth: f32,
+    fft_disp: vec3<f32>, fft_horiz: f32, fft_vert: f32, fft_slope: f32, fft_j: f32,
+    fft_comp: f32, fft_curv: f32, fft_crest: f32, fft_var: f32, interaction: vec4<f32>,
+    foam_hist: vec4<f32>, foam_src: f32, sky_refl: vec3<f32>, ssr: vec4<f32>,
+    planar_refl: vec4<f32>, refl: vec3<f32>, refract_uv: vec2<f32>, base_uv: vec2<f32>,
+    refracted: SceneSample, transmission: f32) -> vec4<f32> {
+    let dist = length(world_rel);
+    var c = vec3<f32>(0.0);
+    switch view {
+        case 1: { c = dbg_heat(length(fft_disp), 1.5); }
+        case 2: { c = dbg_heat(fft_horiz, 1.0); }
+        case 3: { c = dbg_signed(fft_vert, 1.0); }
+        case 4: { c = dbg_heat(fft_slope, 0.5); }
+        case 5: { c = dbg_heat(fft_j, 1.0); }
+        case 6: { c = dbg_heat(fft_comp, 0.5); }
+        case 7: { c = dbg_heat(fft_curv, 0.1); }
+        case 8: { c = dbg_heat(fft_crest, 0.2); }
+        case 9: { c = dbg_heat(fft_var, 0.2); }
+        case 10: { c = vec3<f32>(fract(base_xz * 0.01), 0.35); }
+        case 11: { let w = base_xz + world_rel.xz; c = vec3<f32>(fract(w * 0.01), 0.35); }
+        case 12: { c = dbg_signed(interaction.r, 0.5); }
+        case 13: { c = dbg_signed(interaction.g, 1.0); }
+        case 14: { c = dbg_heat(interaction.b, 1.0); }
+        case 15: { c = dbg_heat(foam_src, 1.0); }
+        case 16: { c = dbg_heat(foam_hist.r, 1.0); }
+        case 17: { let vel = interaction.g * 0.5 + 0.5; c = vec3<f32>(vel, vel, 0.3); }
+        case 18: { c = dbg_heat(min(water_depth, 60.0), 60.0); }
+        case 19: { c = dbg_heat(dist, 1000.0); }
+        case 20: { c = ssr.rgb; }
+        case 21: { c = vec3<f32>(ssr.a); }
+        case 22: { c = planar_refl.rgb; }
+        case 23: { c = vec3<f32>(planar_refl.a); }
+        case 24: { c = sky_refl; }
+        case 25: {
+            c = vec3<f32>(0.10);
+            if (ssr.a > 0.02) { c = vec3<f32>(1.0, 0.30, 0.20); }
+            else if (planar_refl.a > 0.02) { c = vec3<f32>(0.25, 0.75, 1.0); }
+            else { c = vec3<f32>(0.30, 1.0, 0.40); }
+        }
+        case 26: {
+            let dims = vec2<f32>(textureDimensions(scene_color));
+            c = vec3<f32>((refract_uv - base_uv) * dims / 32.0 + 0.5, 0.4);
+        }
+        case 27: { c = vec3<f32>(refracted.valid); }
+        case 28: { c = dbg_heat(min(water_depth, 40.0), 40.0); }
+        case 29: { c = transmission * vec3<f32>(1.4); }
+        default: { c = vec3<f32>(0.0); }
+    }
+    return vec4<f32>(c, 1.0);
+}
+
 @fragment
 fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Receiver-plane derivatives for the CSM bias must be taken in uniform control flow.
@@ -670,6 +735,58 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // remain legible on the engine's low-contrast terrain palette.
     let reflection_weight = clamp(fresnel * 1.45 + 0.025, 0.0, 1.0);
     rgb = mix(transmitted, refl, reflection_weight);
+
+    // WTR-003 — debug views replace the lit output (view 0 = normal shading). Aggregated
+    // FFT diagnostics + the interaction/foam/reflection/refraction intermediates computed
+    // above; reserved views (underwater/god-ray/caustic/whitewater) fall through to black.
+    let dbg_view = i32(wp.debug_params.x + 0.5);
+    if (dbg_view > 0) {
+        var fft_disp = vec3<f32>(0.0);
+        var fft_slope_v = vec2<f32>(0.0);
+        var fft_j = 1.0;
+        var fft_comp = 0.0;
+        var fft_curv = 0.0;
+        if (wp.fft_control.x > 0.5) {
+            for (var layer = 0; layer < 4; layer = layer + 1) {
+                let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
+                let duv = fract(in.base_xz / length_m);
+                fft_disp = fft_disp + textureSampleLevel(fft_displacement, fft_samp, duv, layer, 0.0).xyz;
+                fft_slope_v = fft_slope_v + textureSampleLevel(fft_dynamics, fft_samp, duv, layer, 0.0).xy;
+                let aux = textureSampleLevel(fft_auxiliary, fft_samp, duv, layer, 0.0);
+                fft_j = min(fft_j, aux.x);
+                fft_comp = max(fft_comp, aux.y);
+                fft_curv = max(fft_curv, aux.z);
+            }
+        }
+        let dbg_interaction = interaction_sample(in.base_xz);
+        let dbg_foam_hist = persistent_foam_sample(in.base_xz);
+        var dbg_foam_src = clamp(dbg_interaction.b, 0.0, 1.0);
+        if (wp.fft_control.x > 0.5) {
+            for (var layer = 0; layer < 4; layer = layer + 1) {
+                let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
+                let duv = fract(in.base_xz / length_m);
+                let crest = textureSampleLevel(fft_displacement, fft_samp, duv, layer, 0.0).w;
+                let aux = textureSampleLevel(fft_auxiliary, fft_samp, duv, layer, 0.0);
+                let breaker = smoothstep(0.008, 0.026, aux.y)
+                    * smoothstep(0.025, 0.090, crest)
+                    * smoothstep(0.020, 0.090, sqrt(max(aux.w, 0.0)))
+                    * smoothstep(0.0015, 0.012, aux.z);
+                dbg_foam_src = max(dbg_foam_src, breaker);
+            }
+        }
+        var dbg_sky = vec3<f32>(0.0);
+        if (linear > 0.5) {
+            dbg_sky = sky_env_sample(reflect(normalize(in.world_pos), n));
+        } else {
+            dbg_sky = mix(sun_ambient, fog_color, sun_up);
+        }
+        let dbg_base_uv = scene_uv(in.clip.xy);
+        return debug_view(dbg_view, in.base_xz, in.world_pos, water_depth,
+            fft_disp, length(fft_disp.xz), fft_disp.y, length(fft_slope_v), fft_j,
+            fft_comp, fft_curv, fft_crest, fft_slope_variance, dbg_interaction,
+            dbg_foam_hist, dbg_foam_src, dbg_sky, ssr, planar_refl, refl, refract_uv,
+            dbg_base_uv, refracted, transmission);
+    }
 
     // Energy-normalized GGX sunlight. The NDF is broadened by resolved FFT slope
     // variance and micro-ripples, preventing a temporally unstable pin-prick glint.

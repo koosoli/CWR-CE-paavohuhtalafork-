@@ -2155,6 +2155,66 @@ void DrawWaterTab()
 
     ImGui::EndDisabled();
 
+    // WTR-003 — water debug views. Replaces the water surface shading with a single diagnostic
+    // (WgrWaterDebugView). Kept outside the disabled block so it works even with the water
+    // surface toggled off. Reserved slots (underwater/god-ray/caustic/whitewater) render black
+    // until their passes exist. The combo index maps 1:1 onto WgrWaterDebugView.
+    ImGui::Separator();
+    ImGui::TextUnformatted("Debug views (WTR-003)");
+    static const char* const kWaterDebugViews[] = {
+        "Off (normal shading)",        // 0
+        "FFT displacement",            // 1
+        "FFT horizontal",              // 2
+        "FFT vertical",                // 3
+        "FFT slope",                   // 4
+        "Jacobian",                    // 5
+        "Compression",                 // 6
+        "Curvature",                   // 7
+        "Crest energy",                // 8
+        "Slope variance",              // 9
+        "Material coordinate",         // 10
+        "Displaced world coordinate",  // 11
+        "Interaction height",          // 12
+        "Interaction velocity",        // 13
+        "Interaction foam/aeration",   // 14
+        "Persistent foam source",      // 15
+        "Persistent foam history",     // 16
+        "Surface velocity",            // 17
+        "Water-column depth",          // 18
+        "Camera-to-surface distance",  // 19
+        "SSR colour",                  // 20
+        "SSR confidence",              // 21
+        "Planar colour",               // 22
+        "Planar geometry validity",    // 23
+        "Directional sky/cloud refl.", // 24
+        "Reflection-source selection", // 25
+        "Refraction ray",              // 26
+        "Refraction hit validity",     // 27
+        "Refraction path length",      // 28
+        "RGB transmittance",           // 29
+        "Underwater extinction",       // 30 (reserved)
+        "Underwater in-scattering",    // 31 (reserved)
+        "God-ray shadow visibility",   // 32 (reserved)
+        "Caustic intensity",           // 33 (reserved)
+        "Whitewater particle state",   // 34 (reserved)
+        "Whitewater pool occupancy",   // 35 (reserved)
+        "Particle overflow",           // 36 (reserved)
+    };
+    // The combo index maps 1:1 onto WgrWaterDebugView (wgpu_renderer.hpp). The count is
+    // hard-coded here to keep the engine layer free of the renderer ABI dependency.
+    static_assert(std::size(kWaterDebugViews) == 37,
+                  "Water debug view names must match WgrWaterDebugView (0..36)");
+    int debugView = (s.debugView >= 0 && s.debugView < (int)std::size(kWaterDebugViews)) ? s.debugView : 0;
+    if (ImGui::Combo("Debug view", &debugView, kWaterDebugViews, (int)std::size(kWaterDebugViews)))
+    {
+        s.debugView = debugView;
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Replaces the water surface output with the selected diagnostic. FFT / "
+                          "interaction / foam views aggregate the four cascades; interaction & foam "
+                          "fields read zero outside the 256 m camera domain. Reserved entries have no "
+                          "backing pass yet and render black. wgpu backend only.");
+
     if (changed)
         GEngine->SetWaterSettings(s);
 

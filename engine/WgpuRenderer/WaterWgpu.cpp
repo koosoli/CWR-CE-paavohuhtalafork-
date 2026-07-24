@@ -204,6 +204,9 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     float freezeBits = 0.0f;
     std::memcpy(&freezeBits, &freezeMask, sizeof(freezeBits));
     _params.fft_control.z = freezeBits;
+    // WTR-003 — water debug view selector (0 = normal shading). The Water tab "Debug views"
+    // combo writes look.debugView; the shader swaps its output for the chosen diagnostic.
+    _params.debug_params = {static_cast<float>(look.debugView), 0.0f, 0.0f, 0.0f};
     wgr_water_set_params(_renderer, &_params);
 
     const Vector3 cameraPos = camera->Position();

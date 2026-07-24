@@ -710,6 +710,12 @@ struct WgrWaterParams
      * WgrWaterKind. Zero is the established global ocean behavior. The current CDLOD API has
      * one global material, so river producers must not set this until per-water-body batches exist. */
     WgrVec4 flow_direction_speed;
+    /* WTR-003 — water debug views (dev-only; the Water tab "Debug views" section). x is the
+     * WgrWaterDebugView index (0 = normal shading); the fragment shader replaces its output
+     * with the selected diagnostic when non-zero. yzw are reserved for future view parameters
+     * (e.g. a cascade selector / gain). Appended at the struct end so the existing lanes keep
+     * their offsets; the sizeof assert below moves 192 -> 208 in lockstep with the Rust side. */
+    WgrVec4 debug_params;
 };
 
 constexpr uint32_t WGR_MAX_WATER_INTERACTIONS = 48;
@@ -756,6 +762,52 @@ enum WgrGpuTimerRegion : uint32_t
 };
 
 enum WgrWaterKind : uint32_t { WGR_WATER_KIND_OCEAN = 0, WGR_WATER_KIND_RIVER = 1 };
+/* WTR-003 — water debug view selector, written to WgrWaterParams.debug_params.x. The water
+ * fragment shader maps these to on-surface diagnostics; 0 is normal shading. Views whose
+ * backing pass does not exist yet (underwater froxel/in-scattering, god rays, caustics,
+ * whitewater) are listed for a stable UI but render black until those passes land. The
+ * ordering mirrors the Water tab combo and the shader's debug_view() switch. */
+enum WgrWaterDebugView : uint32_t
+{
+    WGR_WATER_DEBUG_OFF = 0,                 // normal shading
+    WGR_WATER_DEBUG_FFT_DISPLACEMENT = 1,    // |displacement.xyz| summed over cascades
+    WGR_WATER_DEBUG_FFT_HORIZONTAL = 2,      // horizontal displacement magnitude (xz)
+    WGR_WATER_DEBUG_FFT_VERTICAL = 3,        // vertical displacement (y), signed heatmap
+    WGR_WATER_DEBUG_FFT_SLOPE = 4,           // |dynamics.xy| slope magnitude
+    WGR_WATER_DEBUG_JACOBIAN = 5,            // auxiliary.x Jacobian (1 = unfolded)
+    WGR_WATER_DEBUG_COMPRESSION = 6,         // auxiliary.y horizontal compression
+    WGR_WATER_DEBUG_CURVATURE = 7,           // auxiliary.z positive curvature
+    WGR_WATER_DEBUG_CREST_ENERGY = 8,        // displacement.w crest energy
+    WGR_WATER_DEBUG_SLOPE_VARIANCE = 9,      // auxiliary.w resolved slope variance
+    WGR_WATER_DEBUG_MATERIAL_COORD = 10,     // undisplaced base xz (uv of the domain)
+    WGR_WATER_DEBUG_DISPLACED_COORD = 11,    // displaced world xz
+    WGR_WATER_DEBUG_INTERACTION_HEIGHT = 12, // interaction field .r (signed heatmap)
+    WGR_WATER_DEBUG_INTERACTION_VELOCITY = 13, // interaction field .g (signed heatmap)
+    WGR_WATER_DEBUG_INTERACTION_FOAM = 14,   // interaction field .b aeration
+    WGR_WATER_DEBUG_FOAM_SOURCE = 15,        // breaker source (fft gates + aeration)
+    WGR_WATER_DEBUG_FOAM_HISTORY = 16,       // persistent foam coverage (history .r)
+    WGR_WATER_DEBUG_SURFACE_VELOCITY = 17,   // interaction velocity as a flow vector
+    WGR_WATER_DEBUG_WATER_DEPTH = 18,        // reconstructed water-column depth
+    WGR_WATER_DEBUG_CAMERA_DISTANCE = 19,    // camera-to-surface distance
+    WGR_WATER_DEBUG_SSR_COLOR = 20,          // screen-space reflection colour
+    WGR_WATER_DEBUG_SSR_CONFIDENCE = 21,     // SSR hit weight
+    WGR_WATER_DEBUG_PLANAR_COLOR = 22,       // planar reflection colour
+    WGR_WATER_DEBUG_PLANAR_VALIDITY = 23,    // planar reflection validity
+    WGR_WATER_DEBUG_SKY_REFLECTION = 24,     // directional sky/cloud reflection
+    WGR_WATER_DEBUG_REFLECTION_SOURCE = 25,  // final reflection-source selection (rgb coded)
+    WGR_WATER_DEBUG_REFRACTION_RAY = 26,     // refraction uv offset (pixel space)
+    WGR_WATER_DEBUG_REFRACTION_VALIDITY = 27,// refracted scene hit validity
+    WGR_WATER_DEBUG_REFRACTION_PATH = 28,    // refraction path length (column depth)
+    WGR_WATER_DEBUG_TRANSMITTANCE = 29,      // RGB transmittance
+    WGR_WATER_DEBUG_UNDERWATER_EXTINCTION = 30,  // reserved — underwater pass
+    WGR_WATER_DEBUG_UNDERWATER_INSCATTER = 31,   // reserved — underwater pass
+    WGR_WATER_DEBUG_GODRAY_VISIBILITY = 32,      // reserved — no god-ray pass yet
+    WGR_WATER_DEBUG_CAUSTIC_INTENSITY = 33,      // reserved — caustics ride the shaders
+    WGR_WATER_DEBUG_WHITEWATER_STATE = 34,       // reserved — no whitewater pass yet
+    WGR_WATER_DEBUG_WHITEWATER_POOL = 35,        // reserved — no whitewater pass yet
+    WGR_WATER_DEBUG_PARTICLE_OVERFLOW = 36,      // reserved — no whitewater pass yet
+    WGR_WATER_DEBUG_VIEW_COUNT = 37,
+};
 enum WgrWaterInteractionKind : uint32_t { WGR_WATER_INTERACTION_BULLET = 0, WGR_WATER_INTERACTION_OBJECT = 1, WGR_WATER_INTERACTION_PLAYER = 2, WGR_WATER_INTERACTION_EXPLOSION = 3, WGR_WATER_INTERACTION_FOOTSTEP = 4, WGR_WATER_INTERACTION_CONTINUOUS = 5 };
 enum WgrWaterInteractionFlags : uint32_t { WGR_WATER_INTERACTION_PENDING_IMPULSE = 1u << 0, WGR_WATER_INTERACTION_CAPSULE = 1u << 8, WGR_WATER_INTERACTION_PLAYER_WADING = 1u << 9, WGR_WATER_INTERACTION_PLAYER_SWIMMING = 1u << 10, WGR_WATER_INTERACTION_LEFT_SIDE = 1u << 11, WGR_WATER_INTERACTION_LARGE_BODY = 1u << 12 };
 struct alignas(16) WgrWaterInteractionEvent { WgrVec4 position_radius, velocity_kind, time_life_foam_mass, direction_depth_flags; };
@@ -890,7 +942,7 @@ static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match th
 static_assert(sizeof(WgrTerrainParams) == 64, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrWaterParams) == 192, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterParams) == 208, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 24, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterInteractionEvent) == 64 && alignof(WgrWaterInteractionEvent) == 16, "WgrWaterInteractionEvent must match Rust");

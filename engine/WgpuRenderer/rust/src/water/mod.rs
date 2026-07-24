@@ -266,6 +266,7 @@ impl Water {
             fft_wind_sea: [0.82, 0.57, 11.0, 0.55],
             fft_cascade_lengths: [48.0, 144.0, 432.0, 1296.0],
             flow_direction_speed: [0.0, 0.0, 0.0, 0.0],
+            debug_params: [0.0, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 
@@ -1091,5 +1092,22 @@ mod tests {
         assert_eq!(normal & FREEZE_FFT, 0);
         assert_eq!(normal & FREEZE_INTERACTION, 0);
         assert_eq!(normal & FREEZE_FOAM, 0);
+    }
+
+    // WTR-003 — the debug-view selector rides WgrWaterParams.debug_params.x, appended at the
+    // struct end so every existing lane keeps its offset. Lock the field offset (192) and the
+    // total size (208) so a reorder on either side of the FFI boundary fails here, not as a
+    // silent UBO misread in the shader.
+    #[test]
+    fn debug_params_appended_without_shifting_existing_lanes() {
+        use crate::ffi::WgrWaterParams;
+        assert_eq!(std::mem::size_of::<WgrWaterParams>(), 208);
+        assert_eq!(
+            std::mem::offset_of!(WgrWaterParams, debug_params),
+            192,
+            "debug_params must sit at the struct end so earlier lanes keep their offsets"
+        );
+        // flow_direction_speed (the previous last field) must not have moved.
+        assert_eq!(std::mem::offset_of!(WgrWaterParams, flow_direction_speed), 176);
     }
 }

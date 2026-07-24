@@ -1223,6 +1223,12 @@ class Engine : public IGraphicsEngine
         float wetHeight = 0.26f;   // m above sea level the damp band reaches
         float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
 
+        // WTR-003 — water debug view selector (dev-only; the Water tab "Debug views" section).
+        // 0 = normal shading; any other value is a WgrWaterDebugView index that the wgpu water
+        // shader maps to an on-surface diagnostic (FFT/interaction/foam/reflection/refraction).
+        // Backend-agnostic: non-wgpu engines ignore it. Written to WgrWaterParams.debug_params.x.
+        int debugView = 0;
+
         // WTR-001 — deterministic water debug controls (dev-only; the Water tab "Debug" section).
         // All freezes are renderer-local: they override the UBO time/dt the shader sees, without
         // touching Glob.time (gameplay / net clock) or any non-water subsystem other than the cloud

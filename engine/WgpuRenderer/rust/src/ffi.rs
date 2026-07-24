@@ -784,6 +784,10 @@ pub struct WgrWaterParams {
     pub fft_wind_sea: WgrVec4,
     pub fft_cascade_lengths: WgrVec4,
     pub flow_direction_speed: WgrVec4,
+    // WTR-003 — water debug views. x = WgrWaterDebugView index (0 = normal shading); the
+    // fragment shader swaps its output for the selected diagnostic. yzw reserved. Appended
+    // at the end so existing lane offsets are unchanged (sizeof 192 -> 208, matching C++).
+    pub debug_params: WgrVec4,
 }
 
 pub const MAX_WATER_INTERACTIONS: usize = 48;
@@ -911,7 +915,7 @@ const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 192);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 208);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrWaterInteractionEvent>() == 64);
