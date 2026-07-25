@@ -1,0 +1,1 @@
+Build with a CMake preset from the repo root, then run via `ctest --test-dir <build_dir>`. For integration tests, copy `.trident.env.example` to `.trident.env`, set `OFPR_GAME_DIR` and `OFPR_DATA_DIR`, build the Rust workspace (`cargo build`) so the `tri` binary is available on PATH, then run `tri test -j6 --retries 2 tests/integration`.

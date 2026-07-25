@@ -1,0 +1,1 @@
+CMake presets, toolchain files, and vcpkg triplets that configure multi-platform Clang builds with static/dynamic linking, plus Docker images for the SteamRT4 build environment and the papa-bear-master-service Rust binary.

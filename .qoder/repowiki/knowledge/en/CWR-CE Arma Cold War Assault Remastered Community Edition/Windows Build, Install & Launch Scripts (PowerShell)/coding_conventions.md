@@ -1,0 +1,5 @@
+- Each script uses `[CmdletBinding()]` with named parameters and documents usage via `.SYNOPSIS` / `.PARAMETER` / `.EXAMPLE` comment blocks.
+- Scripts set `$ErrorActionPreference = 'Stop'` at the top and throw descriptive messages when prerequisites (vcpkg, Steam install, built binary) are missing.
+- Steam game installations are discovered through a two-step strategy: query the Windows registry uninstall keys first, then fall back to parsing `libraryfolders.vdf` and `appmanifest_*.acf` files.
+- Extra command-line arguments intended for the underlying tool (cmake or the Poseidon binary) are forwarded via a `Position=0, ValueFromRemainingArguments=$true` parameter so they do not bind to named script parameters.
+- Shared logic is centralized in `CwaCommon.ps1` and consumed via dot-sourcing (`.` `"$PSScriptRoot\CwaCommon.ps1"`) rather than module imports.

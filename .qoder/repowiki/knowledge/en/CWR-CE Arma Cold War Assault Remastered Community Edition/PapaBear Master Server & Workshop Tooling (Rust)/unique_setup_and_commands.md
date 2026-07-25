@@ -1,0 +1,1 @@
+CI runs `cargo fmt`, `cargo clippy`, `cargo test`, and `cargo build` across Linux and Windows for all four crates. The Postgres integration tests are gated by the `PAPABEAR_TEST_POSTGRES_URL` environment variable and skip when unset. The CLI reads `PAPA_MASTER` and `PAPA_ADMIN_KEY` from environment for default master URL and admin key.

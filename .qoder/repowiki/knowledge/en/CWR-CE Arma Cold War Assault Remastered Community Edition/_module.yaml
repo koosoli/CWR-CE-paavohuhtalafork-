@@ -1,0 +1,27 @@
+schema_version: 1
+module_path: ""
+title: 'CWR-CE: Arma Cold War Assault Remastered Community Edition'
+scope:
+    - README.md
+    - CONTRIBUTING.md
+    - .gitignore
+    - .trident.env.example
+    - CMakeLists.txt
+    - CMakePresets.json
+    - Cargo.toml
+    - Cargo.lock
+    - CLAUDE.md
+    - CREDITS.md
+    - THIRD_PARTY_NOTICES.md
+    - valgrind-suppressions.supp
+    - .clang-format
+    - .clang-tidy
+    - .gitattributes
+    - LICENSE
+    - lsan-suppressions.txt
+    - tsan-suppressions.txt
+    - ubsan-suppressions.txt
+    - vcpkg.json
+source_files: []
+depends_on: []
+related_to: []

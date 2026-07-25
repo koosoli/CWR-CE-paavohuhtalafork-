@@ -1,0 +1,1 @@
+Icons are compiled into their respective executables by the Windows build system through the matching .rc file; no additional setup beyond having the .ico and .rc pairs present in this directory.

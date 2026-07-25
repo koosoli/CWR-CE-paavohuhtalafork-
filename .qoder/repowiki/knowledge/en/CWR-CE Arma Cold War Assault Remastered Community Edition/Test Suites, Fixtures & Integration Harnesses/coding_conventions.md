@@ -1,0 +1,5 @@
+- Each integration test consists of a paired `.sqf` script and a `.toml` configuration file placed in the same directory under `integration/<subsystem>/`.
+- Unit tests follow a per-subsystem directory layout mirroring the source tree, with each suite containing its own `CMakeLists.txt` and a `test_main.cpp` bootstrap.
+- Stress tests use a `.stress` directory convention where `stress.toml` declares the scenario and `hooks/` subdirectories hold client/server expectation scripts.
+- Fixtures are organized by asset type under `fixtures/<type>/` (audio, p3d, paa, pbo, stringtable, cfg, config, etc.) and are consumed directly by tests without code generation.
+- Smoke tests are named `<feature>.tests.ps1` and assert behavior by parsing boot logs or configuration files rather than launching the full game.

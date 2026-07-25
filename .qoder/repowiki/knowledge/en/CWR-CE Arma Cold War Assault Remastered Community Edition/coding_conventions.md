@@ -1,0 +1,5 @@
+- Substantial C++ targets share a precompiled header `engine/Poseidon/Foundation/PoseidonPCH.hpp` applied via `target_precompile_headers` rather than per-target includes.
+- Large classes are partitioned across multiple translation units using the `Foo.cpp` + `FooImpl*.cpp` + `*.inc` pattern instead of single-file definitions.
+- Intentional use of `memcpy`/`memset` on non-trivial types is preserved via the `ClassIsMovableZeroed` pattern and global `-Wno-nontrivial-memcall` suppression.
+- Cross-platform code uses `__FILE__` rewritten to repo-root-relative paths via `-fmacro-prefix-map` on GNU-driver clang, while clang-cl keeps absolute paths for test helpers.
+- Rust workspace members declare `rust-version = "1.87"` so the MSRV-aware resolver does not pin shared dependencies to older incompatible versions.

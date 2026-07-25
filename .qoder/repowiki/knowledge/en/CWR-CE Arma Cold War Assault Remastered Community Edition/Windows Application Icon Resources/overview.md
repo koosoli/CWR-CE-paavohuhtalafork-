@@ -1,0 +1,1 @@
+Windows resource files that embed .ico icon assets for the launcher, game, server, and tool executables via per-application .rc manifests.

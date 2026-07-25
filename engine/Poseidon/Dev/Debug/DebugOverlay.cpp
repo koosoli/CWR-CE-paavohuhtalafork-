@@ -1981,6 +1981,50 @@ void DrawCullingTab()
     }
 }
 
+// WTR-003 water debug view names — file scope so both the Water tab combo and the
+// Ctrl+Shift+W cycle hotkey can reference them. Index maps 1:1 onto WgrWaterDebugView.
+static const char* const kWaterDebugViews[] = {
+    "Off (normal shading)",        // 0
+    "FFT displacement",            // 1
+    "FFT horizontal",              // 2
+    "FFT vertical",                // 3
+    "FFT slope",                   // 4
+    "Jacobian",                    // 5
+    "Compression",                 // 6
+    "Curvature",                   // 7
+    "Crest energy",                // 8
+    "Slope variance",              // 9
+    "Material coordinate",         // 10
+    "Displaced world coordinate",  // 11
+    "Interaction height",          // 12
+    "Interaction velocity",        // 13
+    "Interaction foam/aeration",   // 14
+    "Persistent foam source",      // 15
+    "Persistent foam history",     // 16
+    "Surface velocity",            // 17
+    "Water-column depth",          // 18
+    "Camera-to-surface distance",  // 19
+    "SSR colour",                  // 20
+    "SSR confidence",              // 21
+    "Planar colour",               // 22
+    "Planar geometry validity",    // 23
+    "Directional sky/cloud refl.", // 24
+    "Reflection-source selection", // 25
+    "Refraction ray",              // 26
+    "Refraction hit validity",     // 27
+    "Refraction path length",      // 28
+    "RGB transmittance",           // 29
+    "Underwater extinction",       // 30 (reserved)
+    "Underwater in-scattering",    // 31 (reserved)
+    "God-ray shadow visibility",   // 32 (reserved)
+    "Caustic intensity",           // 33 (reserved)
+    "Whitewater particle state",   // 34 (reserved)
+    "Whitewater pool occupancy",   // 35 (reserved)
+    "Particle overflow",           // 36 (reserved)
+};
+static constexpr int kWaterDebugViewCount = static_cast<int>(std::size(kWaterDebugViews));
+static_assert(kWaterDebugViewCount == 37, "Water debug view names must match WgrWaterDebugView (0..36)");
+
 void DrawWaterTab()
 {
     if (!GEngine)
@@ -2160,51 +2204,9 @@ void DrawWaterTab()
     // surface toggled off. Reserved slots (underwater/god-ray/caustic/whitewater) render black
     // until their passes exist. The combo index maps 1:1 onto WgrWaterDebugView.
     ImGui::Separator();
-    ImGui::TextUnformatted("Debug views (WTR-003)");
-    static const char* const kWaterDebugViews[] = {
-        "Off (normal shading)",        // 0
-        "FFT displacement",            // 1
-        "FFT horizontal",              // 2
-        "FFT vertical",                // 3
-        "FFT slope",                   // 4
-        "Jacobian",                    // 5
-        "Compression",                 // 6
-        "Curvature",                   // 7
-        "Crest energy",                // 8
-        "Slope variance",              // 9
-        "Material coordinate",         // 10
-        "Displaced world coordinate",  // 11
-        "Interaction height",          // 12
-        "Interaction velocity",        // 13
-        "Interaction foam/aeration",   // 14
-        "Persistent foam source",      // 15
-        "Persistent foam history",     // 16
-        "Surface velocity",            // 17
-        "Water-column depth",          // 18
-        "Camera-to-surface distance",  // 19
-        "SSR colour",                  // 20
-        "SSR confidence",              // 21
-        "Planar colour",               // 22
-        "Planar geometry validity",    // 23
-        "Directional sky/cloud refl.", // 24
-        "Reflection-source selection", // 25
-        "Refraction ray",              // 26
-        "Refraction hit validity",     // 27
-        "Refraction path length",      // 28
-        "RGB transmittance",           // 29
-        "Underwater extinction",       // 30 (reserved)
-        "Underwater in-scattering",    // 31 (reserved)
-        "God-ray shadow visibility",   // 32 (reserved)
-        "Caustic intensity",           // 33 (reserved)
-        "Whitewater particle state",   // 34 (reserved)
-        "Whitewater pool occupancy",   // 35 (reserved)
-        "Particle overflow",           // 36 (reserved)
-    };
-    // The combo index maps 1:1 onto WgrWaterDebugView (wgpu_renderer.hpp). The count is
-    // hard-coded here to keep the engine layer free of the renderer ABI dependency.
-    static_assert(std::size(kWaterDebugViews) == 37,
-                  "Water debug view names must match WgrWaterDebugView (0..36)");
-    int debugView = (s.debugView >= 0 && s.debugView < (int)std::size(kWaterDebugViews)) ? s.debugView : 0;
+    ImGui::TextUnformatted("Debug views (WTR-003)  [Ctrl+Shift+W cycles]");
+    // kWaterDebugViews / kWaterDebugViewCount are at file scope (shared with the hotkey).
+    int debugView = (s.debugView >= 0 && s.debugView < kWaterDebugViewCount) ? s.debugView : 0;
     if (ImGui::Combo("Debug view", &debugView, kWaterDebugViews, (int)std::size(kWaterDebugViews)))
     {
         s.debugView = debugView;
@@ -2698,6 +2700,17 @@ void ProcessEvent(const SDL_Event& event)
         if (event.key.scancode == SDL_SCANCODE_GRAVE && ctrlDown)
         {
             ToggleVisible();
+            return;
+        }
+        // Ctrl+Shift+W — cycle the WTR-003 water debug view (works without
+        // opening the dev panel).  Wraps 0→1→…→36→0.
+        const bool shiftDown = (event.key.mod & SDL_KMOD_SHIFT) != 0;
+        if (event.key.scancode == SDL_SCANCODE_W && ctrlDown && shiftDown && GEngine && GEngine->SupportsWater())
+        {
+            auto ws = GEngine->GetWaterSettings();
+            ws.debugView = (ws.debugView + 1) % kWaterDebugViewCount;
+            GEngine->SetWaterSettings(ws);
+            LOG_INFO(Core, "Water debug view: [{}] {}", ws.debugView, kWaterDebugViews[ws.debugView]);
             return;
         }
     }

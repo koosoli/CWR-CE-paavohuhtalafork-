@@ -1,0 +1,1 @@
+Rust workspace providing the PapaBear master server HTTP service, a PBO archive library, a UDP session-query client SDK, and a `papa` CLI for packing, publishing, and installing mods.
