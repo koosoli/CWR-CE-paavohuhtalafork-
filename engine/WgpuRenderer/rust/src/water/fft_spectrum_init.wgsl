@@ -33,14 +33,21 @@ fn cascade_band(kl: f32, layer: u32) -> f32 {
     if (layer == 2u) { return low_to_mid_low * (1.0 - mid_low_to_mid_high); }
     return 1.0 - low_to_mid_low;
 }
-// Deep-water JONSWAP expressed in k-space. The alpha ratio preserves the old
-// parameter scale while the shape supplies the physical omega^-5/Jacobian result.
+fn tma_depth_factor(kl: f32, depth: f32) -> f32 {
+    let omega_h = sqrt(kl * max(depth, 1.0));
+    if (omega_h >= 2.0) { return 1.0; }
+    if (omega_h >= 1.0) { return -0.5 * omega_h * omega_h + 2.0 * omega_h - 1.0; }
+    return max(0.5 * omega_h * omega_h, 1e-3);
+}
+// Deep-water JONSWAP with TMA depth attenuation expressed in k-space.
 fn jonswap_k_shape(kl: f32, peak_k: f32, alpha: f32, gamma: f32) -> f32 {
     let ratio = max(kl / peak_k, 1e-4);
     let sigma = select(0.09, 0.07, ratio <= 1.0);
     let peak = exp(-0.5 * pow((ratio - 1.0) / sigma, 2.0));
+    let depth = 20.0; // Standard 20m depth attenuation
+    let phi = tma_depth_factor(kl, depth);
     return alpha / PM_ALPHA * exp(-1.25 / (ratio * ratio))
-        * pow(max(gamma, 1.0), peak) / max(kl * kl * kl * kl, 1e-5);
+        * pow(max(gamma, 1.0), peak) / max(kl * kl * kl * kl, 1e-5) * phi;
 }
 fn spread_power(omega: f32, peak_omega: f32) -> f32 {
     let ratio = max(omega / peak_omega, 1e-4);

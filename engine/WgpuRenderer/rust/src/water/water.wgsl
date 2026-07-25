@@ -222,20 +222,27 @@ fn cubic_weights(a: f32) -> vec4<f32> {
 
 fn texture_bicubic_dynamics(uv: vec2<f32>, layer: i32) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(fft_dynamics));
-    let dims_inv = 1.0 / dims;
+    let inv_x = 1.0 / dims.x;
+    let inv_y = 1.0 / dims.y;
     let uv_grid = uv * dims + 0.5;
     let fuv = fract(uv_grid);
     let wx = cubic_weights(fuv.x);
     let wy = cubic_weights(fuv.y);
 
     let g = vec4<f32>(wx.x + wx.z, wx.y + wx.w, wy.x + wy.z, wy.y + wy.w);
-    let h = (vec4<f32>(wx.y, wx.w, wy.y, wy.w) / g + vec2<f32>(-1.5, 0.5).xyxy + floor(uv_grid).xxyy) * dims_inv.xxyy;
+    let floor_uv = floor(uv_grid);
+    // Offset x coords
+    let hx0 = (wx.y / g.y + (-1.5 + floor_uv.x)) * inv_x;
+    let hx1 = (wx.w / g.w + ( 0.5 + floor_uv.x)) * inv_x;
+    // Offset y coords
+    let hy0 = (wy.y / g.z + (-1.5 + floor_uv.y)) * inv_y;
+    let hy1 = (wy.w / g.w + ( 0.5 + floor_uv.y)) * inv_y;
     let w = g.xz / (g.xz + g.yw);
 
-    let s00 = textureSampleLevel(fft_dynamics, fft_samp, h.yw, layer, 0.0);
-    let s10 = textureSampleLevel(fft_dynamics, fft_samp, h.xw, layer, 0.0);
-    let s01 = textureSampleLevel(fft_dynamics, fft_samp, h.yz, layer, 0.0);
-    let s11 = textureSampleLevel(fft_dynamics, fft_samp, h.xz, layer, 0.0);
+    let s00 = textureSampleLevel(fft_dynamics, fft_samp, vec2<f32>(hx0, hy0), layer, 0.0);
+    let s10 = textureSampleLevel(fft_dynamics, fft_samp, vec2<f32>(hx1, hy0), layer, 0.0);
+    let s01 = textureSampleLevel(fft_dynamics, fft_samp, vec2<f32>(hx0, hy1), layer, 0.0);
+    let s11 = textureSampleLevel(fft_dynamics, fft_samp, vec2<f32>(hx1, hy1), layer, 0.0);
 
     return mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
 }
@@ -1005,9 +1012,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let view_xz = safe_normalize3(vec3<f32>(v.x, 0.0, v.z), vec3<f32>(0.0, 0.0, 1.0)).xz;
     let light_xz = safe_normalize3(vec3<f32>(l.x, 0.0, l.z), vec3<f32>(0.0, 0.0, -1.0)).xz;
     let backlit = smoothstep(0.10, 0.70, dot(view_xz, -light_xz));
-    let crest_depth = smoothstep(0.35, 1.5, min(water_depth, DEEP));
-    let crest_scatter = crest_shape * backlit * crest_depth * sun_vis * 0.035;
-    rgb = rgb + sun_diffuse * crest_scatter;
+    const sss_modifier = vec3<f32>(0.9, 1.15, 0.85); // GodotOceanWaves SSS turquoise wave crest modifier
+    let crest_scatter = crest_shape * backlit * crest_depth * sun_vis * 0.085;
+    rgb = rgb + sun_diffuse * crest_scatter * sss_modifier;
 
     // Artistic darkening of shadowed water for readability (dims the ambient/sky term
     // too, which the pure sun-removal above does not). 0 = physical (sun-only).
