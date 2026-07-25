@@ -249,11 +249,7 @@ fn texture_bicubic_dynamics(uv: vec2<f32>, layer: i32) -> vec4<f32> {
 
 fn sample_fft_dynamics_filtered(xz: vec2<f32>, layer: i32, length_m: f32) -> vec4<f32> {
     let uv = fract(xz / length_m);
-    let ppm = 256.0 / max(length_m, 1.0); // Pixels per meter
-    let bilinear = textureSampleLevel(fft_dynamics, fft_samp, uv, layer, 0.0);
-    let bicubic = texture_bicubic_dynamics(uv, layer);
-    // Blend bicubic and bilinear filtering based on world-space pixels per meter (PPM)
-    return mix(bicubic, bilinear, clamp(ppm * 0.1, 0.0, 1.0));
+    return texture_bicubic_dynamics(uv, layer);
 }
 
 fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
@@ -944,6 +940,14 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Reflective but NOT a mirror: cap reflection weight to max 0.72 so deep navy blue ocean color always shines through
     let reflection_weight = clamp(physical_fresnel * 0.68 + 0.020, 0.02, 0.72);
     rgb = mix(transmitted, refl, reflection_weight);
+
+    let is_underwater = wp.fft_control.w > 0.5 || frame.cam_pos.y < wp.sea_level + 0.1;
+    if (is_underwater) {
+        let uw_dist = length(in.world_pos);
+        let uw_extinction = 1.0 - exp(-uw_dist * vec3<f32>(0.20, 0.08, 0.03));
+        let uw_fog_color = deep_col * 0.90 + vec3<f32>(0.0, 0.04, 0.08);
+        rgb = mix(rgb, uw_fog_color, uw_extinction);
+    }
 
     // WTR-003 — debug views replace the lit output (view 0 = normal shading). Aggregated
     // FFT diagnostics + the interaction/foam/reflection/refraction intermediates computed
