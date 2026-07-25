@@ -453,10 +453,9 @@ fn optical_refract(view_dir: vec3<f32>, normal: vec3<f32>, eta: f32) -> vec3<f32
     return eta * view_dir + (eta * cos_i - sqrt(k)) * normal;
 }
 
-// WTR-056 — RGB wavelength-dependent extinction (Beer-Lambert optical transmission).
-// Red attenuates rapidly (0.15/m), Green moderately (0.04/m), Blue slowly (0.015/m).
-fn beer_lambert_attenuation(water_path_length: f32) -> vec3<f32> {
-    let extinction_rgb = vec3<f32>(0.150, 0.040, 0.015) * wp.color_ext;
+    // WTR-056 — RGB wavelength-dependent extinction (Beer-Lambert optical transmission).
+    // Red attenuates rapidly (0.280/m), Green moderately (0.065/m), Blue slowly (0.020/m).
+    let extinction_rgb = vec3<f32>(0.280, 0.065, 0.020) * max(wp.color_ext * 2.5, 0.12);
     return exp(-extinction_rgb * max(water_path_length, 0.0));
 }
 
@@ -829,37 +828,30 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         shallow = srgb_to_linear(shallow);
         deep = srgb_to_linear(deep);
     }
-    let depth_tint = 1.0 - exp(-water_depth * wp.color_ext);
-    // Weakly diffuse — water mostly reflects/transmits — so this is the transmitted body tint.
-    let body = mix(shallow, deep, depth_tint);
-    // Direct-sun diffuse sheen is removed in shadow; sky ambient survives. Sky-visibility AO scales
-    // only the diffuse sky ambient (and the foam ambient below) — NOT the env-map reflection term,
-    // which is a directional specular reflection whose own occlusion is Stage 4b's job. Off (1.0) when
-    // sky_vis_strength = 0. Subtle on grazing (reflection-dominated) water; mainly darkens shaded coves.
+    // Coastal Turquoise Cyan vs Deep Ocean Navy Blue color palette:
+    // Shallow: Vibrant Turquoise Cyan (Linear = [0.005, 0.28, 0.38])
+    // Deep: Rich Navy Blue (Linear = [0.001, 0.022, 0.14])
+    let shallow_preset = vec3<f32>(0.005, 0.28, 0.38);
+    let deep_preset = vec3<f32>(0.001, 0.022, 0.14);
+    let shallow_col = select(shallow, shallow_preset, length(shallow) <= 0.01);
+    let deep_col = select(deep, deep_preset, length(deep) <= 0.01);
+
+    let depth_tint = 1.0 - exp(-water_depth * max(wp.color_ext * 2.2, 0.15));
+    let ocean_body = mix(shallow_col, deep_col, depth_tint);
+
     let amb_ao = sky_vis_ao(in.base_xz);
     let ndl = max(dot(n, l), 0.0);
-    var rgb = body * (sun_ambient * amb_ao + sun_diffuse * ndl * 0.15 * sun_vis);
+    var rgb = ocean_body * (sun_ambient * amb_ao + sun_diffuse * ndl * 0.25 * sun_vis);
 
-    // Fresnel toward the horizon/sky tint (a cheap reflection stand-in until Stage 4's real sky
-    // reflection): near-grazing water lightens and reads reflective.
+    // Fresnel toward the horizon/sky tint: near-grazing water lightens and reads reflective.
     let ndv = max(dot(n, v), 0.0);
     let f0 = 0.035;
-    // max() guards pow() against a tiny negative base from normalize() rounding (NaN).
     let fresnel = schlick_fresnel(f0, ndv);
-    // Stage 4a: reflect the REAL sky. Sample the sky env map (disc-free atmosphere radiance) in the
-    // reflected view direction — so night water reflects a genuinely dark sky, and only the fragments
-    // that geometrically reflect toward the sun/horizon pick up its glow (no uniform pink wash). The
-    // LDR-direct reference path has no linear env, so it keeps the sun-elevation-dimmed fog_color
-    // stand-in. reflect(incident, n): incident = camera->surface world dir = normalize(world_pos).
+
     var refl: vec3<f32>;
     if (linear > 0.5) {
         let refl_dir = reflect(normalize(in.world_pos), n);
         var sky_refl = sky_env_sample(refl_dir);
-        // The env map has no terrain, so a grazing reflection toward the low sun mirrors the bright
-        // horizon glow even where a hill actually blocks that direction (a mountain between the water
-        // and the sun). Approximate the missing occlusion with the terrain sun-shadow: where the sun
-        // is ridge-occluded here AND the reflection points toward it, fade the reflected glow to the
-        // (shadowed) sky ambient. A full fix is Stage 4b — reflecting the actual terrain.
         let toward_sun = smoothstep(0.0, 0.4, dot(refl_dir, l));
         sky_refl = mix(sky_refl, sun_ambient, ter_raw * toward_sun);
         refl = sky_refl;
@@ -871,9 +863,6 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
     refl = mix(refl, ssr.rgb, ssr.a);
     let planar_refl = planar_reflection(in.world_pos, base_normal, roughness);
-    // SSR has the highest-detail on-screen hit; planar fills its off-screen holes,
-    // then the atmosphere remains the final fallback. Retain a small projected-planar
-    // contribution at stable SSR hits so the half-res wave deformation is not hidden.
     refl = mix(refl, planar_refl.rgb, planar_refl.a * (1.0 - ssr.a * 0.80));
     let uv = scene_uv(in.clip.xy);
 
@@ -891,10 +880,10 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let rgb_transmittance = beer_lambert_attenuation(path_length);
     let physical_fresnel = schlick_fresnel(physical_f0, ndv);
     let transmission = (1.0 - physical_fresnel) * 0.85;
-    let transmitted = mix(rgb * rgb_transmittance, refracted.color * rgb_transmittance, refracted.valid * transmission);
+    let transmitted = mix(ocean_body * (1.0 - rgb_transmittance * 0.4) + rgb * rgb_transmittance, refracted.color * rgb_transmittance, refracted.valid * transmission);
 
-    // SSR augments environment; reflection_weight uses physical Fresnel with artistic controls
-    let reflection_weight = clamp(physical_fresnel * 1.45 + 0.025, 0.0, 1.0);
+    // Reflective but NOT a mirror: cap reflection weight to max 0.72 so deep navy blue ocean color always shines through
+    let reflection_weight = clamp(physical_fresnel * 0.68 + 0.020, 0.02, 0.72);
     rgb = mix(transmitted, refl, reflection_weight);
 
     // WTR-003 — debug views replace the lit output (view 0 = normal shading). Aggregated
