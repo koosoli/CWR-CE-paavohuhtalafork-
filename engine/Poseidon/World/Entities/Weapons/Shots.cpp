@@ -13,6 +13,7 @@
 #include <Poseidon/World/Entities/Weapons/Weapons.hpp>
 #include <Poseidon/Network/Network.hpp>
 #include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
+#include <Poseidon/Graphics/Rendering/Effects/Smokes.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/Graphics/Rendering/Draw/SpecLods.hpp>
 #include <Poseidon/World/Scene/ObjLine.hpp>
@@ -786,6 +787,12 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
                     event.directionDepthFlags[1] = lDirNorm.Z();
                     event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse;
                     SubmitWaterInteraction(event);
+
+                    // Spawn 3D particle water splash effect at the exact impact position
+                    float splashSize = Type()->explosive ? 2.5f : 0.8f;
+                    Crater* splash = new Crater(nullptr, nullptr, 0.8f, splashSize, false, false, true);
+                    splash->SetPosition(waterPoint);
+                    GLOB_WORLD->AddAnimal(splash);
                 }
             }
 
