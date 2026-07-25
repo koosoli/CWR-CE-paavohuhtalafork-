@@ -16,6 +16,17 @@ const GRAVITY: f32 = 9.81;
 fn cmul(a: vec2<f32>, b: vec2<f32>) -> vec2<f32> { return vec2<f32>(a.x * b.x - a.y * b.y, a.x * b.y + a.y * b.x); }
 fn cexp(a: f32) -> vec2<f32> { return vec2<f32>(cos(a), sin(a)); }
 fn cascade_length(layer: u32) -> f32 { return water.fft_cascade_lengths[layer]; }
+fn tanh_approx(x: f32) -> f32 {
+    if (x >= 3.0) { return 1.0; }
+    let e2x = exp(2.0 * x);
+    return (e2x - 1.0) / (e2x + 1.0);
+}
+
+fn dispersion_omega(kl: f32, depth: f32) -> f32 {
+    let kh = clamp(kl * max(depth, 1.0), 0.01, 15.0);
+    return sqrt(GRAVITY * kl * tanh_approx(kh));
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn fft_spectrum_evolve(@builtin(global_invocation_id) id: vec3<u32>) {
     let dims = textureDimensions(pack0);
@@ -26,7 +37,8 @@ fn fft_spectrum_evolve(@builtin(global_invocation_id) id: vec3<u32>) {
     let opposite = vec2<i32>(i32((dims.x - id.x) % dims.x), i32((dims.y - id.y) % dims.y));
     let h0 = textureLoad(h0_texture, vec2<i32>(id.xy), i32(id.z), 0).xy;
     let h0_opposite = textureLoad(h0_texture, opposite, i32(id.z), 0).xy;
-    let omega = sqrt(GRAVITY * kl);
+    let depth = 20.0;
+    let omega = dispersion_omega(kl, depth);
     let phase = cexp(omega * water.time * water.wave_speed);
     // The modular opposite index covers DC and even-resolution Nyquist bins. Self-paired bins
     // reduce to h0*phase + conj(h0*phase), so the inverse transform remains real.
