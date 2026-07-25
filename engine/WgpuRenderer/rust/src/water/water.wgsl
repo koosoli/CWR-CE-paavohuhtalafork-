@@ -779,8 +779,10 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
     state.curvature = fft_curv;
     state.slope_variance = fft_slope_var;
     state.crest_energy = fft_crest;
-    state.breaking_energy = max(0.0, fft_crest - 0.6) + state.aeration;
-    state.foam_density = textureSampleLevel(foam_history, foam_samp, clamp(in.base_xz / 256.0, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).r;
+    let foam_uv = (in.base_xz - wp.world_origin) * (1.0 / 256.0);
+    let foam_sample = textureSampleLevel(foam_history, foam_samp, clamp(foam_uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
+    state.foam_density = clamp(foam_sample.r + foam_sample.g * 1.25 + foam_sample.b * 0.75, 0.0, 1.0);
+    state.aeration = max(state.aeration, foam_sample.b);
     
     return state;
 }

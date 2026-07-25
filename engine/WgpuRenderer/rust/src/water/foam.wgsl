@@ -48,23 +48,57 @@ fn foam_update(@builtin(global_invocation_id) id: vec3<u32>) {
     let uv = (vec2<f32>(id.xy) + 0.5) / size;
     let world = interaction_params.domain.xy + uv * interaction_params.domain.z;
     let dt = clamp(interaction_params.grid.y, 0.0, 0.033);
-    let wind = normalize(water.fft_wind_sea.xy + vec2<f32>(0.0001, 0.0));
-    let drift = wind * (0.10 + max(water.fft_wind_sea.z, 0.0) * 0.012);
-    let previous_world = world - drift * dt;
+    let texel = vec2<f32>(1.0) / size;
+
+    // Sample current interaction velocity field and central differences for WTR-082 divergence & vorticity
+    let interaction_uv = (world - interaction_params.domain.xy) * interaction_params.domain.w;
+    let centre_inter = textureSampleLevel(interaction_field, field_sampler, clamp(interaction_uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0);
+    let inter_l = textureSampleLevel(interaction_field, field_sampler, clamp(interaction_uv - vec2<f32>(texel.x, 0.0), vec2<f32>(0.001), vec2<f32>(0.999)), 0.0);
+    let inter_r = textureSampleLevel(interaction_field, field_sampler, clamp(interaction_uv + vec2<f32>(texel.x, 0.0), vec2<f32>(0.001), vec2<f32>(0.999)), 0.0);
+    let inter_d = textureSampleLevel(interaction_field, field_sampler, clamp(interaction_uv - vec2<f32>(0.0, texel.y), vec2<f32>(0.001), vec2<f32>(0.999)), 0.0);
+    let inter_u = textureSampleLevel(interaction_field, field_sampler, clamp(interaction_uv + vec2<f32>(0.0, texel.y), vec2<f32>(0.001), vec2<f32>(0.999)), 0.0);
+
+    let cell_spacing = max(interaction_params.domain.z / size.x, 0.01);
+    let dvx_dx = (inter_r.g - inter_l.g) / (2.0 * cell_spacing);
+    let dvy_dy = (inter_u.g - inter_d.g) / (2.0 * cell_spacing);
+    let divergence = dvx_dx + dvy_dy;
+    let convergence = smoothstep(0.0, -0.6, divergence);
+    let vorticity = abs(dvy_dy - dvx_dx);
+
+    // WTR-085 — Composite physical foam advection velocity (interaction velocity + ambient current + wind drift)
+    let flow_dir = normalize(water.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) * max(water.flow_direction_speed.z, 0.0);
+    let wind_dir = normalize(water.fft_wind_sea.xy + vec2<f32>(1e-4, 0.0));
+    let wind_drift = wind_dir * (0.08 + max(water.fft_wind_sea.z, 0.0) * 0.010);
+    let surface_velocity = vec2<f32>(centre_inter.g * 0.4) + flow_dir + wind_drift;
+
+    let previous_world = world - surface_velocity * dt;
     let previous_uv = (previous_world - interaction_params.previous_domain.xy) * interaction_params.previous_domain.w;
     let history = sample_history(previous_uv);
-    let interaction_uv = (world - interaction_params.domain.xy) * interaction_params.domain.w;
-    let interaction = textureSampleLevel(interaction_field, field_sampler, clamp(interaction_uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0);
-    let fft = fft_source(world);
-    let aeration = clamp(interaction.b, 0.0, 1.0);
-    let source = max(fft, aeration);
-    // Keep breakers visible briefly, but do not let repeated shallow/coastal sources
-    // turn into a permanent white band.
-    let decayed = history.r * exp(-dt * 5.5);
-    let injection = 1.0 - exp(-source * dt * 0.85);
-    let coverage = 1.0 - (1.0 - decayed) * (1.0 - injection);
-    let age = mix(min(history.g + dt * 0.08, 1.0), 0.0, clamp(injection * 2.0, 0.0, 1.0));
-    let stored_aeration = max(history.b * exp(-dt * 4.8), aeration);
+
+    // WTR-081 — Physical breaking energy and interaction aeration injection
+    let fft_breaker = fft_source(world);
+    let aeration = clamp(centre_inter.b, 0.0, 1.0);
+    let wake_breaker = clamp(convergence * 0.35 + centre_inter.g * 0.15 + aeration, 0.0, 1.0);
+
+    // Dissipation and decay rates
+    let breaker_decay = history.r * exp(-dt * 3.5);
+    let wake_decay = history.g * exp(-dt * 2.8);
+    let aeration_decay = history.b * exp(-dt * 4.2);
+
+    let breaker_injection = 1.0 - exp(-fft_breaker * dt * 1.25);
+    let wake_injection = 1.0 - exp(-wake_breaker * dt * 1.50);
+
+    let breaker_foam = 1.0 - (1.0 - breaker_decay) * (1.0 - breaker_injection);
+    let wake_foam = 1.0 - (1.0 - wake_decay) * (1.0 - wake_injection);
+    let air_entrainment = max(aeration_decay, aeration);
+
     let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
-    textureStore(next_foam, vec2<i32>(id.xy), vec4<f32>(coverage * smoothstep(0.002, 0.018, edge), age, stored_aeration, 0.0));
+    let edge_mask = smoothstep(0.002, 0.018, edge);
+
+    textureStore(next_foam, vec2<i32>(id.xy), vec4<f32>(
+        breaker_foam * edge_mask,
+        wake_foam * edge_mask,
+        air_entrainment * edge_mask,
+        clamp(vorticity, 0.0, 1.0) * edge_mask
+    ));
 }
