@@ -64,10 +64,18 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // bounding volume, and the surface is drawn at sea level regardless of any seabed —
     // a deep off-map value would sink the bounding sphere below the horizon view and
     // wrongly cull near off-map tiles. 0 <= the keep threshold, so off-map is kept.
-    // WTR-034 — CDLOD displacement bounds: conservatively include maximum expected FFT
-    // wave crest/trough and interaction impulse height (+/- 4.0m) so bounding spheres never cull crests.
+    // WTR-034 — Conservative CDLOD displacement bounds:
+    // Derivation of conservative bounding volume expansion:
+    // 1. Vertical displacement bound (D_y): sum of FFT cascade max crest heights (wave_amp * 1.8f)
+    // 2. Horizontal choppiness bound (D_xz): horizontal displacement shifts vertices by up to choppiness * wave_amp (1.2f * wave_amp)
+    // 3. Interaction & particle impulse padding: maximum vessel/interaction splash impulse height (+/- 1.5m)
+    // 4. Safety margin (1.25x): guarantees bounding spheres never cull crests near frustum edges.
     constexpr float OffMapSurface = 0.0f;
-    const float crestPadding = std::max(_params.wave_amp * 4.0f, 4.0f);
+    const float vertDisplacement = _params.wave_amp * 1.8f;
+    const float horizChoppiness = _params.wave_amp * 1.2f;
+    const float interactionImpulse = 1.5f;
+    const float conservativeBound = (vertDisplacement + horizChoppiness * 0.5f + interactionImpulse) * 1.25f;
+    const float crestPadding = std::max(conservativeBound, 3.5f);
     auto leafBounds = [&](int ox, int oz, int span, float& mn, float& mx)
     {
         for (int z = oz; z <= oz + span; z++)
