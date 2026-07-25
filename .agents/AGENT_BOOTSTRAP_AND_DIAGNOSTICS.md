@@ -98,3 +98,17 @@ When modifying FFI exports (e.g. `ffi.rs`, `wgpu_renderer.hpp`, `lib.rs` or `Wat
    ```
 3. **ALWAYS run a verification test to confirm the window opens before handing control back to the user**.
 
+---
+
+## 6. MANDATORY BUILD & DEPLOYMENT SEQUENCE AFTER EVERY FILE EDIT
+
+Editing any source file (`.wgsl`, `.cpp`, `.hpp`, `.rs`) in the repository **does NOT automatically update the game installation**. The game in `D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\` will continue running stale or mismatched binaries until deployed.
+
+**IDIOT-PROOF WORKFLOW FOR EVERY SINGLE CODE EDIT:**
+1. **Edit File**: Apply code/shader changes.
+2. **Build**: Run `cmake --build build/win-x64-clang-rwdi --target PoseidonGame`
+3. **Deploy**: Copy BOTH `PoseidonGame.exe` AND `wgpu_renderer.dll` to `D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\`
+4. **Test**: Execute `cmd /c ".\ColdWarAssault.exe --render wgpu --window --dev --log-file cwr.log"` and verify process initializes cleanly.
+5. **DO NOT** claim a feature is fixed or working until steps 1–4 are fully executed and verified!
+
+
