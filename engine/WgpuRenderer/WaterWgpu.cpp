@@ -120,6 +120,57 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // water-body batches can supply a river-only material signal.
     _params.flow_direction_speed = {0.0f, 0.0f, 0.0f, static_cast<float>(WGR_WATER_KIND_OCEAN)};
     _haveInteractionDomain = false;
+
+    // Phase GOW-014: Apply exact GodotOceanWaves reference cascade preset (88m, 57m, 16m)
+    WgrWaterCascadeConfig casA{};
+    casA.enabled = 1;
+    casA.resolution = 256;
+    casA.tile_length_x = 88.0f;
+    casA.tile_length_y = 88.0f;
+    casA.displacement_scale = 1.00f;
+    casA.horiz_displacement_scale = 1.00f;
+    casA.normal_scale = 1.00f;
+    casA.foam_scale = 8.00f;
+    casA.wind_speed = 10.0f;
+    casA.wind_direction_rad = 0.349f; // 20 degrees
+    casA.fetch_meters = 150000.0f;     // 150 km
+    casA.water_depth_meters = 20.0f;
+    casA.swell = 0.80f;
+    casA.directional_spread = 0.20f;
+    casA.short_wave_detail = 1.00f;
+    casA.whitecap_threshold = 0.50f;
+    casA.spectrum_seed = 1234;
+    casA.phase_offset_seconds = 0.0f;
+    casA.update_rate_hz = 60.0f;
+
+    WgrWaterCascadeConfig casB = casA;
+    casB.tile_length_x = 57.0f;
+    casB.tile_length_y = 57.0f;
+    casB.displacement_scale = 0.75f;
+    casB.horiz_displacement_scale = 0.75f;
+    casB.normal_scale = 1.00f;
+    casB.foam_scale = 0.00f;
+    casB.wind_speed = 5.0f;
+    casB.wind_direction_rad = 0.2618f; // 15 degrees
+    casB.directional_spread = 0.40f;
+    casB.spectrum_seed = 5678;
+
+    WgrWaterCascadeConfig casC = casA;
+    casC.tile_length_x = 16.0f;
+    casC.tile_length_y = 16.0f;
+    casC.displacement_scale = 0.00f; // High-frequency normal and foam cascade only
+    casC.horiz_displacement_scale = 0.00f;
+    casC.normal_scale = 0.25f;
+    casC.foam_scale = 3.00f;
+    casC.wind_speed = 20.0f;
+    casC.wind_direction_rad = 0.349f; // 20 degrees
+    casC.fetch_meters = 550000.0f;    // 550 km
+    casC.directional_spread = 0.40f;
+    casC.spectrum_seed = 91011;
+
+    wgr_water_set_cascade_config(_renderer, 0, &casA);
+    wgr_water_set_cascade_config(_renderer, 1, &casB);
+    wgr_water_set_cascade_config(_renderer, 2, &casC);
 }
 
 bool WaterWgpu::RebuildIfNeeded(const Landscape& land)

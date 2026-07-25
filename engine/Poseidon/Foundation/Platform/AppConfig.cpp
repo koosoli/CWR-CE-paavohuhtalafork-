@@ -244,12 +244,6 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
     try
     {
         std::vector<std::string> normalizedArgs = NormalizeLegacyArguments(argc, argv);
-        if (BuildInfo::ReleaseBuild && ContainsCliArg(normalizedArgs, "--dev"))
-        {
-            _parseFatalError = "--dev is not supported in release builds";
-            _parseFatalExitCode = 2;
-            return;
-        }
 
         const CliHelpMode helpMode = DetectHelpMode(normalizedArgs);
         const CliAppRole appRole = DetectAppRole(normalizedArgs);
@@ -559,13 +553,10 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
 
         showOption(debugGroup->add_flag("--benchmark", _benchmark, "Benchmark mode"), CliHelpVisibility::Dev);
 
-        if (!BuildInfo::ReleaseBuild)
-        {
-            debugGroup->add_flag(
-                "--dev", _devMode,
-                serverRole ? "Enable developer and test-oriented command-line options"
-                           : "Enable the dev panel (Ctrl+` toggles; Cheats/Game/Console/Profile/Memory/Font tabs)");
-        }
+        debugGroup->add_flag(
+            "--dev", _devMode,
+            serverRole ? "Enable developer and test-oriented command-line options"
+                       : "Enable the dev panel (Ctrl+` toggles; Cheats/Game/Console/Profile/Memory/Font tabs)");
 
         showOption(debugGroup->add_option("--vd", _viewDistanceOverride, "Override view distance (bypass 5000 clamp)")
                        ->check(CLI::Range(100.0f, 100000.0f)),

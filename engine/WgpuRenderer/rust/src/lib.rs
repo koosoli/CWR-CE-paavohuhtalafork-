@@ -21,7 +21,7 @@ use crate::ffi::{
     WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrInstance, WgrLight, WgrMat4, WgrMeshVertex,
     WgrModelLod, WgrModelMaterial, WgrModelSection, WgrOverlayDraw, WgrOverlayVertex,
     WgrShadowCaster, WgrShadowPass, WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams, WgrVec4,
-    WgrVertex2D, WgrWaterBatch, WgrWaterInteractionEvent, WgrWaterInteractionParams, WgrWaterNode,
+    WgrVertex2D, WgrWaterBatch, WgrWaterCascadeConfig, WgrWaterInteractionEvent, WgrWaterInteractionParams, WgrWaterNode,
     WgrWaterParams,
 };
 use crate::gfx2d::Gfx2d;
@@ -2337,6 +2337,10 @@ impl Renderer {
 
     fn water_set_params(&mut self, params: WgrWaterParams) {
         self.water.set_params(&self.queue, params);
+    }
+
+    fn water_set_cascade_config(&mut self, index: u32, config: WgrWaterCascadeConfig) {
+        self.water.set_cascade_config(&self.device, &self.queue, index, config);
     }
 
     fn water_set_interaction_params(&mut self, params: WgrWaterInteractionParams) {

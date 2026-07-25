@@ -718,6 +718,30 @@ struct WgrWaterParams
     WgrVec4 debug_params;
 };
 
+struct WgrWaterCascadeConfig
+{
+    uint32_t enabled;
+    uint32_t resolution;
+    float tile_length_x;
+    float tile_length_y;
+    float displacement_scale;
+    float horiz_displacement_scale;
+    float normal_scale;
+    float foam_scale;
+    float wind_speed;
+    float wind_direction_rad;
+    float fetch_meters;
+    float water_depth_meters;
+    float swell;
+    float directional_spread;
+    float short_wave_detail;
+    float whitecap_threshold;
+    uint32_t spectrum_seed;
+    float phase_offset_seconds;
+    float update_rate_hz;
+    float pad;
+};
+
 constexpr uint32_t WGR_MAX_WATER_INTERACTIONS = 48;
 
 /* WTR-001 — deterministic water freeze mask, OR-ed into WgrWaterParams.fft_control.z.
@@ -1105,6 +1129,9 @@ extern "C"
     /* Set/refresh the water placement params (see WgrWaterParams). Cheap; called on
      * map load and each frame to update the animated `sea_level`. */
     WGR_API void wgr_water_set_params(WgrRenderer* renderer, const WgrWaterParams* params);
+
+    /* Set per-cascade configuration (0..7). Spectrum initialisation regenerates when spectrum parameters change. */
+    WGR_API void wgr_water_set_cascade_config(WgrRenderer* renderer, uint32_t index, const WgrWaterCascadeConfig* config);
     WGR_API void wgr_water_set_interaction_params(WgrRenderer* renderer, const WgrWaterInteractionParams* params);
     WGR_API void wgr_water_submit_interactions(WgrRenderer* renderer, const WgrWaterInteractionEvent* events, uint32_t count);
 

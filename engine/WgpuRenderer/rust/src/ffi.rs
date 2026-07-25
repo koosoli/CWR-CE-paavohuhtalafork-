@@ -790,6 +790,33 @@ pub struct WgrWaterParams {
     pub debug_params: WgrVec4,
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrWaterCascadeConfig {
+    pub enabled: u32,
+    pub resolution: u32,
+    pub tile_length_x: f32,
+    pub tile_length_y: f32,
+    pub displacement_scale: f32,
+    pub horiz_displacement_scale: f32,
+    pub normal_scale: f32,
+    pub foam_scale: f32,
+    pub wind_speed: f32,
+    pub wind_direction_rad: f32,
+    pub fetch_meters: f32,
+    pub water_depth_meters: f32,
+    pub swell: f32,
+    pub directional_spread: f32,
+    pub short_wave_detail: f32,
+    pub whitecap_threshold: f32,
+    pub spectrum_seed: u32,
+    pub phase_offset_seconds: f32,
+    pub update_rate_hz: f32,
+    pub pad: f32,
+}
+
+const _: () = assert!(std::mem::size_of::<WgrWaterCascadeConfig>() == 80);
+
 pub const MAX_WATER_INTERACTIONS: usize = 48;
 #[repr(C, align(16))]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1387,6 +1414,24 @@ pub unsafe extern "C" fn wgr_water_set_params(
         let renderer = unsafe { &mut *renderer };
         let params = unsafe { *params };
         renderer.water_set_params(params);
+    }));
+}
+
+/// # Safety
+/// `renderer` must be live; `config` must point to one valid `WgrWaterCascadeConfig` or be null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_water_set_cascade_config(
+    renderer: *mut WgrRenderer,
+    index: u32,
+    config: *const WgrWaterCascadeConfig,
+) {
+    if renderer.is_null() || config.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let config = unsafe { *config };
+        renderer.water_set_cascade_config(index, config);
     }));
 }
 

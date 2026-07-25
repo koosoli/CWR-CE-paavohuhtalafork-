@@ -511,6 +511,15 @@ impl Fft {
             self.spectrum_dirty = true;
         }
     }
+    pub fn set_cascade_config(
+        &mut self,
+        _device: &wgpu::Device,
+        _queue: &wgpu::Queue,
+        _index: u32,
+        _config: crate::ffi::WgrWaterCascadeConfig,
+    ) {
+        self.spectrum_dirty = true;
+    }
     pub fn dispatch(
         &mut self,
         encoder: &mut wgpu::CommandEncoder,

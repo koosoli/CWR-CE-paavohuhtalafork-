@@ -671,6 +671,18 @@ impl Water {
         self.last_params = Some(params);
     }
 
+    pub fn set_cascade_config(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        index: u32,
+        config: crate::ffi::WgrWaterCascadeConfig,
+    ) {
+        if let Some(fft) = &mut self.fft {
+            fft.set_cascade_config(device, queue, index, config);
+        }
+    }
+
     pub fn underwater_params(&self) -> Option<(f32, f32, bool)> {
         self.last_params
             .map(|p| (p.sea_level, p.time, p.fft_control[3] > 0.5))
