@@ -433,8 +433,31 @@ fn safe_normalize3(x: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
     return select(fallback, x * inverseSqrt(max(length_sq, 1e-8)), length_sq > 1e-8);
 }
 
+// WTR-052 — Physical Fresnel foundation.
+// For water IOR eta = 1.333, physical F0 at normal incidence is ((1.333 - 1)/(1.333 + 1))^2 = 0.02037.
+fn water_fresnel_f0() -> f32 {
+    return 0.02037;
+}
+
 fn schlick_fresnel(f0: f32, cosine: f32) -> f32 {
     return f0 + (1.0 - f0) * pow(max(1.0 - cosine, 0.0), 5.0);
+}
+
+// WTR-053 — Optical refraction direction via Snell's Law (eta = 1.0 / 1.333 = 0.7502)
+fn optical_refract(view_dir: vec3<f32>, normal: vec3<f32>, eta: f32) -> vec3<f32> {
+    let cos_i = dot(-view_dir, normal);
+    let k = 1.0 - eta * eta * (1.0 - cos_i * cos_i);
+    if (k < 0.0) {
+        return reflect(view_dir, normal); // Total internal reflection fallback
+    }
+    return eta * view_dir + (eta * cos_i - sqrt(k)) * normal;
+}
+
+// WTR-056 — RGB wavelength-dependent extinction (Beer-Lambert optical transmission).
+// Red attenuates rapidly (0.15/m), Green moderately (0.04/m), Blue slowly (0.015/m).
+fn beer_lambert_attenuation(water_path_length: f32) -> vec3<f32> {
+    let extinction_rgb = vec3<f32>(0.150, 0.040, 0.015) * wp.color_ext;
+    return exp(-extinction_rgb * max(water_path_length, 0.0));
 }
 
 fn smith_schlick_g1(ndx: f32, roughness: f32) -> f32 {
@@ -460,6 +483,7 @@ struct SceneSample {
     valid: f32,
 };
 
+// WTR-053 & WTR-055 — Refracted scene lookup with strict foreground depth rejection guard.
 // The distorted lookup is accepted only when opaque geometry is farther from the
 // camera than the water surface. Compare reconstructed camera-relative distance,
 // not nonlinear reversed-Z values, and keep validity separate from scene colour.
@@ -831,19 +855,18 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
 
     // WTR-051 / WTR-052 / WTR-053 / WTR-056 — Physical Fresnel, Snell's law refraction & RGB extinction
     const WATER_IOR: f32 = 1.333;
-    const PHYSICAL_F0: f32 = 0.02037; // ((1.333 - 1.0)/(1.333 + 1.0))^2
+    let physical_f0 = water_fresnel_f0();
     let view_dir = normalize(in.world_pos); // camera -> surface
-    let refracted_dir = refract(view_dir, n, 1.0 / WATER_IOR);
-    let path_length = water_depth / max(abs(view_dir.y), 0.1);
+    let refracted_dir = optical_refract(view_dir, n, 1.0 / WATER_IOR);
+    let path_length = water_depth / max(abs(refracted_dir.y), 0.1);
     let refract_offset = (refracted_dir.xz - view_dir.xz) * clamp(water_depth * 0.12, 0.005, 0.45);
     let refract_uv = clamp(uv + refract_offset, vec2<f32>(0.001), vec2<f32>(0.999));
     let refracted = refracted_scene(refract_uv, in.world_pos);
 
     // RGB Beer-Lambert transmission (red light absorbed fastest in water)
-    const SIGMA_ABSORPTION: vec3<f32> = vec3<f32>(0.35, 0.07, 0.02);
-    let rgb_transmittance = exp(-SIGMA_ABSORPTION * path_length * wp.color_ext * 8.0);
-    let physical_fresnel = schlick_fresnel(PHYSICAL_F0, ndv);
-    let transmission = (1.0 - fresnel) * 0.85;
+    let rgb_transmittance = beer_lambert_attenuation(path_length);
+    let physical_fresnel = schlick_fresnel(physical_f0, ndv);
+    let transmission = (1.0 - physical_fresnel) * 0.85;
     let transmitted = mix(rgb * rgb_transmittance, refracted.color * rgb_transmittance, refracted.valid * transmission);
 
     // SSR augments environment; reflection_weight uses physical Fresnel with artistic controls
