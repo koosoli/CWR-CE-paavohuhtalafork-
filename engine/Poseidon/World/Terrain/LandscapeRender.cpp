@@ -1398,6 +1398,11 @@ void Landscape::DrawHorizont(Scene& scene)
         return;
     }
 
+    if (!_horizontObject)
+    {
+        return;
+    }
+
     GEngine->EnableReorderQueues(false);
     GEngine->FlushQueues();
 
