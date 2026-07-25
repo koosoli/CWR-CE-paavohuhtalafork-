@@ -257,14 +257,7 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     {
         dt = 0.0f;
     }
-    const bool reset = !_haveInteractionDomain || std::abs(originX - _interaction.domain.x) > interactionSize * 0.5f || std::abs(originZ - _interaction.domain.y) > interactionSize * 0.5f;
-    _interaction.previous_domain = _haveInteractionDomain ? _interaction.domain : WgrVec4{originX, originZ, interactionSize, 1.0f / interactionSize};
-    _interaction.domain = {originX, originZ, interactionSize, 1.0f / interactionSize};
-    _interaction.grid = {256.0f, dt, 0.0f, reset ? 1.0f : 0.0f};
-    _interaction.physics = {12.0f, 1.6f, 0.35f, 1.2f};
-    _interaction.misc = {0.0f, now, 0.0f, 0.0f};
-    _interaction.weather = {0.0f, std::clamp(1.0f - look.waveAmp * 0.45f, 0.15f, 1.0f), 0.0f, 0.0f};
-    wgr_water_set_interaction_params(_renderer, &_interaction);
+
     std::array<WgrWaterInteractionEvent, WGR_MAX_WATER_INTERACTIONS> events{};
     uint32_t eventCount = 0;
     if (_interactionDemo)
@@ -299,6 +292,16 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         event.direction_depth_flags = {source.directionDepthFlags[0], source.directionDepthFlags[1],
                                        source.directionDepthFlags[2], source.directionDepthFlags[3]};
     }
+
+    const bool reset = !_haveInteractionDomain || std::abs(originX - _interaction.domain.x) > interactionSize * 0.5f || std::abs(originZ - _interaction.domain.y) > interactionSize * 0.5f;
+    _interaction.previous_domain = _haveInteractionDomain ? _interaction.domain : WgrVec4{originX, originZ, interactionSize, 1.0f / interactionSize};
+    _interaction.domain = {originX, originZ, interactionSize, 1.0f / interactionSize};
+    _interaction.grid = {256.0f, dt, static_cast<float>(eventCount), reset ? 1.0f : 0.0f};
+    _interaction.physics = {12.0f, 1.6f, 0.35f, 1.2f};
+    _interaction.misc = {0.0f, now, 0.0f, 0.0f};
+    _interaction.weather = {0.0f, std::clamp(1.0f - look.waveAmp * 0.45f, 0.15f, 1.0f), 0.0f, 0.0f};
+    wgr_water_set_interaction_params(_renderer, &_interaction);
+
     if (eventCount != 0)
     {
         wgr_water_submit_interactions(_renderer, events.data(), eventCount);
