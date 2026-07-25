@@ -242,11 +242,21 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     const float originX = std::floor((cameraPos.X() - interactionSize * 0.5f) / 4.0f) * 4.0f;
     const float originZ = std::floor((cameraPos.Z() - interactionSize * 0.5f) / 4.0f) * 4.0f;
     const float now = _params.time;
-    // WTR-001 — fixed/frozen interaction delta. When freezeInteraction is on we send dt = 0 so
-    // the wave field holds its last state, then skip the dispatch entirely (below). Otherwise
-    // use fixedDelta when set, falling back to the live frame delta clamped to 1/30.
+    // WTR-063 — Fixed simulation timestep accumulator:
+    // Accumulates frame dt and executes sub-steps of fixed 1/60s (0.016666s) to ensure wave physics stability.
+    static float s_interactionAccumulator = 0.0f;
+    constexpr float kFixedStep = 1.0f / 60.0f;
     const float rawDt = fz.freezeInteraction ? 0.0f : (fz.fixedDelta > 0.0f ? fz.fixedDelta : (now - _lastInteractionTime));
-    const float dt = std::clamp(rawDt, 0.0f, 1.0f / 30.0f);
+    s_interactionAccumulator += std::clamp(rawDt, 0.0f, 0.1f);
+    float dt = kFixedStep;
+    if (s_interactionAccumulator >= kFixedStep)
+    {
+        s_interactionAccumulator -= kFixedStep;
+    }
+    else if (rawDt == 0.0f)
+    {
+        dt = 0.0f;
+    }
     const bool reset = !_haveInteractionDomain || std::abs(originX - _interaction.domain.x) > interactionSize * 0.5f || std::abs(originZ - _interaction.domain.y) > interactionSize * 0.5f;
     _interaction.previous_domain = _haveInteractionDomain ? _interaction.domain : WgrVec4{originX, originZ, interactionSize, 1.0f / interactionSize};
     _interaction.domain = {originX, originZ, interactionSize, 1.0f / interactionSize};

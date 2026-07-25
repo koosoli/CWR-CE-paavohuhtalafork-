@@ -51,6 +51,9 @@ fn interaction_update(@builtin(global_invocation_id) id: vec3<u32>) {
         if ((flags & 1u) == 0u) { continue; }
         let delta = world - event.position_radius.xy;
         let radius = max(event.position_radius.z, cell * 1.25);
+        // WTR-062 — Bounded event dispatch optimization:
+        // Skip texel calculations for events whose radius box does not overlap the current position.
+        if (abs(delta.x) > radius * 2.5 || abs(delta.y) > radius * 2.5) { continue; }
         let direction = normalize(event.direction_depth_flags.xy + event.velocity_kind.xy + vec2<f32>(0.001, 0.0));
         let capsule = (flags & (1u << 8u)) != 0u;
         let along = clamp(dot(delta, direction), -radius, radius);
