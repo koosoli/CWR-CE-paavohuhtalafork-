@@ -165,20 +165,20 @@ void Landscape::Init()
         const int sunSpec =
             (IsAlpha | NoZBuf | NoZWrite | ClampV | ClampU | SpecLighting | NoShadow | IsAlphaFog | FogDisabled);
         Ref<LODShapeWithShadow> haloShape = loadSkyShape(sunHaloName, "sunHalo");
-        if (haloShape)
+        Shape* haloShape0 = haloShape ? haloShape->LevelOpaque(0) : nullptr;
+        int i;
         {
-            Shape* haloShape0 = haloShape->LevelOpaque(0);
-            int i;
+            // load sun shape
+            Ref<LODShapeWithShadow> sunShape = loadSkyShape(sunName, "sun");
+            if (sunShape)
             {
-                // load sun shape
-                Ref<LODShapeWithShadow> sunShape = loadSkyShape(sunName, "sun");
-                if (sunShape)
+                Shape* sunShape0 = sunShape->LevelOpaque(0);
+                for (i = 0; i < sunShape0->NPos(); i++)
                 {
-                    Shape* sunShape0 = sunShape->LevelOpaque(0);
-                    for (i = 0; i < sunShape0->NPos(); i++)
-                    {
-                        sunShape0->SetClip(i, ClipLightSun | ClipFogDisable | ClipDecalNormal | clipSky);
-                    }
+                    sunShape0->SetClip(i, ClipLightSun | ClipFogDisable | ClipDecalNormal | clipSky);
+                }
+                if (haloShape0)
+                {
                     for (i = 0; i < haloShape0->NPos(); i++)
                     {
                         haloShape0->SetClip(i, ClipLightSunHalo | ClipFogDisable | ClipDecalNormal | clipSky);
@@ -192,22 +192,31 @@ void Landscape::Init()
                     sunWithHalo->AllowAnimation();
                     _sunObject = new ObjectPlain(sunWithHalo, -1);
                 }
-            }
-            {
-                // load moon shape
-                Ref<LODShapeWithShadow> lShape = loadSkyShape(moonName, "moon");
-                if (lShape)
+                else
                 {
-                    Shape* moonShape0 = lShape->LevelOpaque(0);
-                    if ((lShape->Special() & IsAlphaFog) == 0)
+                    sunShape->SetSpecial(sunSpec);
+                    sunShape->AllowAnimation();
+                    _sunObject = new ObjectPlain(sunShape, -1);
+                }
+            }
+        }
+        {
+            // load moon shape
+            Ref<LODShapeWithShadow> lShape = loadSkyShape(moonName, "moon");
+            if (lShape)
+            {
+                Shape* moonShape0 = lShape->LevelOpaque(0);
+                if ((lShape->Special() & IsAlphaFog) == 0)
+                {
+                    lShape->OrSpecial(IsAlphaFog);
+                    for (i = 0; i < moonShape0->NPos(); i++)
                     {
-                        lShape->OrSpecial(IsAlphaFog);
-                        for (i = 0; i < moonShape0->NPos(); i++)
-                        {
-                            moonShape0->SetClip(i, ClipLightMoon | ClipFogDisable | clipSky);
-                        }
-                        lShape->InternalTransform(Matrix4(MScale, 0.25));
+                        moonShape0->SetClip(i, ClipLightMoon | ClipFogDisable | clipSky);
                     }
+                    lShape->InternalTransform(Matrix4(MScale, 0.25));
+                }
+                if (haloShape0)
+                {
                     for (i = 0; i < haloShape0->NPos(); i++)
                     {
                         haloShape0->SetClip(i, ClipLightMoonHalo | ClipFogDisable | clipSky);
@@ -217,10 +226,15 @@ void Landscape::Init()
                     moonWithHalo->LevelOpaque(0)->Merge(moonShape0, MIdentity);
                     moonWithHalo->LevelOpaque(0)->CalculateHints();
                     moonWithHalo->CalculateHints();
-                    // moonWithHalo->SetSpecial(sunSpec|IsFlare);
                     moonWithHalo->SetSpecial(sunSpec | IsLight);
                     moonWithHalo->AllowAnimation();
                     _moonObject = new ObjectPlain(moonWithHalo, -1);
+                }
+                else
+                {
+                    lShape->SetSpecial(sunSpec | IsLight);
+                    lShape->AllowAnimation();
+                    _moonObject = new ObjectPlain(lShape, -1);
                 }
             }
         }

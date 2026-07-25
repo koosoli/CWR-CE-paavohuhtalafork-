@@ -64,7 +64,10 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // bounding volume, and the surface is drawn at sea level regardless of any seabed —
     // a deep off-map value would sink the bounding sphere below the horizon view and
     // wrongly cull near off-map tiles. 0 <= the keep threshold, so off-map is kept.
+    // WTR-034 — CDLOD displacement bounds: conservatively include maximum expected FFT
+    // wave crest/trough and interaction impulse height (+/- 4.0m) so bounding spheres never cull crests.
     constexpr float OffMapSurface = 0.0f;
+    const float crestPadding = std::max(_params.wave_amp * 4.0f, 4.0f);
     auto leafBounds = [&](int ox, int oz, int span, float& mn, float& mx)
     {
         for (int z = oz; z <= oz + span; z++)
@@ -73,8 +76,8 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
             {
                 const float h =
                     (x < 0 || z < 0 || x >= range || z >= range) ? OffMapSurface : land.GetHeight(z, x);
-                mn = std::min(mn, h);
-                mx = std::max(mx, h);
+                mn = std::min(mn, h - crestPadding);
+                mx = std::max(mx, h + crestPadding);
             }
         }
     };

@@ -176,23 +176,45 @@ fn fft_sample(xz: vec2<f32>, layer: i32) -> vec4<f32> {
     let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
     return textureSampleLevel(fft_displacement, fft_samp, fract(xz / length_m), layer, 0.0);
 }
+// WTR-031 / WTR-032 — Frequency-aware per-cascade distance filtering.
+// Attenuates detail by wavelength so short waves disappear first while distant swell remains visible.
+fn cascade_wave_fade(layer: i32, dist: f32) -> f32 {
+    let length_m = max(wp.fft_cascade_lengths[layer], 48.0);
+    let ratio = length_m / 48.0;
+    let fade_start = wp.fade_start * ratio;
+    let fade_end = wp.fade_end * ratio;
+    return 1.0 - smoothstep(fade_start, fade_end, dist);
+}
+
 fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
     var disp = vec3<f32>(0.0);
-    // The JONSWAP wind peak sits in the shortest 48 m cascade at the default
-    // wind speed. It must contribute to geometry as well as normals or the
-    // visible ocean stays flat while only its shading ripples.
     for (var layer = 0; layer < 4; layer = layer + 1) {
-        disp = disp + fft_sample(xz, layer).xyz;
+        let fade = cascade_wave_fade(layer, dist);
+        disp = disp + fft_sample(xz, layer).xyz * fade;
     }
-    return disp * wave_fade(dist);
+    return disp;
+}
+// WTR-013 — Fixed-point world-to-material coordinate inversion.
+// Resolves material coordinate q from a displaced world position x (3 iterations).
+fn world_to_material_pos(world_xz: vec2<f32>, dist: f32) -> vec2<f32> {
+    var q = world_xz;
+    if (wp.fft_control.x > 0.5) {
+        for (var i = 0; i < 3; i = i + 1) {
+            let disp_xz = fft_geometry_disp(q, dist).xz;
+            q = world_xz - disp_xz;
+        }
+    }
+    return q;
 }
 fn fft_normal(xz: vec2<f32>, dist: f32) -> vec3<f32> {
     var slope = vec2<f32>(0.0);
     for (var layer = 0; layer < 4; layer = layer + 1) {
         let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-        slope = slope + textureSampleLevel(fft_dynamics, fft_samp, fract(xz / length_m), layer, 0.0).xy;
+        let fade = cascade_wave_fade(layer, dist);
+        let layer_slope = textureSampleLevel(fft_dynamics, fft_samp, fract(xz / length_m), layer, 0.0).xy;
+        slope = slope + layer_slope * fade;
     }
-    return normalize(vec3<f32>(-slope.x * wave_fade(dist), 1.0, -slope.y * wave_fade(dist)));
+    return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
 }
 
 // The interaction field follows the camera in a 256m domain. Outside it samples zero;
@@ -584,6 +606,28 @@ fn debug_view(view: i32, base_xz: vec2<f32>, world_rel: vec3<f32>, water_depth: 
     return vec4<f32>(c, 1.0);
 }
 
+// WTR-011 — Shared water-surface state representation
+struct WaterSurfaceState {
+    material_position: vec2<f32>,
+    world_pos: vec3<f32>,
+    displaced_pos: vec3<f32>,
+    previous_displaced_pos: vec3<f32>,
+    displacement: vec3<f32>,
+    velocity: vec3<f32>,
+    geometric_normal: vec3<f32>,
+    shading_normal: vec3<f32>,
+    jacobian: f32,
+    compression: f32,
+    curvature: f32,
+    slope_variance: f32,
+    crest_energy: f32,
+    breaking_energy: f32,
+    interaction_height: f32,
+    interaction_velocity: f32,
+    aeration: f32,
+    foam_density: f32,
+};
+
 @fragment
 fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Receiver-plane derivatives for the CSM bias must be taken in uniform control flow.
@@ -663,6 +707,30 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let base_normal = n;
     n = micro_normal(in.base_xz, length(in.world_pos), water_depth, n, fft_slope_variance);
     let roughness = water_roughness(wp.spec_power, fft_slope_variance, base_normal, n);
+
+    // WTR-011 / WTR-012 — Shared surface-state construction
+    var state: WaterSurfaceState;
+    state.material_position = in.base_xz;
+    state.world_pos = in.world_pos;
+    state.displaced_pos = in.world_pos;
+    let interaction_texel = interaction_sample(in.base_xz);
+    state.interaction_height = interaction_texel.r;
+    state.interaction_velocity = interaction_texel.g;
+    state.aeration = interaction_texel.b;
+    let flow_speed = max(wp.flow_direction_speed.z, 0.0);
+    let flow_dir = normalize(wp.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) * flow_speed;
+    state.velocity = vec3<f32>(flow_dir.x, state.interaction_velocity, flow_dir.y);
+    state.previous_displaced_pos = in.world_pos - state.velocity * 0.0333;
+    state.displacement = in.world_pos - vec3<f32>(in.base_xz.x - frame.cam_pos.x, 0.0, in.base_xz.y - frame.cam_pos.z);
+    state.geometric_normal = base_normal;
+    state.shading_normal = n;
+    state.jacobian = 1.0;
+    state.compression = fft_compression;
+    state.curvature = fft_curvature;
+    state.slope_variance = fft_slope_variance;
+    state.crest_energy = fft_crest;
+    state.breaking_energy = max(0.0, fft_crest - 0.6) + state.aeration;
+    state.foam_density = textureSampleLevel(foam_history, foam_samp, fract(in.base_xz / 256.0), 0.0).r;
     var shallow = wp.shallow_color.rgb;
     var deep = wp.deep_color.rgb;
     if (linear > 0.5) {
@@ -716,24 +784,26 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // contribution at stable SSR hits so the half-res wave deformation is not hidden.
     refl = mix(refl, planar_refl.rgb, planar_refl.a * (1.0 - ssr.a * 0.80));
     let uv = scene_uv(in.clip.xy);
-    // Refraction is strongest looking down. The normal offset is bounded in pixels so
-    // choppy near water cannot pull foreground geometry across the shoreline.
-    // Distort the visible seabed through the same resolved surface normal. The offset
-    // is strongest in clear shallows, then fades as water-body absorption takes over.
-    let refraction_strength = (0.003 + 0.013 / (1.0 + water_depth)) *
-        (1.0 - 0.35 * smoothstep(1.5, 8.0, water_depth));
-    let refract_uv = clamp(uv + n.xz * refraction_strength, vec2<f32>(0.001), vec2<f32>(0.999));
-    let refracted = refracted_scene(refract_uv, in.world_pos);
-    // Retain a visible water body even in the clearest shallows; this avoids a
-    // glass-like surface while leaving the refracted seabed readable.
-    let transmission = (1.0 - depth_tint) * 0.76 * (1.0 - fresnel);
-    let transmitted = mix(rgb, refracted.color, refracted.valid * transmission);
 
-    // SSR augments, but never replaces, the environment: the snapshot cannot reflect off-screen
-    // content or transparent objects, and this renderer has no reflected-camera/clip-plane pass.
-    // Slightly boost the physically small water F0 so the sky and valid SSR detail
-    // remain legible on the engine's low-contrast terrain palette.
-    let reflection_weight = clamp(fresnel * 1.45 + 0.025, 0.0, 1.0);
+    // WTR-051 / WTR-052 / WTR-053 / WTR-056 — Physical Fresnel, Snell's law refraction & RGB extinction
+    const WATER_IOR: f32 = 1.333;
+    const PHYSICAL_F0: f32 = 0.02037; // ((1.333 - 1.0)/(1.333 + 1.0))^2
+    let view_dir = normalize(in.world_pos); // camera -> surface
+    let refracted_dir = refract(view_dir, n, 1.0 / WATER_IOR);
+    let path_length = water_depth / max(abs(view_dir.y), 0.1);
+    let refract_offset = (refracted_dir.xz - view_dir.xz) * clamp(water_depth * 0.12, 0.005, 0.45);
+    let refract_uv = clamp(uv + refract_offset, vec2<f32>(0.001), vec2<f32>(0.999));
+    let refracted = refracted_scene(refract_uv, in.world_pos);
+
+    // RGB Beer-Lambert transmission (red light absorbed fastest in water)
+    const SIGMA_ABSORPTION: vec3<f32> = vec3<f32>(0.35, 0.07, 0.02);
+    let rgb_transmittance = exp(-SIGMA_ABSORPTION * path_length * wp.color_ext * 8.0);
+    let physical_fresnel = schlick_fresnel(PHYSICAL_F0, ndv);
+    let transmission = (1.0 - fresnel) * 0.85;
+    let transmitted = mix(rgb * rgb_transmittance, refracted.color * rgb_transmittance, refracted.valid * transmission);
+
+    // SSR augments environment; reflection_weight uses physical Fresnel with artistic controls
+    let reflection_weight = clamp(physical_fresnel * 1.45 + 0.025, 0.0, 1.0);
     rgb = mix(transmitted, refl, reflection_weight);
 
     // WTR-003 — debug views replace the lit output (view 0 = normal shading). Aggregated

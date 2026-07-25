@@ -2025,6 +2025,97 @@ static const char* const kWaterDebugViews[] = {
 static constexpr int kWaterDebugViewCount = static_cast<int>(std::size(kWaterDebugViews));
 static_assert(kWaterDebugViewCount == 37, "Water debug view names must match WgrWaterDebugView (0..36)");
 
+// WTR-004 standard test scene definitions
+static const char* const kWaterTestScenes[] = {
+    "None (Custom / Authored Defaults)",                      // 0
+    "WTR-Test-01 — Seabed checkerboard (Refraction)",        // 1
+    "WTR-Test-02 — Cloud pitch (Reflection pitch stability)",  // 2
+    "WTR-Test-03 — Ocean altitude (Cascade filtering)",       // 3
+    "WTR-Test-04 — Projectile grid (Interaction solver)",     // 4
+    "WTR-Test-05 — Boat wake (Vessel wake propagation)",      // 5
+    "WTR-Test-06 — Explosion (Impulse & aeration)",           // 6
+    "WTR-Test-07 — Underwater light (God rays & volumetric)", // 7
+    "WTR-Test-08 — Waterline (Near-field submersion)",        // 8
+    "WTR-Test-09 — Shoreline (Swash, foam & wet band)",       // 9
+    "WTR-Test-10 — Weather transition (Calm/storm spectrum)"  // 10
+};
+static constexpr int kWaterTestSceneCount = static_cast<int>(std::size(kWaterTestScenes));
+
+static void ApplyWtrTestScenePreset(Poseidon::Engine::WaterSettings& s, int index)
+{
+    s.testScene = index;
+    switch (index)
+    {
+    case 1: // WTR-Test-01 — Seabed checkerboard
+        s.enabled = true;
+        s.alpha = 0.35f;
+        s.colorExt = 0.05f;
+        s.coastFade = 0.05f;
+        s.foamWidth = 0.0f;
+        s.foamIntensity = 0.0f;
+        s.freeze.freezeTime = true;
+        s.freeze.fixedTime = 12.0f;
+        s.debugView = 18; // Water-column depth
+        break;
+    case 2: // WTR-Test-02 — Cloud pitch
+        s.enabled = true;
+        s.waveAmp = 0.0f; // Calm water
+        s.freeze.freezeTime = true;
+        s.freeze.fixedTime = 42.0f;
+        s.freeze.freezeClouds = true;
+        s.debugView = 24; // Directional sky/cloud reflection
+        break;
+    case 3: // WTR-Test-03 — Ocean altitude
+        s.enabled = true;
+        s.fadeStart = 1000.0f;
+        s.fadeEnd = 10000.0f;
+        s.freeze.freezeTime = true;
+        s.freeze.fixedTime = 100.0f;
+        s.debugView = 0;
+        break;
+    case 4: // WTR-Test-04 — Projectile grid
+        s.enabled = true;
+        s.freeze.freezeInteraction = false;
+        s.freeze.fixedDelta = 1.0f / 60.0f;
+        s.debugView = 12; // Interaction height
+        break;
+    case 5: // WTR-Test-05 — Boat wake
+        s.enabled = true;
+        s.debugView = 17; // Surface velocity
+        break;
+    case 6: // WTR-Test-06 — Explosion
+        s.enabled = true;
+        s.debugView = 14; // Interaction foam/aeration
+        break;
+    case 7: // WTR-Test-07 — Underwater light
+        s.enabled = true;
+        s.debugView = 31; // Underwater in-scattering
+        break;
+    case 8: // WTR-Test-08 — Waterline
+        s.enabled = true;
+        s.debugView = 29; // RGB transmittance
+        break;
+    case 9: // WTR-Test-09 — Shoreline
+        s.enabled = true;
+        s.swashAmp = 0.50f;
+        s.swashSpeed = 0.05f;
+        s.coastFade = 1.50f;
+        s.foamWidth = 4.00f;
+        s.foamIntensity = 1.00f;
+        s.wetHeight = 0.50f;
+        s.wetDarken = 0.40f;
+        s.debugView = 0;
+        break;
+    case 10: // WTR-Test-10 — Weather transition
+        s.enabled = true;
+        s.freeze.freezeWeather = false;
+        s.debugView = 0;
+        break;
+    default:
+        break;
+    }
+}
+
 void DrawWaterTab()
 {
     if (!GEngine)
@@ -2216,6 +2307,18 @@ void DrawWaterTab()
                           "interaction / foam views aggregate the four cascades; interaction & foam "
                           "fields read zero outside the 256 m camera domain. Reserved entries have no "
                           "backing pass yet and render black. wgpu backend only.");
+
+    // WTR-004 — Standard test scenes preset selector
+    ImGui::Separator();
+    ImGui::TextUnformatted("Standard test scenes (WTR-004)");
+    int testScene = (s.testScene >= 0 && s.testScene < kWaterTestSceneCount) ? s.testScene : 0;
+    if (ImGui::Combo("Test scene preset", &testScene, kWaterTestScenes, kWaterTestSceneCount))
+    {
+        ApplyWtrTestScenePreset(s, testScene);
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Selects a standard WTR-Test-01..10 test scene preset (sets water parameters, "
+                          "freeze switches, and debug view to reproduce exact test conditions).");
 
     if (changed)
         GEngine->SetWaterSettings(s);

@@ -1229,6 +1229,9 @@ class Engine : public IGraphicsEngine
         // Backend-agnostic: non-wgpu engines ignore it. Written to WgrWaterParams.debug_params.x.
         int debugView = 0;
 
+        // WTR-004 — standard test scene selector (dev-only; 0 = None / Authored, 1..10 = WTR-Test-01..10).
+        int testScene = 0;
+
         // WTR-001 — deterministic water debug controls (dev-only; the Water tab "Debug" section).
         // All freezes are renderer-local: they override the UBO time/dt the shader sees, without
         // touching Glob.time (gameplay / net clock) or any non-water subsystem other than the cloud
