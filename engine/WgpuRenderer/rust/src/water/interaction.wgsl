@@ -19,6 +19,10 @@ fn sample_previous(uv: vec2<f32>) -> vec4<f32> {
     return textureSampleLevel(previous_field, field_sampler, clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0) * inside;
 }
 fn hash2(p: vec2<f32>) -> f32 { return fract(sin(dot(p, vec2<f32>(127.1, 311.7))) * 43758.5453); }
+fn safe_normalize_vec2(v: vec2<f32>) -> vec2<f32> {
+    let len_sq = dot(v, v);
+    return select(vec2<f32>(0.0, 1.0), v * inverseSqrt(max(len_sq, 1e-8)), len_sq > 1e-8);
+}
 fn type_mask(value: f32, expected: f32) -> f32 { return 1.0 - step(0.45, abs(value - expected)); }
 
 @compute @workgroup_size(8, 8, 1)
@@ -71,9 +75,29 @@ fn interaction_update(@builtin(global_invocation_id) id: vec3<u32>) {
         let footstep = type_mask(kind, FOOTSTEP);
         let continuous = type_mask(kind, CONTINUOUS);
         let entry = clamp(abs(event.velocity_kind.z) / 8.0, 0.22, 2.0);
-        let pulse = bullet * (-core * 1.45 + ring * 0.82) + object * (-core * 1.65 + ring * 2.05) + player * (-core * 1.10 + ring * 1.38) + explosion * (-core * 3.8 + ring * 5.3) + footstep * (-core * 0.26 + ring * 0.34) + continuous * (core * 0.16 + ring * 0.12);
+
+        // WTR-072 — Directional footstep & wading bow wave bias
+        let move_dot = dot(safe_normalize_vec2(delta), direction);
+        let footstep_bias = 1.0 + move_dot * 0.45;
+
+        // WTR-074 — Vessel Kelvin wake V-shaped wedge (19.47 degrees, sin ~ 0.333)
+        let perp_dir = vec2<f32>(-direction.y, direction.x);
+        let lateral_dist = abs(dot(delta, perp_dir));
+        let kelvin_angle_sin = lateral_dist / max(distance, 0.01);
+        let kelvin_wedge = smoothstep(0.38, 0.28, kelvin_angle_sin);
+        let kelvin_wake = continuous * kelvin_wedge * (sin(q * 14.0) * 0.75 - core * 1.1);
+
+        // WTR-071 / WTR-073 / WTR-075 — Bullet, explosion rebound, and object pulse profiles
+        let bullet_pulse = bullet * (-core * 2.20 + ring * 1.85);
+        let object_pulse = object * (-core * 1.65 + ring * 2.05) + kelvin_wake;
+        let player_pulse = player * (-core * 1.10 + ring * 1.38) * footstep_bias;
+        let explosion_pulse = explosion * (-core * 4.50 + ring * 6.50); // Deep cavity + central rebound column
+        let footstep_pulse = footstep * (-core * 0.32 + ring * 0.42) * footstep_bias;
+        let continuous_pulse = continuous * (core * 0.16 + ring * 0.12) + kelvin_wake;
+
+        let pulse = bullet_pulse + object_pulse + player_pulse + explosion_pulse + footstep_pulse + continuous_pulse;
         velocity = velocity + pulse * event.position_radius.w * entry * mix(0.075, 1.0, calmness * calmness);
-        foam = max(foam, clamp((core + ring) * event.time_life_foam_mass.z * event.position_radius.w * 0.2, 0.0, 1.0));
+        foam = max(foam, clamp((core + ring) * event.time_life_foam_mass.z * event.position_radius.w * 0.25, 0.0, 1.0));
     }
     if (params.weather.x > 0.0005 && calmness > 0.025) {
         let rain = hash2(floor(world * 0.8) + floor(params.misc.y));
