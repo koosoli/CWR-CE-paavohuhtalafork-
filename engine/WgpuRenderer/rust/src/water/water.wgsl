@@ -1001,8 +1001,8 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // LAND side dissolves softly instead of ending on a hard bright line where the water geometry
     // is clipped by the beach — the deep side already faded. Foam also fades to 0 right at the
     // edge, so the water there is transparent (soft wash over wet sand) rather than opaque white.
-    let ft = eff_depth / max(wp.foam_width, 1e-4);
-    let foam_band = smoothstep(0.0, 0.12, ft) * (1.0 - smoothstep(0.45, 1.35, ft));
+    let ft = eff_depth / max(wp.foam_width * 2.2, 0.4);
+    let foam_band = smoothstep(0.0, 0.06, ft) * (1.0 - smoothstep(0.35, 1.95, ft));
     let coast_noise = foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time);
     // `coast_flow` is the reconstructed water-depth gradient toward land. Build elongated
     // streaks perpendicular to that direction so wash follows the actual shoreline contour.
@@ -1012,12 +1012,11 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         dot(in.base_xz, shoreline_tangent) * 0.74 + wp.time * 0.16,
         dot(in.base_xz, shoreward) * 0.19 - wp.time * 0.38
     ));
-    let coast_pattern = max(coast_noise, smoothstep(0.59, 0.78, shoreline_streak));
-    let foam = clamp(foam_band * (0.18 + coast_pattern * 0.82) * wp.foam_intensity *
-        (1.0 + shore_break * 1.15), 0.0, 1.0);
+    let coast_pattern = max(coast_noise, smoothstep(0.52, 0.72, shoreline_streak));
+    let foam = clamp(foam_band * (0.35 + coast_pattern * 0.95) * max(wp.foam_intensity * 1.8, 1.25) *
+        (1.0 + shore_break * 1.35), 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
-    // The compute source is thresholded, so calm water with no events or breaking crests remains clean.
-    let persistent_foam = clamp(foam_history_sample.r * (0.52 + foam_history_sample.b * 0.30), 0.0, 1.0);
+    let persistent_foam = clamp((foam_history_sample.r + foam_history_sample.g * 1.5) * (0.65 + foam_history_sample.b * 0.45), 0.0, 1.0);
     // Immediate sparse whitecaps bridge the time before the persistent history builds.
     // Every gate is required, preventing a broad bright layer on ordinary wind waves.
     let breaker_foam = smoothstep(0.014, 0.050, state.crest_energy) *
