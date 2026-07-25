@@ -245,7 +245,7 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _params.swash_amp = look.swashAmp;
     _params.swash_speed = look.swashSpeed;
     const Vector3 cameraPos = camera->Position();
-    const bool isSubmerged = (cameraPos.Y() < land.GetSeaLevel() + 0.05f) || (GetPlayerWaterDepth() > 0.50f);
+    const bool isSubmerged = (cameraPos.Y() < land.GetSeaLevel() + 0.25f) || (GetPlayerWaterDepth() > 0.10f);
     _params.fft_control.w = isSubmerged ? 1.0f : 0.0f;
     // WTR-001 — deterministic FFT seed. The authored default (1337.0, set in BuildQuadtree)
     // already keeps the random field stable across frames; allow the dev tab to override it,

@@ -171,10 +171,36 @@ fn gerstner_normal(p_in: vec2<f32>, dist: f32) -> vec3<f32> {
     return normalize(vec3<f32>(nx, 1.0 + ny, nz));
 }
 
+fn texture_bicubic_displacement(uv: vec2<f32>, layer: i32) -> vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(fft_displacement));
+    let inv_x = 1.0 / dims.x;
+    let inv_y = 1.0 / dims.y;
+    let uv_grid = uv * dims + 0.5;
+    let fuv = fract(uv_grid);
+    let wx = cubic_weights(fuv.x);
+    let wy = cubic_weights(fuv.y);
+
+    let g = vec4<f32>(wx.x + wx.z, wx.y + wx.w, wy.x + wy.z, wy.y + wy.w);
+    let floor_uv = floor(uv_grid);
+    let hx0 = (wx.y / g.y + (-1.5 + floor_uv.x)) * inv_x;
+    let hx1 = (wx.w / g.w + ( 0.5 + floor_uv.x)) * inv_x;
+    let hy0 = (wy.y / g.z + (-1.5 + floor_uv.y)) * inv_y;
+    let hy1 = (wy.w / g.w + ( 0.5 + floor_uv.y)) * inv_y;
+    let w = g.xz / (g.xz + g.yw);
+
+    let s00 = textureSampleLevel(fft_displacement, fft_samp, vec2<f32>(hx0, hy0), layer, 0.0);
+    let s10 = textureSampleLevel(fft_displacement, fft_samp, vec2<f32>(hx1, hy0), layer, 0.0);
+    let s01 = textureSampleLevel(fft_displacement, fft_samp, vec2<f32>(hx0, hy1), layer, 0.0);
+    let s11 = textureSampleLevel(fft_displacement, fft_samp, vec2<f32>(hx1, hy1), layer, 0.0);
+
+    return mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
+}
+
 // Sample absolute xz so camera-relative rendering never changes FFT phase.
 fn fft_sample(xz: vec2<f32>, layer: i32) -> vec4<f32> {
     let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-    return textureSampleLevel(fft_displacement, fft_samp, fract(xz / length_m), layer, 0.0);
+    let uv = fract(xz / length_m);
+    return texture_bicubic_displacement(uv, layer);
 }
 // WTR-031 / WTR-032 — Projected footprint cascade visibility weights.
 // Calculates separate weights for geometry, normal detail, and foam based on projected pixel size.
@@ -1070,13 +1096,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         (1.0 + shore_break * 1.35), 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
     let persistent_foam = clamp((foam_history_sample.r + foam_history_sample.g * 1.5) * (0.65 + foam_history_sample.b * 0.45), 0.0, 1.0);
-    // Immediate sparse whitecaps bridge the time before the persistent history builds.
-    // Every gate is required, preventing a broad bright layer on ordinary wind waves.
-    let breaker_foam = smoothstep(0.014, 0.050, state.crest_energy) *
-        smoothstep(0.002, 0.012, state.compression) *
-        smoothstep(0.0004, 0.004, state.curvature) *
-        smoothstep(0.012, 0.060, sqrt(max(state.slope_variance, 0.0))) *
-        foam_noise(in.base_xz * 1.8, wp.time) * 0.55;
+    // Whitecaps and crest foam: crest energy and compression trigger organic whitecap tendrils on wave peaks.
+    let breaker_foam = smoothstep(0.003, 0.025, state.crest_energy + state.compression * 0.8) *
+        foam_noise(in.base_xz * 1.5, wp.time) * 0.95;
     // Sparse short-lived flecks sell wind-torn shore break and whitecap spindrift
     // without a separate particle system or a broad white surface layer.
     let spray_flecks = (foam_band * shore_break + breaker_foam) *
