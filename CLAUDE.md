@@ -1,5 +1,12 @@
 # CLAUDE.md
 
+> [!IMPORTANT]
+> **MANDATORY RULES FOR ALL AI AGENTS**: Before making code or shader modifications, you MUST inspect [.agents/README.md](.agents/README.md) and [.agents/AGENT_BOOTSTRAP_AND_DIAGNOSTICS.md](.agents/AGENT_BOOTSTRAP_AND_DIAGNOSTICS.md).
+> Key rules:
+> 1. **Dual Binary Deployment**: Whenever modifying FFI exports (`wgpu_renderer.hpp`, `ffi.rs`, `WaterWgpu.cpp`), you MUST copy **BOTH** `PoseidonGame.exe` AND `wgpu_renderer.dll` to `D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\`. Copying only one binary causes an instant `Entry Point Not Found` crash on launch.
+> 2. **WGSL Shader Rules**: Review [.agents/WGSL_CODING_RULES.md](.agents/WGSL_CODING_RULES.md). No 4-component swizzles on `vec2` (`.xxyy` / `.xyxy`), all variables must be explicitly declared in scope.
+> 3. **Startup Diagnostics**: If the game exits instantly, ALWAYS test with `cmd /c ".\ColdWarAssault.exe --render wgpu --window --dev --log-file cwr.log"` to read the panic traceback.
+
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
