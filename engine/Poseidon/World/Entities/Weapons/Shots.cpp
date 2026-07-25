@@ -789,20 +789,23 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
                     event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse;
                     SubmitWaterInteraction(event);
 
-                    // Spawn 3D particle water splash droplets at impact site
                     WaterSource waterSplash;
-                    waterSplash.SetSize(0.25f, 0.45f);
-                    waterSplash.SetFades(0.1f, 0.05f, 0.35f);
-                    waterSplash.SetTimes(0.1f, 0.6f);
+                    waterSplash.SetSize(0.35f, 0.65f);
+                    waterSplash.SetFades(0.1f, 0.05f, 0.45f);
+                    waterSplash.SetTimes(0.1f, 0.8f);
 
-                    const int numDroplets = Type()->explosive ? 24 : 12;
+                    const int numDroplets = Type()->explosive ? 24 : 14;
                     for (int i = 0; i < numDroplets; ++i)
                     {
                         float angle = static_cast<float>(i) * (2.0f * 3.14159265f / static_cast<float>(numDroplets));
-                        float spreadSpeed = 1.2f + GRandGen.RandomValue() * 1.8f;
-                        float upSpeed = 3.5f + GRandGen.RandomValue() * 4.0f;
+                        float spreadSpeed = 1.5f + GRandGen.RandomValue() * 2.5f;
+                        float upSpeed = 4.5f + GRandGen.RandomValue() * 5.5f;
                         Vector3 vel(std::cos(angle) * spreadSpeed, upSpeed, std::sin(angle) * spreadSpeed);
-                        waterSplash.Drop(waterPoint, vel);
+                        Cloudlet* droplet = waterSplash.Drop(waterPoint, vel);
+                        if (droplet)
+                        {
+                            GLOB_WORLD->AddCloudlet(droplet);
+                        }
                     }
                 }
             }
