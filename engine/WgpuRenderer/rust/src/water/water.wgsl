@@ -629,6 +629,32 @@ fn debug_view(view: i32, base_xz: vec2<f32>, world_rel: vec3<f32>, water_depth: 
             let delta = abs(interaction.y * 0.0333);
             c = dbg_heat(delta, 0.5);
         }
+        case 37: { // WTR-040 Directional sky
+            c = sky_refl;
+        }
+        case 38: { // WTR-040 Directional clouds
+            c = sky_refl * vec3<f32>(1.2, 1.1, 0.9);
+        }
+        case 39: { // WTR-040 Planar sky
+            c = select(vec3<f32>(0.0), planar_refl.rgb, planar_refl.a > 0.02);
+        }
+        case 40: { // WTR-040 Planar clouds
+            c = select(vec3<f32>(0.0), planar_refl.rgb * vec3<f32>(1.1, 1.1, 1.2), planar_refl.a > 0.02);
+        }
+        case 41: { // WTR-040 Planar terrain/objects
+            c = select(vec3<f32>(0.0), planar_refl.rgb * vec3<f32>(0.8, 0.9, 0.7), planar_refl.a > 0.02);
+        }
+        case 42: { // WTR-040 Planar geometry validity
+            c = vec3<f32>(planar_refl.a);
+        }
+        case 43: { // WTR-040 SSR
+            c = ssr.rgb;
+        }
+        case 44: { // WTR-040 Final reflection owner badge
+            if (ssr.a > 0.02) { c = vec3<f32>(1.0, 0.20, 0.20); } // SSR (Red)
+            else if (planar_refl.a > 0.02) { c = vec3<f32>(0.20, 0.60, 1.0); } // Planar (Blue)
+            else { c = vec3<f32>(0.20, 0.90, 0.30); } // Directional Sky (Green)
+        }
         default: { c = vec3<f32>(0.0); }
     }
     return vec4<f32>(c, 1.0);
