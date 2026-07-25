@@ -1679,19 +1679,27 @@ void Landscape::DrawSky(Scene& scene)
     // calculate sun position
     LightSun* sun = scene.MainLight();
     Vector3Val skyPosition = camera.Position();
-    _skyObject->SetPosition(skyPosition + _skyObject->GetShape()->BoundingCenter());
-    _starsObject->SetPosition(skyPosition + _starsObject->GetShape()->BoundingCenter());
-    // rotate stars
-    _starsObject->SetOrientation(sun->StarsOrientation());
+    if (_skyObject && _skyObject->GetShape())
+    {
+        _skyObject->SetPosition(skyPosition + _skyObject->GetShape()->BoundingCenter());
+    }
+    if (_starsObject && _starsObject->GetShape())
+    {
+        _starsObject->SetPosition(skyPosition + _starsObject->GetShape()->BoundingCenter());
+        if (sun)
+        {
+            _starsObject->SetOrientation(sun->StarsOrientation());
+        }
+    }
     const float sunScale = 120.0 / 12000;
+    if (_sunObject && sun)
     {
         Vector3 relPos = sun->SunDirection() * 12000 * sunScale;
         Vector3 sunPosition = camera.Position() - relPos;
         _sunObject->SetScale(sunScale);
         _sunObject->SetPosition(sunPosition);
-
-        // LOG_DEBUG(World, "Sun rel pos {:.2f},{:.2f},{:.2f}",relPos[0],relPos[1],relPos[2]);
     }
+    if (_moonObject && sun)
     {
         Point3 moonPosition = camera.Position() - sun->MoonDirection() * 12000 * sunScale;
         _moonObject->SetPosition(moonPosition);
@@ -1699,35 +1707,47 @@ void Landscape::DrawSky(Scene& scene)
         moonOrient.SetDirectionAndUp(-sun->MoonDirection(), sun->MoonDirectionUp());
         _moonObject->SetOrientation(moonOrient);
         _moonObject->SetScale(sunScale);
-        Shape* shape = _moonObject->GetShape()->LevelOpaque(0);
-        if (shape->NFaces() >= 2)
+        if (_moonObject->GetShape())
         {
-            shape->FaceIndexed(1).AnimateTexture(sun->MoonPhase());
-        }
-        if (shape->NSections() >= 2)
-        {
-            shape->GetSection(1).properties.AnimateTexture(sun->MoonPhase());
+            Shape* shape = _moonObject->GetShape()->LevelOpaque(0);
+            if (shape && shape->NFaces() >= 2)
+            {
+                shape->FaceIndexed(1).AnimateTexture(sun->MoonPhase());
+            }
+            if (shape && shape->NSections() >= 2)
+            {
+                shape->GetSection(1).properties.AnimateTexture(sun->MoonPhase());
+            }
         }
     }
 
     float clipLevel = skyPosition.Y();
     scene.GetCamera()->SetUserClipPars(VUp, -clipLevel);
 
-    _skyObject->Draw(0, ClipAll & ~ClipBack | ClipUser0, *_skyObject);
-    float starsVisibility = (
+    if (_skyObject)
+    {
+        _skyObject->Draw(0, ClipAll & ~ClipBack | ClipUser0, *_skyObject);
+    }
+    float starsVisibility = sun ? (
         // see TLVertexMesh::DoStarLighting
         // overcast limitation
         (1.5 * SkyThrough() - 0.5) *
         // daytime limitation
-        sun->StarsVisibility());
-    if (starsVisibility >= 0.1)
+        sun->StarsVisibility()) : 0.0f;
+    if (_starsObject && starsVisibility >= 0.1)
     {
         _starsObject->DrawPoints(0, ClipAll & ~ClipBack | ClipUser0, *_starsObject);
     }
     scene.GetCamera()->CancelUserClip();
 
-    _sunObject->Draw(0, ClipAll & ~ClipBack, *_sunObject);
-    _moonObject->Draw(0, ClipAll & ~ClipBack, *_moonObject);
+    if (_sunObject)
+    {
+        _sunObject->Draw(0, ClipAll & ~ClipBack, *_sunObject);
+    }
+    if (_moonObject)
+    {
+        _moonObject->Draw(0, ClipAll & ~ClipBack, *_moonObject);
+    }
 }
 
 // there are three separate clouds levels
