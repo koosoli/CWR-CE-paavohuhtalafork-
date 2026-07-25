@@ -1223,6 +1223,9 @@ class Engine : public IGraphicsEngine
         float wetHeight = 0.26f;   // m above sea level the damp band reaches
         float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
 
+        // WTR-036C / WTR-037 — FFT Cascade Preset (0 = Production Non-Harmonic 4-Cascade, 1 = GodotOceanWaves Reference Style, 2 = Legacy Harmonic 4-Cascade).
+        int cascadePreset = 0;
+
         // WTR-003 — water debug view selector (dev-only; the Water tab "Debug views" section).
         // 0 = normal shading; any other value is a WgrWaterDebugView index that the wgpu water
         // shader maps to an on-surface diagnostic (FFT/interaction/foam/reflection/refraction).

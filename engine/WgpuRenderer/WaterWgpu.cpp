@@ -215,8 +215,23 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     float freezeBits = 0.0f;
     std::memcpy(&freezeBits, &freezeMask, sizeof(freezeBits));
     _params.fft_control.z = freezeBits;
-    // WTR-003 — water debug view selector (0 = normal shading). The Water tab "Debug views"
-    // combo writes look.debugView; the shader swaps its output for the chosen diagnostic.
+    // WTR-036C / WTR-037 — Apply cascade configuration presets
+    if (look.cascadePreset == 1)
+    {
+        // GodotOceanWaves Reference Style (3 cascades: 88m, 57m, 16m)
+        _params.fft_cascade_lengths = {88.0f, 57.0f, 16.0f, 0.0f};
+    }
+    else if (look.cascadePreset == 2)
+    {
+        // Legacy 4-Cascade Harmonic (48m, 144m, 432m, 1296m)
+        _params.fft_cascade_lengths = {48.0f, 144.0f, 432.0f, 1296.0f};
+    }
+    else
+    {
+        // WTR-037 Production Non-Harmonic 4-Cascade (37m, 89m, 211m, 503m - >50 km repeat period)
+        _params.fft_cascade_lengths = {37.0f, 89.0f, 211.0f, 503.0f};
+    }
+
     _params.debug_params = {static_cast<float>(look.debugView), 0.0f, 0.0f, 0.0f};
     wgr_water_set_params(_renderer, &_params);
 

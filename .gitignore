@@ -77,3 +77,6 @@ target/
 !docs/**/*.png
 !tests/missions/screenshot/**/*.bmp
 !tests/missions/screenshot/**/*.png
+
+# Inspiration reference projects
+/inspiration/

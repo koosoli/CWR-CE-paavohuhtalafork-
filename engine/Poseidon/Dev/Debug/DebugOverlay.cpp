@@ -2140,6 +2140,18 @@ void DrawWaterTab()
 
     ImGui::Separator();
     ImGui::TextUnformatted("Waves (cosmetic — buoyancy stays on the flat plane)");
+
+    const char* cascadePresets[] = {
+        "Production Non-Harmonic (37m, 89m, 211m, 503m - >50km repeat)",
+        "GodotOceanWaves Reference Style (88m, 57m, 16m - 3 cascades)",
+        "Legacy Harmonic (48m, 144m, 432m, 1296m - 1296m repeat)"
+    };
+    if (ImGui::Combo("Cascade Preset", &s.cascadePreset, cascadePresets, IM_ARRAYSIZE(cascadePresets)))
+    {
+        changed = true;
+    }
+    ImGui::SetItemTooltip("WTR-036C / WTR-037: Toggle between production non-harmonic coprime cascades, GodotOceanWaves reference parity preset, and legacy harmonic cascades.");
+
     changed |= ImGui::SliderFloat("Amplitude", &s.waveAmp, 0.0f, 4.0f, "%.2f");
     ImGui::SetItemTooltip("Overall wave height scale. Kept gentle so boats never float in air.");
     changed |= ImGui::SliderFloat("Choppiness", &s.waveChoppy, 0.0f, 1.5f, "%.2f");
