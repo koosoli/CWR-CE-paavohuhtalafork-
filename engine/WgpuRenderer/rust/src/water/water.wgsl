@@ -185,15 +185,68 @@ struct CascadeWeights {
 };
 
 fn compute_cascade_weights(layer: i32, dist: f32, view_dir: vec3<f32>) -> CascadeWeights {
-    let length_m = max(wp.fft_cascade_lengths[layer], 48.0);
+    var w: CascadeWeights;
+    let raw_length = wp.fft_cascade_lengths[layer];
+    if (raw_length <= 0.0) {
+        w.geometry_weight = 0.0;
+        w.normal_weight = 0.0;
+        w.foam_weight = 0.0;
+        return w;
+    }
+    let length_m = max(raw_length, 1.0);
     let view_angle_cos = max(abs(view_dir.y), 0.1);
     let proj_pixels = (length_m * 1080.0) / (2.0 * max(dist, 0.1) * 0.57735 * view_angle_cos);
     
-    var w: CascadeWeights;
     w.geometry_weight = smoothstep(1.5, 4.0, proj_pixels);
     w.normal_weight = smoothstep(0.5, 2.0, proj_pixels);
     w.foam_weight = smoothstep(1.0, 3.0, proj_pixels);
+
+    // GodotOceanWaves reference parity tuning:
+    // Cascade 2 (16m) is a normal/foam-only detail cascade with 0 displacement.
+    if (raw_length < 20.0) {
+        w.geometry_weight = 0.0;
+    }
     return w;
+}
+
+// WTR-038 — GodotOceanWaves-style Pixels-Per-Meter (PPM) bicubic B-spline normal filtering
+fn cubic_weights(a: f32) -> vec4<f32> {
+    let a2 = a * a;
+    let a3 = a2 * a;
+    let w0 = -a3 + a2 * 3.0 - a * 3.0 + 1.0;
+    let w1 = a3 * 3.0 - a2 * 6.0 + 4.0;
+    let w2 = -a3 * 3.0 + a2 * 3.0 + a * 3.0 + 1.0;
+    let w3 = a3;
+    return vec4<f32>(w0, w1, w2, w3) / 6.0;
+}
+
+fn texture_bicubic_dynamics(uv: vec2<f32>, layer: i32) -> vec4<f32> {
+    let dims = vec2<f32>(textureDimensions(fft_dynamics));
+    let dims_inv = 1.0 / dims;
+    let uv_grid = uv * dims + 0.5;
+    let fuv = fract(uv_grid);
+    let wx = cubic_weights(fuv.x);
+    let wy = cubic_weights(fuv.y);
+
+    let g = vec4<f32>(wx.x + wx.z, wx.y + wx.w, wy.x + wy.z, wy.y + wy.w);
+    let h = (vec4<f32>(wx.y, wx.w, wy.y, wy.w) / g + vec2<f32>(-1.5, 0.5).xyxy + floor(uv_grid).xxyy) * dims_inv.xxyy;
+    let w = g.xz / (g.xz + g.yw);
+
+    let s00 = textureSampleLevel(fft_dynamics, fft_samp, h.yw, layer, 0.0);
+    let s10 = textureSampleLevel(fft_dynamics, fft_samp, h.xw, layer, 0.0);
+    let s01 = textureSampleLevel(fft_dynamics, fft_samp, h.yz, layer, 0.0);
+    let s11 = textureSampleLevel(fft_dynamics, fft_samp, h.xz, layer, 0.0);
+
+    return mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
+}
+
+fn sample_fft_dynamics_filtered(xz: vec2<f32>, layer: i32, length_m: f32) -> vec4<f32> {
+    let uv = fract(xz / length_m);
+    let ppm = 256.0 / max(length_m, 1.0); // Pixels per meter
+    let bilinear = textureSampleLevel(fft_dynamics, fft_samp, uv, layer, 0.0);
+    let bicubic = texture_bicubic_dynamics(uv, layer);
+    // Blend bicubic and bilinear filtering based on world-space pixels per meter (PPM)
+    return mix(bicubic, bilinear, clamp(ppm * 0.1, 0.0, 1.0));
 }
 
 fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
@@ -205,9 +258,7 @@ fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
     }
     return disp;
 }
-// WTR-013 — Fixed-point world-to-material coordinate inversion.
-// Resolves material coordinate q from a displaced world position x (3 iterations).
-// Used selectively at world-space query sites (camera surface query, hit/whitewater transitions).
+
 fn world_to_material_pos(world_xz: vec2<f32>, dist: f32) -> vec2<f32> {
     var q = world_xz;
     if (wp.fft_control.x > 0.5) {
@@ -219,8 +270,6 @@ fn world_to_material_pos(world_xz: vec2<f32>, dist: f32) -> vec2<f32> {
     return q;
 }
 
-// Justified WTR-013 call site: Whitewater & particle surface transition
-// Maps world-space hit coordinate back to undisplaced material position q to evaluate surface height.
 fn whitewater_surface_transition(world_xz: vec2<f32>, dist: f32) -> f32 {
     let mat_q = world_to_material_pos(world_xz, dist);
     let disp = fft_geometry_disp(mat_q, dist);
@@ -232,7 +281,7 @@ fn fft_normal_with_weights(xz: vec2<f32>, dist: f32, view_dir: vec3<f32>) -> vec
     for (var layer = 0; layer < 4; layer = layer + 1) {
         let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
         let w = compute_cascade_weights(layer, dist, view_dir);
-        let layer_slope = textureSampleLevel(fft_dynamics, fft_samp, fract(xz / length_m), layer, 0.0).xy;
+        let layer_slope = sample_fft_dynamics_filtered(xz, layer, length_m).xy;
         slope = slope + layer_slope * w.normal_weight;
     }
     return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
