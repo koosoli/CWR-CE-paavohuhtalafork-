@@ -601,12 +601,20 @@ fn debug_view(view: i32, base_xz: vec2<f32>, world_rel: vec3<f32>, water_depth: 
         case 27: { c = vec3<f32>(refracted.valid); }
         case 28: { c = dbg_heat(min(water_depth, 40.0), 40.0); }
         case 29: { c = transmission * vec3<f32>(1.4); }
+        case 35: { // WTR-012 Surface velocity
+            let speed = length(interaction.xy);
+            c = dbg_heat(speed, 2.0);
+        }
+        case 36: { // WTR-012 Previous displacement delta
+            let delta = abs(interaction.y * 0.0333);
+            c = dbg_heat(delta, 0.5);
+        }
         default: { c = vec3<f32>(0.0); }
     }
     return vec4<f32>(c, 1.0);
 }
 
-// WTR-011 — Shared water-surface state representation
+// WTR-011 / WTR-012 — Shared water-surface state representation & evaluation
 struct WaterSurfaceState {
     material_position: vec2<f32>,
     world_pos: vec3<f32>,
@@ -627,6 +635,59 @@ struct WaterSurfaceState {
     aeration: f32,
     foam_density: f32,
 };
+
+fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
+    var state: WaterSurfaceState;
+    state.material_position = in.base_xz;
+    state.world_pos = in.world_pos;
+    state.displaced_pos = in.world_pos;
+    
+    let dist = length(in.world_pos);
+    var n = gerstner_normal(in.base_xz, dist);
+    var fft_slope_var = 0.0;
+    var fft_crest = 0.0;
+    var fft_comp = 0.0;
+    var fft_curv = 0.0;
+    
+    if (wp.fft_control.x > 0.5) {
+        n = fft_normal(in.base_xz, dist);
+        for (var layer = 0; layer < 4; layer = layer + 1) {
+            let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
+            let uv = fract(in.base_xz / length_m);
+            let aux = textureSampleLevel(fft_auxiliary, fft_samp, uv, layer, 0.0);
+            fft_slope_var = fft_slope_var + aux.w;
+            fft_crest = max(fft_crest, textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0).w);
+            fft_comp = max(fft_comp, aux.y);
+            fft_curv = max(fft_curv, aux.z);
+        }
+    }
+    
+    let interaction_texel = interaction_sample(in.base_xz);
+    state.interaction_height = interaction_texel.r;
+    state.interaction_velocity = interaction_texel.g;
+    state.aeration = interaction_texel.b;
+    
+    let flow_speed = max(wp.flow_direction_speed.z, 0.0);
+    let flow_dir = normalize(wp.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) * flow_speed;
+    state.velocity = vec3<f32>(flow_dir.x, state.interaction_velocity, flow_dir.y);
+    state.previous_displaced_pos = in.world_pos - state.velocity * 0.0333;
+    state.displacement = in.world_pos - vec3<f32>(in.base_xz.x - frame.cam_pos.x, 0.0, in.base_xz.y - frame.cam_pos.z);
+    state.geometric_normal = n;
+    
+    let water_depth = seabed_depth(in.clip.xy, in.world_pos);
+    let shading_n = micro_normal(in.base_xz, dist, water_depth, n, fft_slope_var);
+    state.shading_normal = shading_n;
+    
+    state.jacobian = 1.0;
+    state.compression = fft_comp;
+    state.curvature = fft_curv;
+    state.slope_variance = fft_slope_var;
+    state.crest_energy = fft_crest;
+    state.breaking_energy = max(0.0, fft_crest - 0.6) + state.aeration;
+    state.foam_density = textureSampleLevel(foam_history, foam_samp, clamp(in.base_xz / 256.0, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0).r;
+    
+    return state;
+}
 
 @fragment
 fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
