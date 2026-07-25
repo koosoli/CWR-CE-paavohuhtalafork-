@@ -453,8 +453,7 @@ fn optical_refract(view_dir: vec3<f32>, normal: vec3<f32>, eta: f32) -> vec3<f32
     return eta * view_dir + (eta * cos_i - sqrt(k)) * normal;
 }
 
-    // WTR-056 — RGB wavelength-dependent extinction (Beer-Lambert optical transmission).
-    // Red attenuates rapidly (0.280/m), Green moderately (0.065/m), Blue slowly (0.020/m).
+fn beer_lambert_attenuation(water_path_length: f32) -> vec3<f32> {
     let extinction_rgb = vec3<f32>(0.280, 0.065, 0.020) * max(wp.color_ext * 2.5, 0.12);
     return exp(-extinction_rgb * max(water_path_length, 0.0));
 }
