@@ -127,6 +127,7 @@ protected:
 	float _initDelay;
 	
 	float _coefGravity;
+	bool _waterImpactDone;
 
 public:
 	ShotShell( EntityAI *parent, const AmmoType *type );

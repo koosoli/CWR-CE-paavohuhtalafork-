@@ -98,9 +98,9 @@ fn interaction_update(@builtin(global_invocation_id) id: vec3<u32>) {
         let continuous_pulse = continuous * (core * 0.16 + ring * 0.12) + kelvin_wake;
 
         let pulse = bullet_pulse + object_pulse + player_pulse + explosion_pulse + footstep_pulse + continuous_pulse;
-        velocity = velocity + pulse * event.position_radius.w * entry * mix(0.15, 1.0, calmness * calmness);
-        height = height + bullet * (-core * 0.50 + ring * 0.40) * event.position_radius.w;
-        foam = max(foam, clamp(bullet * (core * 2.5 + ring * 1.5) * event.time_life_foam_mass.z + (core + ring) * event.time_life_foam_mass.z * event.position_radius.w * 0.25, 0.0, 1.0));
+        velocity = velocity + pulse * event.position_radius.w * entry * mix(0.25, 1.0, calmness * calmness);
+        height = height + (bullet_pulse + explosion_pulse * 0.6 + object_pulse * 0.3) * event.position_radius.w * 0.35;
+        foam = max(foam, clamp(bullet * (core * 3.5 + ring * 2.0) + explosion * (core * 5.0 + ring * 3.0) + (core + ring) * event.time_life_foam_mass.z * event.position_radius.w * 0.35, 0.0, 1.0));
     }
     if (params.weather.x > 0.0005 && calmness > 0.025) {
         let rain = hash2(floor(world * 0.8) + floor(params.misc.y));

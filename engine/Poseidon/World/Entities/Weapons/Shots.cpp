@@ -625,6 +625,7 @@ ShotShell::ShotShell(EntityAI* parent, const AmmoType* type) : base(parent, type
             _timeToLive = *entry;
         }
     }
+    _waterImpactDone = false;
 }
 
 bool ShotShell::Invisible() const
@@ -759,28 +760,33 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
             Vector3 isect;
             bool hitSea = false;
             float t = GLandscape->IntersectWithGroundOrSea(&isect, hitSea, lPos, lDirNorm, 0, maxDist * 1.1);
-            const float seaLevel = GLandscape->GetSeaLevel();
 
-            // Check if bullet segment crossed the sea surface or hit sea geometry
-            const bool segmentCrossedSea = (lPos.Y() > seaLevel && position.Y() <= seaLevel) || (lPos.Y() <= seaLevel && position.Y() > seaLevel);
-            if (hitSea || segmentCrossedSea || (t <= maxDist && isect.Y() <= seaLevel + 0.3f))
+            if (!_waterImpactDone)
             {
-                const Vector3 waterPoint = (hitSea || segmentCrossedSea) ? Vector3(lPos.X() + lDirNorm.X() * t, seaLevel, lPos.Z() + lDirNorm.Z() * t) : isect;
-                HydroWaterInteractionEvent event{};
-                event.positionRadius[0] = waterPoint.X();
-                event.positionRadius[1] = waterPoint.Z();
-                event.positionRadius[2] = Type()->explosive ? 3.5f : 1.8f; // Radius
-                event.positionRadius[3] = Type()->explosive ? 2.5f : 2.2f; // Strength
-                event.velocityKind[0] = lDirNorm.X() * 15.0f;
-                event.velocityKind[1] = lDirNorm.Z() * 15.0f;
-                event.velocityKind[2] = -25.0f; // Downward entry velocity
-                event.velocityKind[3] = Type()->explosive ? HydroWaterInteractionExplosion : HydroWaterInteractionBullet;
-                event.timeLifeFoamMass[1] = 1.8f;
-                event.timeLifeFoamMass[2] = 0.8f; // Foam density
-                event.directionDepthFlags[0] = lDirNorm.X();
-                event.directionDepthFlags[1] = lDirNorm.Z();
-                event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse;
-                SubmitWaterInteraction(event);
+                const float seaLevel = GLandscape->GetSeaLevel();
+
+                // Check if bullet segment crossed the sea surface or hit sea geometry
+                const bool segmentCrossedSea = (lPos.Y() > seaLevel && position.Y() <= seaLevel) || (lPos.Y() <= seaLevel && position.Y() > seaLevel);
+                if (hitSea || segmentCrossedSea || (t <= maxDist && isect.Y() <= seaLevel + 0.3f))
+                {
+                    _waterImpactDone = true;
+                    const Vector3 waterPoint = (hitSea || segmentCrossedSea) ? Vector3(lPos.X() + lDirNorm.X() * t, seaLevel, lPos.Z() + lDirNorm.Z() * t) : isect;
+                    HydroWaterInteractionEvent event{};
+                    event.positionRadius[0] = waterPoint.X();
+                    event.positionRadius[1] = waterPoint.Z();
+                    event.positionRadius[2] = Type()->explosive ? 3.5f : 1.8f; // Radius
+                    event.positionRadius[3] = Type()->explosive ? 4.5f : 3.8f; // Strength
+                    event.velocityKind[0] = lDirNorm.X() * 15.0f;
+                    event.velocityKind[1] = lDirNorm.Z() * 15.0f;
+                    event.velocityKind[2] = -25.0f; // Downward entry velocity
+                    event.velocityKind[3] = Type()->explosive ? HydroWaterInteractionExplosion : HydroWaterInteractionBullet;
+                    event.timeLifeFoamMass[1] = 1.8f;
+                    event.timeLifeFoamMass[2] = 1.0f; // Foam density
+                    event.directionDepthFlags[0] = lDirNorm.X();
+                    event.directionDepthFlags[1] = lDirNorm.Z();
+                    event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse;
+                    SubmitWaterInteraction(event);
+                }
             }
 
             if (t <= maxDist)
