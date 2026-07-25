@@ -789,14 +789,20 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
                     event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse;
                     SubmitWaterInteraction(event);
 
-                    // Spawn 3D particle water splash effect at the exact impact position
-                    VehicleNonAIType* craterType = VehicleTypes.New("crater");
-                    if (craterType)
+                    // Spawn 3D particle water splash droplets at impact site
+                    WaterSource waterSplash;
+                    waterSplash.SetSize(0.25f, 0.45f);
+                    waterSplash.SetFades(0.1f, 0.05f, 0.35f);
+                    waterSplash.SetTimes(0.1f, 0.6f);
+
+                    const int numDroplets = Type()->explosive ? 24 : 12;
+                    for (int i = 0; i < numDroplets; ++i)
                     {
-                        float splashSize = Type()->explosive ? 2.5f : 0.8f;
-                        Crater* splash = new Crater(nullptr, craterType, 0.8f, splashSize, false, false, true);
-                        splash->SetPosition(waterPoint);
-                        GLOB_WORLD->AddAnimal(splash);
+                        float angle = static_cast<float>(i) * (2.0f * 3.14159265f / static_cast<float>(numDroplets));
+                        float spreadSpeed = 1.2f + GRandGen.RandomValue() * 1.8f;
+                        float upSpeed = 3.5f + GRandGen.RandomValue() * 4.0f;
+                        Vector3 vel(std::cos(angle) * spreadSpeed, upSpeed, std::sin(angle) * spreadSpeed);
+                        waterSplash.Drop(waterPoint, vel);
                     }
                 }
             }
