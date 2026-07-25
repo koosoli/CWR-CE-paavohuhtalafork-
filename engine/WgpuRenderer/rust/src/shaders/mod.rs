@@ -158,5 +158,9 @@ mod tests {
             include_str!("../water/fft_compose.wgsl"),
             "water/fft_compose.wgsl",
         );
+        compose(
+            include_str!("../water/whitewater.wgsl"),
+            "water/whitewater.wgsl",
+        );
     }
 }
