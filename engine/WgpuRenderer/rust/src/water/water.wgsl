@@ -176,21 +176,32 @@ fn fft_sample(xz: vec2<f32>, layer: i32) -> vec4<f32> {
     let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
     return textureSampleLevel(fft_displacement, fft_samp, fract(xz / length_m), layer, 0.0);
 }
-// WTR-031 / WTR-032 — Frequency-aware per-cascade distance filtering.
-// Attenuates detail by wavelength so short waves disappear first while distant swell remains visible.
-fn cascade_wave_fade(layer: i32, dist: f32) -> f32 {
+// WTR-031 / WTR-032 — Projected footprint cascade visibility weights.
+// Calculates separate weights for geometry, normal detail, and foam based on projected pixel size.
+struct CascadeWeights {
+    geometry_weight: f32,
+    normal_weight: f32,
+    foam_weight: f32,
+};
+
+fn compute_cascade_weights(layer: i32, dist: f32, view_dir: vec3<f32>) -> CascadeWeights {
     let length_m = max(wp.fft_cascade_lengths[layer], 48.0);
-    let ratio = length_m / 48.0;
-    let fade_start = wp.fade_start * ratio;
-    let fade_end = wp.fade_end * ratio;
-    return 1.0 - smoothstep(fade_start, fade_end, dist);
+    let view_angle_cos = max(abs(view_dir.y), 0.1);
+    let proj_pixels = (length_m * 1080.0) / (2.0 * max(dist, 0.1) * 0.57735 * view_angle_cos);
+    
+    var w: CascadeWeights;
+    w.geometry_weight = smoothstep(1.5, 4.0, proj_pixels);
+    w.normal_weight = smoothstep(0.5, 2.0, proj_pixels);
+    w.foam_weight = smoothstep(1.0, 3.0, proj_pixels);
+    return w;
 }
 
 fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
     var disp = vec3<f32>(0.0);
+    let view_dir = vec3<f32>(0.0, -0.707, 0.707);
     for (var layer = 0; layer < 4; layer = layer + 1) {
-        let fade = cascade_wave_fade(layer, dist);
-        disp = disp + fft_sample(xz, layer).xyz * fade;
+        let w = compute_cascade_weights(layer, dist, view_dir);
+        disp = disp + fft_sample(xz, layer).xyz * w.geometry_weight;
     }
     return disp;
 }
@@ -215,13 +226,14 @@ fn whitewater_surface_transition(world_xz: vec2<f32>, dist: f32) -> f32 {
     let disp = fft_geometry_disp(mat_q, dist);
     return disp.y;
 }
-fn fft_normal(xz: vec2<f32>, dist: f32) -> vec3<f32> {
+
+fn fft_normal_with_weights(xz: vec2<f32>, dist: f32, view_dir: vec3<f32>) -> vec3<f32> {
     var slope = vec2<f32>(0.0);
     for (var layer = 0; layer < 4; layer = layer + 1) {
         let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-        let fade = cascade_wave_fade(layer, dist);
+        let w = compute_cascade_weights(layer, dist, view_dir);
         let layer_slope = textureSampleLevel(fft_dynamics, fft_samp, fract(xz / length_m), layer, 0.0).xy;
-        slope = slope + layer_slope * fade;
+        slope = slope + layer_slope * w.normal_weight;
     }
     return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
 }
@@ -407,14 +419,13 @@ fn micro_normal(xz: vec2<f32>, dist: f32, water_depth: f32, base_normal: vec3<f3
     return normalize(vec3<f32>(base_normal.x - slope.x * strength, base_normal.y, base_normal.z - slope.y * strength));
 }
 
-// `spec_power` predates the microfacet path. Convert its Blinn-Phong sharpness to
-// a conservative perceptual roughness floor, then let the resolved wave variance
-// and shading-only ripple perturbation broaden the lobe rather than sharpen it.
-fn water_roughness(spec_power: f32, fft_slope_variance: f32, base_normal: vec3<f32>, shading_normal: vec3<f32>) -> f32 {
+// WTR-033 — Corrected slope-variance roughness compensation.
+// Adds ONLY the slope variance removed by filtering: lostVariance = sum(cascadeSlopeVariance[i] * (1 - normalWeight[i])).
+fn water_roughness(spec_power: f32, lost_variance: f32, base_normal: vec3<f32>, shading_normal: vec3<f32>) -> f32 {
     let legacy_floor = sqrt(2.0 / max(spec_power + 2.0, 2.0));
-    let fft_slope = sqrt(clamp(fft_slope_variance, 0.0, 0.25));
     let micro_slope = length(shading_normal.xz - base_normal.xz);
-    return clamp(legacy_floor + fft_slope * 0.26 + micro_slope * 0.35, 0.075, 0.32);
+    let lost_roughness = sqrt(clamp(lost_variance, 0.0, 0.25));
+    return clamp(legacy_floor + micro_slope * 0.35 + lost_roughness * 0.45, 0.075, 0.45);
 }
 
 fn safe_normalize3(x: vec3<f32>, fallback: vec3<f32>) -> vec3<f32> {
@@ -658,13 +669,17 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
     var fft_comp = 0.0;
     var fft_curv = 0.0;
     
+    var lost_variance = 0.0;
     if (wp.fft_control.x > 0.5) {
-        n = fft_normal(in.base_xz, dist);
+        let view_dir = normalize(in.world_pos);
+        n = fft_normal_with_weights(in.base_xz, dist, view_dir);
         for (var layer = 0; layer < 4; layer = layer + 1) {
             let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
             let uv = fract(in.base_xz / length_m);
             let aux = textureSampleLevel(fft_auxiliary, fft_samp, uv, layer, 0.0);
+            let w = compute_cascade_weights(layer, dist, view_dir);
             fft_slope_var = fft_slope_var + aux.w;
+            lost_variance = lost_variance + aux.w * (1.0 - w.normal_weight);
             fft_crest = max(fft_crest, textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0).w);
             fft_comp = max(fft_comp, aux.y);
             fft_curv = max(fft_curv, aux.z);
@@ -709,36 +724,22 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let h_r = interaction_sample(in.base_xz + vec2<f32>(interaction_cell, 0.0)).r;
     let h_d = interaction_sample(in.base_xz - vec2<f32>(0.0, interaction_cell)).r;
     let h_u = interaction_sample(in.base_xz + vec2<f32>(0.0, interaction_cell)).r;
-    let interaction_normal = normalize(vec3<f32>(h_l - h_r, 2.0 * interaction_cell, h_d - h_u));
-    var n = gerstner_normal(in.base_xz, length(in.world_pos));
-    if (wp.fft_control.x > 0.5) {
-        n = fft_normal(in.base_xz, length(in.world_pos));
-    }
+    let state = evaluate_water_surface(in);
+    let n = state.shading_normal;
+    let base_normal = state.geometric_normal;
+    let roughness = water_roughness(wp.spec_power, state.slope_variance, base_normal, n);
     let v = normalize(-in.world_pos);              // surface -> camera
     let l = normalize(-frame.sun_dir_world.xyz);   // surface -> sun
-
-    // Sun occlusion: CSM cascades (objects/near contact) and the long-range terrain
-    // heightfield mask compose by max() — whichever occludes the sun more wins. Both
-    // fade with distance fog. 1 = fully shadowed. This removes the sun glint + direct
-    // sheen and (via shadow_dim) darkens the shadowed water — e.g. a headland's shadow.
     let world_y = in.world_pos.y + frame.cam_pos.y;
     let csm_s = shadow_strength(in.world_pos, n, in.fog, dwx, dwy);
-    // Raw terrain sun-occlusion (1 = a ridge blocks the sun above this point) — reused below to
-    // occlude the sky reflection where a hill stands between the water and the sun.
     let ter_raw = terrain_sun_shadow(in.base_xz, world_y);
     let ter_s = ter_raw * in.fog;
     let sun_shadow = max(csm_s, ter_s);
-    // A sub-horizon sun casts no shadow, so shadowing alone can't remove its glint/sheen before
-    // sunrise (the water was reading a bright specular reflection of a sun still under the horizon).
-    // Gate the DIRECT sun on its elevation: l.y = surface->sun.y = sin(elevation), 0 at the horizon.
-    // Ambient/sky (twilight tint) is untouched, so the pre-dawn colour still comes through.
     let sun_up = smoothstep(0.0, 0.06, l.y);
     let sun_vis = (1.0 - sun_shadow) * sun_up;
-
     var sun_diffuse = frame.sun_diffuse.rgb;
     var sun_ambient = frame.sun_ambient.rgb;
     var fog_color = frame.fog_color.rgb;
-    // sun_diffuse.w = 1: sky-based lighting is already physical linear radiance.
     let sky_lit = frame.sun_diffuse.w > 0.5;
     if (linear > 0.5) {
         if (!sky_lit) {
@@ -747,60 +748,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         }
         fog_color = srgb_to_linear(fog_color);
     }
-
-    // Depth-based body colour: turquoise shallows -> dark blue depths, saturating with the water
-    // column depth like Beer-Lambert extinction. Reconstructed from the (farthest-resolved) opaque
-    // prepass depth. Colours/extinction are live WgrWaterParams (Water tab).
     let water_depth = seabed_depth(in.clip.xy, in.world_pos);
-    let coast_flow = shallow_flow(water_depth, in.base_xz);
-    let river_flow = normalize(wp.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) *
-        max(wp.flow_direction_speed.z, 0.0) * select(0.0, 1.0, wp.flow_direction_speed.w > 0.5);
-    let interaction_mask = smoothstep(0.0, wp.coast_fade * 2.0, water_depth);
-    let interaction_strength = smoothstep(0.00001, 0.001, abs(h_l) + abs(h_r) + abs(h_d) + abs(h_u));
-    n = normalize(mix(n, interaction_normal, interaction_mask * interaction_strength));
-    var fft_slope_variance = 0.0;
-    var fft_crest = 0.0;
-    var fft_compression = 0.0;
-    var fft_curvature = 0.0;
-    if (wp.fft_control.x > 0.5) {
-        for (var layer = 0; layer < 4; layer = layer + 1) {
-            let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-            let uv = fract(in.base_xz / length_m);
-            let auxiliary = textureSampleLevel(fft_auxiliary, fft_samp, uv, layer, 0.0);
-            fft_slope_variance = fft_slope_variance + auxiliary.w;
-            fft_crest = max(fft_crest, textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0).w);
-            fft_compression = max(fft_compression, auxiliary.y);
-            fft_curvature = max(fft_curvature, auxiliary.z);
-        }
-    }
-    // Applied after all physical/interactions normals, so micro ripples alter only final shading.
-    let base_normal = n;
-    n = micro_normal(in.base_xz, length(in.world_pos), water_depth, n, fft_slope_variance);
-    let roughness = water_roughness(wp.spec_power, fft_slope_variance, base_normal, n);
-
-    // WTR-011 / WTR-012 — Shared surface-state construction
-    var state: WaterSurfaceState;
-    state.material_position = in.base_xz;
-    state.world_pos = in.world_pos;
-    state.displaced_pos = in.world_pos;
-    let interaction_texel = interaction_sample(in.base_xz);
-    state.interaction_height = interaction_texel.r;
-    state.interaction_velocity = interaction_texel.g;
-    state.aeration = interaction_texel.b;
-    let flow_speed = max(wp.flow_direction_speed.z, 0.0);
-    let flow_dir = normalize(wp.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) * flow_speed;
-    state.velocity = vec3<f32>(flow_dir.x, state.interaction_velocity, flow_dir.y);
-    state.previous_displaced_pos = in.world_pos - state.velocity * 0.0333;
-    state.displacement = in.world_pos - vec3<f32>(in.base_xz.x - frame.cam_pos.x, 0.0, in.base_xz.y - frame.cam_pos.z);
-    state.geometric_normal = base_normal;
-    state.shading_normal = n;
-    state.jacobian = 1.0;
-    state.compression = fft_compression;
-    state.curvature = fft_curvature;
-    state.slope_variance = fft_slope_variance;
-    state.crest_energy = fft_crest;
-    state.breaking_energy = max(0.0, fft_crest - 0.6) + state.aeration;
-    state.foam_density = textureSampleLevel(foam_history, foam_samp, fract(in.base_xz / 256.0), 0.0).r;
     var shallow = wp.shallow_color.rgb;
     var deep = wp.deep_color.rgb;
     if (linear > 0.5) {
@@ -884,35 +832,24 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         var fft_disp = vec3<f32>(0.0);
         var fft_slope_v = vec2<f32>(0.0);
         var fft_j = 1.0;
-        var fft_comp = 0.0;
-        var fft_curv = 0.0;
+        let fft_comp = state.compression;
+        let fft_curv = state.curvature;
+        let fft_crest = state.crest_energy;
+        let fft_slope_variance = state.slope_variance;
         if (wp.fft_control.x > 0.5) {
             for (var layer = 0; layer < 4; layer = layer + 1) {
                 let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
                 let duv = fract(in.base_xz / length_m);
                 fft_disp = fft_disp + textureSampleLevel(fft_displacement, fft_samp, duv, layer, 0.0).xyz;
                 fft_slope_v = fft_slope_v + textureSampleLevel(fft_dynamics, fft_samp, duv, layer, 0.0).xy;
-                let aux = textureSampleLevel(fft_auxiliary, fft_samp, duv, layer, 0.0);
-                fft_j = min(fft_j, aux.x);
-                fft_comp = max(fft_comp, aux.y);
-                fft_curv = max(fft_curv, aux.z);
             }
         }
         let dbg_interaction = interaction_sample(in.base_xz);
         let dbg_foam_hist = persistent_foam_sample(in.base_xz);
         var dbg_foam_src = clamp(dbg_interaction.b, 0.0, 1.0);
         if (wp.fft_control.x > 0.5) {
-            for (var layer = 0; layer < 4; layer = layer + 1) {
-                let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-                let duv = fract(in.base_xz / length_m);
-                let crest = textureSampleLevel(fft_displacement, fft_samp, duv, layer, 0.0).w;
-                let aux = textureSampleLevel(fft_auxiliary, fft_samp, duv, layer, 0.0);
-                let breaker = smoothstep(0.008, 0.026, aux.y)
-                    * smoothstep(0.025, 0.090, crest)
-                    * smoothstep(0.020, 0.090, sqrt(max(aux.w, 0.0)))
-                    * smoothstep(0.0015, 0.012, aux.z);
-                dbg_foam_src = max(dbg_foam_src, breaker);
-            }
+            let breaker = smoothstep(0.014, 0.050, fft_crest);
+            dbg_foam_src = max(dbg_foam_src, breaker);
         }
         var dbg_sky = vec3<f32>(0.0);
         if (linear > 0.5) {
@@ -948,9 +885,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Focused, backlit crests transmit a little direct sunlight. Curvature and
     // horizontal compression reject broad swells; sufficient column depth rejects
     // the shoreline foam band. This is direct-light scattering, not emission.
-    let crest_shape = smoothstep(0.025, 0.09, fft_crest) *
-        smoothstep(0.008, 0.030, fft_compression) *
-        smoothstep(0.0015, 0.014, fft_curvature);
+    let crest_shape = smoothstep(0.025, 0.09, state.crest_energy) *
+        smoothstep(0.008, 0.030, state.compression) *
+        smoothstep(0.0015, 0.014, state.curvature);
     let view_xz = safe_normalize3(vec3<f32>(v.x, 0.0, v.z), vec3<f32>(0.0, 0.0, 1.0)).xz;
     let light_xz = safe_normalize3(vec3<f32>(l.x, 0.0, l.z), vec3<f32>(0.0, 0.0, -1.0)).xz;
     let backlit = smoothstep(0.10, 0.70, dot(view_xz, -light_xz));
@@ -978,9 +915,11 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // out over the wet beach. The body colour keeps the true depth so it doesn't flicker.
     let swash = sin(TWO_PI * wp.time * wp.swash_speed);
     let eff_depth = water_depth + swash * wp.swash_amp;
-    let spray_wind = normalize(wp.fft_wind_sea.xy + vec2<f32>(0.0001, 0.0));
-    // The depth field already includes displaced water height. Use the local crest to
-    // concentrate the otherwise restrained shore foam at wave arrivals on the beach.
+    let coast_flow = shallow_flow(water_depth, in.base_xz);
+    let river_flow = normalize(wp.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) *
+        max(wp.flow_direction_speed.z, 0.0) * select(0.0, 1.0, wp.flow_direction_speed.w > 0.5);
+    let spray_wind = normalize(wp.fft_wind_sea.xy + vec2<f32>(1e-4, 0.0)) * max(wp.fft_wind_sea.z, 0.5);
+
     let surface_wave = in.world_pos.y + frame.cam_pos.y - wp.sea_level;
     let shore_break = smoothstep(0.015, 0.12, surface_wave);
 
@@ -1008,10 +947,10 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let persistent_foam = clamp(foam_history_sample.r * (0.52 + foam_history_sample.b * 0.30), 0.0, 1.0);
     // Immediate sparse whitecaps bridge the time before the persistent history builds.
     // Every gate is required, preventing a broad bright layer on ordinary wind waves.
-    let breaker_foam = smoothstep(0.014, 0.050, fft_crest) *
-        smoothstep(0.002, 0.012, fft_compression) *
-        smoothstep(0.0004, 0.004, fft_curvature) *
-        smoothstep(0.012, 0.060, sqrt(max(fft_slope_variance, 0.0))) *
+    let breaker_foam = smoothstep(0.014, 0.050, state.crest_energy) *
+        smoothstep(0.002, 0.012, state.compression) *
+        smoothstep(0.0004, 0.004, state.curvature) *
+        smoothstep(0.012, 0.060, sqrt(max(state.slope_variance, 0.0))) *
         foam_noise(in.base_xz * 1.8, wp.time) * 0.55;
     // Sparse short-lived flecks sell wind-torn shore break and whitecap spindrift
     // without a separate particle system or a broad white surface layer.
