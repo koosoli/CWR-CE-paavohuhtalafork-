@@ -28,6 +28,7 @@
 #include <Poseidon/Dev/Debug/DebugOverlay.hpp>
 #include <Poseidon/Dev/Debug/DebugCheats.hpp>
 #include <Poseidon/Dev/Debug/DebugCommands.hpp>
+#include <Poseidon/Dev/Debug/WtrTestHarness.hpp>
 #include <Poseidon/Foundation/Logging/Logging.hpp>
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Core/Config/EngineConfig.hpp>
@@ -2308,17 +2309,88 @@ void DrawWaterTab()
                           "fields read zero outside the 256 m camera domain. Reserved entries have no "
                           "backing pass yet and render black. wgpu backend only.");
 
-    // WTR-004 — Standard test scenes preset selector
+    // WTR-004 — Standard test harness (deterministic animation, frame-stepping, snapshot/restore)
     ImGui::Separator();
-    ImGui::TextUnformatted("Standard test scenes (WTR-004)");
-    int testScene = (s.testScene >= 0 && s.testScene < kWaterTestSceneCount) ? s.testScene : 0;
+    ImGui::TextUnformatted("Standard test harness (WTR-004)");
+    auto& harness = Poseidon::WtrTestHarness::Instance();
+    int testScene = harness.IsActive() ? harness.GetCurrentPresetId() : ((s.testScene >= 0 && s.testScene < kWaterTestSceneCount) ? s.testScene : 0);
     if (ImGui::Combo("Test scene preset", &testScene, kWaterTestScenes, kWaterTestSceneCount))
     {
-        ApplyWtrTestScenePreset(s, testScene);
+        s.testScene = testScene;
+        harness.SelectPreset(testScene, s, s.debugView);
         changed = true;
     }
-    ImGui::SetItemTooltip("Selects a standard WTR-Test-01..10 test scene preset (sets water parameters, "
-                          "freeze switches, and debug view to reproduce exact test conditions).");
+    ImGui::SetItemTooltip("Selects a standard WTR-Test-01..10 test scene preset.");
+
+    if (testScene > 0)
+    {
+        const auto* info = harness.GetPresetInfo(testScene);
+        if (info)
+        {
+            if (info->availability == Poseidon::WtrTestAvailability::Available)
+            {
+                ImGui::TextColored(ImVec4(0.2f, 0.9f, 0.3f, 1.0f), "Status: Available");
+            }
+            else if (info->availability == Poseidon::WtrTestAvailability::Partial)
+            {
+                ImGui::TextColored(ImVec4(0.9f, 0.8f, 0.2f, 1.0f), "Status: %s", info->statusReason);
+            }
+            else
+            {
+                ImGui::TextColored(ImVec4(0.9f, 0.3f, 0.2f, 1.0f), "Status: %s", info->statusReason);
+            }
+        }
+
+        ImGui::Spacing();
+        if (!harness.IsActive())
+        {
+            if (ImGui::Button("Start Test Harness"))
+            {
+                harness.Start(s, s.debugView);
+                changed = true;
+            }
+        }
+        else
+        {
+            if (ImGui::Button(harness.IsPaused() ? "Resume" : "Pause"))
+            {
+                harness.Pause();
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Step Frame"))
+            {
+                harness.StepFrame(s);
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Restart"))
+            {
+                harness.Restart(s);
+                changed = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button("Stop & Restore Settings"))
+            {
+                int restoredDebugView = s.debugView;
+                harness.Stop(s, restoredDebugView);
+                s.debugView = restoredDebugView;
+                changed = true;
+            }
+
+            ImGui::Text("Active Frame: %llu | Time: %.3f s | Triggers: %u",
+                        static_cast<unsigned long long>(harness.GetFrameIndex()),
+                        static_cast<double>(harness.GetFrameIndex() * harness.GetFixedDeltaTime()),
+                        harness.GetTriggeredEventCount());
+
+            if (ImGui::Button("Copy Metadata Log JSON"))
+            {
+                Vector3 dummyPos(100.0f, 5.0f, 100.0f);
+                Vector3 dummyRot(0.0f, 0.0f, 0.0f);
+                std::string logJson = harness.GenerateMetadataLog(s, dummyPos, dummyRot);
+                ImGui::SetClipboardText(logJson.c_str());
+            }
+        }
+    }
 
     if (changed)
         GEngine->SetWaterSettings(s);
