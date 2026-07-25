@@ -80,3 +80,21 @@ Whenever modifying C++ or Rust/WGSL code:
    git push origin new-renderer-infrastructure
    git push origin new-renderer-infrastructure:main --force
    ```
+
+---
+
+## 5. CRITICAL: FFI Export & Binary Synchronization (IDIOT-PROOF RULE)
+
+When modifying FFI exports (e.g. `ffi.rs`, `wgpu_renderer.hpp`, `lib.rs` or `WaterWgpu.cpp`):
+
+> [!CAUTION]
+> If you add or modify an FFI symbol (such as `wgr_water_set_cascade_config`) and build `PoseidonGame.exe` without copying **BOTH** `PoseidonGame.exe` AND `wgpu_renderer.dll` to the game folder, `ColdWarAssault.exe` will fail to load `wgpu_renderer.dll` at runtime and exit instantly on startup with Exit Code 1 (`Entry Point Not Found`).
+
+### MANDATORY STEPS whenever changing FFI / C++ / Rust code:
+1. **Never copy only `ColdWarAssault.exe` or only `wgpu_renderer.dll`**.
+2. **ALWAYS copy BOTH files together**:
+   ```powershell
+   Stop-Process -Name "ColdWarAssault","PoseidonGame" -ErrorAction SilentlyContinue; Copy-Item -Path "build\win-x64-clang-rwdi\apps\cwr\Game\PoseidonGame.exe" -Destination "D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\ColdWarAssault.exe" -Force; Copy-Item -Path "build\win-x64-clang-rwdi\engine\WgpuRenderer\wgpu_renderer.dll" -Destination "D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\wgpu_renderer.dll" -Force
+   ```
+3. **ALWAYS run a verification test to confirm the window opens before handing control back to the user**.
+
