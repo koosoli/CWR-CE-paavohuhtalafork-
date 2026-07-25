@@ -143,12 +143,27 @@ Check the Cargo/Rust build output for `wgpu` validation messages — they appear
 
 ---
 
+## Rule 7 — All variables in expressions must be explicitly declared
+
+Unlike C/C++, WGSL has strict lexical scoping with no implicit or global fallback for identifiers. Using an un-scoped or un-declared identifier (e.g. `crest_depth`) causes a `naga` / `wgpu` shader composition error:
+
+```
+compose wgr_water_shader (water/water.wgsl): error: no definition in scope for identifier: `crest_depth`
+```
+
+When `wgr_create` fails during `InitializeGraphicsEngine()`, the engine logs `Wgpu: wgr_create failed; backend unavailable` and silently falls back to GL33 mode.
+
+**Fix:** Ensure every variable used in WGSL expressions is explicitly defined with `let` or `const` in scope (e.g. `let crest_depth = smoothstep(0.40, 2.00, water_depth);`).
+
+---
+
 ## Quick Checklist Before Committing WGSL Changes
 
 - [ ] No swizzles wider than the source vector (`.xxyy` on `vec2` etc.)
 - [ ] All `textureSampleLevel` mip arguments are `f32` literals (`0.0`, not `0`)
 - [ ] All `texture_2d_array` sample calls include the layer `i32` argument
 - [ ] All module-level `const` values are pure literal expressions
+- [ ] All identifiers referenced in expressions are declared in scope
 - [ ] Numeric literals match the expected type (use `0.0` for `f32`, `0u` for `u32`, `0` for `i32`)
 - [ ] Build succeeded with no Cargo errors
 - [ ] Game window opened successfully after deployment
