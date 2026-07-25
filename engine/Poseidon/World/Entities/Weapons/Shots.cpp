@@ -14,6 +14,7 @@
 #include <Poseidon/Network/Network.hpp>
 #include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 #include <Poseidon/Graphics/Rendering/Effects/Smokes.hpp>
+#include <Poseidon/World/Entities/Vehicles/Vehicle.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/Graphics/Rendering/Draw/SpecLods.hpp>
 #include <Poseidon/World/Scene/ObjLine.hpp>
@@ -789,10 +790,14 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
                     SubmitWaterInteraction(event);
 
                     // Spawn 3D particle water splash effect at the exact impact position
-                    float splashSize = Type()->explosive ? 2.5f : 0.8f;
-                    Crater* splash = new Crater(nullptr, nullptr, 0.8f, splashSize, false, false, true);
-                    splash->SetPosition(waterPoint);
-                    GLOB_WORLD->AddAnimal(splash);
+                    VehicleNonAIType* craterType = VehicleTypes.New("crater");
+                    if (craterType)
+                    {
+                        float splashSize = Type()->explosive ? 2.5f : 0.8f;
+                        Crater* splash = new Crater(nullptr, craterType, 0.8f, splashSize, false, false, true);
+                        splash->SetPosition(waterPoint);
+                        GLOB_WORLD->AddAnimal(splash);
+                    }
                 }
             }
 
