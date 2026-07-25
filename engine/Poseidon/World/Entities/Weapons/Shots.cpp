@@ -12,6 +12,7 @@
 #include <Poseidon/AI/AI.hpp>
 #include <Poseidon/World/Entities/Weapons/Weapons.hpp>
 #include <Poseidon/Network/Network.hpp>
+#include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/Graphics/Rendering/Draw/SpecLods.hpp>
 #include <Poseidon/World/Scene/ObjLine.hpp>
@@ -763,6 +764,25 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
 
                 if (IsLocal())
                 {
+                    if (isect.Y() <= GLandscape->GetSeaLevel() + 0.3f)
+                    {
+                        HydroWaterInteractionEvent event{};
+                        event.positionRadius[0] = isect.X();
+                        event.positionRadius[1] = isect.Z();
+                        event.positionRadius[2] = Type()->explosive ? 2.5f : 0.6f;
+                        event.positionRadius[3] = Type()->explosive ? 1.5f : 0.8f;
+                        event.velocityKind[0] = lDirNorm.X() * 10.0f;
+                        event.velocityKind[1] = lDirNorm.Z() * 10.0f;
+                        event.velocityKind[2] = -12.0f;
+                        event.velocityKind[3] = Type()->explosive ? HydroWaterInteractionExplosion : HydroWaterInteractionBullet;
+                        event.timeLifeFoamMass[1] = 1.2f;
+                        event.timeLifeFoamMass[2] = 0.6f;
+                        event.directionDepthFlags[0] = lDirNorm.X();
+                        event.directionDepthFlags[1] = lDirNorm.Z();
+                        event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse;
+                        SubmitWaterInteraction(event);
+                    }
+
                     Vector3 exploPos = position;
                     if (Type()->explosive)
                     {
