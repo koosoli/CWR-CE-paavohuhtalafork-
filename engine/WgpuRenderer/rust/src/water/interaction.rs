@@ -206,8 +206,15 @@ impl Interaction {
     fn expire_events(&mut self) {
         let now = self.latest_params.misc[1];
         self.active_events.retain(|event| {
+            let kind = event.velocity_kind[3];
+            let is_continuous = kind == 5.0; // WGR_WATER_INTERACTION_CONTINUOUS
             let lifetime = event.time_life_foam_mass[1];
-            lifetime > 0.0 && now - event.time_life_foam_mass[0] <= lifetime
+            if is_continuous {
+                lifetime > 0.0 && now - event.time_life_foam_mass[0] <= lifetime
+            } else {
+                // One-shot impulses (bullet, explosion, footstep, object) are processed on the single frame of submission
+                now <= event.time_life_foam_mass[0]
+            }
         });
     }
     fn upload_params(&mut self, queue: &wgpu::Queue) {
