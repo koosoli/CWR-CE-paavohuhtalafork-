@@ -415,23 +415,27 @@ fn hash2(cell: vec2<f32>) -> f32 {
 fn vnoise(p: vec2<f32>) -> f32 {
     let i = floor(p);
     let f = fract(p);
-    let u = f * f * (3.0 - 2.0 * f);
+    // Quintic C2 continuous interpolation curve (6f^5 - 15f^4 + 10f^3) eliminates grid lines
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
     let a = hash2(i);
     let b = hash2(i + vec2<f32>(1.0, 0.0));
     let c = hash2(i + vec2<f32>(0.0, 1.0));
     let d = hash2(i + vec2<f32>(1.0, 1.0));
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
-// Four decorrelated world-space octaves make foam visibly cellular rather than a broad,
-// smooth brightness wash. It is shared by coast foam, persistent breakers, and spray flecks.
-const FOAM_FREQ: f32 = 0.35; // spatial frequency (per metre)
+// Organic multi-octave domain-warped foam noise (shared by shore swash, persistent breakers, and flecks).
+const FOAM_FREQ: f32 = 0.55; // spatial frequency (per metre)
 fn foam_noise(p_world: vec2<f32>, t: f32) -> f32 {
-    let p = p_world * FOAM_FREQ;
-    var v = 0.46 * vnoise(p + vec2<f32>(t * 0.60, t * 0.20));
-    v = v + 0.27 * vnoise(vec2<f32>(p.x * 1.83 - p.y * 0.72, p.x * 0.72 + p.y * 1.83) - vec2<f32>(t * 0.30, t * 0.50));
+    let p0 = p_world * FOAM_FREQ;
+    // Domain warp creates organic filament tendrils instead of grid-aligned blocks
+    let warp = vec2<f32>(vnoise(p0 * 0.45 + vec2<f32>(t * 0.20, -t * 0.15)),
+                         vnoise(p0 * 0.45 + vec2<f32>(-t * 0.15, t * 0.25))) * 1.8 - vec2<f32>(0.9);
+    let p = p0 + warp;
+    var v = 0.42 * vnoise(p + vec2<f32>(t * 0.60, t * 0.20));
+    v = v + 0.28 * vnoise(vec2<f32>(p.x * 1.83 - p.y * 0.72, p.x * 0.72 + p.y * 1.83) - vec2<f32>(t * 0.30, t * 0.50));
     v = v + 0.18 * vnoise(vec2<f32>(p.x * 3.91 + p.y * 0.41, -p.x * 0.41 + p.y * 3.91) + vec2<f32>(t * 0.44, -t * 0.17));
-    v = v + 0.09 * vnoise(p * 7.37 + vec2<f32>(17.3, 41.7) + vec2<f32>(-t * 0.18, t * 0.37));
-    return smoothstep(0.36, 0.68, v);
+    v = v + 0.12 * vnoise(p * 8.37 + vec2<f32>(17.3, 41.7) + vec2<f32>(-t * 0.18, t * 0.37));
+    return smoothstep(0.32, 0.64, v);
 }
 
 // A small shading-only ripple field. Rotating each octave avoids aligned fBm cells;

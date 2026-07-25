@@ -193,10 +193,9 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _params.foam_intensity = look.foamIntensity;
     _params.swash_amp = look.swashAmp;
     _params.swash_speed = look.swashSpeed;
-    // The fourth FFT control component is otherwise padding. The renderer receives no
-    // reliable head transform from legacy infantry, so use deep player immersion plus
-    // a downward look direction as the visual-only submersion signal.
-    _params.fft_control.w = GetPlayerWaterDepth() > 0.80f && camera->Direction().Y() < -0.20f ? 1.0f : 0.0f;
+    const Vector3 cameraPos = camera->Position();
+    const bool isSubmerged = (cameraPos.Y() < land.GetSeaLevel() + 0.05f) || (GetPlayerWaterDepth() > 0.50f);
+    _params.fft_control.w = isSubmerged ? 1.0f : 0.0f;
     // WTR-001 — deterministic FFT seed. The authored default (1337.0, set in BuildQuadtree)
     // already keeps the random field stable across frames; allow the dev tab to override it,
     // so a frozen frame is reproducible regardless of seq-of-edits to the spectrum. Setting a
@@ -235,7 +234,6 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _params.debug_params = {static_cast<float>(look.debugView), 0.0f, 0.0f, 0.0f};
     wgr_water_set_params(_renderer, &_params);
 
-    const Vector3 cameraPos = camera->Position();
     // WTR-001 — repeatable-camera-path foundation. When the Water tab sets a frame tag (>= 0),
     // log it with an FNV-1a digest of the exact UBO bytes just uploaded plus the camera pose,
     // so two launches can be diffed frame-by-frame from the log alone (the acceptance evidence
