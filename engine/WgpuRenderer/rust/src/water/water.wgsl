@@ -741,17 +741,27 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
     state.interaction_velocity = interaction_texel.g;
     state.aeration = interaction_texel.b;
     
-    // Blend interaction normal perturbation into the geometric water normal
-    let interaction_cell = 0.5;
-    let h_l = interaction_sample(in.base_xz - vec2<f32>(interaction_cell, 0.0)).r;
-    let h_r = interaction_sample(in.base_xz + vec2<f32>(interaction_cell, 0.0)).r;
-    let h_d = interaction_sample(in.base_xz - vec2<f32>(0.0, interaction_cell)).r;
-    let h_u = interaction_sample(in.base_xz + vec2<f32>(0.0, interaction_cell)).r;
-    let interaction_slope = vec2<f32>(h_l - h_r, h_d - h_u) * 2.5;
-    let interaction_normal = normalize(vec3<f32>(interaction_slope.x, 1.0, interaction_slope.y));
-    let interaction_mag = abs(h_l) + abs(h_r) + abs(h_d) + abs(h_u) + abs(interaction_texel.r);
-    let interaction_weight = smoothstep(0.0001, 0.008, interaction_mag);
-    n = normalize(mix(n, interaction_normal, interaction_weight * 0.90));
+    // Multi-scale central differences for crisp, physical capillary-gravity wave train normals
+    let cell_fine = 0.20;
+    let cell_wide = 0.80;
+    let h_l_f = interaction_sample(in.base_xz - vec2<f32>(cell_fine, 0.0)).r;
+    let h_r_f = interaction_sample(in.base_xz + vec2<f32>(cell_fine, 0.0)).r;
+    let h_d_f = interaction_sample(in.base_xz - vec2<f32>(0.0, cell_fine)).r;
+    let h_u_f = interaction_sample(in.base_xz + vec2<f32>(0.0, cell_fine)).r;
+
+    let h_l_w = interaction_sample(in.base_xz - vec2<f32>(cell_wide, 0.0)).r;
+    let h_r_w = interaction_sample(in.base_xz + vec2<f32>(cell_wide, 0.0)).r;
+    let h_d_w = interaction_sample(in.base_xz - vec2<f32>(0.0, cell_wide)).r;
+    let h_u_w = interaction_sample(in.base_xz + vec2<f32>(0.0, cell_wide)).r;
+
+    let slope_fine = vec2<f32>(h_l_f - h_r_f, h_d_f - h_u_f) * 8.5;
+    let slope_wide = vec2<f32>(h_l_w - h_r_w, h_d_w - h_u_w) * 3.2;
+    let combined_slope = slope_fine + slope_wide;
+    let interaction_normal = normalize(vec3<f32>(combined_slope.x, 1.0, combined_slope.y));
+
+    let interaction_mag = abs(h_l_f) + abs(h_r_f) + abs(h_d_f) + abs(h_u_f) + abs(interaction_texel.r);
+    let interaction_weight = smoothstep(0.00005, 0.004, interaction_mag);
+    n = normalize(mix(n, interaction_normal, interaction_weight * 0.95));
     
     let flow_speed = max(wp.flow_direction_speed.z, 0.0);
     let flow_dir = normalize(wp.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) * flow_speed;

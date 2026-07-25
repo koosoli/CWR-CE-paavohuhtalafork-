@@ -87,8 +87,10 @@ fn interaction_update(@builtin(global_invocation_id) id: vec3<u32>) {
         let kelvin_wedge = smoothstep(0.38, 0.28, kelvin_angle_sin);
         let kelvin_wake = continuous * kelvin_wedge * (sin(q * 14.0) * 0.75 - core * 1.1);
 
-        // WTR-071 / WTR-073 / WTR-075 — Bullet, explosion rebound, and object pulse profiles
-        let bullet_pulse = bullet * (-core * 2.20 + ring * 1.85);
+        let capillary_ring1 = exp(-((q - 0.55) * (q - 0.55)) * 30.0);
+        let capillary_ring2 = exp(-((q - 1.25) * (q - 1.25)) * 18.0);
+        let capillary_ring3 = exp(-((q - 1.70) * (q - 1.70)) * 12.0);
+        let bullet_pulse = bullet * (-core * 4.50 + ring * 4.00 - capillary_ring1 * 2.80 + capillary_ring2 * 2.20 - capillary_ring3 * 1.50);
         let object_pulse = object * (-core * 1.65 + ring * 2.05) + kelvin_wake;
         let player_pulse = player * (-core * 1.10 + ring * 1.38) * footstep_bias;
         let explosion_pulse = explosion * (-core * 4.50 + ring * 6.50); // Deep cavity + central rebound column
@@ -96,8 +98,9 @@ fn interaction_update(@builtin(global_invocation_id) id: vec3<u32>) {
         let continuous_pulse = continuous * (core * 0.16 + ring * 0.12) + kelvin_wake;
 
         let pulse = bullet_pulse + object_pulse + player_pulse + explosion_pulse + footstep_pulse + continuous_pulse;
-        velocity = velocity + pulse * event.position_radius.w * entry * mix(0.075, 1.0, calmness * calmness);
-        foam = max(foam, clamp((core + ring) * event.time_life_foam_mass.z * event.position_radius.w * 0.25, 0.0, 1.0));
+        velocity = velocity + pulse * event.position_radius.w * entry * mix(0.15, 1.0, calmness * calmness);
+        height = height + bullet * (-core * 0.50 + ring * 0.40) * event.position_radius.w;
+        foam = max(foam, clamp(bullet * (core * 2.5 + ring * 1.5) * event.time_life_foam_mass.z + (core + ring) * event.time_life_foam_mass.z * event.position_radius.w * 0.25, 0.0, 1.0));
     }
     if (params.weather.x > 0.0005 && calmness > 0.025) {
         let rain = hash2(floor(world * 0.8) + floor(params.misc.y));
