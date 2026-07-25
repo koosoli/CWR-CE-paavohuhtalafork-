@@ -196,6 +196,7 @@ fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
 }
 // WTR-013 — Fixed-point world-to-material coordinate inversion.
 // Resolves material coordinate q from a displaced world position x (3 iterations).
+// Used selectively at world-space query sites (camera surface query, hit/whitewater transitions).
 fn world_to_material_pos(world_xz: vec2<f32>, dist: f32) -> vec2<f32> {
     var q = world_xz;
     if (wp.fft_control.x > 0.5) {
@@ -205,6 +206,14 @@ fn world_to_material_pos(world_xz: vec2<f32>, dist: f32) -> vec2<f32> {
         }
     }
     return q;
+}
+
+// Justified WTR-013 call site: Whitewater & particle surface transition
+// Maps world-space hit coordinate back to undisplaced material position q to evaluate surface height.
+fn whitewater_surface_transition(world_xz: vec2<f32>, dist: f32) -> f32 {
+    let mat_q = world_to_material_pos(world_xz, dist);
+    let disp = fft_geometry_disp(mat_q, dist);
+    return disp.y;
 }
 fn fft_normal(xz: vec2<f32>, dist: f32) -> vec3<f32> {
     var slope = vec2<f32>(0.0);
