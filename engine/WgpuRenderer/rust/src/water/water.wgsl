@@ -1013,6 +1013,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let light_xz = safe_normalize3(vec3<f32>(l.x, 0.0, l.z), vec3<f32>(0.0, 0.0, -1.0)).xz;
     let backlit = smoothstep(0.10, 0.70, dot(view_xz, -light_xz));
     const sss_modifier = vec3<f32>(0.9, 1.15, 0.85); // GodotOceanWaves SSS turquoise wave crest modifier
+    let crest_depth = smoothstep(0.40, 2.00, water_depth);
     let crest_scatter = crest_shape * backlit * crest_depth * sun_vis * 0.085;
     rgb = rgb + sun_diffuse * crest_scatter * sss_modifier;
 
