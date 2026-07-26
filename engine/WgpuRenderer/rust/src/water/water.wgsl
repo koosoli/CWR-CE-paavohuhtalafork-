@@ -173,6 +173,38 @@ fn gerstner_normal(p_in: vec2<f32>, dist: f32) -> vec3<f32> {
     return normalize(vec3<f32>(nx, 1.0 + ny, nz));
 }
 
+// Near a coastline, shallow-water waves refract and their crests run toward land.
+// This is a local breaker train layered over the unchanged offshore FFT, avoiding
+// seams from attempting to rotate a global FFT lookup.
+fn shore_breaker_disp(p: vec2<f32>, shore_dir: vec2<f32>, shore_factor: f32) -> vec3<f32> {
+    let factor = clamp(shore_factor, 0.0, 1.0);
+    if (factor <= 0.001) { return vec3<f32>(0.0); }
+    let d = normalize(shore_dir + vec2<f32>(1e-4, 0.0));
+    let lateral = vec2<f32>(-d.y, d.x);
+    let along = dot(p, d);
+    let across = dot(p, lateral);
+    let phase_a = along * 0.62 - wp.time * 2.35 + sin(across * 0.09) * 0.42;
+    let phase_b = along * 1.05 - wp.time * 3.05 + sin(across * 0.17 + 1.7) * 0.28;
+    let amp_a = 0.24 * wp.wave_amp * factor;
+    let amp_b = 0.075 * wp.wave_amp * factor;
+    let vertical = amp_a * sin(phase_a) + amp_b * sin(phase_b);
+    let horizontal = amp_a * 0.32 * cos(phase_a) + amp_b * 0.18 * cos(phase_b);
+    return vec3<f32>(d.x * horizontal, vertical, d.y * horizontal);
+}
+
+fn shore_breaker_normal(p: vec2<f32>, shore_dir: vec2<f32>, shore_factor: f32) -> vec3<f32> {
+    let factor = clamp(shore_factor, 0.0, 1.0);
+    if (factor <= 0.001) { return vec3<f32>(0.0, 1.0, 0.0); }
+    let d = normalize(shore_dir + vec2<f32>(1e-4, 0.0));
+    let lateral = vec2<f32>(-d.y, d.x);
+    let along = dot(p, d);
+    let across = dot(p, lateral);
+    let phase_a = along * 0.62 - wp.time * 2.35 + sin(across * 0.09) * 0.42;
+    let phase_b = along * 1.05 - wp.time * 3.05 + sin(across * 0.17 + 1.7) * 0.28;
+    let slope = (0.24 * 0.62 * cos(phase_a) + 0.075 * 1.05 * cos(phase_b)) * wp.wave_amp * factor;
+    return normalize(vec3<f32>(-d.x * slope, 1.0, -d.y * slope));
+}
+
 fn texture_bicubic_displacement(uv: vec2<f32>, layer: i32) -> vec4<f32> {
     let dims = vec2<f32>(textureDimensions(fft_displacement));
     let inv_x = 1.0 / dims.x;
@@ -345,6 +377,8 @@ struct VsOut {
     @location(0) world_pos: vec3<f32>, // camera-relative displaced position
     @location(1) base_xz: vec2<f32>,   // undisplaced world-xz (for per-fragment normal)
     @location(2) fog: f32,             // 1 = keep colour, 0 = full fog
+    @location(3) shore_dir: vec2<f32>,
+    @location(4) shore_factor: f32,
 };
 
 override skirt_k: f32 = 0.0;
@@ -356,6 +390,8 @@ fn vs_water(
     @location(2) size: f32,          // node world size
     @location(3) lod: u32,
     @location(4) morph: vec2<f32>,   // (morph_start, morph_end) camera-distance band
+    @location(5) shore_dir: vec2<f32>,
+    @location(6) shore_factor: f32,
 ) -> VsOut {
     let grid = grid_in.xy;
     let world_xz_fine = origin + grid * size;
@@ -376,6 +412,7 @@ fn vs_water(
     if (wp.fft_control.x > 0.5) {
         disp = fft_geometry_disp(base_xz, dist);
     }
+    disp = disp + shore_breaker_disp(base_xz, shore_dir, shore_factor);
     let interaction = interaction_sample(base_xz);
     let y = wp.sea_level + disp.y + interaction.r * 2.5 - grid_in.z * (size / GRID_N) * skirt_k;
     let world_rel = vec3<f32>(base_xz.x + disp.x, y, base_xz.y + disp.z) - frame.cam_pos.xyz;
@@ -385,6 +422,8 @@ fn vs_water(
     out.world_pos = world_rel;
     out.base_xz = base_xz;
     out.fog = fog_factor(length(world_rel));
+    out.shore_dir = shore_dir;
+    out.shore_factor = shore_factor;
     return out;
 }
 
@@ -856,6 +895,10 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
         }
     }
     
+    // FFT normals replace the offshore Gerstner normal above; add the same local
+    // shoreward component after that replacement so geometry and lighting agree.
+    let shore_n = shore_breaker_normal(in.base_xz, in.shore_dir, in.shore_factor);
+    n = normalize(n + shore_n - vec3<f32>(0.0, 1.0, 0.0));
     let interaction_texel = interaction_sample(in.base_xz);
     state.interaction_height = interaction_texel.r;
     state.interaction_velocity = interaction_texel.g;
@@ -1010,7 +1053,12 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let transmitted = mix(ocean_body * (1.0 - rgb_transmittance * 0.4) + rgb * rgb_transmittance, refracted.color * rgb_transmittance, refracted.valid * transmission);
 
     // Reflective but NOT a mirror: cap reflection weight to max 0.72 so deep navy blue ocean color always shines through
-    let reflection_weight = clamp(physical_fresnel * 0.68 + 0.020, 0.02, 0.72);
+    // Deep wind-driven ocean should retain a navy/teal body. Calm water stays
+    // reflective, while FFT slope energy reduces the SSR/planar mirror contribution.
+    let open_ocean_activity = clamp(max(state.slope_variance * 2.8, wp.wave_amp * 0.70), 0.0, 1.0);
+    let reflection_scale = mix(0.72, 0.43, open_ocean_activity);
+    let reflection_cap = mix(0.72, 0.52, open_ocean_activity);
+    let reflection_weight = clamp(physical_fresnel * reflection_scale + 0.012, 0.012, reflection_cap);
     rgb = mix(transmitted, refl, reflection_weight);
 
     let is_underwater = wp.fft_control.w > 0.5;
@@ -1132,27 +1180,35 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // edge, so the water there is transparent (soft wash over wet sand) rather than opaque white.
     let ft = eff_depth / max(wp.foam_width * 2.2, 0.4);
     let foam_band = smoothstep(0.0, 0.06, ft) * (1.0 - smoothstep(0.35, 1.95, ft));
-    let coast_noise = foam_noise(in.base_xz + (coast_flow + river_flow) * wp.time, wp.time);
+    // coast_flow points toward land. Sampling x + v*t moves a pattern in -v, so
+    // the old wash visibly travelled offshore. x - v*t makes each band advance landward.
+    let shore_speed = 0.38 + shore_break * 0.82;
+    let coast_noise = foam_noise(in.base_xz - coast_flow * wp.time * shore_speed + river_flow * wp.time, wp.time);
+
     // `coast_flow` is the reconstructed water-depth gradient toward land. Build elongated
     // streaks perpendicular to that direction so wash follows the actual shoreline contour.
     let shoreward = normalize(coast_flow + spray_wind * 0.001);
     let shoreline_tangent = vec2<f32>(-shoreward.y, shoreward.x);
     let shoreline_streak = vnoise(vec2<f32>(
-        dot(in.base_xz, shoreline_tangent) * 0.74 + wp.time * 0.16,
-        dot(in.base_xz, shoreward) * 0.19 - wp.time * 0.38
+        dot(in.base_xz, shoreline_tangent) * 0.74 + wp.time * 0.10,
+        dot(in.base_xz, shoreward) * 0.19 - wp.time * shore_speed
     ));
     let coast_pattern = max(coast_noise, smoothstep(0.52, 0.72, shoreline_streak));
     let foam = clamp(foam_band * (0.35 + coast_pattern * 0.95) * max(wp.foam_intensity, 0.0) *
         (1.0 + shore_break * 0.65), 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
     let persistent_foam = clamp((foam_history_sample.r + foam_history_sample.g * 1.5) * (0.65 + foam_history_sample.b * 0.45), 0.0, 1.0);
-    // Whitecaps and crest foam: crest energy and compression trigger organic whitecap tendrils on wave peaks.
-    // Match the reference's accumulated Jacobian foam: a crest must have either
-    // appreciable vertical energy or horizontal convergence, then is broken into
-    // tendrils by the noise field.  The earlier very narrow threshold was effectively
-    // invisible with the production sea state.
-    let breaker_foam = smoothstep(0.50, 0.78, state.compression) *
-        smoothstep(0.48, 0.72, foam_noise(in.base_xz * 1.5, wp.time)) * 0.28;
+    // Whitecaps belong on the *top* of a breaking crest. Godot stores the
+    // negative-Jacobian accumulation in normal-map alpha, then thresholds that
+    // field in the material. Retain our persistent equivalent, but add a direct
+    // crest-shaped term so a tall crest reads as a white cap instead of leaving
+    // foam scattered around the troughs. The noise only breaks the edge up; it
+    // does not decide where a crest is.
+    let crest_top = smoothstep(0.035, 0.16, state.crest_energy) *
+        smoothstep(0.008, 0.085, max(surface_wave, 0.0));
+    let jacobian_break = smoothstep(0.035, 0.22, state.compression);
+    let crest_shape = smoothstep(0.42, 0.68, foam_noise(in.base_xz * 1.5 - spray_wind * wp.time * 0.18, wp.time));
+    let breaker_foam = crest_top * mix(0.28, 0.72, jacobian_break) * crest_shape;
     // Sparse short-lived flecks sell wind-torn shore break and whitecap spindrift
     // without a separate particle system or a broad white surface layer.
     let spray_flecks = (foam_band * shore_break + breaker_foam) *

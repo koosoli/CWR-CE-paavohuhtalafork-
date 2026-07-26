@@ -20,7 +20,8 @@ const GRID_N: u32 = 192;
 // rather than CPU-owned particles: only crests that pass the FFT breaking test reach
 // the fragment stage, so the cost scales with visible whitewater rather than a CPU
 // particle list.
-const WHITEWATER_PARTICLE_COUNT: u32 = 32_768;
+// Matches the compact 45x45 Godot-style emitter in whitewater_render.wgsl.
+const WHITEWATER_PARTICLE_COUNT: u32 = 2_025;
 
 // A flat GPU CDLOD water surface: the shared grid mesh instanced per selected node,
 // placed on a horizontal plane at the frame's sea level, drawn after opaque terrain +
@@ -509,8 +510,10 @@ impl Water {
             immediate_size: 0,
         });
         let grid_attrs = wgpu::vertex_attr_array![0 => Float32x3];
-        let inst_attrs =
-            wgpu::vertex_attr_array![1 => Float32x2, 2 => Float32, 3 => Uint32, 4 => Float32x2];
+        let inst_attrs = wgpu::vertex_attr_array![
+            1 => Float32x2, 2 => Float32, 3 => Uint32, 4 => Float32x2,
+            5 => Float32x2, 6 => Float32
+        ];
         let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgr_water_pipeline"),
             layout: Some(&pipeline_layout),

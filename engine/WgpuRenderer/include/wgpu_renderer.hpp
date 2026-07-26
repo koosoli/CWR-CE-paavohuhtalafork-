@@ -898,6 +898,12 @@ struct WgrWaterNode
     uint32_t lod;
     float morph_start;
     float morph_end;
+    /* CPU-derived direction from the nearby shallow-water tile toward the closest
+     * shore, plus a 0..1 shallow/coast weight.  This lets the vertex shader add a
+     * shoreward breaker train without rotating the global open-ocean FFT field. */
+    WgrVec2 shore_direction;
+    float shore_factor;
+    float _shore_pad;
 };
 
 /* A run [first_node, first_node+node_count) of WgrFrame.water_nodes drawn with the
@@ -1024,7 +1030,7 @@ static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the 
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassParams) == 1616, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterParams) == 208, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrWaterNode) == 24, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterNode) == 40, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterInteractionEvent) == 64 && alignof(WgrWaterInteractionEvent) == 16, "WgrWaterInteractionEvent must match Rust");
 static_assert(sizeof(WgrWaterInteractionParams) == 96 && alignof(WgrWaterInteractionParams) == 16, "WgrWaterInteractionParams must match Rust");

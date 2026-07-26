@@ -894,6 +894,9 @@ pub struct WgrWaterNode {
     pub lod: u32,
     pub morph_start: f32,
     pub morph_end: f32,
+    pub shore_direction: WgrVec2,
+    pub shore_factor: f32,
+    pub _shore_pad: f32,
 }
 
 #[repr(C)]
@@ -994,7 +997,7 @@ const _: () = assert!(std::mem::size_of::<WgrGrassBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1616);
 const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 208);
-const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
+const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrWaterInteractionEvent>() == 64);
 const _: () = assert!(std::mem::align_of::<WgrWaterInteractionEvent>() == 16);

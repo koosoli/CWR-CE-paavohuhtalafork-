@@ -182,7 +182,8 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
 {
     WgrWaterCascadeConfig c{};
     c.enabled = 1;
-    c.resolution = 256;
+    // Match GodotOceanWaves Water.map_size and the renderer allocation in fft.rs.
+    c.resolution = 1024;
     c.displacement_scale = 1.0f;
     c.horiz_displacement_scale = 1.0f;
     c.normal_scale = 1.0f;
@@ -196,6 +197,8 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
     c.short_wave_detail = 1.0f;
     c.whitecap_threshold = 0.50f;
     c.spectrum_seed = 0;
+    // Godot water.gd dispatches cascade i at 120 + PI*i seconds.
+    c.phase_offset_seconds = 120.0f;
     c.update_rate_hz = 60.0f;
 
     if (preset == 1)
@@ -210,6 +213,7 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
         b.wind_direction_rad = 0.2618f;
         b.directional_spread = 0.40f;
         b.spectrum_seed = 0;
+        b.phase_offset_seconds = 120.0f + 3.14159265359f;
         WgrWaterCascadeConfig d = c;
         d.tile_length_x = d.tile_length_y = 16.0f;
         d.displacement_scale = d.horiz_displacement_scale = 0.0f;
@@ -220,6 +224,7 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
         d.directional_spread = 0.40f;
         d.whitecap_threshold = 0.25f;
         d.spectrum_seed = 0;
+        d.phase_offset_seconds = 120.0f + 2.0f * 3.14159265359f;
         c.foam_scale = 8.0f;
         WgrWaterCascadeConfig disabled{};
         wgr_water_set_cascade_config(renderer, 0, &c);
@@ -233,9 +238,9 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
     {
         // Retained solely for visual A/B of the old harmonic implementation.
         c.tile_length_x = c.tile_length_y = 48.0f;
-        WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 144.0f; b.wind_speed = 8.5f; b.spectrum_seed = 5678;
-        WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 432.0f; d.wind_speed = 7.0f; d.spectrum_seed = 91011;
-        WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1296.0f; e.wind_speed = 6.0f; e.spectrum_seed = 121314;
+        WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 144.0f; b.wind_speed = 8.5f; b.spectrum_seed = 5678; b.phase_offset_seconds += 3.14159265359f;
+        WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 432.0f; d.wind_speed = 7.0f; d.spectrum_seed = 91011; d.phase_offset_seconds += 2.0f * 3.14159265359f;
+        WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1296.0f; e.wind_speed = 6.0f; e.spectrum_seed = 121314; e.phase_offset_seconds += 3.0f * 3.14159265359f;
         wgr_water_set_cascade_config(renderer, 0, &c);
         wgr_water_set_cascade_config(renderer, 1, &b);
         wgr_water_set_cascade_config(renderer, 2, &d);
@@ -251,9 +256,9 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
     c.wind_direction_rad = 0.31f;
     c.fetch_meters = 210000.0f;
     c.spectrum_seed = 1471;
-    WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 257.0f; b.wind_speed = 9.5f; b.wind_direction_rad = 0.43f; b.spectrum_seed = 8623;
-    WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 683.0f; d.wind_speed = 7.5f; d.wind_direction_rad = 0.22f; d.fetch_meters = 350000.0f; d.spectrum_seed = 24593;
-    WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1777.0f; e.wind_speed = 6.0f; e.wind_direction_rad = 0.37f; e.fetch_meters = 550000.0f; e.spectrum_seed = 73471;
+    WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 257.0f; b.wind_speed = 9.5f; b.wind_direction_rad = 0.43f; b.spectrum_seed = 8623; b.phase_offset_seconds += 3.14159265359f;
+    WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 683.0f; d.wind_speed = 7.5f; d.wind_direction_rad = 0.22f; d.fetch_meters = 350000.0f; d.spectrum_seed = 24593; d.phase_offset_seconds += 2.0f * 3.14159265359f;
+    WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1777.0f; e.wind_speed = 6.0f; e.wind_direction_rad = 0.37f; e.fetch_meters = 550000.0f; e.spectrum_seed = 73471; e.phase_offset_seconds += 3.0f * 3.14159265359f;
     wgr_water_set_cascade_config(renderer, 0, &c);
     wgr_water_set_cascade_config(renderer, 1, &b);
     wgr_water_set_cascade_config(renderer, 2, &d);
@@ -606,6 +611,52 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         node.lod = static_cast<uint32_t>(s.level);
         node.morph_start = s.morphStart;
         node.morph_end = s.morphEnd;
+        // Find the closest dry/very-shallow terrain sample around this water tile.
+        // The result is deliberately tile-local: it bends only a short coastal breaker
+        // train, never the globally coherent FFT sea state offshore.
+        const float centreX = s.originX + s.size * 0.5f;
+        const float centreZ = s.originZ + s.size * 0.5f;
+        const int centreIx = static_cast<int>(std::lround(centreX / land.GetTerrainGrid()));
+        const int centreIz = static_cast<int>(std::lround(centreZ / land.GetTerrainGrid()));
+        const int terrainRange = land.GetTerrainRange();
+        float bestDistance = 1.0e9f;
+        float dirX = 0.0f;
+        float dirZ = 0.0f;
+        float localDepth = 1000.0f;
+        if (centreIx >= 0 && centreIz >= 0 && centreIx < terrainRange && centreIz < terrainRange)
+        {
+            localDepth = std::max(land.GetSeaLevel() - land.GetHeight(centreIz, centreIx), 0.0f);
+            constexpr int directions[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}};
+            for (const auto& d : directions)
+            {
+                for (int step = 2; step <= 24; step += 2)
+                {
+                    const int x = centreIx + d[0] * step;
+                    const int z = centreIz + d[1] * step;
+                    if (x < 0 || z < 0 || x >= terrainRange || z >= terrainRange)
+                    {
+                        break;
+                    }
+                    if (land.GetHeight(z, x) >= land.GetSeaLevel() - 0.15f)
+                    {
+                        const float dx = static_cast<float>(d[0] * step) * land.GetTerrainGrid();
+                        const float dz = static_cast<float>(d[1] * step) * land.GetTerrainGrid();
+                        const float distance = std::sqrt(dx * dx + dz * dz);
+                        if (distance < bestDistance)
+                        {
+                            bestDistance = distance;
+                            dirX = dx / distance;
+                            dirZ = dz / distance;
+                        }
+                        break;
+                    }
+                }
+            }
+        }
+        const float shoreDistanceFade = std::clamp((48.0f - bestDistance) / 36.0f, 0.0f, 1.0f);
+        const float shallowFade = std::clamp((8.0f - localDepth) / 6.0f, 0.0f, 1.0f);
+        node.shore_direction = {dirX, dirZ};
+        node.shore_factor = shoreDistanceFade * shallowFade;
         _selected.push_back(node);
     };
     // Reject nodes that sit entirely above the highest sea surface: their terrain

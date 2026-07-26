@@ -7,8 +7,10 @@
 #import water_fft_sampling::fft_aperiodic_uv
 
 const TAU: f32 = 6.28318530718;
-const EMITTER_SIDE: u32 = 181u; // ceil(sqrt(32768)); matches reference density.
-const EMITTER_SPAN: f32 = 150.0;
+// Godot's GPUParticles emitter is a compact 10 m square. The former 150 m / 32k
+// field converted every distant crest into an oversized spray cloud.
+const EMITTER_SIDE: u32 = 45u;
+const EMITTER_SPAN: f32 = 10.0;
 
 struct WaterParams {
     world_origin: vec2<f32>, terrain_grid: f32, sea_level: f32,
@@ -111,13 +113,14 @@ fn vs_whitewater(
     let cell = vec2<f32>(
         f32(instance_index % EMITTER_SIDE), f32(instance_index / EMITTER_SIDE));
     // Snap the emitter rather than following the camera every pixel.  The cycle
-    // phase and jitter conceal the 150m relocation, while the snap keeps spray
+    // phase and jitter conceal the 10m relocation, while the snap keeps spray
     // anchored to world-space wave crests.
     let anchor = floor(frame.cam_pos.xz / EMITTER_SPAN) * EMITTER_SPAN;
     let local = ((cell + random) / f32(EMITTER_SIDE) - vec2<f32>(0.5)) * EMITTER_SPAN;
     let source_xz = anchor + local;
 
-    let lifetime = mix(1.45, 2.65, hash11(instance_index * 747796405u + 2891336453u));
+    // Reference lifetime is 3 seconds; retain a small variation to avoid a reset ring.
+    let lifetime = mix(2.55, 3.0, hash11(instance_index * 747796405u + 2891336453u));
     let age = fract(wp.time / lifetime + hash11(instance_index * 277803737u + 1u));
     let crest = crest_source(source_xz);
     let interaction = interaction_source(source_xz);
@@ -138,7 +141,7 @@ fn vs_whitewater(
     let horizontal_drift = wind * age * age * (0.30 + max(wp.fft_wind_sea.z, 0.0) * 0.075);
     // Ballistic envelope: particles leave a crest, peak midway through life, then
     // merge back into the surface.  Its amplitude follows breaking strength.
-    let lift = 4.0 * age * (1.0 - age) * (0.35 + source_strength * 1.95);
+    let lift = 4.0 * age * (1.0 - age) * (0.16 + source_strength * 0.72);
     let world = vec3<f32>(
         source_xz.x + crest.x * 0.75 + horizontal_drift.x,
         wp.sea_level + crest.y + interaction.r * 2.5 + lift,
@@ -146,7 +149,7 @@ fn vs_whitewater(
     );
     let world_rel = world - frame.cam_pos.xyz;
     let corner = quad_corner(vertex_index);
-    let size = mix(0.12, 0.92, source_strength) * mix(0.65, 1.0, sin(age * 3.14159265));
+    let size = mix(0.035, 0.26, source_strength) * mix(0.45, 1.0, sin(age * 3.14159265));
     // Form the quad in view space: this is exact camera billboarding without
     // depending on a CPU-side emitter transform.
     let view_pos = frame.view * vec4<f32>(world_rel, 1.0);

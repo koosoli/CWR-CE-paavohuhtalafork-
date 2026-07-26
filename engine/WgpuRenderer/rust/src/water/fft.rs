@@ -1,11 +1,11 @@
-/// Shared ocean resolution. 256² resolves the medium/small wind bands noticeably better
-/// than 128² while remaining practical for the four-cascade compute path.
+/// GodotOceanWaves' `Water.map_size` default.  The extra spectral samples are important
+/// from aircraft distance: at 256² the small cascades visibly resolve into a repeating grid.
 use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
-pub const FFT_RESOLUTION: u32 = 256;
+pub const FFT_RESOLUTION: u32 = 1024;
 const FFT_LAYERS: u32 = 4;
-const FFT_STAGES: u32 = 8;
+const FFT_STAGES: u32 = 10;
 
 // These are the only WaterParams values used to construct h0. Compare their raw bits so live
 // per-frame uploads do not recreate the spectrum, while every authored spectrum change does.
