@@ -20,6 +20,7 @@ use crate::ffi::{
     WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrInstance, WgrLight, WgrMat4, WgrMeshVertex,
     WgrModelLod, WgrModelMaterial, WgrModelSection, WgrShadowCaster, WgrShadowPass, WgrVec4,
 };
+use crate::grass::Grass;
 use crate::textures::SharedTextures;
 
 // Depth + stencil: the stencil aspect gives per-poly shadow exclusion (a pixel is
@@ -2530,6 +2531,12 @@ impl Gfx3d {
         &self.cameras.layout
     }
 
+    /// The cascade light-VP dynamic UBO layout, lent to the grass shadow
+    /// pipeline so blades land in the same depth array as scene casters.
+    pub fn shadow_pass_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.shadow_pass_ubo.layout
+    }
+
     // Camera bind group for the current frame (valid after `prepare`); index a
     // camera by `slot * camera_stride()` as the dynamic offset.
     pub fn camera_bind(&self) -> Option<&wgpu::BindGroup> {
@@ -2665,13 +2672,14 @@ impl Gfx3d {
         queue: &wgpu::Queue,
         pass: &WgrShadowPass,
         casters: &[WgrShadowCaster],
+        grass: &Grass,
     ) {
         let count = pass.count.min(MAX_CASCADES);
         // The GPU-driven set casts its own shadows (draw_gpu_driven_shadow), so the target +
         // pass UBO must be set up even when there are no CPU casters this frame; only the CPU
         // caster bucketing below is skipped when `casters` is empty.
         let gpu_shadows = self.gpu_driven_enabled;
-        if count == 0 || pass.resolution == 0 || (casters.is_empty() && !gpu_shadows) {
+        if count == 0 || pass.resolution == 0 || (casters.is_empty() && !gpu_shadows && !grass.casts_shadows()) {
             self.shadow_plan.clear();
             return;
         }
@@ -2827,12 +2835,13 @@ impl Gfx3d {
         textures: &SharedTextures,
         pass: &WgrShadowPass,
         casters: &[WgrShadowCaster],
+        grass: &Grass,
     ) {
         let count = pass.count.min(MAX_CASCADES);
         // The GPU-driven set casts on its own, so render even with no CPU casters (as long as
         // the target + pass UBO exist). Nothing to do only when both sources are empty.
         let gpu_shadows = self.gpu_driven_enabled;
-        if count == 0 || (casters.is_empty() && !gpu_shadows) {
+        if count == 0 || (casters.is_empty() && !gpu_shadows && !grass.casts_shadows()) {
             return;
         }
         let (Some(target), Some(pass_bind)) = (
@@ -2942,6 +2951,7 @@ impl Gfx3d {
             // GPU-driven retained set casts into this cascade (no-op when GPU-driven is off,
             // or when the cascade has no survivors). Drawn last into the same depth attachment.
             self.draw_gpu_driven_shadow(&mut rp, textures, pass_ubo_off, c);
+            grass.draw_shadow(&mut rp, pass_bind, pass_ubo_off);
         }
     }
 

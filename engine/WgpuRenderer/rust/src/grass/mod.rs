@@ -79,6 +79,7 @@ pub struct Grass {
     mid_color_no_write_pipeline: wgpu::RenderPipeline,
     far_color_pipeline: wgpu::RenderPipeline,
     far_color_no_write_pipeline: wgpu::RenderPipeline,
+    shadow_pipeline: wgpu::RenderPipeline,
 }
 
 impl Grass {
@@ -86,6 +87,7 @@ impl Grass {
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         camera_layout: &wgpu::BindGroupLayout,
+        shadow_pass_layout: &wgpu::BindGroupLayout,
         surface_format: wgpu::TextureFormat,
         sample_count: u32,
         composer: &mut naga_oil::compose::Composer,
@@ -488,6 +490,35 @@ impl Grass {
             surface_format,
             false,
         );
+        let shadow_shader = crate::shaders::make_module(
+            device,
+            composer,
+            "wgr_grass_shadow_shader",
+            include_str!("grass_shadow.wgsl"),
+            "grass/grass_shadow.wgsl",
+        );
+        let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgr_grass_shadow_pipeline_layout"),
+            bind_group_layouts: &[Some(shadow_pass_layout), Some(&terrain_layout), Some(&data_layout)],
+            immediate_size: 0,
+        });
+        let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wgr_grass_shadow"),
+            layout: Some(&shadow_layout),
+            vertex: wgpu::VertexState { module: &shadow_shader, entry_point: Some("vs_grass_shadow"), compilation_options: Default::default(), buffers: &[] },
+            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: wgpu::TextureFormat::Depth32Float,
+                depth_write_enabled: Some(true),
+                depth_compare: Some(wgpu::CompareFunction::LessEqual),
+                stencil: Default::default(),
+                bias: wgpu::DepthBiasState { constant: 4, slope_scale: 2.5, clamp: 0.0 },
+            }),
+            multisample: Default::default(),
+            fragment: None,
+            multiview_mask: None,
+            cache: None,
+        });
         Self {
             enabled,
             terrain_params,
@@ -519,6 +550,7 @@ impl Grass {
             mid_color_no_write_pipeline,
             far_color_pipeline,
             far_color_no_write_pipeline,
+            shadow_pipeline,
         }
     }
 
@@ -717,6 +749,20 @@ impl Grass {
         pass.set_bind_group(2, &self.data_bind, &[]);
         pass.draw_indirect(&self.indirect, 0);
     }
+
+    /// Dense near blades are the only grass LOD that casts. This keeps the
+    /// cascade cost bounded while matching the close-range silhouettes that
+    /// players can actually see moving in the wind.
+    pub fn draw_shadow(&self, pass: &mut wgpu::RenderPass<'_>, shadow_bind: &wgpu::BindGroup, shadow_offset: u32) {
+        if !self.enabled || !self.have_heightmap { return; }
+        pass.set_pipeline(&self.shadow_pipeline);
+        pass.set_bind_group(0, shadow_bind, &[shadow_offset]);
+        pass.set_bind_group(1, &self.terrain_bind, &[]);
+        pass.set_bind_group(2, &self.data_bind, &[]);
+        pass.draw_indirect(&self.indirect, 0);
+    }
+
+    pub fn casts_shadows(&self) -> bool { self.enabled && self.have_heightmap }
 }
 
 fn make_geography_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {

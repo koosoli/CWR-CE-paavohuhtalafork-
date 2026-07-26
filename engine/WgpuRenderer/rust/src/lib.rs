@@ -468,6 +468,7 @@ impl Renderer {
             &device,
             &queue,
             gfx3d.camera_layout(),
+            gfx3d.shadow_pass_layout(),
             color_format,
             sample_count,
             &mut composer,
@@ -1113,7 +1114,7 @@ impl Renderer {
         // Shadows first: prepare() binds the frame's final shadow target into
         // the camera group.
         self.gfx3d
-            .prepare_shadows(&self.device, &self.queue, shadow, shadow_casters);
+            .prepare_shadows(&self.device, &self.queue, shadow, shadow_casters, &self.grass);
         // The terrain owns the sun-shadow mask; lend its view + world->UV mapping to
         // the shared camera group(0) so lit meshes receive terrain shadow too.
         let shadow_mask_view = self.terrain.shadow_mask_view();
@@ -1493,7 +1494,7 @@ impl Renderer {
         // (here and below) name each phase in a RenderDoc capture.
         encoder.push_debug_group("wgr_shadow_cascades");
         self.gfx3d
-            .render_shadow_passes(&mut encoder, &self.textures, shadow, shadow_casters);
+            .render_shadow_passes(&mut encoder, &self.textures, shadow, shadow_casters, &self.grass);
         encoder.pop_debug_group();
 
         // Amortized terrain sun-shadow sweep (long-range heightfield self-shadow),
