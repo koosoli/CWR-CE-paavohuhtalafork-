@@ -1146,6 +1146,17 @@ mod tests {
         assert!(planar_weight > 0.0 && planar_weight < 1.0);
     }
 
+    #[test]
+    fn sunlight_catch_uses_the_godot_ocean_waves_light_model() {
+        let shader = include_str!("water.wgsl");
+        assert!(shader.contains("fn godot_smith_masking_shadowing"));
+        assert!(shader.contains("fn godot_ggx_distribution"));
+        assert!(shader.contains("fn godot_water_fresnel"));
+        assert!(shader.contains("const GODOT_LIGHT_ROUGHNESS: f32 = 0.4"));
+        assert!(shader.contains("let wave_height = state.displacement.y"));
+        assert!(shader.contains("let sss_near = 0.5 * pow(godot_nv, 2.0)"));
+    }
+
     // WTR-001 — the deterministic-freeze mask is bit-cast into WgrWaterParams.fft_control[2].
     // The legacy authored default (12.0 m minimum geometry wavelength) is preserved when no
     // freeze is requested: its bit pattern's low three bits are clean so it cannot accidentally

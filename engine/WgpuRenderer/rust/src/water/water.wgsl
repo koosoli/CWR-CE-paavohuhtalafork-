@@ -552,6 +552,32 @@ fn smith_schlick_g1(ndx: f32, roughness: f32) -> f32 {
     return ndx / max(ndx * (1.0 - k) + k, 1e-4);
 }
 
+// Direct ports of GodotOceanWaves' water.gdshader light() helpers.  Keep these
+// separate from the engine's physically based reflection/refraction helpers above:
+// this pair defines the distinctive broad sunlight catch and turquoise crest glow
+// of the reference project.
+fn godot_smith_masking_shadowing(cos_theta: f32, alpha: f32) -> f32 {
+    let a = cos_theta / (alpha * sqrt(max(1.0 - cos_theta * cos_theta, 1e-6)));
+    let a_sq = a * a;
+    if (a < 1.6) {
+        return (1.0 - 1.259 * a + 0.396 * a_sq) / max(3.535 * a + 2.181 * a_sq, 1e-6);
+    }
+    return 0.0;
+}
+
+fn godot_ggx_distribution(cos_theta: f32, alpha: f32) -> f32 {
+    let a_sq = alpha * alpha;
+    let d = 1.0 + (a_sq - 1.0) * cos_theta * cos_theta;
+    return a_sq / (PI * d * d);
+}
+
+fn godot_water_fresnel(cos_view_normal: f32, roughness: f32) -> f32 {
+    // Exact reference expression: mix(custom grazing term, 1, REFLECTANCE=0.02).
+    let grazing = pow(max(1.0 - cos_view_normal, 0.0), 5.0 * exp(-2.69 * roughness)) /
+        (1.0 + 22.7 * pow(roughness, 1.5));
+    return mix(grazing, 1.0, 0.02);
+}
+
 // Equirect lookup into the sky reflection env map. Matches fs_sky_env's convention in sky.wgsl:
 // u = azimuth (atan2(z, x)/2pi + 0.5, U-wrapped), v = 0 at zenith .. 1 at nadir (acos(y)/pi).
 // `dir` is a world-space direction. Returns linear sky radiance.
@@ -938,7 +964,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
 
     let amb_ao = sky_vis_ao(in.base_xz);
     let ndl = max(dot(n, l), 0.0);
-    var rgb = ocean_body * (sun_ambient * amb_ao + sun_diffuse * ndl * 0.25 * sun_vis);
+    // Direct sun is added below with the GodotOceanWaves light() port.  Leave the
+    // volume/body term ambient-lit here so it is not double-counted.
+    var rgb = ocean_body * (sun_ambient * amb_ao);
 
     // Fresnel toward the horizon/sky tint: near-grazing water lightens and reads reflective.
     let ndv = max(dot(n, v), 0.0);
@@ -1034,36 +1062,40 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
             dbg_base_uv, refracted, transmission);
     }
 
-    // Energy-normalized GGX sunlight. The NDF is broadened by resolved FFT slope
-    // variance and micro-ripples, preventing a temporally unstable pin-prick glint.
-    // Keep the legacy intensity as a restrained trim: its old default targeted the
-    // much lower Blinn-Phong peak, while GGX retains a physically sharper core.
-    let h = safe_normalize3(l + v, n);
-    let ndh = max(dot(n, h), 0.0);
-    let vdh = max(dot(v, h), 0.0);
-    let ggx_alpha = roughness * roughness;
-    let alpha_sq = ggx_alpha * ggx_alpha;
-    let d_base = max(ndh * ndh * (alpha_sq - 1.0) + 1.0, 1e-6);
-    let distribution = alpha_sq / (PI * d_base * d_base);
-    let visibility = smith_schlick_g1(ndl, roughness) * smith_schlick_g1(ndv, roughness);
-    let specular = distribution * visibility * schlick_fresnel(f0, vdh) /
-        max(4.0 * ndl * ndv, 1e-4);
-    let sun_specular = specular * ndl * wp.spec_intensity * 0.12 * sun_vis;
-    rgb = rgb + sun_diffuse * sun_specular;
+    // Exact GodotOceanWaves light() model.  Its author uses a fixed 0.4 light
+    // roughness (independent of the material ROUGHNESS output), custom Fresnel,
+    // empirical Smith masking and a height-driven turquoise SSS term.  The current
+    // FFT displacement supplies the reference shader's `wave_height`.
+    const GODOT_LIGHT_ROUGHNESS: f32 = 0.4;
+    let halfway = safe_normalize3(l + v, n);
+    let godot_nl = max(dot(n, l), 2e-5);
+    let godot_nv = max(dot(n, v), 2e-5);
+    let godot_fresnel = godot_water_fresnel(godot_nv, GODOT_LIGHT_ROUGHNESS);
+    let light_mask = godot_smith_masking_shadowing(GODOT_LIGHT_ROUGHNESS, godot_nv);
+    let view_mask = godot_smith_masking_shadowing(GODOT_LIGHT_ROUGHNESS, godot_nl);
+    let microfacet_distribution = godot_ggx_distribution(dot(n, halfway), GODOT_LIGHT_ROUGHNESS);
+    let geometric_attenuation = 1.0 / (1.0 + light_mask + view_mask);
+    let godot_specular = godot_fresnel * microfacet_distribution * geometric_attenuation /
+        (4.0 * godot_nv + 0.1) * sun_vis;
 
-    // Focused, backlit crests transmit a little direct sunlight. Curvature and
-    // horizontal compression reject broad swells; sufficient column depth rejects
-    // the shoreline foam band. This is direct-light scattering, not emission.
-    let crest_shape = smoothstep(0.025, 0.09, state.crest_energy) *
-        smoothstep(0.008, 0.030, state.compression) *
-        smoothstep(0.0015, 0.014, state.curvature);
-    let view_xz = safe_normalize3(vec3<f32>(v.x, 0.0, v.z), vec3<f32>(0.0, 0.0, 1.0)).xz;
-    let light_xz = safe_normalize3(vec3<f32>(l.x, 0.0, l.z), vec3<f32>(0.0, 0.0, -1.0)).xz;
-    let backlit = smoothstep(0.10, 0.70, dot(view_xz, -light_xz));
-    const sss_modifier = vec3<f32>(0.9, 1.15, 0.85); // GodotOceanWaves SSS turquoise wave crest modifier
-    let crest_depth = smoothstep(0.40, 2.00, water_depth);
-    let crest_scatter = crest_shape * backlit * crest_depth * sun_vis * 0.085;
-    rgb = rgb + sun_diffuse * crest_scatter * sss_modifier;
+    const GODOT_SSS_MODIFIER = vec3<f32>(0.9, 1.15, 0.85);
+    let wave_height = state.displacement.y;
+    let sss_height = max(0.0, wave_height + 2.5) * pow(max(dot(l, -v), 0.0), 4.0) *
+        pow(0.5 - 0.5 * dot(l, n), 3.0);
+    let sss_near = 0.5 * pow(godot_nv, 2.0);
+    let lambertian = 0.5 * godot_nl;
+    let godot_foam_factor = state.foam_density;
+    let godot_foam_color = vec3<f32>(0.88, 0.92, 0.94);
+    let godot_diffuse = mix((sss_height + sss_near) * GODOT_SSS_MODIFIER /
+        (1.0 + light_mask) + vec3<f32>(lambertian), godot_foam_color, godot_foam_factor) *
+        (1.0 - godot_fresnel) * sun_vis;
+    // Godot applies these light accumulators inside its material pipeline. Our HDR
+    // renderer stores physical sun radiance directly, so adding the reference output
+    // raw would bypass the water-body albedo and turn the surface white. Preserve the
+    // exact reference lobe/crest response, but place diffuse through the ocean body
+    // and keep the same restrained HDR glint energy used by the former GGX path.
+    rgb = rgb + ocean_body * sun_diffuse * godot_diffuse;
+    rgb = rgb + sun_diffuse * (godot_specular * 0.12);
 
     // Artistic darkening of shadowed water for readability (dims the ambient/sky term
     // too, which the pure sun-removal above does not). 0 = physical (sun-only).
