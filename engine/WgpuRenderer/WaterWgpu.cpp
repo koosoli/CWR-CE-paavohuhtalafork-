@@ -16,11 +16,13 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <limits>
 #include <cstring> // memcpy — packs the WTR freeze mask into WgrWaterParams.fft_control.z
 
 namespace Poseidon
 {
-// Grid-mesh resolution per axis; must match GRID_N in water/mod.rs (and the terrain grid).
+// CDLOD leaf span in terrain texels.  The GPU water mesh is intentionally denser
+// (see water/mod.rs) so it can represent smooth FFT displacement inside this leaf.
 constexpr int WaterGridN = 32;
 
 static float EnvFloat(const char* name, float fallback)
@@ -31,6 +33,231 @@ static float EnvFloat(const char* name, float fallback)
         return fallback;
     }
     return std::strtof(v, nullptr);
+}
+
+struct ReferenceWaveMode
+{
+    float kx;
+    float kz;
+    float omega;
+    float h0Real;
+    float h0Imag;
+    float displacementScale;
+};
+
+static std::array<float, 2> ReferenceHash(uint32_t x, uint32_t y)
+{
+    uint32_t h = y + 374761393u + x * 3266489917u;
+    h = 2246822519u * (h ^ (h >> 15u));
+    h = 3266489917u * (h ^ (h >> 13u));
+    const uint32_t n = h ^ (h >> 16u);
+    constexpr float invMax = 1.0f / 2147483647.0f;
+    return {static_cast<float>((n >> 1u) & 0x7fffffffu) * invMax,
+            static_cast<float>(((n * 48271u) >> 1u) & 0x7fffffffu) * invMax};
+}
+
+static float ReferenceSpreadNormalization(float s)
+{
+    constexpr float pi = 3.14159265358979323846f;
+    if (s < 0.4f)
+    {
+        return 0.5f / pi + s * (0.220636f + s * (-0.109f + s * 0.090f));
+    }
+    const float a = std::sqrt(s);
+    return (a * 0.5f + 0.0625f / a) / std::sqrt(pi);
+}
+
+static std::vector<ReferenceWaveMode> BuildReferenceWaveModes()
+{
+    struct AuthoredCascade
+    {
+        float length;
+        float displacement;
+        float windSpeed;
+        float windDirection;
+        float fetch;
+        float swell;
+        float spread;
+        float detail;
+    };
+    constexpr float pi = 3.14159265358979323846f;
+    constexpr std::array<AuthoredCascade, 2> cascades{{
+        {88.0f, 1.0f, 10.0f, 20.0f * pi / 180.0f, 150000.0f, 0.8f, 0.2f, 1.0f},
+        {57.0f, 0.75f, 5.0f, 15.0f * pi / 180.0f, 150000.0f, 0.8f, 0.4f, 1.0f},
+    }};
+    constexpr int resolution = 256;
+    constexpr float gravity = 9.81f;
+    constexpr float tau = 2.0f * pi;
+    constexpr size_t retainedPerCascade = 4096;
+    std::vector<ReferenceWaveMode> retained;
+    retained.reserve(retainedPerCascade * cascades.size());
+
+    for (const AuthoredCascade& cascade : cascades)
+    {
+        std::vector<ReferenceWaveMode> all;
+        all.reserve(resolution * resolution);
+        const float dk = tau / cascade.length;
+        const float alpha =
+            0.076f * std::pow(cascade.windSpeed * cascade.windSpeed / (cascade.fetch * gravity), 0.22f);
+        const float peak =
+            22.0f * std::pow(gravity * gravity / (cascade.windSpeed * cascade.fetch), 1.0f / 3.0f);
+
+        for (int y = 0; y < resolution; ++y)
+        {
+            for (int x = 0; x < resolution; ++x)
+            {
+                const float kx = (static_cast<float>(x) - resolution * 0.5f) * dk;
+                const float kz = (static_cast<float>(y) - resolution * 0.5f) * dk;
+                const float k = std::sqrt(kx * kx + kz * kz) + 1e-6f;
+                const float kd = k * 20.0f;
+                const float tanhKd = std::tanh(kd);
+                const float omega = std::sqrt(gravity * k * tanhKd);
+                const float derivative =
+                    0.5f * gravity * (tanhKd + kd * (1.0f - tanhKd * tanhKd)) / omega;
+                const float p = omega / peak;
+                const float s = omega <= peak
+                                    ? 6.97f * std::pow(std::abs(p), 4.06f)
+                                    : 9.77f * std::pow(std::abs(p),
+                                                       -2.33f - 1.45f *
+                                                                    (cascade.windSpeed * peak / gravity - 1.17f));
+                const float sx = 16.0f * std::tanh(peak / omega) * cascade.swell * cascade.swell;
+                const float alignment =
+                    (kx * std::sin(cascade.windDirection) + kz * std::cos(cascade.windDirection)) / k;
+                const float directional = ReferenceSpreadNormalization(s + sx) *
+                                          std::pow(std::max(0.5f * (1.0f + alignment), 0.0f), s + sx);
+                const float spread =
+                    directional * (1.0f - cascade.spread) + (0.5f / pi) * cascade.spread;
+                const float sigma = omega <= peak ? 0.07f : 0.09f;
+                const float r = std::exp(-(omega - peak) * (omega - peak) /
+                                         (2.0f * sigma * sigma * peak * peak));
+                const float jonswap = alpha * gravity * gravity / std::pow(omega, 5.0f) *
+                                      std::exp(-1.25f * std::pow(peak / omega, 4.0f)) *
+                                      std::pow(3.3f, r);
+                const float wh = std::min(omega * std::sqrt(20.0f / gravity), 2.0f);
+                const float attenuation =
+                    wh <= 1.0f ? 0.5f * wh * wh : 1.0f - 0.5f * (2.0f - wh) * (2.0f - wh);
+                const float damping =
+                    std::exp(-(1.0f - cascade.detail) * (1.0f - cascade.detail) * k * k);
+                const float variance =
+                    jonswap * attenuation * spread * damping * derivative / k * dk * dk;
+                const auto uniform = ReferenceHash(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
+                const float radius = std::sqrt(-2.0f * std::log(std::max(uniform[0], 1e-7f)));
+                const float theta = tau * uniform[1];
+                const float amplitude = std::sqrt(std::max(2.0f * variance, 0.0f));
+                all.push_back({kx, kz, omega, radius * std::cos(theta) * amplitude,
+                               radius * std::sin(theta) * amplitude, cascade.displacement});
+            }
+        }
+        const size_t count = std::min(retainedPerCascade, all.size());
+        std::partial_sort(all.begin(), all.begin() + count, all.end(),
+                          [](const ReferenceWaveMode& a, const ReferenceWaveMode& b)
+                          {
+                              return std::hypot(a.h0Real, a.h0Imag) * a.displacementScale >
+                                     std::hypot(b.h0Real, b.h0Imag) * b.displacementScale;
+                          });
+        retained.insert(retained.end(), all.begin(), all.begin() + count);
+    }
+    return retained;
+}
+
+static float ReferenceSurfaceHeight(float x, float z, float time, float amplitude, float speed,
+                                    float wavelengthScale)
+{
+    static const std::vector<ReferenceWaveMode> modes = BuildReferenceWaveModes();
+    const float invScale = 1.0f / std::max(wavelengthScale, 0.01f);
+    float height = 0.0f;
+    for (const ReferenceWaveMode& mode : modes)
+    {
+        const float phase = mode.omega * time * speed + (mode.kx * x + mode.kz * z) * invScale;
+        height += 2.0f * (mode.h0Real * std::cos(phase) - mode.h0Imag * std::sin(phase)) *
+                  mode.displacementScale;
+    }
+    return height * std::max(amplitude, 0.0f);
+}
+
+// The spectrum consumes these independently per layer.  Keeping all preset data here
+// makes a live Water-tab switch atomic: lengths in WgrWaterParams and their matching
+// wind/fetch/seed/scales reach the GPU in the same frame.
+static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
+{
+    WgrWaterCascadeConfig c{};
+    c.enabled = 1;
+    c.resolution = 256;
+    c.displacement_scale = 1.0f;
+    c.horiz_displacement_scale = 1.0f;
+    c.normal_scale = 1.0f;
+    c.foam_scale = 1.0f;
+    c.wind_speed = 10.0f;
+    c.wind_direction_rad = 0.349f;
+    c.fetch_meters = 150000.0f;
+    c.water_depth_meters = 20.0f;
+    c.swell = 0.80f;
+    c.directional_spread = 0.20f;
+    c.short_wave_detail = 1.0f;
+    c.whitecap_threshold = 0.50f;
+    c.spectrum_seed = 0;
+    c.update_rate_hz = 60.0f;
+
+    if (preset == 1)
+    {
+        // krautdev/GodotOceanWaves' three published cascades.
+        c.tile_length_x = c.tile_length_y = 88.0f;
+        WgrWaterCascadeConfig b = c;
+        b.tile_length_x = b.tile_length_y = 57.0f;
+        b.displacement_scale = b.horiz_displacement_scale = 0.75f;
+        b.foam_scale = 0.0f;
+        b.wind_speed = 5.0f;
+        b.wind_direction_rad = 0.2618f;
+        b.directional_spread = 0.40f;
+        b.spectrum_seed = 0;
+        WgrWaterCascadeConfig d = c;
+        d.tile_length_x = d.tile_length_y = 16.0f;
+        d.displacement_scale = d.horiz_displacement_scale = 0.0f;
+        d.normal_scale = 0.25f;
+        d.foam_scale = 3.0f;
+        d.wind_speed = 20.0f;
+        d.fetch_meters = 550000.0f;
+        d.directional_spread = 0.40f;
+        d.whitecap_threshold = 0.25f;
+        d.spectrum_seed = 0;
+        c.foam_scale = 8.0f;
+        WgrWaterCascadeConfig disabled{};
+        wgr_water_set_cascade_config(renderer, 0, &c);
+        wgr_water_set_cascade_config(renderer, 1, &b);
+        wgr_water_set_cascade_config(renderer, 2, &d);
+        wgr_water_set_cascade_config(renderer, 3, &disabled);
+        return;
+    }
+
+    if (preset == 2)
+    {
+        // Retained solely for visual A/B of the old harmonic implementation.
+        c.tile_length_x = c.tile_length_y = 48.0f;
+        WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 144.0f; b.wind_speed = 8.5f; b.spectrum_seed = 5678;
+        WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 432.0f; d.wind_speed = 7.0f; d.spectrum_seed = 91011;
+        WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1296.0f; e.wind_speed = 6.0f; e.spectrum_seed = 121314;
+        wgr_water_set_cascade_config(renderer, 0, &c);
+        wgr_water_set_cascade_config(renderer, 1, &b);
+        wgr_water_set_cascade_config(renderer, 2, &d);
+        wgr_water_set_cascade_config(renderer, 3, &e);
+        return;
+    }
+
+    // Production: larger pairwise-prime domains make an individual cascade's repeat
+    // imperceptible as well as pushing the shared period beyond the playable world.
+    // Small per-layer direction/seed changes prevent the bands from phase-locking.
+    c.tile_length_x = c.tile_length_y = 97.0f;
+    c.wind_speed = 12.0f;
+    c.wind_direction_rad = 0.31f;
+    c.fetch_meters = 210000.0f;
+    c.spectrum_seed = 1471;
+    WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 257.0f; b.wind_speed = 9.5f; b.wind_direction_rad = 0.43f; b.spectrum_seed = 8623;
+    WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 683.0f; d.wind_speed = 7.5f; d.wind_direction_rad = 0.22f; d.fetch_meters = 350000.0f; d.spectrum_seed = 24593;
+    WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1777.0f; e.wind_speed = 6.0f; e.wind_direction_rad = 0.37f; e.fetch_meters = 550000.0f; e.spectrum_seed = 73471;
+    wgr_water_set_cascade_config(renderer, 0, &c);
+    wgr_water_set_cascade_config(renderer, 1, &b);
+    wgr_water_set_cascade_config(renderer, 2, &d);
+    wgr_water_set_cascade_config(renderer, 3, &e);
 }
 
 WaterWgpu::WaterWgpu(EngineWgpu& engine, WgrRenderer* renderer) : _engine(engine), _renderer(renderer)
@@ -114,63 +341,16 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // Weather does not currently expose a renderer-facing wind vector. Keep this deterministic
     // until the environment weather service is threaded here.
     _params.fft_control = {1.0f, 1337.0f, 12.0f, 0.0f};
-    _params.fft_wind_sea = {0.82f, 0.57f, 6.0f, 0.08f};
+    // Match the energetic reference sea state.  The last lane drives spectral energy;
+    // 0.08 made waves, foam, and spray effectively invisible in normal gameplay.
+    _params.fft_wind_sea = {0.82f, 0.57f, 12.0f, 0.65f};
     _params.fft_cascade_lengths = {48.0f, 144.0f, 432.0f, 1296.0f};
     // The sole draw path is the global ocean plane. Keep directed flow disabled until
     // water-body batches can supply a river-only material signal.
     _params.flow_direction_speed = {0.0f, 0.0f, 0.0f, static_cast<float>(WGR_WATER_KIND_OCEAN)};
     _haveInteractionDomain = false;
 
-    // Phase GOW-014: Apply exact GodotOceanWaves reference cascade preset (88m, 57m, 16m)
-    WgrWaterCascadeConfig casA{};
-    casA.enabled = 1;
-    casA.resolution = 256;
-    casA.tile_length_x = 88.0f;
-    casA.tile_length_y = 88.0f;
-    casA.displacement_scale = 1.00f;
-    casA.horiz_displacement_scale = 1.00f;
-    casA.normal_scale = 1.00f;
-    casA.foam_scale = 8.00f;
-    casA.wind_speed = 10.0f;
-    casA.wind_direction_rad = 0.349f; // 20 degrees
-    casA.fetch_meters = 150000.0f;     // 150 km
-    casA.water_depth_meters = 20.0f;
-    casA.swell = 0.80f;
-    casA.directional_spread = 0.20f;
-    casA.short_wave_detail = 1.00f;
-    casA.whitecap_threshold = 0.50f;
-    casA.spectrum_seed = 1234;
-    casA.phase_offset_seconds = 0.0f;
-    casA.update_rate_hz = 60.0f;
-
-    WgrWaterCascadeConfig casB = casA;
-    casB.tile_length_x = 57.0f;
-    casB.tile_length_y = 57.0f;
-    casB.displacement_scale = 0.75f;
-    casB.horiz_displacement_scale = 0.75f;
-    casB.normal_scale = 1.00f;
-    casB.foam_scale = 0.00f;
-    casB.wind_speed = 5.0f;
-    casB.wind_direction_rad = 0.2618f; // 15 degrees
-    casB.directional_spread = 0.40f;
-    casB.spectrum_seed = 5678;
-
-    WgrWaterCascadeConfig casC = casA;
-    casC.tile_length_x = 16.0f;
-    casC.tile_length_y = 16.0f;
-    casC.displacement_scale = 0.00f; // High-frequency normal and foam cascade only
-    casC.horiz_displacement_scale = 0.00f;
-    casC.normal_scale = 0.25f;
-    casC.foam_scale = 3.00f;
-    casC.wind_speed = 20.0f;
-    casC.wind_direction_rad = 0.349f; // 20 degrees
-    casC.fetch_meters = 550000.0f;    // 550 km
-    casC.directional_spread = 0.40f;
-    casC.spectrum_seed = 91011;
-
-    wgr_water_set_cascade_config(_renderer, 0, &casA);
-    wgr_water_set_cascade_config(_renderer, 1, &casB);
-    wgr_water_set_cascade_config(_renderer, 2, &casC);
+    ApplyCascadePreset(_renderer, _engine.WaterLook().cascadePreset);
 }
 
 bool WaterWgpu::RebuildIfNeeded(const Landscape& land)
@@ -245,8 +425,25 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _params.swash_amp = look.swashAmp;
     _params.swash_speed = look.swashSpeed;
     const Vector3 cameraPos = camera->Position();
-    const bool isSubmerged = (cameraPos.Y() < land.GetSeaLevel() + 0.25f) || (GetPlayerWaterDepth() > 0.10f);
-    _params.fft_control.w = isSubmerged ? 1.0f : 0.0f;
+    // Post-processing is a camera effect.  Player-body water depth is useful for
+    // splash events, but using it here made wading apply underwater fog above water.
+    float localSurface = land.GetSeaLevel();
+    if (look.cascadePreset == 1)
+    {
+        localSurface += ReferenceSurfaceHeight(cameraPos.X(), cameraPos.Z(), _params.time,
+                                               look.waveAmp, look.waveSpeed, look.waveScale);
+    }
+    // Small asymmetric hysteresis keeps the compositor from flickering when the eye
+    // rides exactly on a moving FFT crest.
+    if (_cameraSubmerged)
+    {
+        _cameraSubmerged = cameraPos.Y() < localSurface + 0.08f;
+    }
+    else
+    {
+        _cameraSubmerged = cameraPos.Y() < localSurface - 0.03f;
+    }
+    _params.fft_control.w = _cameraSubmerged ? 1.0f : 0.0f;
     // WTR-001 — deterministic FFT seed. The authored default (1337.0, set in BuildQuadtree)
     // already keeps the random field stable across frames; allow the dev tab to override it,
     // so a frozen frame is reproducible regardless of seq-of-edits to the spectrum. Setting a
@@ -278,11 +475,22 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     }
     else
     {
-        // WTR-037 Production Non-Harmonic 4-Cascade (37m, 89m, 211m, 503m - >50 km repeat period)
-        _params.fft_cascade_lengths = {37.0f, 89.0f, 211.0f, 503.0f};
+        // Production non-repeating four-cascade ocean.  The smallest 97m domain is
+        // large enough that its own pattern does not read as a visible tiled square.
+        _params.fft_cascade_lengths = {97.0f, 257.0f, 683.0f, 1777.0f};
     }
+    ApplyCascadePreset(_renderer, look.cascadePreset);
 
     _params.debug_params = {static_cast<float>(look.debugView), 0.0f, 0.0f, 0.0f};
+    // Runtime proof that the Water tab reaches the actual renderer. This is deliberately
+    // edge-triggered: one log row per edited amplitude, not one row per frame.
+    static float lastLoggedWaveAmp = -1.0f;
+    if (std::abs(lastLoggedWaveAmp - look.waveAmp) > 0.0001f)
+    {
+        LOG_INFO(Graphics, "Water look applied: amplitude={:.3f}, choppiness={:.3f}, speed={:.3f}, preset={}",
+                 look.waveAmp, look.waveChoppy, look.waveSpeed, look.cascadePreset);
+        lastLoggedWaveAmp = look.waveAmp;
+    }
     wgr_water_set_params(_renderer, &_params);
 
     // WTR-001 — repeatable-camera-path foundation. When the Water tab sets a frame tag (>= 0),

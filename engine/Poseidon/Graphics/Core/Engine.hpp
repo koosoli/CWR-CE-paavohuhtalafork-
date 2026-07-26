@@ -1163,7 +1163,10 @@ class Engine : public IGraphicsEngine
     // every later vtable slot and misdispatches across TUs (see git history / memory).
     struct ExposureSettings
     {
-        bool enabled = true;    // auto-exposure on/off (defaulted on to validate the path)
+        // Manual filmic exposure is the stable default. Auto exposure remains available
+        // in the Tonemap tab, but its 4x adaptation range can flash the whole scene
+        // when a player turns from dark terrain toward a bright sky or water glint.
+        bool enabled = false;
         float key = 0.18f;      // target middle-grey luminance (higher = brighter)
         float minScale = 0.25f; // clamp on the exposure multiplier
         float maxScale = 4.0f;
@@ -1187,15 +1190,18 @@ class Engine : public IGraphicsEngine
     struct WaterSettings
     {
         bool enabled = true;         // draw the GPU water surface (off = seabed only, for A/B)
-        float waveAmp = 0.35f;       // overall amplitude of the multi-band open-ocean carrier
-        float waveChoppy = 0.08f;    // horizontal steepness of the crests
-        float waveSpeed = 1.47f;     // wave animation speed
-        float waveScale = 1.09f;     // wavelength scale (>1 = larger, farther-apart waves)
+        // Neutral multipliers reproduce GodotOceanWaves' authored cascade values.
+        // Those physical spectrum coefficients are already metre-scaled; multiplying
+        // them by 2.4 after removing the erroneous IFFT normalization was excessive.
+        float waveAmp = 0.40f;       // calmer gameplay default; 1 = authored reference amplitude
+        float waveChoppy = 1.0f;     // 1 = reference horizontal displacement
+        float waveSpeed = 1.0f;      // 1 = reference dispersion time
+        float waveScale = 1.0f;      // 1 = reference cascade wavelengths
         // Distance detail LOD: wave detail flattens between these (metres), killing the
         // far-field moiré / repetition — past fadeEnd the water is a smooth horizon mirror.
         float fadeStart = 589.0f;
         float fadeEnd = 865.0f;
-        float warpAmp = 2.52f;       // low-frequency domain warp (m) that de-tiles the field
+        float warpAmp = 0.0f;        // 0 = exact reference sampling; optional de-tiling is opt-in
         float specPower = 11.0f;     // sun-glint sharpness
         float specIntensity = 3.82f; // sun-glint brightness (HDR, blooms)
         float alpha = 0.88f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
@@ -1224,6 +1230,9 @@ class Engine : public IGraphicsEngine
         float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
 
         // WTR-036C / WTR-037 — FFT Cascade Preset (0 = Production Non-Harmonic 4-Cascade, 1 = GodotOceanWaves Reference Style, 2 = Legacy Harmonic 4-Cascade).
+        // The GodotOceanWaves-derived TMA/JONSWAP setup is the gameplay default.  The
+        // non-harmonic production layout remains available for A/B testing, but should
+        // never silently replace the reference look the water system is targeting.
         int cascadePreset = 1;
 
         // WTR-003 — water debug view selector (dev-only; the Water tab "Debug views" section).

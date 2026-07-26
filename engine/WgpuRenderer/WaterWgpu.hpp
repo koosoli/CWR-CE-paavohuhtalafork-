@@ -60,6 +60,7 @@ class WaterWgpu : public IWaterRenderer
     bool _haveInteractionDomain = false;
     bool _interactionDemo = false;
     int _lastInteractionDemoPulse = -1;
+    bool _cameraSubmerged = false;
 
     // A node joins the water tree when its terrain min-height dips to or below this
     // world height (highest possible sea surface + a wave-crest margin).

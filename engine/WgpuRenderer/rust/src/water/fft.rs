@@ -1,5 +1,8 @@
 /// Shared ocean resolution. 256² resolves the medium/small wind bands noticeably better
 /// than 128² while remaining practical for the four-cascade compute path.
+use bytemuck::Zeroable;
+use wgpu::util::DeviceExt;
+
 pub const FFT_RESOLUTION: u32 = 256;
 const FFT_LAYERS: u32 = 4;
 const FFT_STAGES: u32 = 8;
@@ -37,6 +40,8 @@ pub struct Fft {
     displacement: wgpu::TextureView,
     dynamics: wgpu::TextureView,
     auxiliary: wgpu::TextureView,
+    cascade_config_ubo: wgpu::Buffer,
+    cascade_configs: [crate::ffi::WgrWaterCascadeConfig; FFT_LAYERS as usize],
     h0_init_bind: wgpu::BindGroup,
     spectrum_bind: wgpu::BindGroup,
     stage_binds: Vec<wgpu::BindGroup>,
@@ -149,6 +154,15 @@ impl Fft {
             ty,
             count: None,
         };
+        // The C++ renderer supplies one of these for every FFT layer.  Keep the
+        // exact FFI layout in a GPU uniform instead of flattening the reference
+        // parameters back into the legacy shared wind vector.
+        let cascade_configs = [crate::ffi::WgrWaterCascadeConfig::zeroed(); FFT_LAYERS as usize];
+        let cascade_config_ubo = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("wgr_fft_cascade_configs"),
+            contents: bytemuck::cast_slice(&cascade_configs),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
         let h0_init_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_fft_h0_init_layout"),
             entries: &[
@@ -168,6 +182,14 @@ impl Fft {
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                     },
                 ),
+                uniform_layout(
+                    2,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
             ],
         });
         let h0_init_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -181,6 +203,10 @@ impl Fft {
                 wgpu::BindGroupEntry {
                     binding: 1,
                     resource: wgpu::BindingResource::TextureView(&h0),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: cascade_config_ubo.as_entire_binding(),
                 },
             ],
         });
@@ -227,6 +253,14 @@ impl Fft {
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                     },
                 ),
+                uniform_layout(
+                    5,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
             ],
         });
         let spectrum_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -252,6 +286,10 @@ impl Fft {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::TextureView(&packs[2][0]),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: cascade_config_ubo.as_entire_binding(),
                 },
             ],
         });
@@ -334,11 +372,11 @@ impl Fft {
                         FFT_RESOLUTION,
                         stage,
                         axis,
-                        if axis == 1 && stage + 1 == FFT_STAGES {
-                            1
-                        } else {
-                            0
-                        },
+                        // GodotOceanWaves synthesizes physical Fourier-series
+                        // coefficients and intentionally leaves its inverse FFT
+                        // unnormalised. Dividing the final stage by N^2 reduced a
+                        // 256x256 ocean by 65,536 and made it visually flat.
+                        0,
                     ],
                 }));
             }
@@ -403,6 +441,14 @@ impl Fft {
                         view_dimension: wgpu::TextureViewDimension::D2Array,
                     },
                 ),
+                uniform_layout(
+                    7,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
             ],
         });
         // X starts in ping (0) and ends in pong; Y starts from that pong and ends in ping.
@@ -439,6 +485,10 @@ impl Fft {
                     binding: 6,
                     resource: wgpu::BindingResource::TextureView(&auxiliary),
                 },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: cascade_config_ubo.as_entire_binding(),
+                },
             ],
         });
         let mut pipeline = |label, source, entry, layout: &wgpu::BindGroupLayout| {
@@ -462,6 +512,8 @@ impl Fft {
             displacement,
             dynamics,
             auxiliary,
+            cascade_config_ubo,
+            cascade_configs,
             h0_init_bind,
             spectrum_bind,
             stage_binds,
@@ -504,6 +556,9 @@ impl Fft {
     pub fn auxiliary_view(&self) -> &wgpu::TextureView {
         &self.auxiliary
     }
+    pub fn cascade_config_buffer(&self) -> &wgpu::Buffer {
+        &self.cascade_config_ubo
+    }
     pub fn set_params(&mut self, params: &crate::ffi::WgrWaterParams) {
         let inputs = SpectrumInputs::from_params(params);
         if self.spectrum_inputs != Some(inputs) {
@@ -514,10 +569,21 @@ impl Fft {
     pub fn set_cascade_config(
         &mut self,
         _device: &wgpu::Device,
-        _queue: &wgpu::Queue,
-        _index: u32,
-        _config: crate::ffi::WgrWaterCascadeConfig,
+        queue: &wgpu::Queue,
+        index: u32,
+        config: crate::ffi::WgrWaterCascadeConfig,
     ) {
+        if let Some(slot) = self.cascade_configs.get_mut(index as usize) {
+            if bytemuck::bytes_of(&*slot) == bytemuck::bytes_of(&config) {
+                return;
+            }
+            *slot = config;
+            queue.write_buffer(
+                &self.cascade_config_ubo,
+                0,
+                bytemuck::cast_slice(&self.cascade_configs),
+            );
+        }
         self.spectrum_dirty = true;
     }
     pub fn dispatch(
@@ -564,9 +630,14 @@ impl Fft {
                 (Region::FftVertical, "wgr_water_fft_vertical")
             };
             timers.begin(encoder, region);
-            let mut pass = compute(encoder, label);
-            pass.set_pipeline(&self.stage_pipeline);
             for stage in 0..FFT_STAGES {
+                // Every radix stage consumes storage writes from the preceding one.
+                // Keep one pass per stage so wgpu emits the required UAV visibility
+                // transition before that data is read again.  Keeping all eight stages
+                // in one pass let Vulkan legally retain stale/zero reads, which made a
+                // perfectly configured spectrum render as calm water on some drivers.
+                let mut pass = compute(encoder, label);
+                pass.set_pipeline(&self.stage_pipeline);
                 for pack in 0..3 {
                     let index = ((axis * FFT_STAGES + stage) * 3 + pack) as usize;
                     pass.set_bind_group(
@@ -576,8 +647,8 @@ impl Fft {
                     );
                     pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
                 }
+                drop(pass);
             }
-            drop(pass);
             timers.end(encoder, region);
         }
         timers.begin(encoder, Region::FftCompose);
@@ -813,8 +884,8 @@ mod tests {
         for source in [
             include_str!("fft_spectrum_init.wgsl"),
             include_str!("fft_spectrum.wgsl"),
+            include_str!("fft_stage.wgsl"),
             include_str!("fft_compose.wgsl"),
-            include_str!("foam.wgsl"),
         ] {
             let module = naga::front::wgsl::parse_str(source).expect("FFT spectrum WGSL parse");
             naga::valid::Validator::new(
@@ -824,5 +895,17 @@ mod tests {
             .validate(&module)
             .expect("FFT spectrum WGSL validate");
         }
+    }
+
+    #[test]
+    fn fft_stage_uses_the_runtime_transform_bit_count() {
+        let stage = include_str!("fft_stage.wgsl");
+        assert!(stage.contains("countLeadingZeros(n)"));
+        assert!(!stage.contains("bit_reverse(a_index, 7u)"));
+        assert!(!stage.contains("bit_reverse(b_index, 7u)"));
+        // Spectrum coefficients already include dkx*dky and are summed as a
+        // physical Fourier series, matching GodotOceanWaves. A conventional
+        // DFT 1/N^2 normalisation here makes every visible wave disappear.
+        assert!(!stage.contains("result / f32(n * n)"));
     }
 }

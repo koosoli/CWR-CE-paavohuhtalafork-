@@ -1197,12 +1197,10 @@ impl Renderer {
         let underwater_time =
             self.water
                 .underwater_params()
-                .and_then(|(sea_level, time, player_submerged)| {
+                .and_then(|(_sea_level, time, player_submerged)| {
                     // Use the water draw camera, not an unrelated terrain/scene batch. The visual
                     // submersion boundary is the actual camera crossing the gameplay sea plane.
-                    cameras.get(water_camera).and_then(|cam| {
-                        (player_submerged || cam.cam_pos[1] < sea_level).then_some(time)
-                    })
+                    cameras.get(water_camera).and_then(|_| player_submerged.then_some(time))
                 });
         if underwater_time.is_some() && !self.hdr_enabled {
             self.ensure_underwater_target(self.config.width, self.config.height);

@@ -15,11 +15,12 @@
 // * Readback never blocks the frame: resolve+copy goes into the frame's encoder, map_async
 //   is requested after submit, and results are drained with a non-blocking poll the next
 //   time round. A saturated ring simply skips that frame's sample.
-// * Regions the spec names but that have no standalone GPU pass yet (whitewater, SSR,
-//   refraction, underwater froxel, caustics) hold reserved indices reporting -1 ("n/a"),
-//   so the FFI ABI and the Water-tab rows are already in place when those passes land.
-//   SSR + refraction are currently fragment-shader work inside the water draw, so their
-//   cost is included in WaterDraw; caustics ride the underwater composite shader.
+// * Regions the spec names but that have no standalone GPU pass yet (SSR, refraction,
+//   underwater froxel, caustics) hold reserved indices reporting -1 ("n/a"), so the FFI
+//   ABI and the Water-tab rows are already in place when those passes land. Whitewater is
+//   rendered as part of WaterDraw, so its cost is intentionally included in that region.
+//   SSR + refraction are likewise fragment-shader work inside the water draw; caustics
+//   ride the underwater composite shader.
 
 use std::cell::Cell;
 use std::sync::mpsc;

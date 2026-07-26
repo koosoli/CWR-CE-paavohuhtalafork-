@@ -863,6 +863,7 @@ void EngineWgpu::NextFrame()
         // into _tonemap / _sky (auto mode only; manual override holds the tabs' values).
         UpdateAutoTonemap();
         UpdateAutoSky();
+        UpdateSunGlareExposure();
         // Push the consolidated look block (picks up the auto-ToD updates; renderer diffs the
         // terrain sub-blocks) and then the per-frame sky runtime (celestial + camera).
         PushRenderParams();
@@ -2787,6 +2788,39 @@ void EngineWgpu::UpdateAutoTonemap()
     // The push happens in NextFrame after UpdateAutoSky (PushRenderParams).
 }
 
+void EngineWgpu::UpdateSunGlareExposure()
+{
+    if (!_renderer || !_hdrEnabled || !GScene || !GScene->GetCamera() || !GScene->MainLight())
+    {
+        _sunGlareExposure = 1.0f;
+        return;
+    }
+
+    Vector3 view = GScene->GetCamera()->Direction();
+    // LightSun stores light travel direction; the visible sun lies opposite it.
+    Vector3 sun = -GScene->MainLight()->SunDirection();
+    view.Normalize();
+    sun.Normalize();
+
+    // Begins within ~14 degrees and peaks only in the central ~2 degrees. Sun below
+    // the horizon never triggers accommodation, even if the camera faces that way.
+    float focus = 0.0f;
+    if (sun.Y() > 0.0f)
+    {
+        const float dot = std::clamp(view.DotProduct(sun), -1.0f, 1.0f);
+        const float t = std::clamp((dot - 0.970f) / (0.9994f - 0.970f), 0.0f, 1.0f);
+        focus = t * t * (3.0f - 2.0f * t);
+    }
+    const float target = 1.0f - 0.07f * focus;
+
+    // Frame-rate-independent temporal response: darker over ~0.8 s, and recovers
+    // more gradually (~1.8 s), avoiding an exposure pop while panning.
+    const float dt = std::clamp(static_cast<float>(GetLastFrameDuration()) * 0.001f, 0.001f, 0.050f);
+    const float seconds = (target < _sunGlareExposure) ? 0.8f : 1.8f;
+    const float alpha = 1.0f - std::exp(-dt / seconds);
+    _sunGlareExposure += (target - _sunGlareExposure) * alpha;
+}
+
 void EngineWgpu::UpdateAutoSky()
 {
     if (!_renderer || !_hdrEnabled || !_sky.autoToD)
@@ -2823,7 +2857,9 @@ void EngineWgpu::PushRenderParams()
     WgrRenderParams p{};
 
     p.tonemap = {
-        _tonemap.exposure,
+        // Looking directly at the sun closes the eye down by at most 7%. The authored
+        // exposure remains the primary HDR look and cannot be permanently overwritten.
+        _tonemap.exposure * _sunGlareExposure,
         _tonemap.hable ? 1.0f : 0.0f,
         _tonemap.encode ? 1.0f : 0.0f,
         _tonemap.temperature,

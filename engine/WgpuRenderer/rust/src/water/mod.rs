@@ -11,9 +11,16 @@ use crate::ffi::{WgrWaterInteractionEvent, WgrWaterInteractionParams};
 use foam::Foam;
 
 // Grid mesh resolution: GRID_N quads per axis, (GRID_N+1)^2 vertices, u16 indices.
-// Must match GRID_N in water.wgsl (and the terrain grid, so the two can eventually
-// share a mesh).
-const GRID_N: u32 = 32;
+// This deliberately exceeds the CDLOD leaf span used by WaterWgpu: a 32m near leaf
+// now has ~0.17m wave samples instead of one displaced vertex per metre.  FFT waves
+// are geometric displacement, so the former 32x32 mesh visibly faceted crests into
+// low-poly pyramids even though the spectrum texture itself was smooth.
+const GRID_N: u32 = 192;
+// Matches the GodotOceanWaves reference emitter.  These are procedural GPU instances
+// rather than CPU-owned particles: only crests that pass the FFT breaking test reach
+// the fragment stage, so the cost scales with visible whitewater rather than a CPU
+// particle list.
+const WHITEWATER_PARTICLE_COUNT: u32 = 32_768;
 
 // A flat GPU CDLOD water surface: the shared grid mesh instanced per selected node,
 // placed on a horizontal plane at the frame's sea level, drawn after opaque terrain +
@@ -53,6 +60,7 @@ pub struct Water {
     instance_cap: u64,
     instance_count: u32,
     pipeline: wgpu::RenderPipeline,
+    whitewater_pipeline: wgpu::RenderPipeline,
     // Set once wgr_water_set_params has run (i.e. a map is loaded); until then there
     // is nothing sensible to draw.
     have_params: bool,
@@ -170,7 +178,7 @@ impl Water {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 10,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -180,7 +188,7 @@ impl Water {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 11,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
                     ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
@@ -431,6 +439,7 @@ impl Water {
                 interaction.views(),
                 fft.displacement_view(),
                 fft.auxiliary_view(),
+                fft.cascade_config_buffer(),
             )
         });
         let group1_bind = build_group1(
@@ -561,6 +570,60 @@ impl Water {
             cache: None,
         });
 
+        // GodotOceanWaves renders sea spray as camera-facing quads emitted at FFT foam
+        // crests.  Keep it in its own pipeline so the transparent ocean mesh remains
+        // independent of the considerably sparser whitewater instances.
+        let whitewater_shader = crate::shaders::make_module(
+            device,
+            composer,
+            "wgr_whitewater_render_shader",
+            include_str!("whitewater_render.wgsl"),
+            "water/whitewater_render.wgsl",
+        );
+        let whitewater_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wgr_water_whitewater_pipeline"),
+            layout: Some(&pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &whitewater_shader,
+                entry_point: Some("vs_whitewater"),
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
+            // Spray belongs above the surface but must still be hidden by terrain,
+            // hulls, and other opaque scene geometry.
+            depth_stencil: Some(wgpu::DepthStencilState {
+                format: DEPTH_FORMAT,
+                depth_write_enabled: Some(false),
+                depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                stencil: wgpu::StencilState::default(),
+                bias: wgpu::DepthBiasState::default(),
+            }),
+            multisample: wgpu::MultisampleState {
+                count: sample_count,
+                ..Default::default()
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &whitewater_shader,
+                entry_point: Some("fs_whitewater"),
+                compilation_options: wgpu::PipelineCompilationOptions {
+                    constants: &fs_constants,
+                    ..Default::default()
+                },
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: surface_format,
+                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+
         Water {
             params_ubo,
             group1_layout,
@@ -591,6 +654,7 @@ impl Water {
             instance_cap,
             instance_count: 0,
             pipeline,
+            whitewater_pipeline,
             have_params: false,
             last_params: None,
         }
@@ -836,6 +900,16 @@ impl Water {
             0,
             first_node..first_node + node_count,
         );
+
+        // The reference demo keeps one sea-spray emitter under its ocean object.
+        // WaterWgpu normally submits one batch, but guard this draw so split CDLOD
+        // batches do not duplicate the same camera-centred emitter.
+        if first_node == 0 {
+            pass.set_pipeline(&self.whitewater_pipeline);
+            pass.set_bind_group(0, camera_bind, &[camera_offset]);
+            pass.set_bind_group(1, &self.group1_bind, &[]);
+            pass.draw(0..6, 0..WHITEWATER_PARTICLE_COUNT);
+        }
     }
 }
 
@@ -1056,8 +1130,8 @@ mod tests {
         assert!(shader.contains("let distorted_uv = clamp(uv, texel, vec2<f32>(1.0) - texel)"));
         assert!(!shader.contains("let slope_projection = planar_project"));
         assert!(shader.contains("let max_mip = f32(textureNumLevels(planar_color) - 1u)"));
-        assert!(shader.contains("let reflection_lod = roughness * roughness * max_mip"));
-        assert!(shader.contains("planar_refl.a * (1.0 - ssr.a * 0.80)"));
+        assert!(shader.contains("let reflection_lod = (0.14 + 0.86 * roughness * roughness) * max_mip"));
+        assert!(shader.contains("planar_refl.a * 0.68 * (1.0 - ssr.a * 0.80)"));
 
         let texel = 1.0 / 960.0_f32; // a representative half-res 1920px target
         let roughness = 0.20_f32;

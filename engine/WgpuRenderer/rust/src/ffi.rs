@@ -318,7 +318,7 @@ pub struct WgrExposure {
 impl Default for WgrExposure {
     fn default() -> Self {
         Self {
-            enabled: 1.0,
+            enabled: 0.0,
             key: 0.18,
             min_scale: 0.25,
             max_scale: 4.0,

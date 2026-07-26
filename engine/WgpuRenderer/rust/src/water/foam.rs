@@ -34,6 +34,7 @@ impl Foam {
         interaction_views: &[wgpu::TextureView; 2],
         displacement: &wgpu::TextureView,
         auxiliary: &wgpu::TextureView,
+        cascade_configs: &wgpu::Buffer,
     ) -> Self {
         let texture = |label| {
             device
@@ -132,6 +133,14 @@ impl Foam {
                         view_dimension: wgpu::TextureViewDimension::D2,
                     },
                 ),
+                entry(
+                    8,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
             ],
         });
         let bind = |previous: usize, next: usize, interaction: usize| {
@@ -172,6 +181,10 @@ impl Foam {
                     wgpu::BindGroupEntry {
                         binding: 7,
                         resource: wgpu::BindingResource::TextureView(&views[next]),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 8,
+                        resource: cascade_configs.as_entire_binding(),
                     },
                 ],
             })

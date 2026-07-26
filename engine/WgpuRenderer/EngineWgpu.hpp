@@ -251,6 +251,9 @@ class EngineWgpu : public EngineDummy
     // current game time into _sky (preserving the live toggle knobs). Called once per
     // frame from NextFrame, before the render-params push.
     void UpdateAutoSky();
+    // Gentle, view-dependent eye accommodation for the visible sun. Kept separate
+    // from scene-average auto-exposure, which remains disabled to prevent white-outs.
+    void UpdateSunGlareExposure();
 
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
@@ -261,6 +264,9 @@ class EngineWgpu : public EngineDummy
     bool _tonemapAuto = true;
     Engine::TonemapSettings _tonemap;
     Engine::ExposureSettings _exposure;
+    // Small multiplier applied only while the sun is centred in the player's view.
+    // The authored time-of-day tonemap exposure remains unchanged in dev controls.
+    float _sunGlareExposure = 1.0f;
     // Live GPU-water look, edited by the Water tab, read by WaterWgpu each frame.
     Engine::WaterSettings _waterLook;
     // Authored procedural-sky params (atmosphere + look); celestial fields are filled

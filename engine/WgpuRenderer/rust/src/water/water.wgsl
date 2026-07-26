@@ -13,6 +13,7 @@
 #import frame::{frame, reverse_z, fog_factor, apply_fog, terrain_sun_shadow, sky_vis_ao}
 #import shadow::shadow_strength
 #import color::srgb_to_linear
+#import water_fft_sampling::fft_aperiodic_uv
 
 const PI: f32 = 3.14159265359;
 
@@ -49,8 +50,9 @@ struct WaterParams {
     debug_params: vec4<f32>, // WTR-003: x = debug view index (0 = normal), yzw reserved
 };
 
-// Must match GRID_N in water/mod.rs (and the terrain grid).
-const GRID_N: f32 = 32.0;
+// Must match the render mesh in water/mod.rs.  It is intentionally denser than
+// WaterWgpu's CDLOD leaf span so near-field FFT displacement stays smooth.
+const GRID_N: f32 = 192.0;
 
 @group(1) @binding(0) var<uniform> wp: WaterParams;
 // Opaque scene depth from the prepass, farthest-sample resolved (single-sample: 1x aspect or the
@@ -199,7 +201,10 @@ fn texture_bicubic_displacement(uv: vec2<f32>, layer: i32) -> vec4<f32> {
 // Sample absolute xz so camera-relative rendering never changes FFT phase.
 fn fft_sample(xz: vec2<f32>, layer: i32) -> vec4<f32> {
     let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-    let uv = fract(xz / length_m);
+    // Preserve the Water-tab convention: scale > 1 means longer waves.  The
+    // spectrum stays stable; only the world-space lookup is dilated.
+    let scaled_xz = xz / max(wp.wave_scale, 0.01);
+    let uv = fft_aperiodic_uv(scaled_xz, length_m, layer, wp.warp_amp);
     return texture_bicubic_displacement(uv, layer);
 }
 // WTR-031 / WTR-032 — Projected footprint cascade visibility weights.
@@ -274,7 +279,8 @@ fn texture_bicubic_dynamics(uv: vec2<f32>, layer: i32) -> vec4<f32> {
 }
 
 fn sample_fft_dynamics_filtered(xz: vec2<f32>, layer: i32, length_m: f32) -> vec4<f32> {
-    let uv = fract(xz / length_m);
+    let scaled_xz = xz / max(wp.wave_scale, 0.01);
+    let uv = fft_aperiodic_uv(scaled_xz, length_m, layer, wp.warp_amp);
     return texture_bicubic_dynamics(uv, layer);
 }
 
@@ -310,7 +316,8 @@ fn fft_normal_with_weights(xz: vec2<f32>, dist: f32, view_dir: vec3<f32>) -> vec
     for (var layer = 0; layer < 4; layer = layer + 1) {
         let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
         let w = compute_cascade_weights(layer, dist, view_dir);
-        let layer_slope = sample_fft_dynamics_filtered(xz, layer, length_m).xy;
+        // A dilated lookup has proportionally shallower world-space derivatives.
+        let layer_slope = sample_fft_dynamics_filtered(xz, layer, length_m).xy / max(wp.wave_scale, 0.01);
         slope = slope + layer_slope * w.normal_weight;
     }
     return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
@@ -611,6 +618,11 @@ fn reflected_scene(surface_rel: vec3<f32>, reflect_dir: vec3<f32>, normal_variat
                     if (opaque_depth > 1e-6 && opaque_depth >= ray_depth) {
                         let opaque_h = frame.inv_view_proj * vec4<f32>(ndc.xy, 1.0 - opaque_depth, 1.0);
                         let opaque_rel = opaque_h.xyz / opaque_h.w;
+                        // The opaque snapshot contains first-person hands/weapons on some
+                        // draw paths.  They are foreground presentation geometry, never
+                        // world objects that can plausibly appear in an ocean reflection.
+                        // Reject that near-camera band before accepting an SSR hit.
+                        if (length(opaque_rel) < 12.0) { continue; }
                         let thickness = 1.5 + ray_distance * 0.025;
                         if (length(opaque_rel - ray_pos) <= thickness) {
                             let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
@@ -658,10 +670,12 @@ fn planar_reflection(surface_rel: vec3<f32>, surface_normal: vec3<f32>, roughnes
     let distorted_uv = clamp(uv, texel, vec2<f32>(1.0) - texel);
     let edge = min(min(distorted_uv.x, distorted_uv.y), min(1.0 - distorted_uv.x, 1.0 - distorted_uv.y));
     let valid = smoothstep(max(texel.x, texel.y), 0.03, edge);
-    // The planar target is a real filtered mip pyramid. Map perceptual roughness
-    // quadratically so calm water remains sharp while foam uses a broad footprint.
+    // The planar target is a real filtered mip pyramid. Keep a small minimum
+    // footprint even on calm water: otherwise the cloud layer reads like a second,
+    // unnaturally sharp sky painted on the sea. Surface roughness still broadens it
+    // strongly for foam and windier conditions.
     let max_mip = f32(textureNumLevels(planar_color) - 1u);
-    let reflection_lod = roughness * roughness * max_mip;
+    let reflection_lod = (0.14 + 0.86 * roughness * roughness) * max_mip;
     let color = textureSampleLevel(planar_color, planar_samp, distorted_uv, reflection_lod).rgb;
     return vec4<f32>(color, valid);
 }
@@ -805,7 +819,7 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
         n = fft_normal_with_weights(in.base_xz, dist, view_dir);
         for (var layer = 0; layer < 4; layer = layer + 1) {
             let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-            let uv = fract(in.base_xz / length_m);
+            let uv = fft_aperiodic_uv(in.base_xz, length_m, layer, wp.warp_amp);
             let aux = textureSampleLevel(fft_auxiliary, fft_samp, uv, layer, 0.0);
             let w = compute_cascade_weights(layer, dist, view_dir);
             fft_slope_var = fft_slope_var + aux.w;
@@ -859,8 +873,10 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
     state.curvature = fft_curv;
     state.slope_variance = fft_slope_var;
     state.crest_energy = fft_crest;
-    let foam_uv = (in.base_xz - wp.world_origin) * (1.0 / 256.0);
-    let foam_sample = textureSampleLevel(foam_history, foam_samp, clamp(foam_uv, vec2<f32>(0.0), vec2<f32>(1.0)), 0.0);
+    // Foam history is camera-domain anchored, not world-origin anchored.  Sampling it
+    // through the same mapping used by the material path keeps the state/debug data
+    // aligned with visible wake and whitecap foam after the camera has moved.
+    let foam_sample = persistent_foam_sample(in.base_xz);
     state.foam_density = clamp(foam_sample.r + foam_sample.g * 1.25 + foam_sample.b * 0.75, 0.0, 1.0);
     state.aeration = max(state.aeration, foam_sample.b);
     
@@ -944,7 +960,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
     refl = mix(refl, ssr.rgb, ssr.a);
     let planar_refl = planar_reflection(in.world_pos, base_normal, roughness);
-    refl = mix(refl, planar_refl.rgb, planar_refl.a * (1.0 - ssr.a * 0.80));
+    // Retain stable planar parallax, but keep its cloud layer deliberately softer
+    // and less dominant than the sky/environment reflection.
+    refl = mix(refl, planar_refl.rgb, planar_refl.a * 0.68 * (1.0 - ssr.a * 0.80));
     let uv = scene_uv(in.clip.xy);
 
     // WTR-051 / WTR-052 / WTR-053 / WTR-056 — Physical Fresnel, Snell's law refraction & RGB extinction
@@ -967,7 +985,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let reflection_weight = clamp(physical_fresnel * 0.68 + 0.020, 0.02, 0.72);
     rgb = mix(transmitted, refl, reflection_weight);
 
-    let is_underwater = wp.fft_control.w > 0.5 || frame.cam_pos.y < wp.sea_level + 0.1;
+    let is_underwater = wp.fft_control.w > 0.5;
     if (is_underwater) {
         let uw_dist = length(in.world_pos);
         let uw_extinction = 1.0 - exp(-uw_dist * vec3<f32>(0.20, 0.08, 0.03));
@@ -990,7 +1008,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         if (wp.fft_control.x > 0.5) {
             for (var layer = 0; layer < 4; layer = layer + 1) {
                 let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-                let duv = fract(in.base_xz / length_m);
+                let duv = fft_aperiodic_uv(in.base_xz, length_m, layer, wp.warp_amp);
                 fft_disp = fft_disp + textureSampleLevel(fft_displacement, fft_samp, duv, layer, 0.0).xyz;
                 fft_slope_v = fft_slope_v + textureSampleLevel(fft_dynamics, fft_samp, duv, layer, 0.0).xy;
             }
@@ -1092,13 +1110,17 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         dot(in.base_xz, shoreward) * 0.19 - wp.time * 0.38
     ));
     let coast_pattern = max(coast_noise, smoothstep(0.52, 0.72, shoreline_streak));
-    let foam = clamp(foam_band * (0.35 + coast_pattern * 0.95) * max(wp.foam_intensity * 1.8, 1.25) *
-        (1.0 + shore_break * 1.35), 0.0, 1.0);
+    let foam = clamp(foam_band * (0.35 + coast_pattern * 0.95) * max(wp.foam_intensity, 0.0) *
+        (1.0 + shore_break * 0.65), 0.0, 1.0);
     let foam_history_sample = persistent_foam_sample(in.base_xz);
     let persistent_foam = clamp((foam_history_sample.r + foam_history_sample.g * 1.5) * (0.65 + foam_history_sample.b * 0.45), 0.0, 1.0);
     // Whitecaps and crest foam: crest energy and compression trigger organic whitecap tendrils on wave peaks.
-    let breaker_foam = smoothstep(0.003, 0.025, state.crest_energy + state.compression * 0.8) *
-        foam_noise(in.base_xz * 1.5, wp.time) * 0.95;
+    // Match the reference's accumulated Jacobian foam: a crest must have either
+    // appreciable vertical energy or horizontal convergence, then is broken into
+    // tendrils by the noise field.  The earlier very narrow threshold was effectively
+    // invisible with the production sea state.
+    let breaker_foam = smoothstep(0.50, 0.78, state.compression) *
+        smoothstep(0.48, 0.72, foam_noise(in.base_xz * 1.5, wp.time)) * 0.28;
     // Sparse short-lived flecks sell wind-torn shore break and whitecap spindrift
     // without a separate particle system or a broad white surface layer.
     let spray_flecks = (foam_band * shore_break + breaker_foam) *
