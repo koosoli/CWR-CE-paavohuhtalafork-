@@ -1962,7 +1962,7 @@ mod tests {
         // Straight ahead, well inside the view.
         assert!(inside(&planes, target - eye)); // rel (0,0,-10)
         assert!(inside(&planes, Vec3::new(0.0, 0.0, 5.0) - eye)); // rel (0,0,-5)
-                                                                  // Behind the camera -> outside the near plane. rel (0,0,10).
+        // Behind the camera -> outside the near plane. rel (0,0,10).
         assert!(!inside(&planes, Vec3::new(0.0, 0.0, 20.0) - eye));
         // Far to the side, in front -> outside a side plane. rel (100,0,-10) / (0,100,-10).
         assert!(!inside(&planes, Vec3::new(100.0, 0.0, 0.0) - eye));

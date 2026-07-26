@@ -920,6 +920,40 @@ class Engine : public IGraphicsEngine
     virtual FoliageSettings GetFoliageSettings() const { return {}; }
     virtual void SetFoliageSettings(const FoliageSettings& /*s*/) {}
 
+    /// Procedural terrain grass (wgpu).  Kept separate from foliage: these values control
+    /// GPU-generated ground blades, not authored alpha-tested trees or bushes.
+    struct GrassSettings
+    {
+        bool enabled = true;
+        // Ultra dense is the production default.  The outer GPU LOD keeps the
+        // default 60 m field affordable while the inner cards remain detailed.
+        float density = 1.0f;
+        float spacing = 0.20f;
+        float radius = 60.0f;
+        float densityBoost = 4.0f; // turns base spacing into a denser placement grid
+        float height = 1.25f;      // authored blade height multiplier
+        // The default follows the weather system that also drives smoke,
+        // parachutes and cloth. The two wind sliders remain a multiplier and
+        // manual fallback for controlled visual testing.
+        bool useLiveWind = true;
+        float windStrength = 1.2f;
+        float windDirection = 0.0f; // degrees, 0 = +X / east
+        // Developer diagnostic for legacy worlds whose geography flags are
+        // invalid or over-broad. Off by default: it deliberately bypasses
+        // road/forest/building rejection to prove whether placement works.
+        bool ignoreGeographyExclusions = false;
+    };
+      virtual GrassSettings GetGrassSettings() const { return {}; }
+      virtual void SetGrassSettings(const GrassSettings& /*settings*/) {}
+
+      // The active terrain's material layers.  WGPU exposes these so the dev
+      // overlay can explicitly choose which painted surfaces receive blades.
+      virtual int GetGrassSurfaceCount() const { return 0; }
+      virtual const char* GetGrassLoadedMapName() const { return ""; }
+      virtual const char* GetGrassSurfaceName(int /*index*/) const { return ""; }
+      virtual bool IsGrassSurfaceEnabled(int /*index*/) const { return false; }
+      virtual void SetGrassSurfaceEnabled(int /*index*/, bool /*enabled*/) {}
+
     /// One alpha-tested shadow-caster batch: a contiguous run of the alpha vertex
     /// buffer sharing one caster texture, whose alpha cuts the cast shadow (so
     /// cutout foliage casts a leaf silhouette). Vertices are xyz+uv (5 floats).

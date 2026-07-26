@@ -1125,12 +1125,16 @@ mod tests {
     fn planar_reflection_uses_stable_plane_projection_with_bounded_ssr_overlap() {
         let shader = include_str!("water.wgsl");
         assert!(shader.contains("fn planar_project"));
-        assert!(shader.contains("let plane_point = vec3<f32>(absolute.x, wp.sea_level, absolute.z)"));
+        assert!(
+            shader.contains("let plane_point = vec3<f32>(absolute.x, wp.sea_level, absolute.z)")
+        );
         assert!(!shader.contains("2.0 * wp.sea_level - absolute.y"));
         assert!(shader.contains("let distorted_uv = clamp(uv, texel, vec2<f32>(1.0) - texel)"));
         assert!(!shader.contains("let slope_projection = planar_project"));
         assert!(shader.contains("let max_mip = f32(textureNumLevels(planar_color) - 1u)"));
-        assert!(shader.contains("let reflection_lod = (0.14 + 0.86 * roughness * roughness) * max_mip"));
+        assert!(
+            shader.contains("let reflection_lod = (0.14 + 0.86 * roughness * roughness) * max_mip")
+        );
         assert!(shader.contains("planar_refl.a * 0.68 * (1.0 - ssr.a * 0.80)"));
 
         let texel = 1.0 / 960.0_f32; // a representative half-res 1920px target
@@ -1172,7 +1176,10 @@ mod tests {
         // The legacy authored default is no freeze: 12.0f, whose IEEE-754 bits have low 3 bits
         // all zero (verified here so a re-encoded mask never collides with it via coincidence).
         let legacy_default = 12.0f32;
-        assert_eq!(legacy_default.to_bits() & (FREEZE_FFT | FREEZE_INTERACTION | FREEZE_FOAM), 0);
+        assert_eq!(
+            legacy_default.to_bits() & (FREEZE_FFT | FREEZE_INTERACTION | FREEZE_FOAM),
+            0
+        );
 
         // Encoding the all-freeze mask via the same std::mem::transmute-style path WaterWgpu uses
         // (bit-cast of the u32 mask to f32) yields a float whose .to_bits() returns the mask, so
@@ -1205,6 +1212,9 @@ mod tests {
             "debug_params must sit at the struct end so earlier lanes keep their offsets"
         );
         // flow_direction_speed (the previous last field) must not have moved.
-        assert_eq!(std::mem::offset_of!(WgrWaterParams, flow_direction_speed), 176);
+        assert_eq!(
+            std::mem::offset_of!(WgrWaterParams, flow_direction_speed),
+            176
+        );
     }
 }

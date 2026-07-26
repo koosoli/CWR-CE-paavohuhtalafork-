@@ -9,6 +9,7 @@
 
 #include <wgpu_renderer.hpp>
 
+#include <array>
 #include <memory>
 #include <span>
 #include <unordered_map>
@@ -149,6 +150,18 @@ class EngineWgpu : public EngineDummy
     bool SupportsWater() const override { return _renderer != nullptr && _water != nullptr; }
     WaterSettings GetWaterSettings() const override { return _waterLook; }
     void SetWaterSettings(const WaterSettings& s) override { _waterLook = s; }
+    // Legacy terrain grass layers call these while submitting their GrassTexture
+    // overlays.  The procedural system uses that exact hook as its eligibility
+    // signal instead of drawing over every opaque terrain cell.
+    void SetGrassParams(float a1, float a2, float a3 = 0, float a4 = 0) override;
+      bool CanGrass() const override { return _renderer != nullptr; }
+      GrassSettings GetGrassSettings() const override { return _grass; }
+      void SetGrassSettings(const GrassSettings& settings) override;
+      int GetGrassSurfaceCount() const override;
+      const char* GetGrassLoadedMapName() const override;
+      const char* GetGrassSurfaceName(int index) const override;
+      bool IsGrassSurfaceEnabled(int index) const override;
+      void SetGrassSurfaceEnabled(int index, bool enabled) override;
     // Live look, read by WaterWgpu::DrawWater when building the per-frame water UBO.
     const WaterSettings& WaterLook() const { return _waterLook; }
 
@@ -211,6 +224,9 @@ class EngineWgpu : public EngineDummy
     // Called by the water renderer: append a batch of `nodes` for the current camera
     // and enqueue its draw in submission order (after the opaque terrain + 3D).
     void SubmitWater(std::span<const WgrWaterNode> nodes);
+    // Called by TerrainWgpu after its terrain batch. The procedural grass system owns
+    // all blade placement; C++ only preserves ordering and the source camera.
+    void SubmitGrass();
 
   private:
     // A camera-relative view/projection plus the world-space camera position the
@@ -399,6 +415,14 @@ class EngineWgpu : public EngineDummy
     ShadowMapTuning _smTuning;
     // Foliage lighting knobs (docs/foliage-translucency-plan.md), pushed via PushRenderParams.
     FoliageSettings _foliage;
+    GrassSettings _grass;
+    // A circular history of terrain contacts.  Kept in engine space so foot
+    // and vehicle trails persist even though grass placement is camera-relative.
+    std::array<WgrGrassTrack, WGR_GRASS_TRACK_COUNT> _grassTracks{};
+    size_t _nextGrassTrack = 0;
+    Vector3 _lastGrassTrackPos = VZero;
+    float _grassTrackSampleTime = 0.0f;
+    bool _haveGrassTrackPos = false;
     float _smSunFactor = 1.0f;
     bool _smEnabledFrame = false;
     shadow::CascadeSet _smCascades;
@@ -425,6 +449,9 @@ class EngineWgpu : public EngineDummy
     std::unique_ptr<WaterWgpu> _water;
     std::vector<WgrWaterNode> _waterNodes;
     std::vector<WgrWaterBatch> _waterBatches;
+
+    std::vector<WgrGrassBatch> _grassBatches;
+    bool _grassSubmitted = false;
 };
 
 Engine* CreateEngineWgpu(const GraphicsEngineParams& params);

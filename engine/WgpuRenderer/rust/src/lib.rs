@@ -4,6 +4,7 @@ mod ffi;
 mod gfx2d;
 mod gfx3d;
 mod gpu_timers;
+mod grass;
 mod handles;
 mod log;
 mod planar_mips;
@@ -18,16 +19,17 @@ mod water;
 use crate::bloom::Bloom;
 use crate::exposure::Exposure;
 use crate::ffi::{
-    WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrInstance, WgrLight, WgrMat4, WgrMeshVertex,
-    WgrModelLod, WgrModelMaterial, WgrModelSection, WgrOverlayDraw, WgrOverlayVertex,
-    WgrShadowCaster, WgrShadowPass, WgrTerrainBatch, WgrTerrainNode, WgrTerrainParams, WgrVec4,
-    WgrVertex2D, WgrWaterBatch, WgrWaterCascadeConfig, WgrWaterInteractionEvent, WgrWaterInteractionParams, WgrWaterNode,
-    WgrWaterParams,
+    WgrCamera, WgrCmd, WgrDraw2DBatch, WgrDraw3D, WgrGrassBatch, WgrGrassParams, WgrInstance,
+    WgrLight, WgrMat4, WgrMeshVertex, WgrModelLod, WgrModelMaterial, WgrModelSection,
+    WgrOverlayDraw, WgrOverlayVertex, WgrShadowCaster, WgrShadowPass, WgrTerrainBatch,
+    WgrTerrainNode, WgrTerrainParams, WgrVec4, WgrVertex2D, WgrWaterBatch, WgrWaterCascadeConfig,
+    WgrWaterInteractionEvent, WgrWaterInteractionParams, WgrWaterNode, WgrWaterParams,
 };
 use crate::gfx2d::Gfx2d;
-use crate::gfx3d::{env_f32, Gfx3d};
+use crate::gfx3d::{Gfx3d, env_f32};
 use crate::gpu_timers::{GpuTimers, Region as TimerRegion};
-use crate::log::{log_level, LogSink};
+use crate::grass::{Grass, GrassPass};
+use crate::log::{LogSink, log_level};
 use crate::planar_mips::PlanarMips;
 use crate::sky::Sky;
 use crate::terrain::Terrain;
@@ -84,6 +86,7 @@ pub struct Renderer {
     gfx2d: Gfx2d,
     gfx3d: Gfx3d,
     terrain: Terrain,
+    grass: Grass,
     water: Water,
     // WTR-002 — GPU timestamp brackets around the water-pipeline passes (inert when the
     // adapter lacks TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS).
@@ -243,6 +246,14 @@ impl Renderer {
         let mdic_avail = adapter.features() & wgpu::Features::MULTI_DRAW_INDIRECT_COUNT;
         let multi_draw_count = !mdic_avail.is_empty();
 
+        // Grass placement writes an instance buffer in compute and consumes it directly
+        // from the vertex stage.  Desktop Vulkan/DX12 adapters expose this optional
+        // WebGPU feature; request it explicitly so the grass bind layout is legal.
+        let vertex_writable_storage = adapter.features() & wgpu::Features::VERTEX_WRITABLE_STORAGE;
+        if vertex_writable_storage.is_empty() {
+            return Err("adapter lacks VERTEX_WRITABLE_STORAGE required for GPU grass".to_string());
+        }
+
         // WTR-002 — GPU timestamp instrumentation. Encoder-level brackets need BOTH
         // TIMESTAMP_QUERY and TIMESTAMP_QUERY_INSIDE_ENCODERS; adapter-gated exactly like
         // `partially_bound` (absent => the timers are inert and the FFI reports 0 regions).
@@ -284,6 +295,7 @@ impl Renderer {
                 | partially_bound
                 | indirect_avail
                 | mdic_avail
+                | vertex_writable_storage
                 | ts_request,
             required_limits,
             ..Default::default()
@@ -452,6 +464,14 @@ impl Renderer {
             textures.white_view().clone(),
             &mut composer,
         );
+        let grass = Grass::new(
+            &device,
+            &queue,
+            gfx3d.camera_layout(),
+            color_format,
+            sample_count,
+            &mut composer,
+        );
         let fft_storage_supported = [
             wgpu::TextureFormat::Rgba32Float,
             wgpu::TextureFormat::Rgba16Float,
@@ -524,6 +544,7 @@ impl Renderer {
             gfx2d,
             gfx3d,
             terrain,
+            grass,
             water,
             gpu_timers,
             hdr_enabled,
@@ -1007,13 +1028,15 @@ impl Renderer {
             (depth_aspect, None)
         };
         let mip_views: Vec<_> = (0..mip_count)
-            .map(|level| sampled.create_view(&wgpu::TextureViewDescriptor {
-                label: Some("wgr_planar_color_mip"),
-                base_mip_level: level,
-                mip_level_count: Some(1),
-                dimension: Some(wgpu::TextureViewDimension::D2),
-                ..Default::default()
-            }))
+            .map(|level| {
+                sampled.create_view(&wgpu::TextureViewDescriptor {
+                    label: Some("wgr_planar_color_mip"),
+                    base_mip_level: level,
+                    mip_level_count: Some(1),
+                    dimension: Some(wgpu::TextureViewDimension::D2),
+                    ..Default::default()
+                })
+            })
             .collect();
         let color_view = if self.sample_count > 1 {
             color.create_view(&Default::default())
@@ -1069,6 +1092,7 @@ impl Renderer {
         lights: &[WgrLight],
         water_nodes: &[WgrWaterNode],
         water_batches: &[WgrWaterBatch],
+        grass_batches: &[WgrGrassBatch],
     ) -> Result<(), String> {
         let screen = glam::Vec2::new(self.config.width as f32, self.config.height as f32);
         self.gfx2d
@@ -1117,6 +1141,7 @@ impl Renderer {
             .map(|b| b.camera as usize)
             .or_else(|| draws3d.first().map(|d| d.camera as usize))
             .or_else(|| water_batches.first().map(|b| b.camera as usize))
+            .or_else(|| grass_batches.first().map(|b| b.camera as usize))
             .unwrap_or(0);
         // Append a private reflected camera to the GPU upload only. It never crosses the
         // C++ ABI and has no cascade data: main-camera shadow matrices are not valid after
@@ -1200,7 +1225,9 @@ impl Renderer {
                 .and_then(|(_sea_level, time, player_submerged)| {
                     // Use the water draw camera, not an unrelated terrain/scene batch. The visual
                     // submersion boundary is the actual camera crossing the gameplay sea plane.
-                    cameras.get(water_camera).and_then(|_| player_submerged.then_some(time))
+                    cameras
+                        .get(water_camera)
+                        .and_then(|_| player_submerged.then_some(time))
                 });
         if underwater_time.is_some() && !self.hdr_enabled {
             self.ensure_underwater_target(self.config.width, self.config.height);
@@ -1255,6 +1282,18 @@ impl Renderer {
             });
         // WTR-002 — new frame, new set of timestamp brackets.
         self.gpu_timers.begin_frame();
+
+        // Grass owns a compact camera-relative candidate grid.  Refresh its borrowed
+        // terrain inputs before the placement compute so the pass sees the same terrain
+        // state as the terrain draw later in this frame.
+        self.grass
+            .prepare_terrain(&self.device, &self.queue, &self.terrain);
+        if let (Some(batch), Some(camera_bind)) = (grass_batches.first(), self.gfx3d.camera_bind())
+        {
+            self.grass.reset_indirect(&self.queue);
+            let offset = (batch.camera as u64 * self.gfx3d.camera_stride()) as u32;
+            self.grass.dispatch(&mut encoder, camera_bind, offset);
+        }
 
         // Update the half-resolution reflected target every visible above-water frame. Reusing
         // it while the camera moves causes clouds to lag behind the projected water lookup.
@@ -1343,7 +1382,8 @@ impl Renderer {
                     }
                 }
                 drop(terrain_pass);
-                self.gpu_timers.end(&mut encoder, TimerRegion::PlanarTerrain);
+                self.gpu_timers
+                    .end(&mut encoder, TimerRegion::PlanarTerrain);
                 // The bracket includes the reflected cull dispatch: it exists solely to
                 // produce this pass's indirect args, so it is part of the planar-objects cost.
                 self.gpu_timers
@@ -1376,7 +1416,8 @@ impl Renderer {
                 self.gfx3d
                     .draw_gpu_driven_reflection(&mut object_pass, &self.textures, off);
                 drop(object_pass);
-                self.gpu_timers.end(&mut encoder, TimerRegion::PlanarObjects);
+                self.gpu_timers
+                    .end(&mut encoder, TimerRegion::PlanarObjects);
                 if let Some(resolve) = planar.depth_resolve.as_ref() {
                     resolve.resolve(&mut encoder);
                 }
@@ -1694,6 +1735,21 @@ impl Renderer {
                                 .draw(pass, cam, off, b.first_node, b.node_count, kind);
                         }
                     }
+                    Plan3dOp::Grass(arg) => {
+                        st3d = crate::gfx3d::Pass3dState::default();
+                        if let (Some(b), Some(cam)) = (
+                            grass_batches.get(*arg as usize),
+                            renderer.gfx3d.camera_bind(),
+                        ) {
+                            let off = (b.camera as u64 * renderer.gfx3d.camera_stride()) as u32;
+                            let kind = if depth_write_off {
+                                GrassPass::ColorNoWrite
+                            } else {
+                                GrassPass::Color
+                            };
+                            renderer.grass.draw(pass, cam, off, kind);
+                        }
+                    }
                     // Water is drawn in a dedicated pass after this sub-pass (it samples the
                     // opaque depth it also depth-tests against, which needs a read-only depth
                     // attachment the shared colour sub-pass can't give). Skipped here.
@@ -1812,6 +1868,15 @@ impl Renderer {
                                     b.node_count,
                                     crate::terrain::TerrainPass::Prepass,
                                 );
+                            }
+                        }
+                        Plan3dOp::Grass(arg) => {
+                            st3d = crate::gfx3d::Pass3dState::default();
+                            if let (Some(b), Some(cam)) =
+                                (grass_batches.get(*arg as usize), self.gfx3d.camera_bind())
+                            {
+                                let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
+                                self.grass.draw(&mut pp, cam, off, GrassPass::Prepass);
                             }
                         }
                         _ => {}
@@ -2338,7 +2403,8 @@ impl Renderer {
     }
 
     fn water_set_cascade_config(&mut self, index: u32, config: WgrWaterCascadeConfig) {
-        self.water.set_cascade_config(&self.device, &self.queue, index, config);
+        self.water
+            .set_cascade_config(&self.device, &self.queue, index, config);
     }
 
     fn water_set_interaction_params(&mut self, params: WgrWaterInteractionParams) {
@@ -2388,6 +2454,15 @@ impl Renderer {
     fn terrain_set_index_map(&mut self, width: u32, height: u32, indices: &[u16]) {
         self.terrain
             .set_index_map(&self.device, &self.queue, width, height, indices);
+    }
+
+    fn grass_set_geography(&mut self, width: u32, height: u32, values: &[u32]) {
+        self.grass
+            .set_geography(&self.device, &self.queue, width, height, values);
+    }
+
+    fn grass_set_params(&mut self, params: WgrGrassParams) {
+        self.grass.set_params(&self.queue, params);
     }
 
     fn terrain_set_jitter_map(&mut self, width: u32, height: u32, offsets: &[i8]) {

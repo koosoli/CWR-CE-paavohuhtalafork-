@@ -22,6 +22,15 @@ class TerrainWgpu : public ITerrainRenderer
     TerrainWgpu(EngineWgpu& engine, WgrRenderer* renderer);
 
     void DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd) override;
+    int GrassSurfaceCount() const;
+    const char* GrassLoadedMapName() const { return _uploadedName.c_str(); }
+    const char* GrassSurfaceName(int index) const;
+    bool GrassSurfaceEnabled(int index) const;
+    void SetGrassSurfaceEnabled(int index, bool enabled);
+    // Eden/Everon ships legacy geography flags that can classify all normal
+    // terrain as excluded. Keep this map-specific compatibility decision next
+    // to the uploaded terrain data, not in UI state.
+    bool GrassNeedsCompatibilityOverride() const { return _grassNeedsCompatibilityOverride; }
 
   private:
     // (Re)uploads and rebuilds the quadtree when the map changes; returns true if it did.
@@ -29,6 +38,7 @@ class TerrainWgpu : public ITerrainRenderer
     void BuildQuadtree(const Landscape& land);
     void UploadGroundTextures(const Landscape& land);
     void UploadIndexMap(const Landscape& land);
+    void UploadGeography(const Landscape& land);
     void UploadJitterMap(const Landscape& land);
     // Loads the global high-frequency detail noise texture (config-driven, once).
     void UploadDetailNoise();
@@ -68,6 +78,12 @@ class TerrainWgpu : public ITerrainRenderer
     float _extentFactor;
 
     std::vector<WgrTerrainNode> _selected;
+
+    // Terrain layers are map-specific.  The explicit selection is deliberately
+    // kept outside GeographyInfo so the dev panel can reclassify a surface live.
+    std::vector<std::string> _grassSurfaceNames;
+    std::vector<bool> _grassSurfaceEnabled;
+    bool _grassNeedsCompatibilityOverride = false;
 
     // Terrain params UBO mirror. The static fields (grid/dims/range) are set at upload; the
     // coast wet-band fields (sea_level/time/swash/wet_*) are refreshed and pushed every frame.

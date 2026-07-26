@@ -16,9 +16,9 @@ mod cull;
 mod hiz;
 
 use crate::ffi::{
-    WgrBlend, WgrCamera, WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrInstance, WgrLight,
-    WgrMat4, WgrMeshVertex, WgrModelLod, WgrModelMaterial, WgrModelSection, WgrShadowCaster,
-    WgrShadowPass, WgrVec4, DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE,
+    DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE, WgrBlend, WgrCamera,
+    WgrCmd, WgrCmdKind, WgrDepthMode, WgrDraw3D, WgrInstance, WgrLight, WgrMat4, WgrMeshVertex,
+    WgrModelLod, WgrModelMaterial, WgrModelSection, WgrShadowCaster, WgrShadowPass, WgrVec4,
 };
 use crate::textures::SharedTextures;
 
@@ -454,7 +454,10 @@ impl CameraGroup {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT,
+                    // The grass placement compute pass reuses Frame.camera at this
+                    // dynamic offset; the remaining camera-group resources retain
+                    // their graphics-only visibility.
+                    visibility: wgpu::ShaderStages::VERTEX_FRAGMENT | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: true,
@@ -3461,6 +3464,9 @@ impl Gfx3d {
             } else if cmd.kind == WgrCmdKind::DrawWater as u32 {
                 flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
                 ops.push(Plan3dOp::Water(cmd.arg));
+            } else if cmd.kind == WgrCmdKind::DrawGrass as u32 {
+                flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
+                ops.push(Plan3dOp::Grass(cmd.arg));
             } else if cmd.kind == WgrCmdKind::ClearDepth as u32 {
                 flush_run(&mut order, &mut ops, &mut buckets, &mut bucket_index);
                 ops.push(Plan3dOp::ClearDepth);
@@ -4558,6 +4564,7 @@ pub enum Plan3dOp {
     Draw2D(u32),  // batch index
     Terrain(u32), // terrain batch index
     Water(u32),   // water batch index
+    Grass(u32),   // grass batch index
     Draw3D {
         draw: u32,
         base: u32,

@@ -23,6 +23,7 @@
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
 #include <Poseidon/World/MapTypes.hpp> // MapBush (spherical/canopy-normal flagging)
 #include <Poseidon/World/Scene/Object.hpp> // Object accessors (GPU-driven retained scene)
+#include <Poseidon/World/World.hpp> // live player/vehicle interaction for grass
 #include <Poseidon/World/Scene/ObjectClasses.hpp> // ForestPlain (mode-1 conform exclusion)
 #include <Poseidon/World/Terrain/Landscape.hpp> // GLandscape->SurfaceY (GPU-driven conform bcSurfaceY)
 #include <Poseidon/Graphics/Shared/PNGWriter.hpp>
@@ -517,6 +518,7 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     }
 
     _wbank = new TextureBankWgpu(_renderer);
+    SetGrassSettings(_grass);
 
     // This backend conforms terrain-clipped geometry (vegetation, roads' visuals) on
     // the GPU, so ClipLand objects publish a conform plane and skip their per-frame CPU
@@ -1099,6 +1101,7 @@ void EngineWgpu::NextFrame()
         frame.lights = _lights;
         frame.water_nodes = _waterNodes;
         frame.water_batches = _waterBatches;
+        frame.grass_batches = _grassBatches;
         wgr_render_frame(_renderer, &frame);
     }
     _verts.clear();
@@ -1115,6 +1118,8 @@ void EngineWgpu::NextFrame()
     _terrainBatches.clear();
     _waterNodes.clear();
     _waterBatches.clear();
+    _grassBatches.clear();
+    _grassSubmitted = false;
     _smCascadesValid = false;
     _haveCamera = false;
     _currentCamera = 0;
@@ -2819,6 +2824,138 @@ void EngineWgpu::UpdateSunGlareExposure()
     const float seconds = (target < _sunGlareExposure) ? 0.8f : 1.8f;
     const float alpha = 1.0f - std::exp(-dt / seconds);
     _sunGlareExposure += (target - _sunGlareExposure) * alpha;
+}
+
+void EngineWgpu::SubmitGrass()
+{
+    if (!_renderer || _grassSubmitted)
+    {
+        return;
+    }
+    // Player/vehicle crushing is live world state, so refresh this small UBO
+    // once per submitted grass frame rather than only when a dev slider moves.
+    SetGrassSettings(_grass);
+    EnsureCamera();
+    WgrGrassBatch batch{};
+    batch.camera = _currentCamera;
+    _grassBatches.push_back(batch);
+    _cmds.push_back(WgrCmd{WGR_CMD_DRAW_GRASS, U32(_grassBatches.size() - 1)});
+    _grassSubmitted = true;
+}
+
+void EngineWgpu::SetGrassParams(float, float, float, float)
+{
+    // Landscape::DrawGround invokes this only for its alpha GrassTexture overlay
+    // layers.  This is the authoritative per-frame signal that the active world
+    // actually uses grass, unlike the opaque terrain submission (which also occurs
+    // for desert, rock, and road-heavy maps).
+    SubmitGrass();
+}
+
+void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
+{
+    _grass = settings;
+    if (!_renderer)
+    {
+        return;
+    }
+      const float dt = std::clamp(static_cast<float>(GetLastFrameDuration()) * 0.001f, 0.001f, 0.100f);
+      for (WgrGrassTrack& track : _grassTracks)
+      {
+          // Keep impressions for a full minute. They still recover, but a
+          // player can now look back over a meaningful walking trail instead
+          // of watching it vanish after a few seconds.
+          track.age = std::min(track.age + dt, 60.0f);
+      }
+
+      WgrGrassParams params{};
+      params.density = std::clamp(settings.density, 0.0f, 1.0f);
+      const float densityBoost = std::clamp(settings.densityBoost, 1.0f, 4.0f);
+      params.spacing = std::clamp(settings.spacing / std::sqrt(densityBoost), 0.10f, 0.75f);
+      // The dense 512x512 grid covers the inner ring. The coarse LOD uses the
+      // requested full radius (up to 5 km) with adaptive spacing.
+      params.near_radius = std::min(std::clamp(settings.radius, 8.0f, 5000.0f), params.spacing * 255.0f);
+      params.enabled = settings.enabled ? 1.0f : 0.0f;
+      params.blade_height = std::clamp(settings.height, 0.10f, 3.00f);
+      params.wind_strength = std::clamp(settings.windStrength, 0.0f, 3.0f);
+      params.wind_direction = settings.windDirection;
+      // Match the simulation's actual weather vector (the same one used by
+      // smoke, cloth and parachutes). The developer strength is deliberately
+      // retained as a gain so artists can test gust visibility without
+      // changing mission weather, and becomes the complete manual control
+      // when live wind is turned off in the Grass panel.
+      if (settings.useLiveWind && GLandscape)
+      {
+          const Vector3 liveWind = GLandscape->GetWind();
+          const float windXZ = std::sqrt(liveWind.X() * liveWind.X() + liveWind.Z() * liveWind.Z());
+          if (windXZ > 0.001f)
+          {
+              params.wind_direction = std::atan2(liveWind.Z(), liveWind.X()) * (180.0f / 3.14159265358979323846f);
+              params.wind_strength = std::clamp(windXZ * 0.20f * settings.windStrength, 0.0f, 3.0f);
+          }
+      }
+      params.far_radius = std::clamp(settings.radius, params.near_radius, 5000.0f);
+      // Everon/Eden's legacy geography marks normal terrain as excluded. The
+      // terrain renderer identifies it from the actual uploaded WRP, so grass
+      // works without requiring the user to discover a diagnostic checkbox.
+      params.debug_ignore_geography_exclusions =
+          (settings.ignoreGeographyExclusions || (_terrain && _terrain->GrassNeedsCompatibilityOverride())) ? 1.0f : 0.0f;
+      // CameraOn is the controlled entity in normal first/third-person play:
+      // the player on foot, or their occupied car/tank. Its visible size gives
+      // vehicles a wider flattened footprint without special vehicle classes.
+      if (GWorld && GWorld->CameraOn())
+      {
+          const Object* interactor = GWorld->CameraOn();
+          const Vector3 pos = interactor->Position();
+          params.interactor_x = pos.X();
+          params.interactor_z = pos.Z();
+          params.interactor_radius = std::clamp(interactor->VisibleSize() * 0.55f, 1.1f, 8.0f);
+          params.interactor_strength = 1.0f;
+          _grassTrackSampleTime += dt;
+          // Wider stamp spacing uses the existing soft-radius falloff to keep
+          // a continuous trail while preserving substantially more history in
+          // the fixed GPU record budget.
+          const float trackSpacing = std::max(0.75f, params.interactor_radius * 0.50f);
+          const float moved2 = _haveGrassTrackPos ? (pos - _lastGrassTrackPos).SquareSizeXZ() : 1e9f;
+          if (!_haveGrassTrackPos || moved2 >= trackSpacing * trackSpacing || _grassTrackSampleTime >= 0.22f)
+          {
+              _grassTracks[_nextGrassTrack] = WgrGrassTrack{pos.X(), pos.Z(), params.interactor_radius, 0.0f};
+              _nextGrassTrack = (_nextGrassTrack + 1) % _grassTracks.size();
+              _lastGrassTrackPos = pos;
+              _grassTrackSampleTime = 0.0f;
+              _haveGrassTrackPos = true;
+          }
+      }
+      std::copy(_grassTracks.begin(), _grassTracks.end(), params.tracks);
+      wgr_grass_set_params(_renderer, &params);
+}
+
+int EngineWgpu::GetGrassSurfaceCount() const
+{
+    return _terrain ? _terrain->GrassSurfaceCount() : 0;
+}
+
+const char* EngineWgpu::GetGrassLoadedMapName() const
+{
+    return _terrain ? _terrain->GrassLoadedMapName() : "";
+}
+
+const char* EngineWgpu::GetGrassSurfaceName(int index) const
+{
+    return _terrain ? _terrain->GrassSurfaceName(index) : "";
+}
+
+bool EngineWgpu::IsGrassSurfaceEnabled(int index) const
+{
+    return _terrain && _terrain->GrassSurfaceEnabled(index);
+}
+
+void EngineWgpu::SetGrassSurfaceEnabled(int index, bool enabled)
+{
+    if (_terrain)
+    {
+        _terrain->SetGrassSurfaceEnabled(index, enabled);
+    }
 }
 
 void EngineWgpu::UpdateAutoSky()

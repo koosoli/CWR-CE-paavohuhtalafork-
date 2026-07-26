@@ -147,9 +147,9 @@ pub fn compute(
             for i in 0..k {
                 let phi = sector * (i as f32) + rot;
                 let (dz, dx) = phi.sin_cos(); // dx = cos, dz = sin (unit xz azimuth)
-                                              // Per-(texel, direction) radial jitter: shift the geometric march's start so the
-                                              // discrete sample distances differ between neighbours, breaking the concentric
-                                              // banding a fixed step sequence would stamp everywhere.
+                // Per-(texel, direction) radial jitter: shift the geometric march's start so the
+                // discrete sample distances differ between neighbours, breaking the concentric
+                // banding a fixed step sequence would stamp everywhere.
                 let j = hash2(
                     ox.wrapping_add(i.wrapping_mul(7919)),
                     oy.wrapping_add(i.wrapping_mul(104729)),

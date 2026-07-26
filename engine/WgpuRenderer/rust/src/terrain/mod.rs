@@ -117,6 +117,7 @@ pub struct Terrain {
     group2_layout: wgpu::BindGroupLayout,
 
     params_ubo: wgpu::Buffer,
+    params: WgrTerrainParams,
     #[allow(dead_code)] // kept alive: group1_bind references its view
     heightmap: wgpu::Texture,
     group1_bind: wgpu::BindGroup,
@@ -737,6 +738,7 @@ impl Terrain {
             group1_layout,
             group2_layout,
             params_ubo,
+            params: default_params,
             heightmap,
             heightmap_view,
             group1_bind,
@@ -804,8 +806,9 @@ impl Terrain {
     // Cheap per-frame params refresh (no heightmap re-upload): the coast wet-band fields
     // (sea_level, time, swash, wet_*) animate every frame, and the static fields are re-sent
     // unchanged. Overwrites the whole params UBO.
-    pub fn set_params(&self, queue: &wgpu::Queue, params: WgrTerrainParams) {
+    pub fn set_params(&mut self, queue: &wgpu::Queue, params: WgrTerrainParams) {
         queue.write_buffer(&self.params_ubo, 0, bytemuck::bytes_of(&params));
+        self.params = params;
     }
 
     pub fn set_heightmap(
@@ -815,6 +818,7 @@ impl Terrain {
         heights: &[f32],
         params: WgrTerrainParams,
     ) {
+        self.params = params;
         let (w, h) = (params.hm_width, params.hm_height);
         if w == 0 || h == 0 || w > self.max_dim || h > self.max_dim {
             return;
@@ -1115,6 +1119,14 @@ impl Terrain {
             hm_height: self.hm_height,
             _pad: [0, 0],
         }
+    }
+
+    pub fn params(&self) -> WgrTerrainParams {
+        self.params
+    }
+
+    pub fn has_heightmap(&self) -> bool {
+        self.have_heightmap
     }
 
     // Ground layers as views into the shared texture registry (missing handles

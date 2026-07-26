@@ -113,7 +113,8 @@ enum WgrCmdKind : uint32_t
     WGR_CMD_CLEAR_DEPTH = 2,   // arg unused; starts a new depth-cleared segment
     WGR_CMD_DRAW_TERRAIN = 3,  // arg = index into WgrFrame.terrain_batches
     WGR_CMD_RESOLVE = 4,       // arg unused; tonemap the HDR scene to the swapchain, then draw UI display-referred
-    WGR_CMD_DRAW_WATER = 5     // arg = index into WgrFrame.water_batches
+    WGR_CMD_DRAW_WATER = 5,    // arg = index into WgrFrame.water_batches
+    WGR_CMD_DRAW_GRASS = 6     // arg = index into WgrFrame.grass_batches
 };
 
 // --- Surface / logging -------------------------------------------------------
@@ -652,6 +653,49 @@ struct WgrTerrainBatch
     uint32_t _pad;
 };
 
+/* One procedural grass draw for `camera`. Grass placement and instances are owned
+ * entirely by the Rust renderer; this batch only preserves the engine command
+ * stream and chooses the scene camera. */
+struct WgrGrassBatch
+{
+    uint32_t camera;
+    uint32_t flags;
+    uint32_t _pad0;
+    uint32_t _pad1;
+};
+
+enum { WGR_GRASS_TRACK_COUNT = 96 };
+
+/* One persistent player/vehicle impression. Age is measured in seconds and
+ * faded on the GPU, so a trail remains after its source has moved away. */
+struct WgrGrassTrack
+{
+    float x;
+    float z;
+    float radius;
+    float age;
+};
+
+/* Live procedural-grass controls, edited through the developer Grass tab. */
+struct WgrGrassParams
+{
+    float density;  /* retained candidate fraction, 0..1 */
+    float spacing;  /* grid spacing in metres */
+    float near_radius; /* dense-placement radius in metres */
+    float enabled;  /* 0 = disabled, nonzero = enabled */
+    float blade_height;   /* blade-height multiplier */
+    float wind_strength;  /* test wind strength */
+    float wind_direction; /* test wind direction, degrees */
+    float far_radius;     /* coarse far-LOD radius */
+    float interactor_x;   /* live player/vehicle world-space centre */
+    float interactor_z;
+    float interactor_radius;
+    float interactor_strength;
+    WgrGrassTrack tracks[WGR_GRASS_TRACK_COUNT];
+    float debug_ignore_geography_exclusions;
+    float _pad0[3];
+};
+
 // --- Water (GPU CDLOD surface) -----------------------------------------------
 
 /* Per-map + per-frame water parameters (a small UBO). `world_origin`/`terrain_grid`/
@@ -930,6 +974,10 @@ struct WgrFrame
      * per-frame sea level) are uploaded separately via wgr_water_set_params. */
     WgrSlice<WgrWaterNode> water_nodes;
     WgrSlice<WgrWaterBatch> water_batches;
+
+    /* Procedural GPU grass, drawn on WGR_CMD_DRAW_GRASS. Static placement
+     * metadata is uploaded separately via wgr_grass_set_geography. */
+    WgrSlice<WgrGrassBatch> grass_batches;
 };
 
 // --- Layout guards (mirror rust/src/ffi.rs) ----------------------------------
@@ -966,12 +1014,15 @@ static_assert(sizeof(WgrOverlayDraw) == 40, "WgrOverlayDraw layout must match th
 static_assert(sizeof(WgrTerrainParams) == 64, "WgrTerrainParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassParams) == 1600, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterParams) == 208, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 24, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterInteractionEvent) == 64 && alignof(WgrWaterInteractionEvent) == 16, "WgrWaterInteractionEvent must match Rust");
 static_assert(sizeof(WgrWaterInteractionParams) == 96 && alignof(WgrWaterInteractionParams) == 16, "WgrWaterInteractionParams must match Rust");
-static_assert(sizeof(WgrFrame) == 560, "WgrFrame layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrFrame) == 576, "WgrFrame layout must match the Rust #[repr(C)] struct");
 
 // --- Functions ---------------------------------------------------------------
 
@@ -1121,6 +1172,13 @@ extern "C"
      * alpha channel modulates the blended ground colour (rgb *= 2*detail.a).
      * Handle 0 is ignored (the neutral built-in stand-in stays). */
     WGR_API void wgr_terrain_set_detail_layer(WgrRenderer* renderer, WgrTexture handle);
+
+    /* Upload one GeographyInfo::packed value per land cell. Grass uses the
+     * existing authoritative water/road/forest/obstacle classification before
+     * attempting any optional artist-authored exclusion masks. */
+    WGR_API void wgr_grass_set_geography(WgrRenderer* renderer, uint32_t width, uint32_t height,
+                                         const uint32_t* geography);
+    WGR_API void wgr_grass_set_params(WgrRenderer* renderer, const WgrGrassParams* params);
 
     /* The terrain sun-shadow and sky-visibility knobs are pushed through the consolidated
      * WgrRenderParams block (wgr_set_render_params), not their own setters. See below and

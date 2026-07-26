@@ -5,6 +5,7 @@
 #include "TextureWgpu.hpp"
 
 #include <Poseidon/Core/Global.hpp> // Glob.time (coast wet-band animation clock)
+#include <Poseidon/Foundation/Logging/Logging.hpp>
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
 #include <Poseidon/IO/ParamFileExt.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
@@ -12,14 +13,60 @@
 #include <Poseidon/World/Terrain/Landscape.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 
 namespace Poseidon
 {
 // Grid-mesh resolution per axis; must match GRID_N in terrain/mod.rs.
 constexpr int TerrainGridN = 32;
+constexpr uint32_t GrassTextureCell = 0x80000000u;
+
+static bool ContainsNoCase(const char* text, const char* needle)
+{
+    if (text == nullptr || needle == nullptr || *needle == '\0')
+    {
+        return false;
+    }
+    const size_t needleLen = std::strlen(needle);
+    for (const char* start = text; *start; ++start)
+    {
+        size_t i = 0;
+        for (; i < needleLen && start[i]; ++i)
+        {
+            const char a = static_cast<char>(std::tolower(static_cast<unsigned char>(start[i])));
+            const char b = static_cast<char>(std::tolower(static_cast<unsigned char>(needle[i])));
+            if (a != b)
+            {
+                break;
+            }
+        }
+        if (i == needleLen)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool IsGrassTexture(const Texture* texture)
+{
+    if (texture == nullptr)
+    {
+        return false;
+    }
+    const char* name = texture->Name();
+    // CWR/OFP terrain assets are mostly named in English or Czech.  Keep this
+    // strict: an unclassified texture must not grow procedural grass over desert,
+    // dirt, concrete, or rock.
+    return ContainsNoCase(name, "grass") || ContainsNoCase(name, "trava") ||
+           ContainsNoCase(name, "louka") || ContainsNoCase(name, "meadow") ||
+           ContainsNoCase(name, "pasture");
+}
 
 static float EnvFloat(const char* name, float fallback)
 {
@@ -111,6 +158,7 @@ bool TerrainWgpu::UploadIfNeeded(const Landscape& land)
 
     UploadGroundTextures(land);
     UploadIndexMap(land);
+    UploadGeography(land);
     UploadJitterMap(land);
     UploadDetailNoise();
 
@@ -119,6 +167,15 @@ bool TerrainWgpu::UploadIfNeeded(const Landscape& land)
     _uploaded = &land;
     _uploadedRange = range;
     _uploadedName = name;
+    // Confirmed from the installed CWA world data: Eden is Everon. Its raw
+    // GeographyInfo flags are not reliable grass exclusions, unlike the other
+    // stock worlds, so the shader must rely on exact height/slope plus the
+    // explicit surface controls for this map.
+    _grassNeedsCompatibilityOverride = ContainsNoCase(name, "eden.wrp");
+    if (_grassNeedsCompatibilityOverride)
+    {
+        LOG_WARN(Graphics, "Wgpu grass: enabling Everon/Eden legacy geography compatibility override");
+    }
     return true;
 }
 
@@ -170,6 +227,176 @@ void TerrainWgpu::UploadIndexMap(const Landscape& land)
         }
     }
     wgr_terrain_set_index_map(_renderer, static_cast<uint32_t>(n), static_cast<uint32_t>(n), indices.data());
+}
+
+void TerrainWgpu::UploadGeography(const Landscape& land)
+{
+    const int n = land.GetLandRange();
+    if (n <= 0)
+    {
+        return;
+    }
+    const int layerCount = std::max(0, land.GetNTextures());
+    bool layersChanged = static_cast<int>(_grassSurfaceNames.size()) != layerCount;
+    if (!layersChanged)
+    {
+        for (int i = 0; i < layerCount; ++i)
+        {
+            const char* name = land.GetTexture(i) ? land.GetTexture(i)->Name() : "<null>";
+            if (_grassSurfaceNames[static_cast<size_t>(i)] != name)
+            {
+                layersChanged = true;
+                break;
+            }
+        }
+    }
+    if (layersChanged)
+    {
+        _grassSurfaceNames.clear();
+        _grassSurfaceEnabled.clear();
+        _grassSurfaceNames.reserve(static_cast<size_t>(layerCount));
+        _grassSurfaceEnabled.reserve(static_cast<size_t>(layerCount));
+        for (int i = 0; i < layerCount; ++i)
+        {
+            const Texture* texture = land.GetTexture(i);
+            _grassSurfaceNames.emplace_back(texture ? texture->Name() : "<null>");
+            _grassSurfaceEnabled.push_back(IsGrassTexture(texture));
+        }
+
+        // The original CWA islands (including Everon/Eden) store their
+        // terrain materials under two-character codes such as eden\\pl and
+        // eden\\tn. They contain no semantic "grass" word, so the strict
+        // detector above selected *zero* surfaces and made grass impossible
+        // to load. Fall back to every terrain layer only when nothing could
+        // be named; water, roads, forests, buildings, cliffs, and shore are
+        // still rejected by the authoritative geography/slope checks in the
+        // grass shader. The Grass tab remains able to narrow this selection.
+        const bool noNamedGrass = std::none_of(_grassSurfaceEnabled.begin(), _grassSurfaceEnabled.end(),
+                                               [](bool enabled) { return enabled; });
+        if (noNamedGrass && layerCount > 0)
+        {
+            std::fill(_grassSurfaceEnabled.begin(), _grassSurfaceEnabled.end(), true);
+            LOG_INFO(Graphics, "Wgpu grass: no named grass textures on this legacy world; enabling all {} terrain layers",
+                     layerCount);
+        }
+    }
+
+    std::vector<bool> grassLayer(static_cast<size_t>(layerCount), false);
+    std::string grassLayerNames;
+    std::string allLayerNames;
+    int grassLayerCount = 0;
+    for (int i = 0; i < land.GetNTextures(); ++i)
+    {
+        if (!allLayerNames.empty())
+        {
+            allLayerNames += ", ";
+        }
+        allLayerNames += std::to_string(i);
+        allLayerNames += ":";
+        allLayerNames += land.GetTexture(i) ? land.GetTexture(i)->Name() : "<null>";
+        grassLayer[static_cast<size_t>(i)] = _grassSurfaceEnabled[static_cast<size_t>(i)];
+        if (grassLayer[static_cast<size_t>(i)])
+        {
+            if (!grassLayerNames.empty())
+            {
+                grassLayerNames += ", ";
+            }
+            grassLayerNames += land.GetTexture(i)->Name();
+            ++grassLayerCount;
+        }
+    }
+
+    std::vector<uint32_t> geography(static_cast<size_t>(n) * n);
+    size_t grassCellCount = 0;
+    size_t grassRenderableCellCount = 0;
+    for (int z = 0; z < n; ++z)
+    {
+        for (int x = 0; x < n; ++x)
+        {
+            uint32_t cell = land.GetGeography(x, z).packed;
+            const int layer = land.GetTexture(z, x);
+            if (layer >= 0 && layer < static_cast<int>(grassLayer.size()) && grassLayer[static_cast<size_t>(layer)])
+            {
+                cell |= GrassTextureCell;
+                ++grassCellCount;
+            }
+            // Match grass.wgsl: water, forests, roads/tracks and hard
+            // buildings are excluded, but the legacy "full" flag is valid
+            // ordinary ground on Everon and must remain grass-capable.
+            if ((cell & GrassTextureCell) != 0 && (cell & 0x00000c7bu) == 0)
+            {
+                ++grassRenderableCellCount;
+            }
+            geography[static_cast<size_t>(z) * n + x] = cell;
+        }
+    }
+    // Some legacy Everon WRP revisions mark a broad part of ordinary ground
+    // as forest. If that leaves no possible grass anywhere, treat only that
+    // blanket forest flag as invalid. Water, roads and tracks stay protected.
+    // Real forest/builder exclusions remain intact whenever the source data
+    // provides even one valid grass cell.
+    if (grassCellCount > 0 && grassRenderableCellCount == 0)
+    {
+        for (uint32_t& cell : geography)
+            cell &= ~0x00000018u; // forestInner | forestOuter
+        for (uint32_t cell : geography)
+        {
+            if ((cell & GrassTextureCell) != 0 && (cell & 0x00000c7bu) == 0)
+                ++grassRenderableCellCount;
+        }
+        LOG_WARN(Graphics, "Wgpu grass: legacy geography had no usable grass cells; relaxed blanket forest flags -> {} cells",
+                 grassRenderableCellCount);
+    }
+    // A handful of old WRP files also store hard-object density across entire
+    // ground regions. Only as a final zero-candidate fallback do we relax it;
+    // this is preferable to silently rendering no grass at all on the map.
+    if (grassCellCount > 0 && grassRenderableCellCount == 0)
+    {
+        for (uint32_t& cell : geography)
+            cell &= ~0x00000c00u; // howManyHardObjects
+        for (uint32_t cell : geography)
+        {
+            if ((cell & GrassTextureCell) != 0 && (cell & 0x00000c7bu) == 0)
+                ++grassRenderableCellCount;
+        }
+        LOG_WARN(Graphics, "Wgpu grass: legacy geography still had no usable cells; relaxed blanket hard-object flags -> {} cells",
+                 grassRenderableCellCount);
+    }
+    LOG_INFO(Graphics, "Wgpu grass texture mask: {} layer(s), {} / {} surface cells, {} renderable after geography [{}]",
+             grassLayerCount, grassCellCount, geography.size(), grassRenderableCellCount,
+             grassLayerNames.empty() ? "none matched" : grassLayerNames);
+    LOG_INFO(Graphics, "Wgpu terrain texture layers: [{}]", allLayerNames);
+    wgr_grass_set_geography(_renderer, static_cast<uint32_t>(n), static_cast<uint32_t>(n), geography.data());
+}
+
+int TerrainWgpu::GrassSurfaceCount() const
+{
+    return static_cast<int>(_grassSurfaceNames.size());
+}
+
+const char* TerrainWgpu::GrassSurfaceName(int index) const
+{
+    return index >= 0 && index < GrassSurfaceCount() ? _grassSurfaceNames[static_cast<size_t>(index)].c_str() : "";
+}
+
+bool TerrainWgpu::GrassSurfaceEnabled(int index) const
+{
+    return index >= 0 && index < static_cast<int>(_grassSurfaceEnabled.size()) &&
+           _grassSurfaceEnabled[static_cast<size_t>(index)];
+}
+
+void TerrainWgpu::SetGrassSurfaceEnabled(int index, bool enabled)
+{
+    if (index < 0 || index >= static_cast<int>(_grassSurfaceEnabled.size()) ||
+        _grassSurfaceEnabled[static_cast<size_t>(index)] == enabled)
+    {
+        return;
+    }
+    _grassSurfaceEnabled[static_cast<size_t>(index)] = enabled;
+    if (_uploaded != nullptr)
+    {
+        UploadGeography(*_uploaded);
+    }
 }
 
 void TerrainWgpu::UploadJitterMap(const Landscape& land)
@@ -298,6 +525,11 @@ void TerrainWgpu::DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zE
                        [](const CdlodNode&) { return true; }, emit);
 
     _engine.SubmitTerrain(_selected);
+    // The procedural path must remain available on maps that use the modern GPU
+    // terrain path (which can skip the legacy alpha overlay callback entirely).
+    // SubmitGrass is frame-deduplicated by EngineWgpu; SetGrassParams below is an
+    // additional legacy signal, not the only activation path.
+    _engine.SubmitGrass();
 }
 
 } // namespace Poseidon

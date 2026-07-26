@@ -33,25 +33,25 @@ use std::sync::mpsc;
 #[derive(Clone, Copy)]
 #[repr(u32)]
 pub enum Region {
-    SpectrumInit = 0,      // h0 spectrum generation (only on spectrum-dirty frames)
-    SpectrumEvolve = 1,    // per-frame spectrum evolution
-    FftHorizontal = 2,     // FFT butterfly stages, axis 0
-    FftVertical = 3,       // FFT butterfly stages, axis 1
-    FftCompose = 4,        // displacement/dynamics/auxiliary composition
-    Interaction = 5,       // injection + propagation (one fused kernel today)
-    Foam = 6,              // persistent foam update
-    Whitewater = 7,        // reserved — no whitewater pass exists yet
-    PlanarSky = 8,         // planar reflection: sky
-    PlanarTerrain = 9,     // planar reflection: terrain
-    PlanarObjects = 10,    // planar reflection: reflected cull + GPU-driven objects
-    PlanarClouds = 11,     // planar reflection: cloud march + composite
-    PlanarMips = 12,       // planar reflection mip generation
-    WaterSsr = 13,         // reserved — SSR is in-shader inside WaterDraw today
-    WaterRefraction = 14,  // reserved — refraction is in-shader inside WaterDraw today
-    WaterDraw = 15,        // the water surface pass (includes SSR + refraction cost)
-    UnderwaterFroxel = 16, // reserved — no underwater froxel pass exists yet
+    SpectrumInit = 0,         // h0 spectrum generation (only on spectrum-dirty frames)
+    SpectrumEvolve = 1,       // per-frame spectrum evolution
+    FftHorizontal = 2,        // FFT butterfly stages, axis 0
+    FftVertical = 3,          // FFT butterfly stages, axis 1
+    FftCompose = 4,           // displacement/dynamics/auxiliary composition
+    Interaction = 5,          // injection + propagation (one fused kernel today)
+    Foam = 6,                 // persistent foam update
+    Whitewater = 7,           // reserved — no whitewater pass exists yet
+    PlanarSky = 8,            // planar reflection: sky
+    PlanarTerrain = 9,        // planar reflection: terrain
+    PlanarObjects = 10,       // planar reflection: reflected cull + GPU-driven objects
+    PlanarClouds = 11,        // planar reflection: cloud march + composite
+    PlanarMips = 12,          // planar reflection mip generation
+    WaterSsr = 13,            // reserved — SSR is in-shader inside WaterDraw today
+    WaterRefraction = 14,     // reserved — refraction is in-shader inside WaterDraw today
+    WaterDraw = 15,           // the water surface pass (includes SSR + refraction cost)
+    UnderwaterFroxel = 16,    // reserved — no underwater froxel pass exists yet
     UnderwaterComposite = 17, // fullscreen underwater compositor (includes caustics cost)
-    Caustics = 18,         // reserved — caustics ride the underwater/water shaders today
+    Caustics = 18,            // reserved — caustics ride the underwater/water shaders today
 }
 
 /// Region count — the FFI getter's element contract (WGR_GPU_TIMER_REGION_COUNT).
@@ -65,7 +65,9 @@ const RING_SLOTS: usize = 3;
 enum SlotState {
     Idle,
     // Copied into by this frame's encoder; map_async is requested after submit.
-    Pending { written: u32 },
+    Pending {
+        written: u32,
+    },
     // map_async requested; the channel resolves once the GPU copy completes.
     InFlight {
         written: u32,
@@ -157,7 +159,9 @@ impl GpuTimers {
     pub fn end(&self, encoder: &mut wgpu::CommandEncoder, region: Region) {
         if let Some(inner) = &self.inner {
             encoder.write_timestamp(&inner.query_set, region as u32 * 2 + 1);
-            inner.written.set(inner.written.get() | (1u32 << region as u32));
+            inner
+                .written
+                .set(inner.written.get() | (1u32 << region as u32));
         }
     }
 

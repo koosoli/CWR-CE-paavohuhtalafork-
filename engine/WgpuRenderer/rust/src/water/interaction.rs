@@ -1,4 +1,4 @@
-use crate::ffi::{WgrWaterInteractionEvent, WgrWaterInteractionParams, MAX_WATER_INTERACTIONS};
+use crate::ffi::{MAX_WATER_INTERACTIONS, WgrWaterInteractionEvent, WgrWaterInteractionParams};
 
 pub struct Interaction {
     params: wgpu::Buffer,

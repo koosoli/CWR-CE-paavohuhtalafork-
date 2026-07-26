@@ -46,6 +46,7 @@
 #include <Poseidon/UI/Settings/AspectRatio.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
 #include <Poseidon/Core/Global.hpp>
+#include <Poseidon/IO/ParamFileExt.hpp>
 #include <Poseidon/Foundation/Memory/CheckMem.hpp>
 #include <Poseidon/Foundation/Memory/MemFreeReq.hpp>
 #include <Poseidon/World/World.hpp>
@@ -1324,6 +1325,210 @@ void DrawAspectTab()
                     a.uiBottomRightY);
         ImGui::Text("world rect x[%.3f..%.3f] y[%.3f..%.3f]", a.worldLeft, a.worldRight, a.worldTop, a.worldBottom);
     }
+}
+
+void DrawGrassTab()
+{
+    if (!GEngine)
+    {
+        ImGui::TextDisabled("No engine.");
+        return;
+    }
+
+    struct GrassMapChoice
+    {
+        const char* label;
+        const char* worldKey;
+    };
+    // CWA's legacy internal world names differ from their displayed island
+    // names: Eden is Everon, Abel is Malden, Cain is Kolgujev, and Noe is
+    // Nogova. Keep both names visible so this tool works with the actual
+    // installed WRP files, not a guessed display name.
+    static constexpr GrassMapChoice maps[] = {
+        {"Intro", "Intro"},
+        {"Everon (Eden)", "Eden"},
+        {"Malden (Abel)", "Abel"},
+        {"Kolgujev (Cain)", "Cain"},
+        {"Nogova (Noe)", "Noe"},
+    };
+    static int selectedMap = 0;
+    static int selectedSurface = 0;
+    static std::string observedWorld;
+
+    // The mission header can remain on the intro world while an in-game map
+    // has already switched. TerrainWgpu records the actual WRP it uploaded,
+    // which is the only name safe to use for grass layer selection.
+    const char* loadedMapName = GEngine->GetGrassLoadedMapName();
+    const std::string activeMapFile = loadedMapName && *loadedMapName ? loadedMapName : Glob.header.worldname;
+    std::string activeWorld = activeMapFile;
+    const size_t lastSlash = activeWorld.find_last_of("\\/");
+    if (lastSlash != std::string::npos)
+        activeWorld.erase(0, lastSlash + 1);
+    const size_t extension = activeWorld.find_last_of('.');
+    if (extension != std::string::npos)
+        activeWorld.erase(extension);
+    if (activeWorld != observedWorld)
+    {
+        observedWorld = activeWorld;
+        selectedSurface = 0;
+        for (int i = 0; i < static_cast<int>(std::size(maps)); ++i)
+        {
+            if (strcmpi(activeWorld.c_str(), maps[i].worldKey) == 0)
+            {
+                selectedMap = i;
+                break;
+            }
+        }
+    }
+
+    Engine::GrassSettings grass = GEngine->GetGrassSettings();
+    bool changed = false;
+
+    ImGui::TextUnformatted("Map and terrain surface");
+    ImGui::SetNextItemWidth(220.0f);
+    if (ImGui::BeginCombo("Map", maps[selectedMap].label))
+    {
+        for (int i = 0; i < static_cast<int>(std::size(maps)); ++i)
+        {
+            const bool selected = selectedMap == i;
+            if (ImGui::Selectable(maps[i].label, selected))
+                selectedMap = i;
+            if (selected)
+                ImGui::SetItemDefaultFocus();
+        }
+        ImGui::EndCombo();
+    }
+    const bool selectedMapLoaded = strcmpi(activeWorld.c_str(), maps[selectedMap].worldKey) == 0;
+    ImGui::SameLine();
+    const bool canSwitchMap = GWorld != nullptr && GWorld->GetMode() == GModeIntro;
+    bool loadMap = false;
+    if (canSwitchMap)
+    {
+        ImGui::BeginDisabled(selectedMapLoaded);
+        loadMap = ImGui::Button("Load selected map");
+        ImGui::EndDisabled();
+    }
+    else if (!selectedMapLoaded && GWorld != nullptr)
+    {
+        loadMap = ImGui::Button("Force-load selected map (dev)");
+    }
+    if (loadMap)
+    {
+        // Resolve through CfgWorlds. This is the same authoritative mapping as
+        // mission loading and handles modded/relocated WRP paths correctly.
+        const RString resolvedWorld = GetWorldName(maps[selectedMap].worldKey);
+        const std::string worldFile = static_cast<const char*>(resolvedWorld);
+        SetVisible(false);
+        // Landscape switching invalidates textures and the scene, so do it only
+        // after ImGui has finished this frame, exactly like the reload control.
+        Defer([worldFile]
+        {
+            if (GWorld != nullptr)
+                GWorld->SwitchLandscape(worldFile.c_str());
+        });
+    }
+    ImGui::TextDisabled("Active terrain WRP: %s. Everon uses the internal name Eden.", activeMapFile.c_str());
+    const RString selectedWorldFile = GetWorldName(maps[selectedMap].worldKey);
+    ImGui::TextDisabled("Selected WRP: %s", static_cast<const char*>(selectedWorldFile));
+    if (!canSwitchMap && !selectedMapLoaded)
+        ImGui::TextDisabled("Force-load replaces the active mission landscape; use it only for grass testing.");
+
+    // The terrain combo is deliberately separate from the map combo. It always
+    // comes from the loaded map, so an Everon selection cannot accidentally
+    // apply Eden layer indices to the active geography texture.
+    const int surfaceCount = GEngine->GetGrassSurfaceCount();
+    if (surfaceCount == 0)
+    {
+        ImGui::TextDisabled("Loading map terrain materials...");
+    }
+    else
+    {
+        selectedSurface = std::clamp(selectedSurface, 0, surfaceCount - 1);
+        ImGui::SetNextItemWidth(390.0f);
+        if (ImGui::BeginCombo("Terrain surface", GEngine->GetGrassSurfaceName(selectedSurface)))
+        {
+            for (int i = 0; i < surfaceCount; ++i)
+            {
+                const bool selected = selectedSurface == i;
+                char label[512];
+                snprintf(label, sizeof(label), "%d: %s", i, GEngine->GetGrassSurfaceName(i));
+                if (ImGui::Selectable(label, selected))
+                    selectedSurface = i;
+                if (selected)
+                    ImGui::SetItemDefaultFocus();
+            }
+            ImGui::EndCombo();
+        }
+        bool selectedEnabled = GEngine->IsGrassSurfaceEnabled(selectedSurface);
+        if (ImGui::Checkbox("Spawn on selected terrain", &selectedEnabled))
+            GEngine->SetGrassSurfaceEnabled(selectedSurface, selectedEnabled);
+        ImGui::SameLine();
+        if (ImGui::Button("Use selected only"))
+        {
+            for (int i = 0; i < surfaceCount; ++i)
+                GEngine->SetGrassSurfaceEnabled(i, i == selectedSurface);
+        }
+        if (ImGui::Button("Clear all surfaces"))
+        {
+            for (int i = 0; i < surfaceCount; ++i)
+                GEngine->SetGrassSurfaceEnabled(i, false);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Enable all surfaces"))
+        {
+            for (int i = 0; i < surfaceCount; ++i)
+                GEngine->SetGrassSurfaceEnabled(i, true);
+        }
+        ImGui::TextDisabled("Select a material, then toggle it. The selector contains every terrain layer of this map.");
+    }
+
+    ImGui::Separator();
+    ImGui::TextDisabled("GPU-generated terrain blades. Placement follows the terrain grass pass and excludes water, roads, forests and buildings.");
+    ImGui::Separator();
+    changed |= ImGui::Checkbox("Enabled", &grass.enabled);
+    changed |= ImGui::Checkbox("Ignore terrain exclusions (diagnostic)", &grass.ignoreGeographyExclusions);
+    ImGui::TextDisabled("Use only to diagnose a legacy map with no grass: this also permits grass on roads, forests and buildings.");
+    changed |= ImGui::SliderFloat("Coverage", &grass.density, 0.05f, 1.0f, "%.2f");
+    ImGui::TextDisabled("Retained fraction of procedural candidate blades. 1.00 uses every candidate.");
+    changed |= ImGui::SliderFloat("Density boost", &grass.densityBoost, 1.0f, 4.0f, "%.1fx");
+    ImGui::TextDisabled("Raises density beyond the base grid. Very high values reduce the maximum usable radius.");
+    changed |= ImGui::SliderFloat("Base spacing (m)", &grass.spacing, 0.10f, 0.75f, "%.2f");
+    ImGui::TextDisabled("Distance between candidates before the density boost; lower values make grass substantially denser.");
+    changed |= ImGui::SliderFloat("Radius (m)", &grass.radius, 8.0f, 5000.0f, "%.0f");
+    ImGui::TextDisabled("Total grass radius (up to 5 km). Dense cards cover the inner ring; scalable GPU distant grass fills the outer field.");
+    changed |= ImGui::SliderFloat("Blade height", &grass.height, 0.10f, 3.0f, "%.2fx");
+    changed |= ImGui::Checkbox("Use live world wind", &grass.useLiveWind);
+    changed |= ImGui::SliderFloat("Wind strength", &grass.windStrength, 0.0f, 3.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Wind direction", &grass.windDirection, -180.0f, 180.0f, "%.0f deg");
+    ImGui::TextDisabled("Live wind follows weather. Disable it to test a manual direction; 0 degrees points east (+X).");
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset ultra dense"))
+    {
+        grass = Engine::GrassSettings{};
+        changed = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::Button("Ultra dense"))
+    {
+        grass.enabled = true;
+        grass.density = 1.0f;
+        grass.densityBoost = 4.0f;
+        grass.spacing = 0.20f;
+        grass.radius = 60.0f;
+        grass.height = 1.25f;
+        grass.windStrength = 1.2f;
+        changed = true;
+    }
+    ImGui::SameLine();
+      if (ImGui::Button("Disable"))
+      {
+          grass.enabled = false;
+          changed = true;
+      }
+
+      if (changed)
+        GEngine->SetGrassSettings(grass);
 }
 
 void DrawFoliageTab()
@@ -2666,6 +2871,11 @@ void DrawMainWindow()
         if (ImGui::BeginTabItem("Foliage"))
         {
             DrawFoliageTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Grass"))
+        {
+            DrawGrassTab();
             ImGui::EndTabItem();
         }
         ImGuiTabItemFlags shadowFlags = 0;

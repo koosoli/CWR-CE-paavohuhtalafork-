@@ -1,10 +1,10 @@
 use std::ffi::c_void;
 use std::os::raw::c_char;
-use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::panic::{AssertUnwindSafe, catch_unwind};
 
-use crate::log::{log_level, LogSink};
-use crate::textures::TextureFormat;
 use crate::Renderer;
+use crate::log::{LogSink, log_level};
+use crate::textures::TextureFormat;
 
 pub type WgrVec2 = glam::Vec2;
 pub type WgrVec3 = glam::Vec3;
@@ -686,6 +686,7 @@ pub enum WgrCmdKind {
     // No-op on the LDR-direct path. Emitted at the engine's scene->UI seam.
     Resolve = 4,
     DrawWater = 5,
+    DrawGrass = 6,
 }
 
 #[repr(C)]
@@ -741,6 +742,46 @@ pub struct WgrTerrainBatch {
     pub node_count: u32,
     pub camera: u32,
     pub _pad: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct WgrGrassBatch {
+    pub camera: u32,
+    pub flags: u32,
+    pub _pad0: u32,
+    pub _pad1: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrGrassTrack {
+    pub x: f32,
+    pub z: f32,
+    pub radius: f32,
+    pub age: f32,
+}
+
+pub const WGR_GRASS_TRACK_COUNT: usize = 96;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrGrassParams {
+    pub density: f32,
+    pub spacing: f32,
+    pub near_radius: f32,
+    pub enabled: f32,
+    pub blade_height: f32,
+    pub wind_strength: f32,
+    pub wind_direction: f32,
+    pub far_radius: f32,
+    pub interactor_x: f32,
+    pub interactor_z: f32,
+    pub interactor_radius: f32,
+    pub interactor_strength: f32,
+    pub tracks: [WgrGrassTrack; WGR_GRASS_TRACK_COUNT],
+    pub debug_ignore_geography_exclusions: f32,
+    pub _pad0: [f32; 3],
 }
 
 // Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.
@@ -911,6 +952,7 @@ pub struct WgrFrame {
     // GPU water nodes, drawn on WGR_CMD_DRAW_WATER.
     pub water_nodes: WgrSlice<WgrWaterNode>,
     pub water_batches: WgrSlice<WgrWaterBatch>,
+    pub grass_batches: WgrSlice<WgrGrassBatch>,
 }
 
 // Layouts must match wgpu_renderer.hpp exactly (the C++ side static_asserts the same).
@@ -942,6 +984,9 @@ const _: () = assert!(std::mem::size_of::<WgrOverlayDraw>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrTerrainParams>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrGrassBatch>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
+const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1600);
 const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 208);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
@@ -950,7 +995,7 @@ const _: () = assert!(std::mem::align_of::<WgrWaterInteractionEvent>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrWaterInteractionParams>() == 96);
 const _: () = assert!(std::mem::align_of::<WgrWaterInteractionParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrFrame>() == 560);
+const _: () = assert!(std::mem::size_of::<WgrFrame>() == 576);
 
 pub type WgrRenderer = Renderer;
 
@@ -967,7 +1012,7 @@ pub unsafe extern "C" fn wgr_create(
     desc: *const WgrSurfaceDesc,
     log: *const WgrLogCallbacks,
 ) -> *mut WgrRenderer {
-    catch_unwind(AssertUnwindSafe(|| {
+    let result = catch_unwind(AssertUnwindSafe(|| {
         let Some(desc) = (unsafe { desc.as_ref() }) else {
             return std::ptr::null_mut();
         };
@@ -991,8 +1036,31 @@ pub unsafe extern "C" fn wgr_create(
                 std::ptr::null_mut()
             }
         }
-    }))
-    .unwrap_or(std::ptr::null_mut())
+    }));
+    match result {
+        Ok(renderer) => renderer,
+        Err(panic) => {
+            let sink = match unsafe { log.as_ref() } {
+                Some(l) => LogSink {
+                    cb: l.log,
+                    user: l.user,
+                },
+                None => LogSink::none(),
+            };
+            let message = if let Some(text) = panic.downcast_ref::<String>() {
+                text.as_str()
+            } else if let Some(text) = panic.downcast_ref::<&str>() {
+                text
+            } else {
+                "unknown panic payload"
+            };
+            sink.log(
+                log_level::ERROR,
+                &format!("wgpu renderer creation panicked: {message}"),
+            );
+            std::ptr::null_mut()
+        }
+    }
 }
 
 /// # Safety
@@ -1538,6 +1606,47 @@ pub unsafe extern "C" fn wgr_terrain_set_index_map(
     }));
 }
 
+/// Upload per-land-cell geography flags for GPU grass placement.  The values are
+/// `GeographyInfo::packed`, one `u32` for every landscape cell.
+///
+/// # Safety
+/// `renderer` must be live; `values` must point to at least `width * height` `u32`s.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_grass_set_geography(
+    renderer: *mut WgrRenderer,
+    width: u32,
+    height: u32,
+    values: *const u32,
+) {
+    if renderer.is_null() || values.is_null() || width == 0 || height == 0 {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let count = width as usize * height as usize;
+        let values = unsafe { std::slice::from_raw_parts(values, count) };
+        renderer.grass_set_geography(width, height, values);
+    }));
+}
+
+/// Update live procedural-grass controls from the developer Grass tab.
+///
+/// # Safety
+/// `renderer` must be live and `params` must point to one valid WgrGrassParams.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_grass_set_params(
+    renderer: *mut WgrRenderer,
+    params: *const WgrGrassParams,
+) {
+    if renderer.is_null() || params.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        renderer.grass_set_params(unsafe { *params });
+    }));
+}
+
 /// Upload the per-grid-point ground UV jitter map (Rg8Snorm). See
 /// wgpu_renderer.hpp.
 ///
@@ -1612,6 +1721,7 @@ pub unsafe extern "C" fn wgr_render_frame(
         let lights = unsafe { frame.lights.as_slice() };
         let water_nodes = unsafe { frame.water_nodes.as_slice() };
         let water_batches = unsafe { frame.water_batches.as_slice() };
+        let grass_batches = unsafe { frame.grass_batches.as_slice() };
         match renderer.render_frame(
             frame.clear,
             frame.fog_color.to_array(),
@@ -1631,6 +1741,7 @@ pub unsafe extern "C" fn wgr_render_frame(
             lights,
             water_nodes,
             water_batches,
+            grass_batches,
         ) {
             Ok(()) => 0,
             Err(e) => {

@@ -74,7 +74,11 @@ impl PlanarMips {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        Self { pipeline, layout, sampler }
+        Self {
+            pipeline,
+            layout,
+            sampler,
+        }
     }
 
     pub fn mip_count(width: u32, height: u32) -> u32 {
@@ -136,7 +140,10 @@ impl PlanarMips {
 fn planar_mips_wgsl_validates() {
     let module = naga::front::wgsl::parse_str(include_str!("planar_mips.wgsl"))
         .expect("planar_mips.wgsl parse");
-    naga::valid::Validator::new(naga::valid::ValidationFlags::all(), naga::valid::Capabilities::all())
-        .validate(&module)
-        .expect("planar_mips.wgsl validate");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("planar_mips.wgsl validate");
 }

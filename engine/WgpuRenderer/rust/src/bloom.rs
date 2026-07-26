@@ -9,7 +9,8 @@ const MAX_MIPS: u32 = 7;
 
 #[test]
 fn bloom_wgsl_validates() {
-    let module = naga::front::wgsl::parse_str(include_str!("bloom.wgsl")).expect("bloom.wgsl parse");
+    let module =
+        naga::front::wgsl::parse_str(include_str!("bloom.wgsl")).expect("bloom.wgsl parse");
     naga::valid::Validator::new(
         naga::valid::ValidationFlags::all(),
         naga::valid::Capabilities::all(),
@@ -287,11 +288,21 @@ impl Bloom {
             return;
         }
         self.down_binds[0] = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wgr_bloom_scene_bind"), layout: &self.layout,
+            label: Some("wgr_bloom_scene_bind"),
+            layout: &self.layout,
             entries: &[
-                wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(scene_view) },
-                wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&self.sampler) },
-                wgpu::BindGroupEntry { binding: 2, resource: self.params_buf.as_entire_binding() },
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(scene_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.params_buf.as_entire_binding(),
+                },
             ],
         });
     }
@@ -326,7 +337,11 @@ impl Bloom {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            pass.set_pipeline(if i == 0 { &self.prefilter } else { &self.downsample });
+            pass.set_pipeline(if i == 0 {
+                &self.prefilter
+            } else {
+                &self.downsample
+            });
             pass.set_bind_group(0, &self.down_binds[i], &[]);
             pass.draw(0..3, 0..1);
         }
