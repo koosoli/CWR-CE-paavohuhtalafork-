@@ -1270,6 +1270,9 @@ class Engine : public IGraphicsEngine
         // CPU particle effect for ordinary rifle impacts. Disabled by default: the
         // interaction field still provides the subtle ripple/foam response.
         bool rifleImpactSpray = false;
+        // Multiplier for the GPU whitewater/splash billboard emitter when enabled.
+        // A restrained default keeps rifle impacts and crest spray from reading as foam cannons.
+        float waterSplashParticleActivity = 0.25f;
 
         // WTR-036C / WTR-037 — FFT Cascade Preset (0 = Production Non-Harmonic 4-Cascade, 1 = GodotOceanWaves Reference Style, 2 = Legacy Harmonic 4-Cascade).
         // The GodotOceanWaves-derived TMA/JONSWAP setup is the gameplay default.  The

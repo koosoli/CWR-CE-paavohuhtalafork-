@@ -481,7 +481,11 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     }
     ApplyCascadePreset(_renderer, look.cascadePreset);
 
-    _params.debug_params = {static_cast<float>(look.debugView), 0.0f, 0.0f, 0.0f};
+    // y gates the GPU whitewater/spray billboard pass and z controls its activity.
+    // It is deliberately off by default: ordinary rifle impacts should keep their
+    // ripple without spawning a large particle field. x remains the debug-view selector.
+    _params.debug_params = {static_cast<float>(look.debugView), look.rifleImpactSpray ? 1.0f : 0.0f,
+                            look.waterSplashParticleActivity, 0.0f};
     // Runtime proof that the Water tab reaches the actual renderer. This is deliberately
     // edge-triggered: one log row per edited amplitude, not one row per frame.
     static float lastLoggedWaveAmp = -1.0f;

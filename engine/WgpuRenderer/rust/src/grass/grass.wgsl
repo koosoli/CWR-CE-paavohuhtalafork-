@@ -160,11 +160,11 @@ fn cs_place(@builtin(global_invocation_id) gid: vec3<u32>) {
     let geo = textureLoad(geography, geocell, 0).x;
     // C++ marks only cells whose base terrain texture is a named grass material.
     // This prevents the procedural pass from treating clear desert or dirt as grass.
-    if ((geo & 0x80000000u) == 0u) { return; }
     // Exclude water, roads/tracks, forest areas, and hard building/obstacle
     // cells. Bit 2 (`full`) is intentionally NOT excluded: legacy Everon
     // marks broad normal ground with it, so rejecting it removes every blade
     // despite the surface being valid grass terrain.
+    if ((geo & 0x80000000u) == 0u) { return; }
     if (grass.debug_flags.x < 0.5 && (geo & 0x00000c7bu) != 0u) { return; }
     let y = sample_height(world_xz);
     if (y <= terrain.sea_level + 0.35) { return; }
@@ -218,9 +218,9 @@ fn cs_place_mid(@builtin(global_invocation_id) gid: vec3<u32>) {
     instances[out_index].pos_seed = vec4<f32>(world_xz.x, y, world_xz.y, seed);
 }
 
-// Coarse outer ring: minimum 1m cells, quarter density, and one triangle per
-// survivor. This is the GPU equivalent of the reference project's far tiles,
-// without its visible CPU tile relocation or hard mesh swaps at tile borders.
+// Coarse outer ring: a terrain-conforming coverage field. This follows the
+// reference project's distance-LOD principle without visible CPU tile
+// relocation or hard mesh swaps at tile borders.
 @compute @workgroup_size(8, 8, 1)
 fn cs_place_far(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= FAR_GRID_DIM || gid.y >= FAR_GRID_DIM || grass.enabled < 0.5) { return; }
@@ -233,19 +233,19 @@ fn cs_place_far(@builtin(global_invocation_id) gid: vec3<u32>) {
     let cell_world = snap + cell * far_spacing;
     let cell_id = vec2<i32>(floor(cell_world / far_spacing));
     let seed = hash_cell01(cell_id, 0xb1e4c025u);
-    let jitter = (hash_cell2(cell_id, 0x7b32d119u) - vec2<f32>(0.5)) * (far_spacing * 1.85);
+    // Small stable jitter plus overlapping coverage tiles avoids regular rows
+    // without leaving kilometre-scale holes in the distant field.
+    let jitter = (hash_cell2(cell_id, 0x7b32d119u) - vec2<f32>(0.5)) * (far_spacing * 0.30);
     let world_xz = cell_world + jitter;
     let delta = world_xz - frame.cam_pos.xz;
     let distance2 = dot(delta, delta);
-    let field = clump_noise(world_xz, 0.075, 0xc7136d5bu);
-    let coverage = max(grass.density * 0.85, 0.60) * mix(1.0, mix(0.55, 1.25, field), grass.debug_flags.y);
     // Start one coarse cell after the near ring; this avoids double-drawing
     // while keeping the LOD join visually continuous.
     let mid_end = min(grass.far_radius, max(grass.near_radius + 10.0, min(160.0, grass.near_radius * 2.5)));
     let near_start = mid_end + far_spacing * 0.5;
     // Keep the outer ring visually continuous. It is still economical (one
     // triangle per tuft), but no longer becomes invisible just past 60 m.
-    if (distance2 <= near_start * near_start || distance2 > grass.far_radius * grass.far_radius || seed > coverage) { return; }
+    if (distance2 <= near_start * near_start || distance2 > grass.far_radius * grass.far_radius) { return; }
     let map_max = terrain.world_origin + vec2<f32>(f32(terrain.hm_width - 1u), f32(terrain.hm_height - 1u)) * terrain.terrain_grid;
     if (any(world_xz < terrain.world_origin) || any(world_xz >= map_max)) { return; }
     let geocell = clamp(vec2<i32>(floor((world_xz - terrain.world_origin) / terrain.land_grid)), vec2<i32>(0), vec2<i32>(i32(terrain.land_range) - 1));
@@ -408,33 +408,26 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
 @vertex
 fn vs_grass_far(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VsOut {
     let inst = instances[instance_index].pos_seed;
-    let seed = inst.w;
-    let field = clump_noise(inst.xz, 0.075, 0x48ac2f19u);
-    let angle = mix(seed * 6.2831853, field * 6.2831853, grass.debug_flags.y);
-    let side = vec3<f32>(cos(angle), 0.0, -sin(angle));
-    let height_seed = mix(hash11(inst.xz + 43.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
-    let height = mix(0.28, 0.78, height_seed) * grass.blade_height;
-    // Larger, crossed-looking tufts at long range maintain field coverage;
-    // this makes a 100–5000 m radius visibly meaningful instead of producing
-    // isolated pin-thin triangles beyond the dense near ring.
-    let distance01 = clamp(length(inst.xz - frame.cam_pos.xz) / max(grass.far_radius, 1.0), 0.0, 1.0);
-    let width = mix(0.16, 0.58, distance01) * mix(0.75, 1.25, hash11(inst.xz + 91.0));
-    let wind_angle = grass.wind_direction * 0.01745329252;
-    let wind_dir = vec2<f32>(cos(wind_angle), sin(wind_angle));
-    let gust = sin(dot(inst.xz, wind_dir * 0.065) + terrain.time * (0.85 + grass.wind_strength * 0.55) + seed * 6.28);
-    let bend = vec3<f32>(wind_dir.x, 0.0, wind_dir.y) * grass.wind_strength * (0.025 + 0.10 * gust);
-    var local: vec3<f32>;
-    var t = 0.0;
-    if (vertex_index == 0u) { local = -side * width; }
-    else if (vertex_index == 1u) { local = side * width; }
-    else { local = vec3<f32>(0.0, height, 0.0) + bend; t = 1.0; }
-    let rel = inst.xyz + local - frame.cam_pos.xyz;
+    // A true distant-grass representation is coverage, not a handful of
+    // giant vertical blades. Each retained coarse cell becomes one slightly
+    // lifted, terrain-conforming quad. The field therefore remains legible
+    // at kilometre ranges while retaining one indirect draw and no texture.
+    let far_spacing = max(max(grass.spacing * 4.0, 1.0), grass.far_radius / (f32(FAR_GRID_DIM) * 0.5 - 1.0));
+    let corners = array<vec2<f32>, 6>(
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, -1.0), vec2<f32>(1.0, 1.0),
+        vec2<f32>(-1.0, -1.0), vec2<f32>(1.0, 1.0), vec2<f32>(-1.0, 1.0));
+    let jitter = (hash_cell2(vec2<i32>(floor(inst.xz / far_spacing)), 0x6d3b718fu) - vec2<f32>(0.5)) * 0.12;
+    // The 0.66 half extent overlaps the at-most 0.30-cell placement jitter,
+    // giving a continuous proxy field rather than separated distant patches.
+    let world_xz = inst.xz + (corners[vertex_index] * 0.66 + jitter) * far_spacing;
+    let y = sample_height(world_xz) + 0.045;
+    let rel = vec3<f32>(world_xz.x, y, world_xz.y) - frame.cam_pos.xyz;
     var out: VsOut;
     out.clip = reverse_z(frame.proj * frame.view * vec4<f32>(rel, 1.0));
     out.world_rel = rel;
-    out.normal = normalize(cross(side, normalize(vec3<f32>(0.0, height, 0.0) + bend)));
-    out.height_t = t;
-    out.seed = seed;
+    out.normal = sample_normal(world_xz);
+    out.height_t = 0.65;
+    out.seed = inst.w;
     return out;
 }
 
@@ -461,6 +454,23 @@ fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
     let transmission = pow(max(dot(view_dir, -light_dir), 0.0), 1.5) * (1.0 - ndl) * grass.debug_flags.w;
     let subsurface = vec3<f32>(1.0, 0.72, 0.18) * transmission * frame.sun_diffuse.rgb * (1.0 - terrain_shadow);
     return vec4<f32>(apply_fog(albedo * (ambient + direct + subsurface), in.world_rel), 1.0);
+}
+
+@fragment
+fn fs_grass_far(in: VsOut) -> @location(0) vec4<f32> {
+    let world = in.world_rel + frame.cam_pos.xyz;
+    let field_noise = clump_noise(world.xz, 0.11, 0x4f93d71bu);
+    // Keep the proxy close to terrain colour: it supplies the distant grassy
+    // field, not bright individual blades. The same aerial fog removes it
+    // naturally at the horizon.
+    let albedo = mix(vec3<f32>(0.075, 0.135, 0.028), vec3<f32>(0.19, 0.27, 0.055), field_noise);
+    let n = normalize(mix(in.normal, vec3<f32>(0.0, 1.0, 0.0), 0.65));
+    let light_dir = normalize(frame.sun_dir_world.xyz);
+    let diffuse = max((dot(n, light_dir) + 0.35) / 1.35, 0.0);
+    let terrain_shadow = terrain_sun_shadow(world.xz, world.y);
+    let direct = frame.sun_diffuse.rgb * diffuse * (1.0 - terrain_shadow);
+    let ambient = sky_irradiance(n) * sky_vis_ao(world.xz);
+    return vec4<f32>(apply_fog(albedo * (ambient + direct), in.world_rel), 1.0);
 }
 
 @fragment

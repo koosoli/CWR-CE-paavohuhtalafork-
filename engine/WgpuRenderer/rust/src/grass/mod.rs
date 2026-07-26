@@ -217,7 +217,9 @@ impl Grass {
             entries: &[
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::COMPUTE,
+                    visibility: wgpu::ShaderStages::VERTEX
+                        | wgpu::ShaderStages::FRAGMENT
+                        | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Buffer {
                         ty: wgpu::BufferBindingType::Uniform,
                         has_dynamic_offset: false,
@@ -239,7 +241,9 @@ impl Grass {
                 },
                 wgpu::BindGroupLayoutEntry {
                     binding: 2,
-                    visibility: wgpu::ShaderStages::COMPUTE,
+                    // Fragment-stage geography tests prevent the outer
+                    // terrain-coverage LOD from colouring across roads.
+                    visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Uint,
                         view_dimension: wgpu::TextureViewDimension::D2,
@@ -482,11 +486,11 @@ impl Grass {
             surface_format,
             false,
         );
-        let far_color_pipeline = make_pipeline("wgr_grass_far_color", "vs_grass_far", "fs_grass", surface_format, false);
+        let far_color_pipeline = make_pipeline("wgr_grass_far_color", "vs_grass_far", "fs_grass_far", surface_format, false);
         let far_color_no_write_pipeline = make_pipeline(
             "wgr_grass_far_color_no_write",
             "vs_grass_far",
-            "fs_grass",
+            "fs_grass_far",
             surface_format,
             false,
         );
@@ -699,8 +703,8 @@ impl Grass {
         queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&[60u32, 0, 0, 0]));
         // Two crossed two-segment ribbons (2 cards * 2 quads * 6 verts).
         queue.write_buffer(&self.mid_indirect, 0, bytemuck::cast_slice(&[24u32, 0, 0, 0]));
-        // Far LOD is a single cheap triangle per compacted instance.
-        queue.write_buffer(&self.far_indirect, 0, bytemuck::cast_slice(&[3u32, 0, 0, 0]));
+        // Far LOD is one terrain-conforming coverage quad per compacted cell.
+        queue.write_buffer(&self.far_indirect, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
     }
 
     pub fn draw(

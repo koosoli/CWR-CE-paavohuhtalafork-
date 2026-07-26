@@ -822,7 +822,11 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
             {
                 position = isect;
 
-                if (IsLocal())
+                // A sea hit already submitted its water interaction above. Do not also
+                // run the legacy ground-impact presentation for ordinary rifle rounds:
+                // that path is the large visible "splash" the Water-tab switch controls.
+                const bool showLegacyWaterImpact = Type()->explosive || RifleWaterImpactSprayEnabled();
+                if (IsLocal() && (!_waterImpactDone || showLegacyWaterImpact))
                 {
                     Vector3 exploPos = position;
                     if (Type()->explosive)

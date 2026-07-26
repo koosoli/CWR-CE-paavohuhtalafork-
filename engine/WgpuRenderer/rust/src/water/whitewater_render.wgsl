@@ -129,7 +129,11 @@ fn vs_whitewater(
     let interaction_splash = max(
         smoothstep(0.010, 0.090, interaction.b),
         smoothstep(0.060, 0.38, abs(interaction.g)));
-    let source_strength = max(crest.w, interaction_splash);
+    // Water-tab "Water splash particles" switch. Keep the draw allocation stable
+    // but make all generated billboards fully transparent when disabled.
+    let spray_enabled = step(0.5, wp.debug_params.y);
+    let spray_activity = clamp(wp.debug_params.z, 0.0, 1.0);
+    let source_strength = max(crest.w, interaction_splash) * spray_enabled * spray_activity;
     let wind = normalize(wp.fft_wind_sea.xy + vec2<f32>(1e-4, 0.0));
     let horizontal_drift = wind * age * age * (0.30 + max(wp.fft_wind_sea.z, 0.0) * 0.075);
     // Ballistic envelope: particles leave a crest, peak midway through life, then

@@ -883,6 +883,16 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
         return;
     }
 
+    // Collision paths for distant terrain tiles can bypass ShotShell's explicit
+    // sea-intersection branch and arrive here as a normal ground impact. Suppress
+    // that legacy presentation too when a non-explosive round is at the waterline.
+    // The Water tab switch deliberately controls both paths; Hydro ripples remain
+    // renderer-side and are not affected.
+    if (!type->explosive && pos.Y() <= GetSeaLevel() + 0.3f && !RifleWaterImpactSprayEnabled())
+    {
+        return;
+    }
+
     AIUnit* ownerUnit = owner ? owner->CommanderUnit() : nullptr;
     AIGroup* ownerGroup = ownerUnit ? ownerUnit->GetGroup() : nullptr;
     AICenter* ownerCenter = ownerGroup ? ownerGroup->GetCenter() : nullptr;

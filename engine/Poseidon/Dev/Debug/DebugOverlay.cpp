@@ -2350,6 +2350,16 @@ void DrawWaterTab()
     changed |= ImGui::Checkbox("Enabled", &s.enabled);
     ImGui::SetItemTooltip("Off = draw no water surface (the seabed shows through), for A/B");
 
+    // Keep this immediately below the master Water switch: it controls the old CPU
+    // impact presentation and must be easy to find during gameplay testing.
+    changed |= ImGui::Checkbox("Water splash particles", &s.rifleImpactSpray);
+    ImGui::SetItemTooltip("Off by default. Enables/disables the GPU whitewater and water-impact particle billboards. Ripples and foam remain active.");
+    SetRifleWaterImpactSprayEnabled(s.rifleImpactSpray);
+    ImGui::BeginDisabled(!s.rifleImpactSpray);
+    changed |= ImGui::SliderFloat("Splash particle activity", &s.waterSplashParticleActivity, 0.0f, 1.0f, "%.2f");
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Strength of the GPU water-spray emitter when enabled. 0.25 is the restrained default; 1.00 restores the original full effect.");
+
     ImGui::BeginDisabled(!s.enabled);
 
     ImGui::Separator();
@@ -2430,12 +2440,6 @@ void DrawWaterTab()
                           "reaches, on near-flat ground only (cliffs stay dry).");
     changed |= ImGui::SliderFloat("Wet darkening", &s.wetDarken, 0.3f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("Albedo multiplier for wet sand (lower = darker). 1 = off.");
-
-    ImGui::Separator();
-    ImGui::TextUnformatted("Impact effects");
-    changed |= ImGui::Checkbox("Rifle impact spray", &s.rifleImpactSpray);
-    ImGui::SetItemTooltip("Off by default. Re-enables the small legacy CPU droplet spray for ordinary rifle rounds; water ripples and foam stay active either way.");
-    SetRifleWaterImpactSprayEnabled(s.rifleImpactSpray);
 
     // WTR-001 — deterministic water debug controls (dev / capture / A-B / shader-diff use only).
     // All freezes are renderer-local substitutions: they replace the UBO time/dt/seed the water,
