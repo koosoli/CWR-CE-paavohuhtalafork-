@@ -1487,6 +1487,9 @@ void DrawGrassTab()
     ImGui::TextDisabled("GPU-generated terrain blades. Placement follows the terrain grass pass and excludes water, roads, forests and buildings.");
     ImGui::Separator();
     changed |= ImGui::Checkbox("Enabled", &grass.enabled);
+    changed |= ImGui::Checkbox("Cast close grass shadows", &grass.castShadows);
+    changed |= ImGui::Checkbox("Apply grass distance fog", &grass.applyFog);
+    ImGui::TextDisabled("Both are grass-only visual controls; turn either off to inspect the procedural field.");
     changed |= ImGui::Checkbox("Ignore terrain exclusions (diagnostic)", &grass.ignoreGeographyExclusions);
     ImGui::TextDisabled("Use only to diagnose a legacy map with no grass: this also permits grass on roads, forests and buildings.");
     changed |= ImGui::SliderFloat("Coverage", &grass.density, 0.05f, 1.0f, "%.2f");
@@ -1505,6 +1508,10 @@ void DrawGrassTab()
     changed |= ImGui::SliderFloat("Field clumping", &grass.clumping, 0.0f, 1.0f, "%.2f");
     changed |= ImGui::SliderFloat("Colour variation", &grass.colorVariation, 0.0f, 1.0f, "%.2f");
     changed |= ImGui::SliderFloat("Backlight transmission", &grass.transmission, 0.0f, 1.0f, "%.2f");
+    const float effectiveSpacing = std::max(0.10f, grass.spacing / std::sqrt(std::max(1.0f, grass.densityBoost)));
+    const float nearDetailRadius = std::min(grass.radius, effectiveSpacing * 255.0f);
+    ImGui::TextDisabled("LOD field: detailed %.0f m, mid blades beyond it, distant terrain-cover proxy to %.0f m.", nearDetailRadius, grass.radius);
+    ImGui::TextDisabled("Wind: travelling direction field plus local gusts; roots stay pinned and player/vehicle tracks persist for one minute.");
 
     ImGui::Separator();
     if (ImGui::Button("Reset ultra dense"))
@@ -1526,6 +1533,8 @@ void DrawGrassTab()
         grass.clumping = 0.55f;
         grass.colorVariation = 0.35f;
         grass.transmission = 0.45f;
+        grass.castShadows = true;
+        grass.applyFog = true;
         changed = true;
     }
     ImGui::SameLine();

@@ -41,9 +41,20 @@ struct GrassParams {
     interactor_strength: f32,
     tracks: array<GrassTrack, 96>,
     debug_flags: vec4<f32>,
+    render_flags: vec4<f32>,
 };
 
 struct GrassInstance { pos_seed: vec4<f32> };
+
+// A low-frequency travelling direction field plus a tighter gust field. This
+// is the reference project's two-noise wind idea, implemented from the
+// renderer's deterministic world-space value noise so it needs no texture
+// upload and remains stable while the camera moves.
+struct WindField {
+    direction: vec2<f32>,
+    gust: f32,
+    turbulence: f32,
+};
 
 @group(1) @binding(0) var<uniform> terrain: TerrainParams;
 @group(1) @binding(1) var heightmap: texture_2d<f32>;
@@ -104,6 +115,35 @@ fn clump_noise(world_xz: vec2<f32>, frequency: f32, salt: u32) -> f32 {
     let c = hash_cell01(base + vec2<i32>(0, 1), salt);
     let d = hash_cell01(base + vec2<i32>(1, 1), salt);
     return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
+
+fn sample_wind_field(world_xz: vec2<f32>, height_t: f32, seed: f32) -> WindField {
+    let strength = clamp(grass.wind_strength, 0.0, 3.0);
+    let base_angle = grass.wind_direction * 0.01745329252;
+    let base_direction = vec2<f32>(cos(base_angle), sin(base_angle));
+    // Advect two fields at distinct scales.  The broad field turns coherent
+    // gusts gradually; the smaller field supplies strength and tip flutter.
+    let broad_scroll = base_direction * terrain.time * (16.0 + strength * 9.0);
+    let gust_scroll = base_direction * terrain.time * (30.0 + strength * 15.0);
+    let direction_noise = clump_noise(world_xz.yx + broad_scroll, 0.006, 0x0d7e31a5u);
+    let gust_noise = clump_noise(world_xz + gust_scroll, 0.022, 0xa12f7c59u);
+    // There is always a small travelling sway. Stronger, soft-edged gusts
+    // ride on top of it instead of leaving most of the field motionless,
+    // which is the important visual distinction in the reference shader.
+    let gust_pulse = pow(smoothstep(0.40, 0.84, gust_noise), 2.0);
+    let gust = mix(0.18, 1.0, gust_pulse);
+    let direction_angle = base_angle + (direction_noise - 0.5) * min(strength, 1.5) * 1.10;
+    let flutter_scroll = gust_scroll * 2.1 + vec2<f32>(terrain.time * 3.7, -terrain.time * 2.9);
+    let flutter_noise = clump_noise(world_xz + flutter_scroll + base_direction * (height_t * height_t * 4.0) +
+                                    vec2<f32>(seed * 19.0, seed * 31.0),
+                                    0.105, 0x3f5a91c7u);
+    var result: WindField;
+    result.direction = vec2<f32>(cos(direction_angle), sin(direction_angle));
+    result.gust = gust;
+    // Phase-shift the fine field up the blade: roots stay locked while tips
+    // gain small independent turbulence inside a travelling gust.
+    result.turbulence = (flutter_noise - 0.5) * (0.035 + 0.085 * gust) * height_t;
+    return result;
 }
 
 fn hm_load(ix: i32, iz: i32) -> f32 {
@@ -270,6 +310,7 @@ struct VsOut {
     @location(1) normal: vec3<f32>,
     @location(2) height_t: f32,
     @location(3) seed: f32,
+    @location(4) wind_gust: f32,
 };
 
 @vertex
@@ -283,15 +324,7 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let height_seed = mix(hash11(inst.xz + 2.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
     let height = mix(0.35, 1.05, height_seed) * grass.blade_height;
     let width = mix(0.018, 0.045, hash11(inst.xz + 9.0));
-    let wind_angle = grass.wind_direction * 0.01745329252;
-    let wind_dir = vec2<f32>(cos(wind_angle), sin(wind_angle));
-    let macro_gust = sin(dot(inst.xz, wind_dir * 0.065) + terrain.time * (0.85 + grass.wind_strength * 0.55) + seed * 6.28);
-    // A height-shifted second wave gives the tip small independent turbulence,
-    // like the reference shader, while the root stays completely locked.
-    let local_gust = sin(dot(inst.xz, vec2<f32>(0.11, -0.08)) + terrain.time * 2.1 + seed * 19.3);
     let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
-    let wind_bend = vec3<f32>(wind_dir.x, 0.0, wind_dir.y) * grass.wind_strength *
-        (0.035 + 0.14 * macro_gust + 0.035 * local_gust);
     let interactor_delta = inst.xz - vec2<f32>(grass.interactor_x, grass.interactor_z);
     let interactor_distance = length(interactor_delta);
     var crush = 0.0;
@@ -326,6 +359,9 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let left = corner == 0u || corner == 3u || corner == 5u;
     let t = f32(segment + select(0u, 1u, upper)) / f32(BLADE_SEGMENTS);
     let blade_axis = select(side, forward, card != 0u);
+    let wind = sample_wind_field(inst.xz, t, seed);
+    let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
+        (0.035 + 0.21 * wind.gust + wind.turbulence);
     let taper = pow(max(1.0 - t, 0.0), 0.65);
     let half_width = width * taper;
     let curve = (static_bend + wind_bend + crush_bend) * (t * t);
@@ -346,6 +382,7 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     out.normal = normalize(cross(blade_axis, tangent));
     out.height_t = t;
     out.seed = seed;
+    out.wind_gust = wind.gust;
     return out;
 }
 
@@ -360,11 +397,7 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let height_seed = mix(hash11(inst.xz + 13.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
     let height = mix(0.32, 0.92, height_seed) * grass.blade_height;
     let width = mix(0.024, 0.055, hash11(inst.xz + 23.0));
-    let wind_angle = grass.wind_direction * 0.01745329252;
-    let wind_dir = vec2<f32>(cos(wind_angle), sin(wind_angle));
-    let gust = sin(dot(inst.xz, wind_dir * 0.065) + terrain.time * (0.85 + grass.wind_strength * 0.55) + seed * 6.28);
-    let bend = (forward * mix(0.04, 0.14, hash11(inst.xz + 71.0)) +
-        vec3<f32>(wind_dir.x, 0.0, wind_dir.y) * grass.wind_strength * (0.03 + 0.12 * gust));
+    let static_bend = forward * mix(0.04, 0.14, hash11(inst.xz + 71.0));
     var crush = 0.0;
     var crush_dir = vec2<f32>(0.0);
     for (var i = 0u; i < 96u; i = i + 1u) {
@@ -389,6 +422,10 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let left = corner == 0u || corner == 3u || corner == 5u;
     let t = f32(segment + select(0u, 1u, upper)) * 0.5;
     let blade_axis = select(side, forward, card != 0u);
+    let wind = sample_wind_field(inst.xz, t, seed);
+    let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
+        (0.030 + 0.18 * wind.gust + wind.turbulence);
+    let bend = static_bend + wind_bend;
     let curve = (bend + crush_bend) * (t * t);
     let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (bend + crush_bend) * (2.0 * t);
     let blade_normal = normalize(cross(blade_axis, tangent));
@@ -402,6 +439,7 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     out.normal = normalize(cross(blade_axis, tangent));
     out.height_t = t;
     out.seed = seed;
+    out.wind_gust = wind.gust;
     return out;
 }
 
@@ -428,6 +466,7 @@ fn vs_grass_far(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     out.normal = sample_normal(world_xz);
     out.height_t = 0.65;
     out.seed = inst.w;
+    out.wind_gust = sample_wind_field(inst.xz, 0.65, inst.w).gust;
     return out;
 }
 
@@ -440,7 +479,10 @@ fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
     let field_tint = clump_noise(world.xz, 0.16, 0x5e3a91c7u);
     let blade_tint = mix(in.seed, field_tint, 0.55);
     let variation = mix(1.0, mix(0.78, 1.20, blade_tint), grass.debug_flags.z);
-    let albedo = mix(base, tip, in.height_t) * root * variation;
+    // A restrained, field-coherent highlight makes gusts readable without
+    // turning grass into emissive green waves.
+    let gust_highlight = 1.0 + in.wind_gust * clamp(grass.wind_strength, 0.0, 1.5) * (0.035 + 0.075 * in.height_t);
+    let albedo = mix(base, tip, in.height_t) * root * variation * gust_highlight;
     // Bend card normals toward an upright rounded-blade normal. This avoids
     // the flat dark-side look of a raw ribbon while preserving its silhouette.
     let n = normalize(mix(normalize(in.normal), vec3<f32>(0.0, 1.0, 0.0), 0.24));
@@ -453,7 +495,9 @@ fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
     let view_dir = normalize(-in.world_rel);
     let transmission = pow(max(dot(view_dir, -light_dir), 0.0), 1.5) * (1.0 - ndl) * grass.debug_flags.w;
     let subsurface = vec3<f32>(1.0, 0.72, 0.18) * transmission * frame.sun_diffuse.rgb * (1.0 - terrain_shadow);
-    return vec4<f32>(apply_fog(albedo * (ambient + direct + subsurface), in.world_rel), 1.0);
+    let lit = albedo * (ambient + direct + subsurface);
+    let fogged = apply_fog(lit, in.world_rel);
+    return vec4<f32>(select(lit, fogged, grass.render_flags.x >= 0.5), 1.0);
 }
 
 @fragment
@@ -463,14 +507,17 @@ fn fs_grass_far(in: VsOut) -> @location(0) vec4<f32> {
     // Keep the proxy close to terrain colour: it supplies the distant grassy
     // field, not bright individual blades. The same aerial fog removes it
     // naturally at the horizon.
-    let albedo = mix(vec3<f32>(0.075, 0.135, 0.028), vec3<f32>(0.19, 0.27, 0.055), field_noise);
+    let gust_highlight = 1.0 + in.wind_gust * clamp(grass.wind_strength, 0.0, 1.5) * 0.05;
+    let albedo = mix(vec3<f32>(0.075, 0.135, 0.028), vec3<f32>(0.19, 0.27, 0.055), field_noise) * gust_highlight;
     let n = normalize(mix(in.normal, vec3<f32>(0.0, 1.0, 0.0), 0.65));
     let light_dir = normalize(frame.sun_dir_world.xyz);
     let diffuse = max((dot(n, light_dir) + 0.35) / 1.35, 0.0);
     let terrain_shadow = terrain_sun_shadow(world.xz, world.y);
     let direct = frame.sun_diffuse.rgb * diffuse * (1.0 - terrain_shadow);
     let ambient = sky_irradiance(n) * sky_vis_ao(world.xz);
-    return vec4<f32>(apply_fog(albedo * (ambient + direct), in.world_rel), 1.0);
+    let lit = albedo * (ambient + direct);
+    let fogged = apply_fog(lit, in.world_rel);
+    return vec4<f32>(select(lit, fogged, grass.render_flags.x >= 0.5), 1.0);
 }
 
 @fragment

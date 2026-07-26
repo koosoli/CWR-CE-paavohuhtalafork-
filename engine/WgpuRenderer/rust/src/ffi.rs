@@ -784,6 +784,10 @@ pub struct WgrGrassParams {
     pub clumping: f32,
     pub color_variation: f32,
     pub transmission: f32,
+    pub cast_shadows: f32,
+    pub apply_fog: f32,
+    pub _pad0: f32,
+    pub _pad1: f32,
 }
 
 // Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.
@@ -988,7 +992,7 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1600);
+const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1616);
 const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 208);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);

@@ -2903,6 +2903,8 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
       params.clumping = std::clamp(settings.clumping, 0.0f, 1.0f);
       params.color_variation = std::clamp(settings.colorVariation, 0.0f, 1.0f);
       params.transmission = std::clamp(settings.transmission, 0.0f, 1.0f);
+      params.cast_shadows = settings.castShadows ? 1.0f : 0.0f;
+      params.apply_fog = settings.applyFog ? 1.0f : 0.0f;
       // CameraOn is the controlled entity in normal first/third-person play:
       // the player on foot, or their occupied car/tank. Its visible size gives
       // vehicles a wider flattened footprint without special vehicle classes.

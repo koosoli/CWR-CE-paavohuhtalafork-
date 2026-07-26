@@ -34,6 +34,10 @@ struct GrassParams {
     clumping: f32,
     color_variation: f32,
     transmission: f32,
+    cast_shadows: f32,
+    apply_fog: f32,
+    _pad0: f32,
+    _pad1: f32,
 }
 
 #[repr(C)]
@@ -50,6 +54,7 @@ pub enum GrassPass {
 
 pub struct Grass {
     enabled: bool,
+    casts_shadows: bool,
     terrain_params: wgpu::Buffer,
     grass_params: wgpu::Buffer,
     placement_count: wgpu::Buffer,
@@ -153,6 +158,10 @@ impl Grass {
             clumping: 0.55,
             color_variation: 0.35,
             transmission: 0.45,
+            cast_shadows: 1.0,
+            apply_fog: 1.0,
+            _pad0: 0.0,
+            _pad1: 0.0,
         };
         queue.write_buffer(&grass_params, 0, bytemuck::bytes_of(&params));
 
@@ -525,6 +534,7 @@ impl Grass {
         });
         Self {
             enabled,
+            casts_shadows: true,
             terrain_params,
             grass_params,
             placement_count,
@@ -621,8 +631,13 @@ impl Grass {
             clumping: params.clumping.clamp(0.0, 1.0),
             color_variation: params.color_variation.clamp(0.0, 1.0),
             transmission: params.transmission.clamp(0.0, 1.0),
+            cast_shadows: if params.cast_shadows != 0.0 { 1.0 } else { 0.0 },
+            apply_fog: if params.apply_fog != 0.0 { 1.0 } else { 0.0 },
+            _pad0: 0.0,
+            _pad1: 0.0,
         };
         self.enabled = params.enabled != 0.0;
+        self.casts_shadows = params.cast_shadows != 0.0;
         queue.write_buffer(&self.grass_params, 0, bytemuck::bytes_of(&params));
     }
 
@@ -758,7 +773,7 @@ impl Grass {
     /// cascade cost bounded while matching the close-range silhouettes that
     /// players can actually see moving in the wind.
     pub fn draw_shadow(&self, pass: &mut wgpu::RenderPass<'_>, shadow_bind: &wgpu::BindGroup, shadow_offset: u32) {
-        if !self.enabled || !self.have_heightmap { return; }
+        if !self.casts_shadows || !self.enabled || !self.have_heightmap { return; }
         pass.set_pipeline(&self.shadow_pipeline);
         pass.set_bind_group(0, shadow_bind, &[shadow_offset]);
         pass.set_bind_group(1, &self.terrain_bind, &[]);
@@ -766,7 +781,7 @@ impl Grass {
         pass.draw_indirect(&self.indirect, 0);
     }
 
-    pub fn casts_shadows(&self) -> bool { self.enabled && self.have_heightmap }
+    pub fn casts_shadows(&self) -> bool { self.casts_shadows && self.enabled && self.have_heightmap }
 }
 
 fn make_geography_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {

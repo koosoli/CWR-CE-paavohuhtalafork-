@@ -696,6 +696,10 @@ struct WgrGrassParams
     float clumping;        /* deterministic field-scale orientation/height/density variation */
     float color_variation; /* per-blade and field colour variation */
     float transmission;    /* backlit thin-blade scattering strength */
+    float cast_shadows;    /* 0 = omit close grass from cascade shadow maps */
+    float apply_fog;       /* 0 = leave procedural grass unfogged (diagnostic) */
+    float _pad0;
+    float _pad1;
 };
 
 // --- Water (GPU CDLOD surface) -----------------------------------------------
@@ -1018,7 +1022,7 @@ static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match th
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrGrassParams) == 1600, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassParams) == 1616, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterParams) == 208, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 24, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");

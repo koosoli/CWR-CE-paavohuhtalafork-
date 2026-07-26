@@ -943,6 +943,10 @@ class Engine : public IGraphicsEngine
         float clumping = 0.55f;
         float colorVariation = 0.35f;
         float transmission = 0.45f;
+        // These are deliberately grass-only controls: terrain and other
+        // world geometry retain the renderer's regular shadow/fog settings.
+        bool castShadows = true;
+        bool applyFog = true;
         // Developer diagnostic for legacy worlds whose geography flags are
         // invalid or over-broad. Off by default: it deliberately bypasses
         // road/forest/building rejection to prove whether placement works.
