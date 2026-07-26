@@ -47,4 +47,9 @@ uint32_t DrainWaterInteractions(HydroWaterInteractionEvent* events, uint32_t cap
 void SetPlayerWaterDepth(float depth);
 float GetPlayerWaterDepth();
 
+// Dev-only visual control for the legacy CPU droplet emitter used by ordinary
+// rifle impacts. The water ripple/foam event remains independent of this switch.
+void SetRifleWaterImpactSprayEnabled(bool enabled);
+bool RifleWaterImpactSprayEnabled();
+
 } // namespace Poseidon

@@ -2900,6 +2900,9 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
       // works without requiring the user to discover a diagnostic checkbox.
       params.debug_ignore_geography_exclusions =
           (settings.ignoreGeographyExclusions || (_terrain && _terrain->GrassNeedsCompatibilityOverride())) ? 1.0f : 0.0f;
+      params.clumping = std::clamp(settings.clumping, 0.0f, 1.0f);
+      params.color_variation = std::clamp(settings.colorVariation, 0.0f, 1.0f);
+      params.transmission = std::clamp(settings.transmission, 0.0f, 1.0f);
       // CameraOn is the controlled entity in normal first/third-person play:
       // the player on foot, or their occupied car/tank. Its visible size gives
       // vehicles a wider flattened footprint without special vehicle classes.

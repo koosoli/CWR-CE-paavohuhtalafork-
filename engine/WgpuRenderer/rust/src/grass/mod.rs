@@ -31,7 +31,9 @@ struct GrassParams {
     interactor_strength: f32,
     tracks: [WgrGrassTrack; WGR_GRASS_TRACK_COUNT],
     debug_ignore_geography_exclusions: f32,
-    _pad0: [f32; 3],
+    clumping: f32,
+    color_variation: f32,
+    transmission: f32,
 }
 
 #[repr(C)]
@@ -146,7 +148,9 @@ impl Grass {
             interactor_strength: 0.0,
             tracks: [WgrGrassTrack { x: 0.0, z: 0.0, radius: 0.0, age: 0.0 }; WGR_GRASS_TRACK_COUNT],
             debug_ignore_geography_exclusions: 0.0,
-            _pad0: [0.0; 3],
+            clumping: 0.55,
+            color_variation: 0.35,
+            transmission: 0.45,
         };
         queue.write_buffer(&grass_params, 0, bytemuck::bytes_of(&params));
 
@@ -578,7 +582,9 @@ impl Grass {
             interactor_strength: params.interactor_strength.clamp(0.0, 1.0),
             tracks: params.tracks,
             debug_ignore_geography_exclusions: params.debug_ignore_geography_exclusions,
-            _pad0: params._pad0,
+            clumping: params.clumping.clamp(0.0, 1.0),
+            color_variation: params.color_variation.clamp(0.0, 1.0),
+            transmission: params.transmission.clamp(0.0, 1.0),
         };
         self.enabled = params.enabled != 0.0;
         queue.write_buffer(&self.grass_params, 0, bytemuck::bytes_of(&params));

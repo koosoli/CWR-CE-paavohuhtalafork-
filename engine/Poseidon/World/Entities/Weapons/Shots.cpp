@@ -789,22 +789,30 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
                     event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse;
                     SubmitWaterInteraction(event);
 
-                    WaterSource waterSplash;
-                    waterSplash.SetSize(0.35f, 0.65f);
-                    waterSplash.SetFades(0.1f, 0.05f, 0.45f);
-                    waterSplash.SetTimes(0.1f, 0.8f);
-
-                    const int numDroplets = Type()->explosive ? 24 : 14;
-                    for (int i = 0; i < numDroplets; ++i)
+                    // Ordinary rifle impacts use the ripple field by default. The optional
+                    // CPU droplet emitter is exposed in the dev Water tab for A/B inspection.
+                    const bool explosiveImpact = Type()->explosive;
+                    if (explosiveImpact || RifleWaterImpactSprayEnabled())
                     {
-                        float angle = static_cast<float>(i) * (2.0f * 3.14159265f / static_cast<float>(numDroplets));
-                        float spreadSpeed = 1.5f + GRandGen.RandomValue() * 2.5f;
-                        float upSpeed = 4.5f + GRandGen.RandomValue() * 5.5f;
-                        Vector3 vel(std::cos(angle) * spreadSpeed, upSpeed, std::sin(angle) * spreadSpeed);
-                        Cloudlet* droplet = waterSplash.Drop(waterPoint, vel);
-                        if (droplet)
+                        WaterSource waterSplash;
+                        waterSplash.SetSize(explosiveImpact ? 0.35f : 0.055f, explosiveImpact ? 0.65f : 0.10f);
+                        waterSplash.SetFades(0.08f, 0.03f, explosiveImpact ? 0.45f : 0.12f);
+                        waterSplash.SetTimes(0.08f, explosiveImpact ? 0.8f : 0.20f);
+
+                        const int numDroplets = explosiveImpact ? 24 : 2;
+                        for (int i = 0; i < numDroplets; ++i)
                         {
-                            GLOB_WORLD->AddCloudlet(droplet);
+                            float angle = static_cast<float>(i) * (2.0f * 3.14159265f / static_cast<float>(numDroplets));
+                            float spreadSpeed = explosiveImpact ? 1.5f + GRandGen.RandomValue() * 2.5f
+                                                                : 0.15f + GRandGen.RandomValue() * 0.25f;
+                            float upSpeed = explosiveImpact ? 4.5f + GRandGen.RandomValue() * 5.5f
+                                                           : 0.55f + GRandGen.RandomValue() * 0.70f;
+                            Vector3 vel(std::cos(angle) * spreadSpeed, upSpeed, std::sin(angle) * spreadSpeed);
+                            Cloudlet* droplet = waterSplash.Drop(waterPoint, vel);
+                            if (droplet)
+                            {
+                                GLOB_WORLD->AddCloudlet(droplet);
+                            }
                         }
                     }
                 }

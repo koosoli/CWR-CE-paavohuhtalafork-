@@ -12,6 +12,7 @@ std::array<HydroWaterInteractionEvent, HydroMaxWaterInteractions> pendingEvents;
 uint32_t pendingCount = 0;
 std::mutex pendingEventsMutex;
 std::atomic<float> playerWaterDepth{0.0f};
+std::atomic<bool> rifleWaterImpactSprayEnabled{false};
 } // namespace
 
 void SubmitWaterInteraction(const HydroWaterInteractionEvent& event)
@@ -58,6 +59,16 @@ void SetPlayerWaterDepth(float depth)
 float GetPlayerWaterDepth()
 {
     return playerWaterDepth.load(std::memory_order_relaxed);
+}
+
+void SetRifleWaterImpactSprayEnabled(bool enabled)
+{
+    rifleWaterImpactSprayEnabled.store(enabled, std::memory_order_relaxed);
+}
+
+bool RifleWaterImpactSprayEnabled()
+{
+    return rifleWaterImpactSprayEnabled.load(std::memory_order_relaxed);
 }
 
 } // namespace Poseidon

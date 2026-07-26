@@ -45,6 +45,7 @@
 #include <Poseidon/UI/Settings/GameSettingsConfig.hpp>
 #include <Poseidon/UI/Settings/AspectRatio.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
+#include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 #include <Poseidon/Core/Global.hpp>
 #include <Poseidon/IO/ParamFileExt.hpp>
 #include <Poseidon/Foundation/Memory/CheckMem.hpp>
@@ -1501,6 +1502,9 @@ void DrawGrassTab()
     changed |= ImGui::SliderFloat("Wind strength", &grass.windStrength, 0.0f, 3.0f, "%.2f");
     changed |= ImGui::SliderFloat("Wind direction", &grass.windDirection, -180.0f, 180.0f, "%.0f deg");
     ImGui::TextDisabled("Live wind follows weather. Disable it to test a manual direction; 0 degrees points east (+X).");
+    changed |= ImGui::SliderFloat("Field clumping", &grass.clumping, 0.0f, 1.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Colour variation", &grass.colorVariation, 0.0f, 1.0f, "%.2f");
+    changed |= ImGui::SliderFloat("Backlight transmission", &grass.transmission, 0.0f, 1.0f, "%.2f");
 
     ImGui::Separator();
     if (ImGui::Button("Reset ultra dense"))
@@ -1517,7 +1521,11 @@ void DrawGrassTab()
         grass.spacing = 0.20f;
         grass.radius = 60.0f;
         grass.height = 1.25f;
+        grass.useLiveWind = true;
         grass.windStrength = 1.2f;
+        grass.clumping = 0.55f;
+        grass.colorVariation = 0.35f;
+        grass.transmission = 0.45f;
         changed = true;
     }
     ImGui::SameLine();
@@ -2336,6 +2344,7 @@ void DrawWaterTab()
     }
 
     auto s = GEngine->GetWaterSettings();
+    SetRifleWaterImpactSprayEnabled(s.rifleImpactSpray);
     bool changed = false;
 
     changed |= ImGui::Checkbox("Enabled", &s.enabled);
@@ -2421,6 +2430,12 @@ void DrawWaterTab()
                           "reaches, on near-flat ground only (cliffs stay dry).");
     changed |= ImGui::SliderFloat("Wet darkening", &s.wetDarken, 0.3f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("Albedo multiplier for wet sand (lower = darker). 1 = off.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Impact effects");
+    changed |= ImGui::Checkbox("Rifle impact spray", &s.rifleImpactSpray);
+    ImGui::SetItemTooltip("Off by default. Re-enables the small legacy CPU droplet spray for ordinary rifle rounds; water ripples and foam stay active either way.");
+    SetRifleWaterImpactSprayEnabled(s.rifleImpactSpray);
 
     // WTR-001 — deterministic water debug controls (dev / capture / A-B / shader-diff use only).
     // All freezes are renderer-local substitutions: they replace the UBO time/dt/seed the water,

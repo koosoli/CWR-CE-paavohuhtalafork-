@@ -693,7 +693,9 @@ struct WgrGrassParams
     float interactor_strength;
     WgrGrassTrack tracks[WGR_GRASS_TRACK_COUNT];
     float debug_ignore_geography_exclusions;
-    float _pad0[3];
+    float clumping;        /* deterministic field-scale orientation/height/density variation */
+    float color_variation; /* per-blade and field colour variation */
+    float transmission;    /* backlit thin-blade scattering strength */
 };
 
 // --- Water (GPU CDLOD surface) -----------------------------------------------

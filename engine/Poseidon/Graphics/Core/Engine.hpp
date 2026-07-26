@@ -938,6 +938,11 @@ class Engine : public IGraphicsEngine
         bool useLiveWind = true;
         float windStrength = 1.2f;
         float windDirection = 0.0f; // degrees, 0 = +X / east
+        // Reference-style field variation. These affect deterministic GPU
+        // hashes, so they do not make blades swim when the camera moves.
+        float clumping = 0.55f;
+        float colorVariation = 0.35f;
+        float transmission = 0.45f;
         // Developer diagnostic for legacy worlds whose geography flags are
         // invalid or over-broad. Off by default: it deliberately bypasses
         // road/forest/building rejection to prove whether placement works.
@@ -1262,6 +1267,9 @@ class Engine : public IGraphicsEngine
         // by the terrain shader via WgrTerrainParams. wetDarken = 1 disables it.
         float wetHeight = 0.26f;   // m above sea level the damp band reaches
         float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
+        // CPU particle effect for ordinary rifle impacts. Disabled by default: the
+        // interaction field still provides the subtle ripple/foam response.
+        bool rifleImpactSpray = false;
 
         // WTR-036C / WTR-037 — FFT Cascade Preset (0 = Production Non-Harmonic 4-Cascade, 1 = GodotOceanWaves Reference Style, 2 = Legacy Harmonic 4-Cascade).
         // The GodotOceanWaves-derived TMA/JONSWAP setup is the gameplay default.  The

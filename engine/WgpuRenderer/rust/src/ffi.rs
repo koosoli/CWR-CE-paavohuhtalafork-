@@ -781,7 +781,9 @@ pub struct WgrGrassParams {
     pub interactor_strength: f32,
     pub tracks: [WgrGrassTrack; WGR_GRASS_TRACK_COUNT],
     pub debug_ignore_geography_exclusions: f32,
-    pub _pad0: [f32; 3],
+    pub clumping: f32,
+    pub color_variation: f32,
+    pub transmission: f32,
 }
 
 // Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.

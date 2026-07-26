@@ -91,6 +91,21 @@ fn hash_cell2(cell: vec2<i32>, salt: u32) -> vec2<f32> {
     return vec2<f32>(hash_cell01(cell, salt), hash_cell01(cell, salt ^ 0x68bc21ebu));
 }
 
+// Smooth world-space value noise is the deterministic equivalent of the
+// reference project's clump texture. It controls a broad field, while the
+// per-cell hash keeps neighbouring blades from becoming visibly uniform.
+fn clump_noise(world_xz: vec2<f32>, frequency: f32, salt: u32) -> f32 {
+    let p = world_xz * frequency;
+    let base = vec2<i32>(floor(p));
+    let f = fract(p);
+    let s = f * f * (vec2<f32>(3.0) - 2.0 * f);
+    let a = hash_cell01(base, salt);
+    let b = hash_cell01(base + vec2<i32>(1, 0), salt);
+    let c = hash_cell01(base + vec2<i32>(0, 1), salt);
+    let d = hash_cell01(base + vec2<i32>(1, 1), salt);
+    return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
+
 fn hm_load(ix: i32, iz: i32) -> f32 {
     let x = clamp(ix, 0, i32(terrain.hm_width) - 1);
     let z = clamp(iz, 0, i32(terrain.hm_height) - 1);
@@ -136,7 +151,9 @@ fn cs_place(@builtin(global_invocation_id) gid: vec3<u32>) {
     let jitter = (hash_cell2(cell_id, 0x19a8b437u) - vec2<f32>(0.5)) * (grass.spacing * 1.85);
     let world_xz = cell_world + jitter;
     let delta = world_xz - frame.cam_pos.xz;
-    if (dot(delta, delta) > grass.near_radius * grass.near_radius || seed > grass.density) { return; }
+    let field = clump_noise(world_xz, 0.075, 0xc7136d5bu);
+    let coverage = grass.density * mix(1.0, mix(0.45, 1.35, field), grass.debug_flags.y);
+    if (dot(delta, delta) > grass.near_radius * grass.near_radius || seed > coverage) { return; }
     let map_max = terrain.world_origin + vec2<f32>(f32(terrain.hm_width - 1u), f32(terrain.hm_height - 1u)) * terrain.terrain_grid;
     if (any(world_xz < terrain.world_origin) || any(world_xz >= map_max)) { return; }
     let geocell = clamp(vec2<i32>(floor((world_xz - terrain.world_origin) / terrain.land_grid)), vec2<i32>(0), vec2<i32>(i32(terrain.land_range) - 1));
@@ -180,9 +197,11 @@ fn cs_place_mid(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_xz = cell_world + jitter;
     let delta = world_xz - frame.cam_pos.xz;
     let distance2 = dot(delta, delta);
+    let field = clump_noise(world_xz, 0.075, 0xc7136d5bu);
+    let coverage = grass.density * 0.95 * mix(1.0, mix(0.45, 1.35, field), grass.debug_flags.y);
     // A small overlap avoids a bare annulus at the detailed/mid and mid/far joins.
     let mid_start = max(0.0, grass.near_radius - mid_spacing * 1.5);
-    if (distance2 < mid_start * mid_start || distance2 > mid_end * mid_end || seed > grass.density * 0.95) { return; }
+    if (distance2 < mid_start * mid_start || distance2 > mid_end * mid_end || seed > coverage) { return; }
     let map_max = terrain.world_origin + vec2<f32>(f32(terrain.hm_width - 1u), f32(terrain.hm_height - 1u)) * terrain.terrain_grid;
     if (any(world_xz < terrain.world_origin) || any(world_xz >= map_max)) { return; }
     let geocell = clamp(vec2<i32>(floor((world_xz - terrain.world_origin) / terrain.land_grid)), vec2<i32>(0), vec2<i32>(i32(terrain.land_range) - 1));
@@ -218,13 +237,15 @@ fn cs_place_far(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_xz = cell_world + jitter;
     let delta = world_xz - frame.cam_pos.xz;
     let distance2 = dot(delta, delta);
+    let field = clump_noise(world_xz, 0.075, 0xc7136d5bu);
+    let coverage = max(grass.density * 0.85, 0.60) * mix(1.0, mix(0.55, 1.25, field), grass.debug_flags.y);
     // Start one coarse cell after the near ring; this avoids double-drawing
     // while keeping the LOD join visually continuous.
     let mid_end = min(grass.far_radius, max(grass.near_radius + 10.0, min(160.0, grass.near_radius * 2.5)));
     let near_start = mid_end + far_spacing * 0.5;
     // Keep the outer ring visually continuous. It is still economical (one
     // triangle per tuft), but no longer becomes invisible just past 60 m.
-    if (distance2 <= near_start * near_start || distance2 > grass.far_radius * grass.far_radius || seed > max(grass.density * 0.85, 0.60)) { return; }
+    if (distance2 <= near_start * near_start || distance2 > grass.far_radius * grass.far_radius || seed > coverage) { return; }
     let map_max = terrain.world_origin + vec2<f32>(f32(terrain.hm_width - 1u), f32(terrain.hm_height - 1u)) * terrain.terrain_grid;
     if (any(world_xz < terrain.world_origin) || any(world_xz >= map_max)) { return; }
     let geocell = clamp(vec2<i32>(floor((world_xz - terrain.world_origin) / terrain.land_grid)), vec2<i32>(0), vec2<i32>(i32(terrain.land_range) - 1));
@@ -255,10 +276,12 @@ struct VsOut {
 fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VsOut {
     let inst = instances[instance_index].pos_seed;
     let seed = inst.w;
-    let angle = seed * 6.2831853;
+    let field = clump_noise(inst.xz, 0.075, 0x48ac2f19u);
+    let angle = mix(seed * 6.2831853, field * 6.2831853, grass.debug_flags.y);
     let side = vec3<f32>(cos(angle), 0.0, -sin(angle));
     let forward = vec3<f32>(sin(angle), 0.0, cos(angle));
-    let height = mix(0.35, 1.05, hash11(inst.xz + 2.0)) * grass.blade_height;
+    let height_seed = mix(hash11(inst.xz + 2.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
+    let height = mix(0.35, 1.05, height_seed) * grass.blade_height;
     let width = mix(0.018, 0.045, hash11(inst.xz + 9.0));
     let wind_angle = grass.wind_direction * 0.01745329252;
     let wind_dir = vec2<f32>(cos(wind_angle), sin(wind_angle));
@@ -307,7 +330,13 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let half_width = width * taper;
     let curve = (static_bend + wind_bend + crush_bend) * (t * t);
     let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (static_bend + wind_bend + crush_bend) * (2.0 * t);
-    let lateral = select(blade_axis * half_width, -blade_axis * half_width, left);
+    // Preserve a minimum apparent silhouette when a card is nearly edge-on
+    // to the camera. This mirrors the reference's view-space widening without
+    // reconstructing a second model matrix or making distant ribbons explode.
+    let blade_normal = normalize(cross(blade_axis, tangent));
+    let view_dir = normalize(frame.cam_pos.xyz - inst.xyz);
+    let edge_on = pow(1.0 - abs(dot(blade_normal, view_dir)), 4.0);
+    let lateral = select(blade_axis * half_width, -blade_axis * half_width, left) * (1.0 + edge_on * 1.6);
     let local = lateral + vec3<f32>(0.0, crushed_height * t, 0.0) + curve;
     let world = inst.xyz + local;
     let rel = world - frame.cam_pos.xyz;
@@ -324,10 +353,12 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
 fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VsOut {
     let inst = instances[instance_index].pos_seed;
     let seed = inst.w;
-    let angle = seed * 6.2831853;
+    let field = clump_noise(inst.xz, 0.075, 0x48ac2f19u);
+    let angle = mix(seed * 6.2831853, field * 6.2831853, grass.debug_flags.y);
     let side = vec3<f32>(cos(angle), 0.0, -sin(angle));
     let forward = vec3<f32>(sin(angle), 0.0, cos(angle));
-    let height = mix(0.32, 0.92, hash11(inst.xz + 13.0)) * grass.blade_height;
+    let height_seed = mix(hash11(inst.xz + 13.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
+    let height = mix(0.32, 0.92, height_seed) * grass.blade_height;
     let width = mix(0.024, 0.055, hash11(inst.xz + 23.0));
     let wind_angle = grass.wind_direction * 0.01745329252;
     let wind_dir = vec2<f32>(cos(wind_angle), sin(wind_angle));
@@ -358,9 +389,12 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let left = corner == 0u || corner == 3u || corner == 5u;
     let t = f32(segment + select(0u, 1u, upper)) * 0.5;
     let blade_axis = select(side, forward, card != 0u);
-    let lateral = select(blade_axis, -blade_axis, left) * width * pow(max(1.0 - t, 0.0), 0.7);
     let curve = (bend + crush_bend) * (t * t);
     let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (bend + crush_bend) * (2.0 * t);
+    let blade_normal = normalize(cross(blade_axis, tangent));
+    let view_dir = normalize(frame.cam_pos.xyz - inst.xyz);
+    let edge_on = pow(1.0 - abs(dot(blade_normal, view_dir)), 4.0);
+    let lateral = select(blade_axis, -blade_axis, left) * width * pow(max(1.0 - t, 0.0), 0.7) * (1.0 + edge_on * 1.25);
     let rel = inst.xyz + lateral + vec3<f32>(0.0, crushed_height * t, 0.0) + curve - frame.cam_pos.xyz;
     var out: VsOut;
     out.clip = reverse_z(frame.proj * frame.view * vec4<f32>(rel, 1.0));
@@ -375,9 +409,11 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
 fn vs_grass_far(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VsOut {
     let inst = instances[instance_index].pos_seed;
     let seed = inst.w;
-    let angle = seed * 6.2831853;
+    let field = clump_noise(inst.xz, 0.075, 0x48ac2f19u);
+    let angle = mix(seed * 6.2831853, field * 6.2831853, grass.debug_flags.y);
     let side = vec3<f32>(cos(angle), 0.0, -sin(angle));
-    let height = mix(0.28, 0.78, hash11(inst.xz + 43.0)) * grass.blade_height;
+    let height_seed = mix(hash11(inst.xz + 43.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
+    let height = mix(0.28, 0.78, height_seed) * grass.blade_height;
     // Larger, crossed-looking tufts at long range maintain field coverage;
     // this makes a 100–5000 m radius visibly meaningful instead of producing
     // isolated pin-thin triangles beyond the dense near ring.
@@ -408,15 +444,23 @@ fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
     let base = vec3<f32>(0.055, 0.16, 0.025);
     let tip = vec3<f32>(0.32, 0.43, 0.10);
     let root = mix(0.30, 1.0, in.height_t * in.height_t);
-    let albedo = mix(base, tip, in.height_t) * root * mix(0.85, 1.10, in.seed);
-    let n = normalize(in.normal);
+    let field_tint = clump_noise(world.xz, 0.16, 0x5e3a91c7u);
+    let blade_tint = mix(in.seed, field_tint, 0.55);
+    let variation = mix(1.0, mix(0.78, 1.20, blade_tint), grass.debug_flags.z);
+    let albedo = mix(base, tip, in.height_t) * root * variation;
+    // Bend card normals toward an upright rounded-blade normal. This avoids
+    // the flat dark-side look of a raw ribbon while preserving its silhouette.
+    let n = normalize(mix(normalize(in.normal), vec3<f32>(0.0, 1.0, 0.0), 0.24));
     let light_dir = normalize(frame.sun_dir_world.xyz);
     let ndl = max(dot(n, light_dir), 0.0);
     let wrap = max((dot(n, light_dir) + 0.35) / 1.35, 0.0);
     let terrain_shadow = terrain_sun_shadow(world.xz, world.y);
     let direct = frame.sun_diffuse.rgb * mix(ndl, wrap, 0.35) * (1.0 - terrain_shadow);
     let ambient = sky_irradiance(normalize(mix(n, vec3<f32>(0.0, 1.0, 0.0), 0.45))) * sky_vis_ao(world.xz);
-    return vec4<f32>(apply_fog(albedo * (ambient + direct), in.world_rel), 1.0);
+    let view_dir = normalize(-in.world_rel);
+    let transmission = pow(max(dot(view_dir, -light_dir), 0.0), 1.5) * (1.0 - ndl) * grass.debug_flags.w;
+    let subsurface = vec3<f32>(1.0, 0.72, 0.18) * transmission * frame.sun_diffuse.rgb * (1.0 - terrain_shadow);
+    return vec4<f32>(apply_fog(albedo * (ambient + direct + subsurface), in.world_rel), 1.0);
 }
 
 @fragment
