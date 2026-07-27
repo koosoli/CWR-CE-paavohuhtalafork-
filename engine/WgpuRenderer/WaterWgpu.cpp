@@ -178,7 +178,11 @@ static float ReferenceSurfaceHeight(float x, float z, float time, float amplitud
 // The spectrum consumes these independently per layer.  Keeping all preset data here
 // makes a live Water-tab switch atomic: lengths in WgrWaterParams and their matching
 // wind/fetch/seed/scales reach the GPU in the same frame.
-static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
+// WTR-001: `seedXor` reconnects the dev-tab FFT seed override to the per-cascade seeds
+// (the spectrum shader reads cfg.spectrum_seed, not fft_control.y). 0 leaves the tuned
+// preset seeds untouched; any other value xors every cascade's seed so the whole h0
+// field re-randomises deterministically.
+static void ApplyCascadePreset(WgrRenderer* renderer, int preset, uint32_t seedXor = 0)
 {
     WgrWaterCascadeConfig c{};
     c.enabled = 1;
@@ -200,6 +204,16 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
     // Godot water.gd dispatches cascade i at 120 + PI*i seconds.
     c.phase_offset_seconds = 120.0f;
     c.update_rate_hz = 60.0f;
+
+    // Push one cascade config, applying the WTR-001 dev seed override (xor) so a non-zero
+    // override re-randomises the whole h0 field deterministically while seedXor == 0 leaves
+    // the tuned preset seeds untouched.
+    auto push = [renderer, seedXor](uint32_t index, const WgrWaterCascadeConfig& cfg)
+    {
+        WgrWaterCascadeConfig out = cfg;
+        out.spectrum_seed ^= seedXor;
+        wgr_water_set_cascade_config(renderer, index, &out);
+    };
 
     if (preset == 1)
     {
@@ -227,10 +241,10 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
         d.phase_offset_seconds = 120.0f + 2.0f * 3.14159265359f;
         c.foam_scale = 8.0f;
         WgrWaterCascadeConfig disabled{};
-        wgr_water_set_cascade_config(renderer, 0, &c);
-        wgr_water_set_cascade_config(renderer, 1, &b);
-        wgr_water_set_cascade_config(renderer, 2, &d);
-        wgr_water_set_cascade_config(renderer, 3, &disabled);
+        push(0, c);
+        push(1, b);
+        push(2, d);
+        push(3, disabled);
         return;
     }
 
@@ -241,10 +255,10 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
         WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 144.0f; b.wind_speed = 8.5f; b.spectrum_seed = 5678; b.phase_offset_seconds += 3.14159265359f;
         WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 432.0f; d.wind_speed = 7.0f; d.spectrum_seed = 91011; d.phase_offset_seconds += 2.0f * 3.14159265359f;
         WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1296.0f; e.wind_speed = 6.0f; e.spectrum_seed = 121314; e.phase_offset_seconds += 3.0f * 3.14159265359f;
-        wgr_water_set_cascade_config(renderer, 0, &c);
-        wgr_water_set_cascade_config(renderer, 1, &b);
-        wgr_water_set_cascade_config(renderer, 2, &d);
-        wgr_water_set_cascade_config(renderer, 3, &e);
+        push(0, c);
+        push(1, b);
+        push(2, d);
+        push(3, e);
         return;
     }
 
@@ -259,10 +273,10 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset)
     WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 257.0f; b.wind_speed = 9.5f; b.wind_direction_rad = 0.43f; b.spectrum_seed = 8623; b.phase_offset_seconds += 3.14159265359f;
     WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 683.0f; d.wind_speed = 7.5f; d.wind_direction_rad = 0.22f; d.fetch_meters = 350000.0f; d.spectrum_seed = 24593; d.phase_offset_seconds += 2.0f * 3.14159265359f;
     WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1777.0f; e.wind_speed = 6.0f; e.wind_direction_rad = 0.37f; e.fetch_meters = 550000.0f; e.spectrum_seed = 73471; e.phase_offset_seconds += 3.0f * 3.14159265359f;
-    wgr_water_set_cascade_config(renderer, 0, &c);
-    wgr_water_set_cascade_config(renderer, 1, &b);
-    wgr_water_set_cascade_config(renderer, 2, &d);
-    wgr_water_set_cascade_config(renderer, 3, &e);
+    push(0, c);
+    push(1, b);
+    push(2, d);
+    push(3, e);
 }
 
 WaterWgpu::WaterWgpu(EngineWgpu& engine, WgrRenderer* renderer) : _engine(engine), _renderer(renderer)
@@ -355,7 +369,11 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     _params.flow_direction_speed = {0.0f, 0.0f, 0.0f, static_cast<float>(WGR_WATER_KIND_OCEAN)};
     _haveInteractionDomain = false;
 
-    ApplyCascadePreset(_renderer, _engine.WaterLook().cascadePreset);
+    // WTR-001: pass the dev-tab seed override (>= 0) as the xor so the initial spectrum
+    // build honours it; 0 when the override is disabled.
+    const auto& fz0 = _engine.WaterLook().freeze;
+    ApplyCascadePreset(_renderer, _engine.WaterLook().cascadePreset,
+                       fz0.fftSeed >= 0 ? static_cast<uint32_t>(fz0.fftSeed) : 0u);
 }
 
 bool WaterWgpu::RebuildIfNeeded(const Landscape& land)
@@ -484,13 +502,19 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         // large enough that its own pattern does not read as a visible tiled square.
         _params.fft_cascade_lengths = {97.0f, 257.0f, 683.0f, 1777.0f};
     }
-    ApplyCascadePreset(_renderer, look.cascadePreset);
+    // WTR-001: per-frame preset push carries the dev-tab seed override (>= 0) as the xor
+    // so toggling it live re-randomises h0 deterministically on the next spectrum rebuild.
+    ApplyCascadePreset(_renderer, look.cascadePreset,
+                       fz.fftSeed >= 0 ? static_cast<uint32_t>(fz.fftSeed) : 0u);
 
     // y gates the GPU whitewater/spray billboard pass and z controls its activity.
     // It is deliberately off by default: ordinary rifle impacts should keep their
     // ripple without spawning a large particle field. x remains the debug-view selector.
+    // w carries the live viewport height in pixels so the shader's per-cascade
+    // projected-pixel filtering (compute_cascade_weights) uses the real backbuffer
+    // height instead of a hardcoded 1080.
     _params.debug_params = {static_cast<float>(look.debugView), look.rifleImpactSpray ? 1.0f : 0.0f,
-                            look.waterSplashParticleActivity, 0.0f};
+                            look.waterSplashParticleActivity, static_cast<float>(std::max(_engine.Height(), 1))};
     // Runtime proof that the Water tab reaches the actual renderer. This is deliberately
     // edge-triggered: one log row per edited amplitude, not one row per frame.
     static float lastLoggedWaveAmp = -1.0f;

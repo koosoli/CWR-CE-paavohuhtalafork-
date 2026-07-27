@@ -2244,9 +2244,19 @@ static const char* const kWaterDebugViews[] = {
     "Whitewater particle state",   // 34 (reserved)
     "Whitewater pool occupancy",   // 35 (reserved)
     "Particle overflow",           // 36 (reserved)
+    "Surface speed (WTR-012)",     // 37
+    "Prev. displacement delta",    // 38 (WTR-012)
+    "WTR-040: Directional sky",    // 39
+    "WTR-040: Directional clouds", // 40
+    "WTR-040: Planar sky",         // 41
+    "WTR-040: Planar clouds",      // 42
+    "WTR-040: Planar geom only",   // 43
+    "WTR-040: Planar validity",    // 44
+    "WTR-040: SSR only",           // 45
+    "WTR-040: Reflection owner",   // 46 (R=SSR, B=planar, G=directional)
 };
 static constexpr int kWaterDebugViewCount = static_cast<int>(std::size(kWaterDebugViews));
-static_assert(kWaterDebugViewCount == 37, "Water debug view names must match WgrWaterDebugView (0..36)");
+static_assert(kWaterDebugViewCount == 47, "Water debug view names must match WgrWaterDebugView (0..46)");
 
 // WTR-004 standard test scene definitions
 static const char* const kWaterTestScenes[] = {

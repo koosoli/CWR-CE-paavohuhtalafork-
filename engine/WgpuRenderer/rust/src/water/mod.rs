@@ -275,7 +275,9 @@ impl Water {
             fft_wind_sea: [0.82, 0.57, 11.0, 0.55],
             fft_cascade_lengths: [48.0, 144.0, 432.0, 1296.0],
             flow_direction_speed: [0.0, 0.0, 0.0, 0.0],
-            debug_params: [0.0, 0.0, 0.0, 0.0],
+            // x = debug view (0 = off), y = spray gate, z = spray activity, w = viewport
+            // height in pixels (1080 fallback; the C++ side pushes the real height each frame).
+            debug_params: [0.0, 0.0, 0.0, 1080.0],
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 

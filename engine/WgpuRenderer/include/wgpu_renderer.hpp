@@ -762,16 +762,18 @@ struct WgrWaterParams
     WgrVec4 flow_direction_speed;
     /* WTR-003 — water debug views (dev-only; the Water tab "Debug views" section). x is the
      * WgrWaterDebugView index (0 = normal shading); the fragment shader replaces its output
-     * with the selected diagnostic when non-zero. yzw are reserved for future view parameters
-     * (e.g. a cascade selector / gain). Appended at the struct end so the existing lanes keep
-     * their offsets; the sizeof assert below moves 192 -> 208 in lockstep with the Rust side. */
+     * with the selected diagnostic when non-zero. y gates the GPU whitewater/spray billboard
+     * pass and z controls its activity. w is the live viewport height in pixels, consumed by
+     * the shader's per-cascade projected-pixel filtering. Appended at the struct end so the
+     * existing lanes keep their offsets; the sizeof assert below moves 192 -> 208 in lockstep
+     * with the Rust side. */
     WgrVec4 debug_params;
 };
 
 struct WgrWaterCascadeConfig
 {
     uint32_t enabled;
-    uint32_t resolution;
+    uint32_t resolution; /* informational only — the FFT allocation is fixed at FFT_RESOLUTION */
     float tile_length_x;
     float tile_length_y;
     float displacement_scale;
@@ -788,6 +790,9 @@ struct WgrWaterCascadeConfig
     float whitecap_threshold;
     uint32_t spectrum_seed;
     float phase_offset_seconds;
+    /* Reserved for WTR-185 (reduced-rate cascade update scheduling with interpolation).
+     * Currently unused: every enabled cascade evolves every frame. Kept in the ABI so the
+     * scheduling work does not need a struct change later. */
     float update_rate_hz;
     float pad;
 };
@@ -880,7 +885,17 @@ enum WgrWaterDebugView : uint32_t
     WGR_WATER_DEBUG_WHITEWATER_STATE = 34,       // reserved — no whitewater pass yet
     WGR_WATER_DEBUG_WHITEWATER_POOL = 35,        // reserved — no whitewater pass yet
     WGR_WATER_DEBUG_PARTICLE_OVERFLOW = 36,      // reserved — no whitewater pass yet
-    WGR_WATER_DEBUG_VIEW_COUNT = 37,
+    WGR_WATER_DEBUG_SURFACE_SPEED = 37,          // WTR-012 — |interaction velocity| heatmap
+    WGR_WATER_DEBUG_PREV_DISP_DELTA = 38,        // WTR-012 — previous-displacement delta magnitude
+    WGR_WATER_DEBUG_WTR40_DIR_SKY = 39,          // WTR-040 — directional atmosphere only
+    WGR_WATER_DEBUG_WTR40_DIR_CLOUDS = 40,       // WTR-040 — directional cloud contribution
+    WGR_WATER_DEBUG_WTR40_PLANAR_SKY = 41,       // WTR-040 — planar sky only
+    WGR_WATER_DEBUG_WTR40_PLANAR_CLOUDS = 42,    // WTR-040 — planar cloud contribution
+    WGR_WATER_DEBUG_WTR40_PLANAR_GEOM = 43,      // WTR-040 — planar terrain/objects only
+    WGR_WATER_DEBUG_WTR40_PLANAR_VALIDITY = 44,  // WTR-040 — planar geometry validity mask
+    WGR_WATER_DEBUG_WTR40_SSR_ONLY = 45,         // WTR-040 — SSR only
+    WGR_WATER_DEBUG_WTR40_OWNER_BADGE = 46,      // WTR-040 — final reflection owner (R=SSR, B=planar, G=directional)
+    WGR_WATER_DEBUG_VIEW_COUNT = 47,
 };
 enum WgrWaterInteractionKind : uint32_t { WGR_WATER_INTERACTION_BULLET = 0, WGR_WATER_INTERACTION_OBJECT = 1, WGR_WATER_INTERACTION_PLAYER = 2, WGR_WATER_INTERACTION_EXPLOSION = 3, WGR_WATER_INTERACTION_FOOTSTEP = 4, WGR_WATER_INTERACTION_CONTINUOUS = 5 };
 enum WgrWaterInteractionFlags : uint32_t { WGR_WATER_INTERACTION_PENDING_IMPULSE = 1u << 0, WGR_WATER_INTERACTION_CAPSULE = 1u << 8, WGR_WATER_INTERACTION_PLAYER_WADING = 1u << 9, WGR_WATER_INTERACTION_PLAYER_SWIMMING = 1u << 10, WGR_WATER_INTERACTION_LEFT_SIDE = 1u << 11, WGR_WATER_INTERACTION_LARGE_BODY = 1u << 12 };

@@ -68,6 +68,8 @@ extern void SDLGamepad_PlayRamp(float beg, float end, float dur);
 #include <Poseidon/IO/Streams/QBStream.hpp>
 #include <Poseidon/IO/Serialization/ParamArchive.hpp>
 
+#include <Poseidon/Dev/Debug/WtrTestHarness.hpp>
+
 #include <Poseidon/UI/Locale/StringtableExt.hpp>
 
 #include <Poseidon/World/WorldShared.hpp>
@@ -1226,6 +1228,28 @@ void World::Simulate(float deltaT, bool& enableDraw)
         if (s_triViewActive)
         {
             transform = s_triViewTransform;
+        }
+        // WTR-004 — standard water test harness. Runs after every other camera source (player,
+        // camera effect, triView) so an active harness preset owns the view: deterministic camera
+        // path plus edge-triggered interaction events, both driven from here (per frame, before
+        // BeginObjects) rather than from the overlay. A paused harness returns false and leaves
+        // the camera alone, so Pause hands control back to the player camera.
+        {
+            auto& wtrHarness = WtrTestHarness::Instance();
+            if (wtrHarness.IsActive())
+            {
+                auto wtrSettings = GEngine->GetWaterSettings();
+                Vector3 wtrCamPos(VZero), wtrCamRot(VZero);
+                if (wtrHarness.Update(deltaT, wtrSettings, wtrCamPos, wtrCamRot))
+                {
+                    // camRot is (pitch, yaw, roll) in degrees; CameraChange takes radians.
+                    Matrix3 wtrOrient =
+                        Matrix3(MRotationY, HDegree(wtrCamRot.Y())) * Matrix3(MRotationX, HDegree(wtrCamRot.X()));
+                    wtrOrient = wtrOrient * Matrix3(MRotationZ, HDegree(wtrCamRot.Z()));
+                    transform.SetOrientation(wtrOrient);
+                    transform.SetPosition(wtrCamPos);
+                }
+            }
         }
         camera.SetTransform(transform);
 

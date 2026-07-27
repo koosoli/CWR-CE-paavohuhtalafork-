@@ -1,4 +1,5 @@
 #include "WtrTestHarness.hpp"
+#include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 #include <sstream>
 #include <iomanip>
 #include <cmath>
@@ -147,7 +148,7 @@ void WtrTestHarness::ApplyPresetSettings(int presetId, Engine::WaterSettings& se
         break;
     case 5: // Vessel Wake
         settings.waveAmp = 0.50f;
-        settings.debugView = 14; // Surface velocity
+        settings.debugView = 17; // Surface velocity
         break;
     case 6: // Wind-Sea & Swell
         settings.waveAmp = 2.2f;
@@ -158,25 +159,25 @@ void WtrTestHarness::ApplyPresetSettings(int presetId, Engine::WaterSettings& se
         settings.waveAmp = 0.6f;
         settings.swashAmp = 1.2f;
         settings.coastFade = 0.5f;
-        settings.debugView = 17; // Shoreline swash mask
+        settings.debugView = 18; // Water-column depth (the swash band animates it)
         break;
     case 8: // Persistent Foam
         settings.waveAmp = 2.0f;
         settings.foamIntensity = 1.5f;
-        settings.debugView = 16; // Foam density
+        settings.debugView = 16; // Persistent foam history
         break;
     default:
         break;
     }
 }
 
-void WtrTestHarness::Update(float frameDt, Engine::WaterSettings& settings, Vector3& camPos, Vector3& camRot)
+bool WtrTestHarness::Update(float frameDt, Engine::WaterSettings& settings, Vector3& camPos, Vector3& camRot)
 {
     if (!_active)
-        return;
+        return false;
 
     if (_paused && !_singleStep)
-        return;
+        return false;
 
     _singleStep = false;
     _frameIndex++;
@@ -184,6 +185,7 @@ void WtrTestHarness::Update(float frameDt, Engine::WaterSettings& settings, Vect
 
     ComputeCameraTransform(_testTime, camPos, camRot);
     InjectEdgeTriggeredEvents(settings);
+    return true;
 }
 
 void WtrTestHarness::ComputeCameraTransform(float t, Vector3& camPos, Vector3& camRot)
@@ -224,11 +226,41 @@ void WtrTestHarness::ComputeCameraTransform(float t, Vector3& camPos, Vector3& c
 
 void WtrTestHarness::InjectEdgeTriggeredEvents(Engine::WaterSettings& settings)
 {
+    (void)settings;
     if (_currentPresetId == 4) // Projectile Grid
     {
-        // Edge-triggered event injection on frames 30, 60, 90
-        if (_frameIndex == 30 || _frameIndex == 60 || _frameIndex == 90)
+        // WTR-Test-04: known impact positions and radii (5 cm, 10 cm, 20 cm, 50 cm, 1 m),
+        // one impact every 30 frames starting at frame 30. Deterministic grid centred on
+        // the fixed overhead camera at (128, 40, 128) so every impact lands inside the
+        // camera-relative interaction domain.
+        static const float kRadii[5] = {0.05f, 0.10f, 0.20f, 0.50f, 1.00f};
+        constexpr int kFirstFrame = 30;
+        constexpr int kFrameStep = 30;
+        if (_frameIndex >= kFirstFrame && (_frameIndex - kFirstFrame) % kFrameStep == 0)
         {
+            const int slot = static_cast<int>((_frameIndex - kFirstFrame) / kFrameStep) % 5;
+            const float spacing = 1.5f;
+            const float gridX = 128.0f + (static_cast<float>(slot) - 2.0f) * spacing;
+            const float gridZ = 128.0f;
+
+            HydroWaterInteractionEvent ev{};
+            ev.positionRadius[0] = gridX;
+            ev.positionRadius[1] = gridZ;
+            ev.positionRadius[2] = kRadii[slot];
+            ev.positionRadius[3] = 0.30f; // strength
+            ev.velocityKind[0] = 0.0f;
+            ev.velocityKind[1] = 0.0f;
+            ev.velocityKind[2] = -6.0f; // downward entry speed
+            ev.velocityKind[3] = static_cast<float>(HydroWaterInteractionBullet);
+            ev.timeLifeFoamMass[0] = 0.0f; // 0 = stamp with the solver's now
+            ev.timeLifeFoamMass[1] = 1.6f; // lifetime (s)
+            ev.timeLifeFoamMass[2] = 0.35f; // foam
+            ev.timeLifeFoamMass[3] = 0.0f;
+            ev.directionDepthFlags[0] = 0.0f;
+            ev.directionDepthFlags[1] = 1.0f;
+            ev.directionDepthFlags[2] = 0.0f;
+            ev.directionDepthFlags[3] = static_cast<float>(HydroWaterInteractionPendingImpulse);
+            SubmitWaterInteraction(ev);
             _triggeredEventCount++;
         }
     }

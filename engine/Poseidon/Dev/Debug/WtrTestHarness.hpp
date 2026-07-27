@@ -52,8 +52,10 @@ public:
     void Restart(Engine::WaterSettings& settings);
     void Stop(Engine::WaterSettings& settings, int& outDebugView);
 
-    // Frame update — drives camera path & edge-triggered event injection outside DrawWater
-    void Update(float frameDt, Engine::WaterSettings& settings, Vector3& camPos, Vector3& camRot);
+    // Frame update — drives camera path & edge-triggered event injection outside DrawWater.
+    // Returns true when a frame advanced and camPos/camRot were written (false when inactive
+    // or paused without a pending single-step, so the caller must leave the camera alone).
+    bool Update(float frameDt, Engine::WaterSettings& settings, Vector3& camPos, Vector3& camRot);
 
     // Reproducible metadata generation across identical runs
     std::string GenerateMetadataLog(const Engine::WaterSettings& settings, const Vector3& camPos, const Vector3& camRot) const;

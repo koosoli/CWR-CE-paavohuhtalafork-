@@ -47,7 +47,7 @@ struct WaterParams {
     fft_wind_sea: vec4<f32>, // wind x/z, speed, sea state
     fft_cascade_lengths: vec4<f32>, // stable world-space cascade lengths
     flow_direction_speed: vec4<f32>, // x/z direction, m/s, water kind (0 ocean, 1 river)
-    debug_params: vec4<f32>, // WTR-003: x = debug view index (0 = normal), yzw reserved
+    debug_params: vec4<f32>, // WTR-003: x = debug view (0 = normal), y = spray gate, z = spray activity, w = viewport height px
 };
 
 // Must match the render mesh in water/mod.rs.  It is intentionally denser than
@@ -258,8 +258,14 @@ fn compute_cascade_weights(layer: i32, dist: f32, view_dir: vec3<f32>) -> Cascad
     }
     let length_m = max(raw_length, 1.0);
     let view_angle_cos = max(abs(view_dir.y), 0.1);
-    let proj_pixels = (length_m * 1080.0) / (2.0 * max(dist, 0.1) * 0.57735 * view_angle_cos);
-    
+    // Real viewport height (debug_params.w, written per frame by WaterWgpu) and the actual
+    // vertical projection scale (proj[1][1] = 1/tan(fovY/2)) replace the earlier hardcoded
+    // 1080 px / tan(30 deg) constants, so the filtering threshold is correct at every
+    // resolution, FOV and camera pitch.
+    let screen_h = max(wp.debug_params.w, 1.0);
+    let tan_half_fov_y = 1.0 / max(frame.proj[1][1], 1e-4);
+    let proj_pixels = (length_m * 0.5 * screen_h) / (max(dist, 0.1) * tan_half_fov_y * view_angle_cos);
+
     w.geometry_weight = smoothstep(1.5, 4.0, proj_pixels);
     w.normal_weight = smoothstep(0.5, 2.0, proj_pixels);
     w.foam_weight = smoothstep(1.0, 3.0, proj_pixels);
@@ -318,7 +324,10 @@ fn sample_fft_dynamics_filtered(xz: vec2<f32>, layer: i32, length_m: f32) -> vec
 
 fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
     var disp = vec3<f32>(0.0);
-    let view_dir = vec3<f32>(0.0, -0.707, 0.707);
+    // Approximate per-vertex view direction from the undisplaced base position — good
+    // enough for LOD weighting (the displaced position differs by metres at most).
+    let approx_rel = vec3<f32>(xz.x, wp.sea_level, xz.y) - frame.cam_pos.xyz;
+    let view_dir = approx_rel / max(length(approx_rel), 1e-3);
     for (var layer = 0; layer < 4; layer = layer + 1) {
         let w = compute_cascade_weights(layer, dist, view_dir);
         disp = disp + fft_sample(xz, layer).xyz * w.geometry_weight;
@@ -804,36 +813,36 @@ fn debug_view(view: i32, base_xz: vec2<f32>, world_rel: vec3<f32>, water_depth: 
         case 27: { c = vec3<f32>(refracted.valid); }
         case 28: { c = dbg_heat(min(water_depth, 40.0), 40.0); }
         case 29: { c = transmission * vec3<f32>(1.4); }
-        case 35: { // WTR-012 Surface velocity
+        case 37: { // WTR-012 Surface velocity
             let speed = length(interaction.xy);
             c = dbg_heat(speed, 2.0);
         }
-        case 36: { // WTR-012 Previous displacement delta
+        case 38: { // WTR-012 Previous displacement delta
             let delta = abs(interaction.y * 0.0333);
             c = dbg_heat(delta, 0.5);
         }
-        case 37: { // WTR-040 Directional sky
+        case 39: { // WTR-040 Directional sky
             c = sky_refl;
         }
-        case 38: { // WTR-040 Directional clouds
+        case 40: { // WTR-040 Directional clouds
             c = sky_refl * vec3<f32>(1.2, 1.1, 0.9);
         }
-        case 39: { // WTR-040 Planar sky
+        case 41: { // WTR-040 Planar sky
             c = select(vec3<f32>(0.0), planar_refl.rgb, planar_refl.a > 0.02);
         }
-        case 40: { // WTR-040 Planar clouds
+        case 42: { // WTR-040 Planar clouds
             c = select(vec3<f32>(0.0), planar_refl.rgb * vec3<f32>(1.1, 1.1, 1.2), planar_refl.a > 0.02);
         }
-        case 41: { // WTR-040 Planar terrain/objects
+        case 43: { // WTR-040 Planar terrain/objects
             c = select(vec3<f32>(0.0), planar_refl.rgb * vec3<f32>(0.8, 0.9, 0.7), planar_refl.a > 0.02);
         }
-        case 42: { // WTR-040 Planar geometry validity
+        case 44: { // WTR-040 Planar geometry validity
             c = vec3<f32>(planar_refl.a);
         }
-        case 43: { // WTR-040 SSR
+        case 45: { // WTR-040 SSR
             c = ssr.rgb;
         }
-        case 44: { // WTR-040 Final reflection owner badge
+        case 46: { // WTR-040 Final reflection owner badge
             if (ssr.a > 0.02) { c = vec3<f32>(1.0, 0.20, 0.20); } // SSR (Red)
             else if (planar_refl.a > 0.02) { c = vec3<f32>(0.20, 0.60, 1.0); } // Planar (Blue)
             else { c = vec3<f32>(0.20, 0.90, 0.30); } // Directional Sky (Green)
