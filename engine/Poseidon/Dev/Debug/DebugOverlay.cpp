@@ -2431,6 +2431,41 @@ void DrawWaterTab()
                           "this additionally darkens the shadowed surface (0 = physical sun-only removal).");
 
     ImGui::Separator();
+    ImGui::TextUnformatted("Surface look (energy model)");
+    changed |= ImGui::Checkbox("Physical composite", &s.physicalLook);
+    ImGui::SetItemTooltip("ON: Fresnel runs uncapped, the sun lobe is evaluated at the variance-filtered "
+                          "roughness at full radiance, and subsurface scattering gets its own light path. "
+                          "OFF: the legacy composite (Fresnel capped at 0.43-0.72, specular scaled to 0.12x, "
+                          "SSS multiplied by the near-black deep colour). Toggle for a direct A/B.");
+    ImGui::BeginDisabled(!s.physicalLook);
+    changed |= ImGui::SliderFloat("Sun glitter gain", &s.glitterGain, 0.0f, 3.0f, "%.2f");
+    ImGui::SetItemTooltip("Sun-specular gain; 1 = the model's own energy. This is the sparkle path — raise it "
+                          "if the sun track looks dull, lower it if crests fire white specks.");
+    changed |= ImGui::SliderFloat("Subsurface gain", &s.sssGain, 0.0f, 3.0f, "%.2f");
+    ImGui::SetItemTooltip("Backlit-crest glow (the turquoise scatter through a wave with the sun behind it). "
+                          "1 = the reference's energy mapped onto our HDR sun radiance.");
+    changed |= ImGui::SliderFloat("Reflection gain", &s.reflectionGain, 0.0f, 1.5f, "%.2f");
+    ImGui::SetItemTooltip("Scales the physical Fresnel reflection weight. 1 = uncapped (correct); lower only "
+                          "if the sky/planar reflection itself is wrong and you need to hide it.");
+    ImGui::EndDisabled();
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Sea state");
+    changed |= ImGui::Checkbox("Physical sea-state coupling", &s.seaStateCoupling);
+    ImGui::SetItemTooltip("ON: the amplitude slider sets a wind speed, so the JONSWAP peak moves with "
+                          "it and a rougher sea grows LONGER waves (height linear in the slider, "
+                          "wavelength ~amp^0.75). OFF: the legacy behaviour — the whole spectrum is "
+                          "scaled uniformly, so waves only get taller at the same wavelength, which "
+                          "reads as short steep chop.");
+    changed |= ImGui::SliderFloat("Shore breaker gain", &s.shoreWaveGain, 0.0f, 3.0f, "%.2f");
+    ImGui::SetItemTooltip("Strength of the shoaling swell that runs in toward the beach. The train "
+                          "grows (Green's law) and its crests sharpen as the water shallows.");
+    changed |= ImGui::Checkbox("Low water quality (performance)", &s.lowQuality);
+    ImGui::SetItemTooltip("Drops screen-space and planar reflections from the water shader — the two "
+                          "dominant fragment costs. Sky reflection, waves, foam and refraction are "
+                          "unchanged. Off by default.");
+
+    ImGui::Separator();
     ImGui::TextUnformatted("Coast (depth-based colour + soft shoreline)");
     changed |= ImGui::ColorEdit3("Shallow colour", s.shallowColor);
     ImGui::SetItemTooltip("Body tint of shallow water (near the coast).");

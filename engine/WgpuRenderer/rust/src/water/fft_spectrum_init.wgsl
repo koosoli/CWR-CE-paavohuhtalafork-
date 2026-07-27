@@ -5,6 +5,7 @@ struct WaterParams {
     color_ext: f32, coast_fade: f32, shallow_color: vec4<f32>, deep_color: vec4<f32>, foam_width: f32,
     foam_intensity: f32, swash_amp: f32, swash_speed: f32, fft_control: vec4<f32>,
     fft_wind_sea: vec4<f32>, fft_cascade_lengths: vec4<f32>, flow_direction_speed: vec4<f32>,
+    debug_params: vec4<f32>, look_params: vec4<f32>, sea_params: vec4<f32>,
 };
 @group(0) @binding(0) var<uniform> water: WaterParams;
 @group(0) @binding(1) var h0_out: texture_storage_2d_array<rgba32float, write>;
@@ -99,10 +100,16 @@ fn fft_spectrum_init(@builtin(global_invocation_id) id: vec3<u32>) {
     let detail = clamp(cfg.short_wave_detail, 0.0, 1.0);
     let short_wave_damping = exp(-(1.0 - detail) * (1.0 - detail) * kl * kl);
     let cell_area = TAU / max(cascade_length(id.z), 1.0) * TAU / max(cascade_length(id.z), 1.0);
-    // Spectral amplitudes are the square root of variance.  Square the authored
-    // amplitude here so the Water-tab control is perceptually and physically
-    // linear: a 2x slider value produces 2x surface displacement, not sqrt(2)x.
-    let amplitude_energy = max(water.wave_amp, 0.0) * max(water.wave_amp, 0.0);
+    // Spectral amplitudes are the square root of variance, so the residual amplitude is squared
+    // here to keep the control linear in surface displacement.
+    //
+    // WTR-LOOK — sea_params.y is that residual, NOT the raw slider. Scaling variance uniformly
+    // across every wavenumber (what this used to do with wave_amp) raises every wave at its
+    // existing wavelength, which is steepness, not sea state: a stormier ocean grows LONGER waves,
+    // because both the JONSWAP energy (alpha) and the peak frequency are functions of wind speed.
+    // In coupled mode the C++ side pushes that wind speed and the matching cascade lengths
+    // instead, and sends 1.0 here so the energy is not applied twice.
+    let amplitude_energy = max(water.sea_params.y, 0.0) * max(water.sea_params.y, 0.0);
     let variance = wind_spectrum * short_wave_damping * dispersion.y / kl * cell_area * amplitude_energy;
     let h0 = gaussian(id.xy, seed) * sqrt(max(2.0 * variance, 0.0));
     // Store h0(k) and conj(h0(-k)) exactly as the reference modulation pass does.

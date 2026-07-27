@@ -1244,7 +1244,13 @@ class Engine : public IGraphicsEngine
         // far-field moiré / repetition — past fadeEnd the water is a smooth horizon mirror.
         float fadeStart = 589.0f;
         float fadeEnd = 865.0f;
-        float warpAmp = 0.0f;        // 0 = exact reference sampling; optional de-tiling is opt-in
+        // De-tiling domain warp (metres). A finite FFT texture is necessarily periodic, so at
+        // distance the cascade period reads as a repeating grid on the ocean — the further you
+        // see, the more repeats fit on screen and the more obvious it is. This warps the world ->
+        // FFT lookup through low-gradient value noise whose hash does not repeat within the
+        // playable world, which breaks the period without disturbing the wave shape. 0 reproduces
+        // the reference project's exact sampling (and its tiling); a few metres is enough.
+        float warpAmp = 5.0f;
         float specPower = 11.0f;     // sun-glint sharpness
         float specIntensity = 3.82f; // sun-glint brightness (HDR, blooms)
         float alpha = 0.88f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
@@ -1256,9 +1262,12 @@ class Engine : public IGraphicsEngine
         // tint runs shallowColor -> deepColor with the water column depth (Beer-Lambert-like),
         // and the surface fades to transparent over the last coastFade metres of depth so the
         // coast is a soft wash over the wet beach, not a hard clip line.
-        float shallowColor[3] = {0.126f, 0.252f, 0.279f}; // turquoise shallows (gamma-space)
-        float deepColor[3] = {0.014f, 0.062f, 0.108f};    // dark blue depths
-        float colorExt = 0.043f;  // 1/m: how fast the tint saturates to deepColor with depth
+        float shallowColor[3] = {0.070f, 0.300f, 0.330f}; // muted coastal turquoise (gamma-space)
+        float deepColor[3] = {0.004f, 0.020f, 0.055f};    // near-black deep ocean blue
+        // 1/m extinction. Applied directly (the old 0.15/m floor saturated every bay to the deep
+        // colour by ~20 m, so the turquoise only survived at the waterline); ~0.035 spreads the
+        // shallow -> deep transition over ~60 m, which is what a real shelf looks like from above.
+        float colorExt = 0.090f;
         float coastFade = 0.09f;  // m of column depth over which the shore ramps transparent->opaque
         // Coast foam + swash (Stage 2c): a churning foam band at the waterline, and a gentle
         // oscillation of the near-shore water edge in/out over the wet beach. Cosmetic only.
@@ -1271,12 +1280,40 @@ class Engine : public IGraphicsEngine
         // by the terrain shader via WgrTerrainParams. wetDarken = 1 disables it.
         float wetHeight = 0.26f;   // m above sea level the damp band reaches
         float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
-        // CPU particle effect for ordinary rifle impacts. Disabled by default: the
-        // interaction field still provides the subtle ripple/foam response.
-        bool rifleImpactSpray = false;
-        // Multiplier for the GPU whitewater/splash billboard emitter when enabled.
-        // A restrained default keeps rifle impacts and crest spray from reading as foam cannons.
-        float waterSplashParticleActivity = 0.25f;
+        // Master switch for water splash particles: the CPU rifle-impact spray and the GPU
+        // whitewater/spray billboard emitter. On by default now that the emitter covers a real
+        // area (120 m, world-anchored), breaks off the FFT compression signal rather than a
+        // saturated foam history, and flies on drag ballistics instead of a scripted parabola.
+        bool rifleImpactSpray = true;
+        // Multiplier for the GPU whitewater/splash billboard emitter.
+        float waterSplashParticleActivity = 0.60f;
+
+        // WTR-LOOK — surface energy model. The legacy composite capped the Fresnel reflection
+        // weight, scaled the sun specular to 0.12x and multiplied the subsurface-scattering term
+        // by the (near-black) deep body colour, which together flattened the surface into blue
+        // plastic. The physical composite lets Fresnel run uncapped, evaluates the sun lobe at the
+        // variance-filtered roughness so glitter stays stable with distance, and gives SSS its own
+        // light path. Keep the legacy path selectable for A/B captures.
+        bool physicalLook = true;
+        float glitterGain = 1.0f;    // sun-specular gain (1 = the model's own energy)
+        float sssGain = 1.0f;        // subsurface / backlit-crest gain
+        float reflectionGain = 1.0f; // environment-reflection gain (1 = uncapped physical Fresnel)
+
+        // WTR-LOOK — physical sea-state coupling. The amplitude control used to scale the whole
+        // variance spectrum uniformly, which raised every wave at its existing wavelength: a
+        // rougher sea became short steep chop instead of the long swell a real wind sea grows.
+        // Coupled, the amplitude sets a wind speed (and matching cascade domain lengths), so the
+        // JONSWAP peak frequency moves with it and taller seas are also longer seas.
+        bool seaStateCoupling = true;
+        // Shore breaker gain — the shoaling swell that runs in toward the beach. OFF by default:
+        // the current train is an analytic two-harmonic sine, which can shoal and steepen but
+        // fundamentally cannot overturn, so it never reads as a wave crashing into itself. A real
+        // plunging breaker needs an actual breaking model, not a bigger sine. Left in place and
+        // tunable rather than deleted, but it should stay off until that exists.
+        float shoreWaveGain = 0.0f;
+        // Dev-only performance mode: drops SSR, planar reflection and their scene sampling from
+        // the water fragment shader. Off by default.
+        bool lowQuality = false;
 
         // WTR-036C / WTR-037 — FFT Cascade Preset (0 = Production Non-Harmonic 4-Cascade, 1 = GodotOceanWaves Reference Style, 2 = Legacy Harmonic 4-Cascade).
         // The GodotOceanWaves-derived TMA/JONSWAP setup is the gameplay default.  The

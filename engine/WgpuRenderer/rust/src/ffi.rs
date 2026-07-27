@@ -835,6 +835,12 @@ pub struct WgrWaterParams {
     // fragment shader swaps its output for the selected diagnostic. yzw reserved. Appended
     // at the end so existing lane offsets are unchanged (sizeof 192 -> 208, matching C++).
     pub debug_params: WgrVec4,
+    // WTR-LOOK — x = energy model (0 legacy, 1 physical), y = glitter gain, z = SSS gain,
+    // w = environment-reflection gain. Appended at the end (sizeof 208 -> 224, matching C++).
+    pub look_params: WgrVec4,
+    // WTR-LOOK — x = physical sea-state coupling on/off, y = residual spectrum amplitude,
+    // z = low water quality, w = shore breaker gain. (sizeof 224 -> 240, matching C++.)
+    pub sea_params: WgrVec4,
 }
 
 #[repr(C)]
@@ -996,7 +1002,7 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1616);
-const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 208);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 240);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrWaterInteractionEvent>() == 64);

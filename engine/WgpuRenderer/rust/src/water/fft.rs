@@ -1,11 +1,26 @@
-/// GodotOceanWaves' `Water.map_size` default.  The extra spectral samples are important
-/// from aircraft distance: at 256² the small cascades visibly resolve into a repeating grid.
 use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
-pub const FFT_RESOLUTION: u32 = 1024;
+// 512 rather than GodotOceanWaves' 1024. The FFT is the most expensive pass in the water system
+// and scales as O(N^2 log N), so halving the resolution is close to a 4x saving.
+//
+// This costs less visually than it sounds, because of how k is indexed: the spectrum builds
+// k = 2*pi*(id - N/2)/L, so the mode SPACING (2*pi/L) is set by the cascade length and does not
+// change with N — only the maximum wavenumber does. Dropping to 512 therefore keeps every
+// low-wavenumber mode (where a wind sea carries essentially all of its energy, the TMA spectrum
+// falling off as omega^-5) and discards only the shortest-wavelength tail. Significant wave height
+// is effectively unchanged; what is lost is the finest ripple detail.
+//
+// The de-tiling warp (Water tab "De-tile warp") is what keeps the ocean from reading as a repeating
+// grid at distance, not the raw mode count. Raise this back to 1024, and FFT_STAGES to 10, if
+// distant tiling returns.
+pub const FFT_RESOLUTION: u32 = 512;
 const FFT_LAYERS: u32 = 4;
-const FFT_STAGES: u32 = 10;
+// log2(FFT_RESOLUTION) — must be kept in lockstep with the resolution above.
+const FFT_STAGES: u32 = 9;
+// Spectra packed into RGBA32F texture pairs: pack0 = (hx,hy),(hz,dhy_dx); pack1 = (dhy_dz,dhx_dx),
+// (dhz_dz,dhz_dx). A third pack exists in the bindings but carries no data — see dispatch().
+const FFT_ACTIVE_PACKS: u32 = 2;
 
 // These are the only WaterParams values used to construct h0. Compare their raw bits so live
 // per-frame uploads do not recreate the spectrum, while every authored spectrum change does.
@@ -53,6 +68,11 @@ pub struct Fft {
     stage_alignment: u32,
     spectrum_inputs: Option<SpectrumInputs>,
     spectrum_dirty: bool,
+    // Highest enabled cascade + 1. Every FFT pass dispatches over the array layers, and this used
+    // to be hardcoded to all 4 even when a preset enabled fewer — the GodotOceanWaves preset only
+    // uses 3, so a quarter of the most expensive pass in the whole water system was transforming a
+    // cascade that is zeroed out and never sampled.
+    active_layers: u32,
 }
 
 impl Fft {
@@ -545,6 +565,7 @@ impl Fft {
             stage_alignment: aligned as u32,
             spectrum_inputs: None,
             spectrum_dirty: true,
+            active_layers: FFT_LAYERS,
         })
     }
     pub fn displacement_view(&self) -> &wgpu::TextureView {
@@ -584,6 +605,15 @@ impl Fft {
                 bytemuck::cast_slice(&self.cascade_configs),
             );
         }
+        // Recompute how many array layers the FFT passes actually have to cover. Enabled cascades
+        // are authored as a prefix, but take the highest enabled index rather than a count so a
+        // gap cannot silently drop a live cascade.
+        self.active_layers = self
+            .cascade_configs
+            .iter()
+            .rposition(|c| c.enabled != 0)
+            .map(|i| i as u32 + 1)
+            .unwrap_or(1);
         self.spectrum_dirty = true;
     }
     pub fn dispatch(
@@ -592,6 +622,7 @@ impl Fft {
         timers: &crate::gpu_timers::GpuTimers,
     ) {
         use crate::gpu_timers::Region;
+        let layers = self.active_layers.clamp(1, FFT_LAYERS);
         // WTR-002 — each FFT phase runs in its own compute pass so the encoder-level
         // timestamps bracket exactly one phase (spectrum init / evolve / horizontal /
         // vertical / compose). Pass splitting adds no barriers beyond those wgpu already
@@ -610,7 +641,7 @@ impl Fft {
             let mut pass = compute(encoder, "wgr_water_fft_spectrum_init");
             pass.set_pipeline(&self.h0_init_pipeline);
             pass.set_bind_group(0, &self.h0_init_bind, &[]);
-            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
+            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, layers);
             drop(pass);
             timers.end(encoder, Region::SpectrumInit);
             self.spectrum_dirty = false;
@@ -620,7 +651,7 @@ impl Fft {
             let mut pass = compute(encoder, "wgr_water_fft_spectrum_evolve");
             pass.set_pipeline(&self.spectrum_pipeline);
             pass.set_bind_group(0, &self.spectrum_bind, &[]);
-            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
+            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, layers);
         }
         timers.end(encoder, Region::SpectrumEvolve);
         for axis in 0..2 {
@@ -638,14 +669,20 @@ impl Fft {
                 // perfectly configured spectrum render as calm water on some drivers.
                 let mut pass = compute(encoder, label);
                 pass.set_pipeline(&self.stage_pipeline);
-                for pack in 0..3 {
+                // Only the packs that actually carry a spectrum. pack2 is written as all zeros by
+                // fft_spectrum_evolve and its result is loaded by fft_compose into a variable that
+                // is never read — so a third of the most expensive pass in the renderer was
+                // transforming zeros through every butterfly stage and throwing the result away.
+                // The bind groups are still built for all three (keeping the stride below valid
+                // and the layouts untouched); this simply stops dispatching the dead one.
+                for pack in 0..FFT_ACTIVE_PACKS {
                     let index = ((axis * FFT_STAGES + stage) * 3 + pack) as usize;
                     pass.set_bind_group(
                         0,
                         &self.stage_binds[index],
                         &[(axis * FFT_STAGES + stage) * self.stage_alignment],
                     );
-                    pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
+                    pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, layers);
                 }
                 drop(pass);
             }
@@ -656,7 +693,7 @@ impl Fft {
             let mut pass = compute(encoder, "wgr_water_fft_compose");
             pass.set_pipeline(&self.compose_pipeline);
             pass.set_bind_group(0, &self.compose_bind, &[]);
-            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, FFT_LAYERS);
+            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, layers);
         }
         timers.end(encoder, Region::FftCompose);
     }

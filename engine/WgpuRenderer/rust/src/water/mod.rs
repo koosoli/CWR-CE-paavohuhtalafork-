@@ -20,8 +20,11 @@ const GRID_N: u32 = 192;
 // rather than CPU-owned particles: only crests that pass the FFT breaking test reach
 // the fragment stage, so the cost scales with visible whitewater rather than a CPU
 // particle list.
-// Matches the compact 45x45 Godot-style emitter in whitewater_render.wgsl.
-const WHITEWATER_PARTICLE_COUNT: u32 = 2_025;
+// Matches the 128x128 world-anchored emitter in whitewater_render.wgsl. The old 45x45 field
+// covered a 10 m box around the camera, so breaking waves further out shed no spray at all.
+// Instances whose source is not breaking collapse to alpha 0 and are discarded in the fragment
+// stage, so the cost still scales with visible whitewater rather than with this count.
+const WHITEWATER_PARTICLE_COUNT: u32 = 16_384;
 
 // A flat GPU CDLOD water surface: the shared grid mesh instanced per selected node,
 // placed on a horizontal plane at the frame's sea level, drawn after opaque terrain +
@@ -278,6 +281,12 @@ impl Water {
             // x = debug view (0 = off), y = spray gate, z = spray activity, w = viewport
             // height in pixels (1080 fallback; the C++ side pushes the real height each frame).
             debug_params: [0.0, 0.0, 0.0, 1080.0],
+            // WTR-LOOK — x = energy model (1 = physical composite), y/z/w = glitter / SSS /
+            // reflection gains. The C++ side pushes the Water tab's values each frame.
+            look_params: [1.0, 1.0, 1.0, 1.0],
+            // WTR-LOOK — x = physical sea-state coupling on, y = residual spectrum amplitude
+            // (1.0 because the coupling carries the energy), z = low quality off, w = shore gain.
+            sea_params: [1.0, 1.0, 0.0, 1.0],
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 
@@ -1203,18 +1212,29 @@ mod tests {
         assert_eq!(normal & FREEZE_FOAM, 0);
     }
 
-    // WTR-003 — the debug-view selector rides WgrWaterParams.debug_params.x, appended at the
-    // struct end so every existing lane keeps its offset. Lock the field offset (192) and the
-    // total size (208) so a reorder on either side of the FFI boundary fails here, not as a
-    // silent UBO misread in the shader.
+    // WTR-003 / WTR-LOOK — the debug-view selector rides WgrWaterParams.debug_params.x and the
+    // surface energy model rides look_params.x, both appended at the struct end so every existing
+    // lane keeps its offset. Lock the field offsets (192, 208) and the total size (224) so a
+    // reorder on either side of the FFI boundary fails here, not as a silent UBO misread in the
+    // shader.
     #[test]
     fn debug_params_appended_without_shifting_existing_lanes() {
         use crate::ffi::WgrWaterParams;
-        assert_eq!(std::mem::size_of::<WgrWaterParams>(), 208);
+        assert_eq!(std::mem::size_of::<WgrWaterParams>(), 240);
         assert_eq!(
             std::mem::offset_of!(WgrWaterParams, debug_params),
             192,
             "debug_params must sit at the struct end so earlier lanes keep their offsets"
+        );
+        assert_eq!(
+            std::mem::offset_of!(WgrWaterParams, look_params),
+            208,
+            "look_params must be appended after debug_params, not inserted before it"
+        );
+        assert_eq!(
+            std::mem::offset_of!(WgrWaterParams, sea_params),
+            224,
+            "sea_params must be appended after look_params, not inserted before it"
         );
         // flow_direction_speed (the previous last field) must not have moved.
         assert_eq!(

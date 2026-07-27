@@ -768,6 +768,23 @@ struct WgrWaterParams
      * existing lanes keep their offsets; the sizeof assert below moves 192 -> 208 in lockstep
      * with the Rust side. */
     WgrVec4 debug_params;
+    /* WTR-LOOK — surface energy model + its gains (the Water tab "Surface look" section).
+     * x selects the composite: 0 = legacy (capped Fresnel, 0.12x specular, SSS multiplied by the
+     * body colour), 1 = physical (uncapped Fresnel, variance-filtered GGX sun glitter at full
+     * radiance, SSS as its own light path). y/z/w are artist gains on glitter / subsurface
+     * scattering / environment reflection, 1.0 = the model's own energy. Appended at the struct
+     * end so every earlier lane keeps its offset; sizeof moves 208 -> 224 with the Rust side. */
+    WgrVec4 look_params;
+    /* WTR-LOOK — sea state, quality and shore-wave lanes.
+     * x: 1 = the amplitude control drives a physically coupled sea state (cascade wind speed and
+     *    tile lengths scale together, so a taller sea is also a LONGER sea), 0 = legacy uniform
+     *    variance scaling (taller waves at an unchanged wavelength — steepness, not sea state).
+     * y: residual spectrum amplitude the h0 pass should apply. 1.0 when the coupling above already
+     *    carries the energy; the raw amplitude in legacy mode. Squared by the spectrum (variance).
+     * z: 1 = low water quality (drops SSR, planar reflection, bicubic filtering and the two
+     *    smallest cascades in the water fragment shader). 0 = full quality.
+     * w: shore breaker gain. Appended at the struct end; sizeof moves 224 -> 240 with Rust. */
+    WgrVec4 sea_params;
 };
 
 struct WgrWaterCascadeConfig
@@ -1044,7 +1061,7 @@ static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match 
 static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassParams) == 1616, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrWaterParams) == 208, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterParams) == 240, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 40, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterInteractionEvent) == 64 && alignof(WgrWaterInteractionEvent) == 16, "WgrWaterInteractionEvent must match Rust");

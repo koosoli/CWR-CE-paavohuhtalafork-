@@ -182,12 +182,68 @@ static float ReferenceSurfaceHeight(float x, float z, float time, float amplitud
 // (the spectrum shader reads cfg.spectrum_seed, not fft_control.y). 0 leaves the tuned
 // preset seeds untouched; any other value xors every cascade's seed so the whole h0
 // field re-randomises deterministically.
-static void ApplyCascadePreset(WgrRenderer* renderer, int preset, uint32_t seedXor = 0)
+// WTR-LOOK — physical sea-state coupling.
+//
+// A wind sea's height and its wavelength are not independent: JONSWAP gives the Phillips
+// constant alpha ~ U^0.44 and the peak frequency omega_p ~ U^(-1/3) at a fixed fetch, so the
+// total variance m0 ~ alpha / omega_p^4 ~ U^1.773 and the significant height H_s = 4*sqrt(m0)
+// ~ U^0.887. Inverting that gives the wind multiplier needed for a height multiplier, so the
+// Water-tab amplitude stays linear in wave height:
+//
+//     U_mult = amp^(1/0.887) = amp^1.127
+//
+// The peak wavelength then follows for free: lambda_p ~ 1/omega_p^2 ~ U^(2/3) = amp^0.75. That
+// is the whole point — a rougher sea becomes a LONGER sea, instead of the same short waves
+// stretched vertically into unrealistic chop.
+// The coupling is referenced to the authored default amplitude, so leaving the slider where the
+// preset put it reproduces the tuned look byte-for-byte and only *moving* it changes the sea
+// state. Without this the default 0.4 would be read as a near-calm 3.5 m/s wind and silently
+// reshape the shipped ocean.
+static constexpr float kSeaStateReferenceAmplitude = 0.40f;
+
+// Only ever GROWS the sea. Below the reference amplitude the residual spectrum scale below
+// handles it instead, because driving the wind down would shorten the waves (chop) and, at
+// amplitude 0, a clamped wind floor still produced a live sea — calm water became unreachable.
+static float SeaStateWindMultiplier(float amplitude)
+{
+    const float ratio = std::max(amplitude, 0.0f) / kSeaStateReferenceAmplitude;
+    return std::max(std::pow(ratio, 1.127f), 1.0f);
+}
+
+// Residual variance scale handed to the h0 pass. Below the reference amplitude this is just the
+// old linear control, so 0 is dead flat and the calm end of the slider behaves exactly as it used
+// to. At and above the reference it holds, and the wind multiplier takes over — which is what
+// makes a rougher sea grow LONGER waves instead of merely taller ones.
+//
+// Getting this wrong is what broke the default look: returning 1.0 here while the wind multiplier
+// was also 1.0 dropped the reference amplitude's own 0.4 factor, so every wave came out 2.5x too
+// tall at the shipped setting.
+static float SeaStateResidualAmplitude(float amplitude)
+{
+    return std::min(std::max(amplitude, 0.0f), kSeaStateReferenceAmplitude);
+}
+
+// The cascade domains have to grow with the peak wavelength, or the longer swell simply does not
+// fit in the tile and wraps. Scaling them together keeps the spectral peak at the same relative
+// position inside each cascade, so no new aliasing is introduced.
+//
+// Clamped to >= 1: the domain may grow but must never shrink. A calmer sea has shorter waves, but
+// shrinking the tile to match would multiply how often it repeats across a long view and make the
+// ocean read as a visible grid — the one artefact a large domain is there to prevent. Keeping the
+// tile large merely leaves the low-wavenumber end of the spectrum quiet, which costs nothing.
+static float SeaStateLengthMultiplier(float amplitude)
+{
+    const float ratio = std::max(amplitude, 0.0f) / kSeaStateReferenceAmplitude;
+    return std::max(std::pow(ratio, 0.75f), 1.0f);
+}
+
+static void ApplyCascadePreset(WgrRenderer* renderer, int preset, uint32_t seedXor = 0,
+                               float windMultiplier = 1.0f, float lengthMultiplier = 1.0f)
 {
     WgrWaterCascadeConfig c{};
     c.enabled = 1;
-    // Match GodotOceanWaves Water.map_size and the renderer allocation in fft.rs.
-    c.resolution = 1024;
+    // Informational only — the actual allocation is FFT_RESOLUTION in fft.rs (512).
+    c.resolution = 512;
     c.displacement_scale = 1.0f;
     c.horiz_displacement_scale = 1.0f;
     c.normal_scale = 1.0f;
@@ -208,10 +264,16 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset, uint32_t seedX
     // Push one cascade config, applying the WTR-001 dev seed override (xor) so a non-zero
     // override re-randomises the whole h0 field deterministically while seedXor == 0 leaves
     // the tuned preset seeds untouched.
-    auto push = [renderer, seedXor](uint32_t index, const WgrWaterCascadeConfig& cfg)
+    auto push = [renderer, seedXor, windMultiplier, lengthMultiplier](uint32_t index,
+                                                                      const WgrWaterCascadeConfig& cfg)
     {
         WgrWaterCascadeConfig out = cfg;
         out.spectrum_seed ^= seedXor;
+        // Sea-state coupling: wind speed drives the JONSWAP energy AND the peak frequency, and
+        // the tile has to grow with the peak wavelength so the longer swell still fits.
+        out.wind_speed *= windMultiplier;
+        out.tile_length_x *= lengthMultiplier;
+        out.tile_length_y *= lengthMultiplier;
         wgr_water_set_cascade_config(renderer, index, &out);
     };
 
@@ -317,10 +379,15 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // 3. Interaction & particle impulse padding: maximum vessel/interaction splash impulse height (+/- 1.5m)
     // 4. Safety margin (1.25x): guarantees bounding spheres never cull crests near frustum edges.
     constexpr float OffMapSurface = 0.0f;
+    // 5. Shore breakers: the shoaling train adds up to ~0.62 * wave_amp * shoreGain * 3.2 (its
+    //    Green's-law gain) on top of the offshore FFT crest, so the coastal band needs its own
+    //    term or near-beach nodes get culled at exactly the moment their waves are tallest.
     const float vertDisplacement = _params.wave_amp * 1.8f;
     const float horizChoppiness = _params.wave_amp * 1.2f;
+    const float shoreBreaker = _params.wave_amp * 2.0f * std::max(_engine.WaterLook().shoreWaveGain, 0.0f);
     const float interactionImpulse = 1.5f;
-    const float conservativeBound = (vertDisplacement + horizChoppiness * 0.5f + interactionImpulse) * 1.25f;
+    const float conservativeBound =
+        (vertDisplacement + horizChoppiness * 0.5f + shoreBreaker + interactionImpulse) * 1.25f;
     const float crestPadding = std::max(conservativeBound, 3.5f);
     auto leafBounds = [&](int ox, int oz, int span, float& mn, float& mx)
     {
@@ -502,10 +569,24 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         // large enough that its own pattern does not read as a visible tiled square.
         _params.fft_cascade_lengths = {97.0f, 257.0f, 683.0f, 1777.0f};
     }
+    // WTR-LOOK — sea-state coupling. In coupled mode the amplitude becomes a wind speed and a
+    // matching set of cascade lengths, so a rougher sea grows longer waves rather than steeper
+    // ones, and the spectrum pass is told to apply no residual amplitude of its own. Legacy mode
+    // keeps the old behaviour (uniform variance scaling at unchanged wavelengths) for A/B.
+    const float windMultiplier = look.seaStateCoupling ? SeaStateWindMultiplier(look.waveAmp) : 1.0f;
+    const float lengthMultiplier = look.seaStateCoupling ? SeaStateLengthMultiplier(look.waveAmp) : 1.0f;
+    if (look.seaStateCoupling)
+    {
+        _params.fft_cascade_lengths.x *= lengthMultiplier;
+        _params.fft_cascade_lengths.y *= lengthMultiplier;
+        _params.fft_cascade_lengths.z *= lengthMultiplier;
+        _params.fft_cascade_lengths.w *= lengthMultiplier;
+    }
     // WTR-001: per-frame preset push carries the dev-tab seed override (>= 0) as the xor
     // so toggling it live re-randomises h0 deterministically on the next spectrum rebuild.
     ApplyCascadePreset(_renderer, look.cascadePreset,
-                       fz.fftSeed >= 0 ? static_cast<uint32_t>(fz.fftSeed) : 0u);
+                       fz.fftSeed >= 0 ? static_cast<uint32_t>(fz.fftSeed) : 0u, windMultiplier,
+                       lengthMultiplier);
 
     // y gates the GPU whitewater/spray billboard pass and z controls its activity.
     // It is deliberately off by default: ordinary rifle impacts should keep their
@@ -515,6 +596,16 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // height instead of a hardcoded 1080.
     _params.debug_params = {static_cast<float>(look.debugView), look.rifleImpactSpray ? 1.0f : 0.0f,
                             look.waterSplashParticleActivity, static_cast<float>(std::max(_engine.Height(), 1))};
+    // WTR-LOOK — surface energy model + artist gains. x selects the composite (0 legacy,
+    // 1 physical); y/z/w gain the sun glitter, subsurface scattering and environment reflection.
+    _params.look_params = {look.physicalLook ? 1.0f : 0.0f, look.glitterGain, look.sssGain,
+                           look.reflectionGain};
+    // WTR-LOOK — sea state / quality / shore lanes. y is the residual spectrum amplitude: 1.0 in
+    // coupled mode (the wind speed and cascade lengths above already carry the energy), the raw
+    // slider in legacy mode.
+    _params.sea_params = {look.seaStateCoupling ? 1.0f : 0.0f,
+                          look.seaStateCoupling ? SeaStateResidualAmplitude(look.waveAmp) : look.waveAmp,
+                          look.lowQuality ? 1.0f : 0.0f, look.shoreWaveGain};
     // Runtime proof that the Water tab reaches the actual renderer. This is deliberately
     // edge-triggered: one log row per edited amplitude, not one row per frame.
     static float lastLoggedWaveAmp = -1.0f;
@@ -650,10 +741,35 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         if (centreIx >= 0 && centreIz >= 0 && centreIx < terrainRange && centreIz < terrainRange)
         {
             localDepth = std::max(land.GetSeaLevel() - land.GetHeight(centreIz, centreIx), 0.0f);
+            // The shore direction used to come from an 8-way ray search, which snapped every node
+            // to one of 8 directions. Adjacent CDLOD nodes landed on different 45-degree buckets,
+            // so the breaker train changed direction abruptly at node boundaries and left a
+            // visible crease along the coast. A central-difference gradient of the seabed height
+            // is continuous in the node centre, so neighbouring nodes now agree and the crease is
+            // gone. Uphill (toward shallower water) is the direction the waves run.
+            auto sampleHeight = [&](int x, int z)
+            {
+                return land.GetHeight(std::clamp(z, 0, terrainRange - 1), std::clamp(x, 0, terrainRange - 1));
+            };
+            // A multi-cell radius smooths out single-cell terrain noise so the train direction is
+            // stable rather than jittering along a rough seabed.
+            constexpr int kGradientRadius = 4;
+            const float gx = sampleHeight(centreIx + kGradientRadius, centreIz) -
+                             sampleHeight(centreIx - kGradientRadius, centreIz);
+            const float gz = sampleHeight(centreIx, centreIz + kGradientRadius) -
+                             sampleHeight(centreIx, centreIz - kGradientRadius);
+            const float gradientLength = std::sqrt(gx * gx + gz * gz);
+            if (gradientLength > 1.0e-5f)
+            {
+                dirX = gx / gradientLength;
+                dirZ = gz / gradientLength;
+            }
+            // Distance to land is still useful as a band, but it no longer sets the direction, so
+            // the coarse 8-way probe is fine here.
             constexpr int directions[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}};
             for (const auto& d : directions)
             {
-                for (int step = 2; step <= 24; step += 2)
+                for (int step = 2; step <= 64; step += 2)
                 {
                     const int x = centreIx + d[0] * step;
                     const int z = centreIz + d[1] * step;
@@ -665,20 +781,24 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
                     {
                         const float dx = static_cast<float>(d[0] * step) * land.GetTerrainGrid();
                         const float dz = static_cast<float>(d[1] * step) * land.GetTerrainGrid();
-                        const float distance = std::sqrt(dx * dx + dz * dz);
-                        if (distance < bestDistance)
-                        {
-                            bestDistance = distance;
-                            dirX = dx / distance;
-                            dirZ = dz / distance;
-                        }
+                        bestDistance = std::min(bestDistance, std::sqrt(dx * dx + dz * dz));
                         break;
                     }
                 }
             }
         }
-        const float shoreDistanceFade = std::clamp((48.0f - bestDistance) / 36.0f, 0.0f, 1.0f);
-        const float shallowFade = std::clamp((8.0f - localDepth) / 6.0f, 0.0f, 1.0f);
+        // Waves start feeling the bottom at roughly half their wavelength, which for open-ocean
+        // swell is tens of metres — not the 8 m this used to use. Widening the band is what makes
+        // a swell visibly run in toward the beach instead of appearing right at the waterline.
+        // smoothstep rather than a linear clamp so the band's own edges do not become a second
+        // crease at node boundaries.
+        auto smoothFade = [](float edge0, float edge1, float x)
+        {
+            const float t = std::clamp((x - edge0) / (edge1 - edge0), 0.0f, 1.0f);
+            return t * t * (3.0f - 2.0f * t);
+        };
+        const float shoreDistanceFade = smoothFade(220.0f, 20.0f, bestDistance);
+        const float shallowFade = smoothFade(30.0f, 2.0f, localDepth);
         node.shore_direction = {dirX, dirZ};
         node.shore_factor = shoreDistanceFade * shallowFade;
         _selected.push_back(node);

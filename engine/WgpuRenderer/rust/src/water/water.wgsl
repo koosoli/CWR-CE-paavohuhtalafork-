@@ -48,6 +48,8 @@ struct WaterParams {
     fft_cascade_lengths: vec4<f32>, // stable world-space cascade lengths
     flow_direction_speed: vec4<f32>, // x/z direction, m/s, water kind (0 ocean, 1 river)
     debug_params: vec4<f32>, // WTR-003: x = debug view (0 = normal), y = spray gate, z = spray activity, w = viewport height px
+    look_params: vec4<f32>,  // WTR-LOOK: x = energy model (0 legacy, 1 physical), y = glitter gain, z = SSS gain, w = reflection gain
+    sea_params: vec4<f32>,   // WTR-LOOK: x = sea-state coupling, y = residual spectrum amp, z = low quality, w = shore breaker gain
 };
 
 // Must match the render mesh in water/mod.rs.  It is intentionally denser than
@@ -176,36 +178,77 @@ fn gerstner_normal(p_in: vec2<f32>, dist: f32) -> vec3<f32> {
 // Near a coastline, shallow-water waves refract and their crests run toward land.
 // This is a local breaker train layered over the unchanged offshore FFT, avoiding
 // seams from attempting to rotate a global FFT lookup.
-fn shore_breaker_disp(p: vec2<f32>, shore_dir: vec2<f32>, shore_factor: f32) -> vec3<f32> {
-    let factor = clamp(shore_factor, 0.0, 1.0);
-    if (factor <= 0.001) { return vec3<f32>(0.0); }
+// Shoaling. As a swell runs into shallowing water its group speed drops, so its energy piles up:
+// Green's law gives height ~ depth^(-1/4) while the wavelength shortens. `shore_factor` already
+// ramps 0 (deep water) -> 1 (the beach), so it stands in for that depth coordinate. The train also
+// tightens as it shoals, which is what turns a long low swell into a steep short breaker.
+struct ShoreWave {
+    amp_a: f32,
+    amp_b: f32,
+    k_a: f32,
+    k_b: f32,
+    phase_a: f32,
+    phase_b: f32,
+    dir: vec2<f32>,
+};
+
+fn shore_wave_setup(p: vec2<f32>, shore_dir: vec2<f32>, factor: f32) -> ShoreWave {
     let d = normalize(shore_dir + vec2<f32>(1e-4, 0.0));
     let lateral = vec2<f32>(-d.y, d.x);
     let along = dot(p, d);
     let across = dot(p, lateral);
-    let phase_a = along * 0.62 - wp.time * 2.35 + sin(across * 0.09) * 0.42;
-    let phase_b = along * 1.05 - wp.time * 3.05 + sin(across * 0.17 + 1.7) * 0.28;
-    let amp_a = 0.24 * wp.wave_amp * factor;
-    let amp_b = 0.075 * wp.wave_amp * factor;
-    let vertical = amp_a * sin(phase_a) + amp_b * sin(phase_b);
-    let horizontal = amp_a * 0.32 * cos(phase_a) + amp_b * 0.18 * cos(phase_b);
-    return vec3<f32>(d.x * horizontal, vertical, d.y * horizontal);
+    // Wavenumbers: ~57 m offshore swell compressing to ~24 m at the break (k = 2*pi/lambda).
+    let k_a = mix(0.11, 0.26, factor);
+    let k_b = mix(0.21, 0.47, factor);
+    // Green's law height gain, ~3.2x from the outer band to the break.
+    let shoal = 1.0 + factor * factor * 2.2;
+    let gain = wp.wave_amp * factor * shoal * max(wp.sea_params.w, 0.0);
+    var w: ShoreWave;
+    w.dir = d;
+    w.k_a = k_a;
+    w.k_b = k_b;
+    // Crests bend to follow the depth contours, so the lateral wobble stays gentle.
+    w.phase_a = along * k_a - wp.time * 2.05 + sin(across * 0.045) * 0.50;
+    w.phase_b = along * k_b - wp.time * 2.70 + sin(across * 0.085 + 1.7) * 0.32;
+    w.amp_a = 0.62 * gain;
+    w.amp_b = 0.19 * gain;
+    return w;
+}
+
+fn shore_breaker_disp(p: vec2<f32>, shore_dir: vec2<f32>, shore_factor: f32) -> vec3<f32> {
+    let factor = clamp(shore_factor, 0.0, 1.0);
+    if (factor <= 0.001) { return vec3<f32>(0.0); }
+    let w = shore_wave_setup(p, shore_dir, factor);
+    // A shoaling wave is not a sine: the crest sharpens and the trough flattens. The second
+    // harmonic (a Stokes-style skew, growing with the shoaling factor) buys that peaked profile
+    // for one extra sin() rather than a solver.
+    let skew = 0.34 * factor;
+    let vertical = w.amp_a * (sin(w.phase_a) + skew * sin(2.0 * w.phase_a)) +
+        w.amp_b * sin(w.phase_b);
+    // Horizontal throw pitches the crest forward toward the beach as it steepens.
+    let horizontal = w.amp_a * (0.34 + 0.30 * factor) * cos(w.phase_a) + w.amp_b * 0.18 * cos(w.phase_b);
+    return vec3<f32>(w.dir.x * horizontal, vertical, w.dir.y * horizontal);
 }
 
 fn shore_breaker_normal(p: vec2<f32>, shore_dir: vec2<f32>, shore_factor: f32) -> vec3<f32> {
     let factor = clamp(shore_factor, 0.0, 1.0);
     if (factor <= 0.001) { return vec3<f32>(0.0, 1.0, 0.0); }
-    let d = normalize(shore_dir + vec2<f32>(1e-4, 0.0));
-    let lateral = vec2<f32>(-d.y, d.x);
-    let along = dot(p, d);
-    let across = dot(p, lateral);
-    let phase_a = along * 0.62 - wp.time * 2.35 + sin(across * 0.09) * 0.42;
-    let phase_b = along * 1.05 - wp.time * 3.05 + sin(across * 0.17 + 1.7) * 0.28;
-    let slope = (0.24 * 0.62 * cos(phase_a) + 0.075 * 1.05 * cos(phase_b)) * wp.wave_amp * factor;
-    return normalize(vec3<f32>(-d.x * slope, 1.0, -d.y * slope));
+    let w = shore_wave_setup(p, shore_dir, factor);
+    let skew = 0.34 * factor;
+    // d/d(along) of the displacement above.
+    let slope = w.amp_a * w.k_a * (cos(w.phase_a) + 2.0 * skew * cos(2.0 * w.phase_a)) +
+        w.amp_b * w.k_b * cos(w.phase_b);
+    return normalize(vec3<f32>(-w.dir.x * slope, 1.0, -w.dir.y * slope));
 }
 
 fn texture_bicubic_displacement(uv: vec2<f32>, layer: i32) -> vec4<f32> {
+    // Low quality: one hardware bilinear tap instead of the four-tap B-spline reconstruction.
+    // The bicubic filters run per cascade in both the vertex and fragment stages, so they are the
+    // bulk of the water draw — this is where a performance mode has to cut, not in the planar
+    // reflection (measured at 0.34 ms of a 30 ms frame).
+    if (wp.sea_params.z > 0.5) {
+        return textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0);
+    }
     let dims = vec2<f32>(textureDimensions(fft_displacement));
     let inv_x = 1.0 / dims.x;
     let inv_y = 1.0 / dims.y;
@@ -235,9 +278,19 @@ fn fft_sample(xz: vec2<f32>, layer: i32) -> vec4<f32> {
     let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
     // Preserve the Water-tab convention: scale > 1 means longer waves.  The
     // spectrum stays stable; only the world-space lookup is dilated.
-    let scaled_xz = xz / max(wp.wave_scale, 0.01);
+    let scale = max(wp.wave_scale, 0.01);
+    let scaled_xz = xz / scale;
     let uv = fft_aperiodic_uv(scaled_xz, length_m, layer, wp.warp_amp);
-    return texture_bicubic_displacement(uv, layer);
+    let s = texture_bicubic_displacement(uv, layer);
+    // Dilating the lookup changes the wavelength but NOT the stored displacement, so the control
+    // used to alter steepness instead of scale: at 0.25 the waves came out four times shorter at
+    // unchanged height, which is why the surface went spiky. Scaling the displacement by the same
+    // factor keeps H/lambda — the actual wave steepness — constant, so the control does what its
+    // name says and only resizes the sea.
+    //
+    // The slope field needs no such correction: h'(x) = S*h(x/S) differentiates to h'(x/S), so
+    // sampling fft_dynamics at the already-dilated coordinate is correct as it stands.
+    return vec4<f32>(s.xyz * scale, s.w);
 }
 // WTR-031 / WTR-032 — Projected footprint cascade visibility weights.
 // Calculates separate weights for geometry, normal detail, and foam based on projected pixel size.
@@ -319,6 +372,9 @@ fn texture_bicubic_dynamics(uv: vec2<f32>, layer: i32) -> vec4<f32> {
 fn sample_fft_dynamics_filtered(xz: vec2<f32>, layer: i32, length_m: f32) -> vec4<f32> {
     let scaled_xz = xz / max(wp.wave_scale, 0.01);
     let uv = fft_aperiodic_uv(scaled_xz, length_m, layer, wp.warp_amp);
+    if (wp.sea_params.z > 0.5) {
+        return textureSampleLevel(fft_dynamics, fft_samp, uv, layer, 0.0);
+    }
     return texture_bicubic_dynamics(uv, layer);
 }
 
@@ -1011,8 +1067,18 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let shallow_col = select(shallow, shallow_preset, length(shallow) <= 0.01);
     let deep_col = select(deep, deep_preset, length(deep) <= 0.01);
 
-    let depth_tint = 1.0 - exp(-water_depth * max(wp.color_ext * 2.2, 0.15));
-    let ocean_body = mix(shallow_col, deep_col, depth_tint);
+    // The old ramp floored the extinction at 0.15/m, which saturated to the deep colour by ~20 m
+    // of column depth no matter where the clarity slider sat — so a bay and the open ocean were
+    // the same navy and the turquoise only survived in the last few metres at the waterline.
+    // Letting color_ext actually control the ramp gives a gradient that reads out to ~60 m, which
+    // is the coast-turquoise -> offshore-blue transition you actually see over a real shelf.
+    let depth_tint = 1.0 - exp(-water_depth * max(wp.color_ext, 0.004));
+    // Deep water also darkens, not just shifts hue: absorption removes total radiance, so the far
+    // body is a deeper, denser blue rather than a lighter navy tint of the same brightness. The
+    // falloff is deliberately front-loaded (sqrt rather than squared) so the surface goes dark
+    // quickly as the bottom drops away, instead of staying bright until it is already far out.
+    let deep_darkening = mix(1.0, 0.30, sqrt(depth_tint));
+    let ocean_body = mix(shallow_col, deep_col, depth_tint) * deep_darkening;
 
     let amb_ao = sky_vis_ao(in.base_xz);
     let ndl = max(dot(n, l), 0.0);
@@ -1037,9 +1103,18 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     }
     let refl_dir = reflect(normalize(in.world_pos), n);
     let normal_variation = length(dpdx(n)) + length(dpdy(n));
-    let ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
+    // WTR-LOOK — low water quality drops the two screen-space reflection sources, which are the
+    // dominant fragment cost here (SSR marches the depth buffer, planar samples a second render
+    // of the scene). The sky/environment reflection below is a single texture fetch and stays, so
+    // the water is still reflective — it just loses parallax-correct scene reflections.
+    let low_quality = wp.sea_params.z > 0.5;
+    var ssr = vec4<f32>(0.0);
+    var planar_refl = vec4<f32>(0.0);
+    if (!low_quality) {
+        ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
+        planar_refl = planar_reflection(in.world_pos, base_normal, roughness);
+    }
     refl = mix(refl, ssr.rgb, ssr.a);
-    let planar_refl = planar_reflection(in.world_pos, base_normal, roughness);
     // Retain stable planar parallax, but keep its cloud layer deliberately softer
     // and less dominant than the sky/environment reflection.
     refl = mix(refl, planar_refl.rgb, planar_refl.a * 0.68 * (1.0 - ssr.a * 0.80));
@@ -1059,15 +1134,30 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let rgb_transmittance = beer_lambert_attenuation(path_length);
     let physical_fresnel = schlick_fresnel(physical_f0, ndv);
     let transmission = (1.0 - physical_fresnel) * 0.85;
-    let transmitted = mix(ocean_body * (1.0 - rgb_transmittance * 0.4) + rgb * rgb_transmittance, refracted.color * rgb_transmittance, refracted.valid * transmission);
+    let legacy_transmitted = mix(ocean_body * (1.0 - rgb_transmittance * 0.4) + rgb * rgb_transmittance, refracted.color * rgb_transmittance, refracted.valid * transmission);
 
-    // Reflective but NOT a mirror: cap reflection weight to max 0.72 so deep navy blue ocean color always shines through
-    // Deep wind-driven ocean should retain a navy/teal body. Calm water stays
-    // reflective, while FFT slope energy reduces the SSR/planar mirror contribution.
+    // WTR-LOOK — physical body radiance: the water volume lit by ambient + sun, with the seabed
+    // showing through weighted by the RGB transmittance instead of an authored lerp. The sun's
+    // lambertian term belongs here (it is body scattering, not a separate light add), so the
+    // direct-light block below contributes only specular + subsurface scattering and nothing is
+    // counted twice.
+    let body_radiance = ocean_body * (sun_ambient * amb_ao + sun_diffuse * ndl * sun_vis * (1.0 - physical_fresnel));
+    let seabed_through = refracted.color * rgb_transmittance + body_radiance * (1.0 - rgb_transmittance);
+    let physical_transmitted = mix(body_radiance, seabed_through, refracted.valid);
+
+    let physical_look = wp.look_params.x > 0.5;
+    let transmitted = select(legacy_transmitted, physical_transmitted, physical_look);
+
+    // Legacy: the reflection weight was capped at 0.43..0.72 and scaled DOWN as the sea got
+    // rougher. That cap is what made the surface read as blue plastic — real water approaches a
+    // mirror at grazing incidence. Physical mode lets Fresnel run uncapped and fixes the look by
+    // fixing what is reflected, not by hiding the reflection.
     let open_ocean_activity = clamp(max(state.slope_variance * 2.8, wp.wave_amp * 0.70), 0.0, 1.0);
     let reflection_scale = mix(0.72, 0.43, open_ocean_activity);
     let reflection_cap = mix(0.72, 0.52, open_ocean_activity);
-    let reflection_weight = clamp(physical_fresnel * reflection_scale + 0.012, 0.012, reflection_cap);
+    let legacy_reflection_weight = clamp(physical_fresnel * reflection_scale + 0.012, 0.012, reflection_cap);
+    let physical_reflection_weight = clamp(physical_fresnel * max(wp.look_params.w, 0.0), 0.0, 1.0);
+    let reflection_weight = select(legacy_reflection_weight, physical_reflection_weight, physical_look);
     rgb = mix(transmitted, refl, reflection_weight);
 
     let is_underwater = wp.fft_control.w > 0.5;
@@ -1146,13 +1236,42 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let godot_diffuse = mix((sss_height + sss_near) * GODOT_SSS_MODIFIER /
         (1.0 + light_mask) + vec3<f32>(lambertian), godot_foam_color, godot_foam_factor) *
         (1.0 - godot_fresnel) * sun_vis;
-    // Godot applies these light accumulators inside its material pipeline. Our HDR
-    // renderer stores physical sun radiance directly, so adding the reference output
-    // raw would bypass the water-body albedo and turn the surface white. Preserve the
-    // exact reference lobe/crest response, but place diffuse through the ocean body
-    // and keep the same restrained HDR glint energy used by the former GGX path.
-    rgb = rgb + ocean_body * sun_diffuse * godot_diffuse;
-    rgb = rgb + sun_diffuse * (godot_specular * 0.12);
+    if (physical_look) {
+        // --- WTR-LOOK sun glitter: GGX evaluated at the variance-filtered roughness, full radiance.
+        // water_roughness() already folds in the slope variance that cascade filtering removed, so a
+        // near crest gets a tight sparkle while the horizon settles into a broad stable sheen. The
+        // reference's fixed 0.4 roughness can do neither, and aliases badly with distance — this is
+        // the term where we go past it rather than merely matching it.
+        let spec_alpha = clamp(roughness, 0.075, 0.45);
+        let ndh = max(dot(n, halfway), 0.0);
+        let vdh = max(dot(v, halfway), 0.0);
+        let d_term = godot_ggx_distribution(ndh, spec_alpha);
+        let vis_term = smith_schlick_g1(godot_nl, spec_alpha) * smith_schlick_g1(godot_nv, spec_alpha) /
+            max(4.0 * godot_nl * godot_nv, 1e-4);
+        let f_term = schlick_fresnel(physical_f0, vdh);
+        // Clamped so one sub-pixel crest cannot fire a runaway speck into the bloom.
+        let glitter = min(d_term * vis_term * f_term * godot_nl, 64.0);
+        rgb = rgb + sun_diffuse * glitter * sun_vis * max(wp.look_params.y, 0.0);
+
+        // --- Subsurface scattering on its own light path. The reference scatters near-white,
+        // green-biased light out of the wave volume and never multiplies it by the body colour.
+        // Multiplying it by a navy deep tint (linear red ~0.001) is what erased the backlit crest
+        // glow. The 0.35 normaliser maps the reference's Godot-side energy onto our HDR sun
+        // radiance so a gain of 1.0 is the intended look.
+        let sss = (sss_height + sss_near) / (1.0 + light_mask);
+        rgb = rgb + GODOT_SSS_MODIFIER * sun_diffuse * sss * (1.0 - physical_fresnel) * sun_vis *
+            max(wp.look_params.z, 0.0) * 0.35;
+        // Foam direct light is deliberately NOT added here: the foam block below replaces rgb
+        // wherever combined_foam is non-zero, so adding it twice would only brighten the seam.
+    } else {
+        // Legacy composite. Godot applies these light accumulators inside its material pipeline.
+        // Our HDR renderer stores physical sun radiance directly, so adding the reference output
+        // raw would bypass the water-body albedo and turn the surface white. This path preserved
+        // the reference lobe/crest response but placed diffuse through the ocean body and kept a
+        // restrained 0.12 glint — which is precisely what suppressed the sun glitter.
+        rgb = rgb + ocean_body * sun_diffuse * godot_diffuse;
+        rgb = rgb + sun_diffuse * (godot_specular * 0.12);
+    }
 
     // Artistic darkening of shadowed water for readability (dims the ambient/sky term
     // too, which the pure sun-removal above does not). 0 = physical (sun-only).
