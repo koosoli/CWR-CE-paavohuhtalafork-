@@ -1,4 +1,20 @@
-struct Params { time: f32, _pad: vec3<f32> };
+// cam_above is the camera's height above the local water surface in metres (negative = the eye is
+// submerged). inv_view_proj unprojects a forward-NDC point to a CAMERA-RELATIVE world position,
+// exactly as Frame.inv_view_proj does — it is inverted view-and-proj-separately in f64 on the Rust
+// side, because the reversed-Z infinite-far projection is ill-conditioned to invert in f32.
+struct Params {
+    time: f32,
+    cam_above: f32,
+    _pad: vec2<f32>,
+    inv_view_proj: mat4x4<f32>,
+    body_color_ext: vec4<f32>, // xyz = water deep body colour (gamma), w = extinction (1/m)
+};
+
+fn srgb_to_linear_v3(c: vec3<f32>) -> vec3<f32> {
+    let lo = c / 12.92;
+    let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(hi, lo, c <= vec3<f32>(0.04045));
+}
 @group(0) @binding(0) var scene_tex: texture_2d<f32>;
 @group(0) @binding(1) var scene_samp: sampler;
 @group(0) @binding(2) var scene_depth: texture_depth_2d;
@@ -40,6 +56,11 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sample_uv = select(in.uv, warped_uv, use_warp);
     let depth = select(base_depth, warped_depth, use_warp);
     let color = textureSampleLevel(scene_tex, scene_samp, sample_uv, 0.0).rgb;
+    // Restored to the original tuning. Deriving the fog from the water body colour and the
+    // per-pixel waterline both made this worse in practice, so this is back to exactly what it was
+    // before this session touched it. It is a crude approximation — `0.12/depth` is not a real path
+    // length and the caustic is a sine — and it should be REBUILT rather than retinted. Until then
+    // it is off by default (Water tab -> "Underwater effect").
     let path_m = clamp(0.12 / max(depth, 0.002), 0.5, 60.0);
     let transmittance = exp(-vec3<f32>(0.075, 0.035, 0.015) * path_m);
     let haze = vec3<f32>(0.018, 0.115, 0.145);

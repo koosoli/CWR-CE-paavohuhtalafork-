@@ -2460,6 +2460,11 @@ void DrawWaterTab()
     changed |= ImGui::SliderFloat("Shore breaker gain", &s.shoreWaveGain, 0.0f, 3.0f, "%.2f");
     ImGui::SetItemTooltip("Strength of the shoaling swell that runs in toward the beach. The train "
                           "grows (Green's law) and its crests sharpen as the water shallows.");
+    changed |= ImGui::Checkbox("Underwater effect", &s.underwaterEffect);
+    ImGui::SetItemTooltip("Fullscreen underwater compositor. OFF by default: it is still the original "
+                          "crude approximation (a 0.12/depth stand-in for path length, fixed RGB "
+                          "transmittance, a sine caustic) and reads worse than no effect. Needs "
+                          "rebuilding, not retuning.");
     changed |= ImGui::Checkbox("Low water quality (performance)", &s.lowQuality);
     ImGui::SetItemTooltip("Drops screen-space and planar reflections from the water shader — the two "
                           "dominant fragment costs. Sky reflection, waves, foam and refraction are "

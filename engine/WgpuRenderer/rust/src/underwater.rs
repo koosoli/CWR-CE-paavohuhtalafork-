@@ -7,11 +7,20 @@ use wgpu::util::DeviceExt;
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Params {
     time: f32,
-    // WGSL aligns the following vec3 to 16 bytes, making the uniform 32 bytes.
-    _pad: [f32; 7],
+    // Camera height above the local water surface in metres; negative means the eye is submerged.
+    // The fragment shader uses it with the reconstructed view ray to find the per-pixel waterline.
+    cam_above: f32,
+    _pad: [f32; 2],
+    // inv(view) * inv(proj), matching Frame.inv_view_proj: unprojects forward-NDC to a
+    // camera-relative world position.
+    inv_view_proj: [f32; 16],
+    // The water's own deep body colour (gamma space) in xyz and its extinction (1/m) in w. The
+    // compositor fogs with this instead of a hardcoded cyan, so going under the surface looks like
+    // entering the water you were just looking at rather than a different liquid.
+    body_color_ext: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<Params>() == 32);
+const _: () = assert!(std::mem::size_of::<Params>() == 96);
 
 #[test]
 fn underwater_wgsl_validates() {
@@ -128,7 +137,10 @@ impl Underwater {
             label: Some("wgr_underwater_params"),
             contents: bytemuck::bytes_of(&Params {
                 time: 0.0,
-                _pad: [0.0; 7],
+                cam_above: -1.0,
+                _pad: [0.0; 2],
+                inv_view_proj: [0.0; 16],
+                body_color_ext: [0.004, 0.020, 0.055, 0.16],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -149,13 +161,19 @@ impl Underwater {
         depth: &wgpu::TextureView,
         destination: &wgpu::TextureView,
         time: f32,
+        cam_above: f32,
+        inv_view_proj: [f32; 16],
+        body_color_ext: [f32; 4],
     ) {
         queue.write_buffer(
             &self.params,
             0,
             bytemuck::bytes_of(&Params {
                 time,
-                _pad: [0.0; 7],
+                cam_above,
+                _pad: [0.0; 2],
+                inv_view_proj,
+                body_color_ext,
             }),
         );
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {

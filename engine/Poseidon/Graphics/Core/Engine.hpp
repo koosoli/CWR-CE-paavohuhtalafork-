@@ -1262,18 +1262,31 @@ class Engine : public IGraphicsEngine
         // tint runs shallowColor -> deepColor with the water column depth (Beer-Lambert-like),
         // and the surface fades to transparent over the last coastFade metres of depth so the
         // coast is a soft wash over the wet beach, not a hard clip line.
-        float shallowColor[3] = {0.070f, 0.300f, 0.330f}; // muted coastal turquoise (gamma-space)
-        float deepColor[3] = {0.004f, 0.020f, 0.055f};    // near-black deep ocean blue
+        // Gamma-space. "Deep" means a SATURATED dark blue, not black: I drove these to near-zero
+        // chasing darker water and the result was a desaturated sea showing nothing but its own
+        // reflection. The body radiance is albedo x irradiance, so a near-black albedo renders as
+        // black no matter how bright the sun is. Real ocean blue comes from volumetric inscattering,
+        // which is far brighter than a surface albedo would suggest — so the body colour has to
+        // carry actual brightness in blue while staying dark in red.
+        float shallowColor[3] = {0.070f, 0.290f, 0.320f}; // coastal turquoise
+        float deepColor[3] = {0.014f, 0.105f, 0.240f};    // saturated deep ocean blue
         // 1/m extinction. Applied directly (the old 0.15/m floor saturated every bay to the deep
         // colour by ~20 m, so the turquoise only survived at the waterline); ~0.035 spreads the
         // shallow -> deep transition over ~60 m, which is what a real shelf looks like from above.
-        float colorExt = 0.090f;
+        // Raised so the turquoise is confined to genuinely shallow water: at 0.16/m the body is
+        // 55% toward the deep colour by 5 m and 96% by 20 m, instead of carrying cyan far out
+        // across the shelf.
+        float colorExt = 0.160f;
         float coastFade = 0.09f;  // m of column depth over which the shore ramps transparent->opaque
         // Coast foam + swash (Stage 2c): a churning foam band at the waterline, and a gentle
         // oscillation of the near-shore water edge in/out over the wet beach. Cosmetic only.
         float foamWidth = 1.12f;   // m of column depth the foam band spans (peaks ~1/4 in)
-        float foamIntensity = 0.55f;// foam brightness / coverage
-        float swashAmp = 0.47f;    // m the near-shore waterline oscillates in/out
+        float foamIntensity = 0.32f;// foam brightness / coverage
+        // m the near-shore waterline oscillates in/out. Reduced from 0.47: this shifts the
+        // EFFECTIVE column depth, so on a gently sloping beach half a metre of depth translates
+        // into several metres of horizontal waterline travel, which reads as the water pulling
+        // back off the shore and leaving a gap rather than as a wash.
+        float swashAmp = 0.14f;
         float swashSpeed = 0.018f; // swash cycles per second (very slow = long, lazy wash)
         // Terrain-side wet/intertidal band: near-flat ground just above the (swash-moved) sea
         // level reads as damp sand (darker albedo), registering with the water's edge. Shared
@@ -1314,6 +1327,12 @@ class Engine : public IGraphicsEngine
         // Dev-only performance mode: drops SSR, planar reflection and their scene sampling from
         // the water fragment shader. Off by default.
         bool lowQuality = false;
+
+        // Fullscreen underwater compositor. On by default, but still the original crude
+        // approximation (a `0.12/depth` stand-in for path length, fixed RGB transmittance and a sine
+        // caustic) — it needs rebuilding (WTR-110..140), not retuning. Switchable from the Water tab
+        // so it can be turned off while that work is outstanding, and so a rebuild can be A/B'd.
+        bool underwaterEffect = true;
 
         // WTR-036C / WTR-037 — FFT Cascade Preset (0 = Production Non-Harmonic 4-Cascade, 1 = GodotOceanWaves Reference Style, 2 = Legacy Harmonic 4-Cascade).
         // The GodotOceanWaves-derived TMA/JONSWAP setup is the gameplay default.  The

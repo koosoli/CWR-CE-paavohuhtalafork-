@@ -72,8 +72,19 @@ fn quad_corner(vertex: u32) -> vec2<f32> {
     return corners[vertex];
 }
 
-fn crest_source(world_xz: vec2<f32>) -> vec4<f32> {
+struct CrestSource {
+    displacement: vec3<f32>,
+    breaking: f32,
+    // Orbital velocity of the water surface at this point (m/s). This is what a droplet actually
+    // inherits when it is torn off a crest, and its absence is why spray read as an animated
+    // shader layer: every particle left the surface with the same wind-plus-vertical-burst
+    // velocity regardless of which way its wave was moving.
+    velocity: vec3<f32>,
+};
+
+fn crest_source(world_xz: vec2<f32>) -> CrestSource {
     var displacement = vec3<f32>(0.0);
+    var velocity = vec3<f32>(0.0);
     var crest = 0.0;
     var compression = 0.0;
     var slope = 0.0;
@@ -87,6 +98,18 @@ fn crest_source(world_xz: vec2<f32>) -> vec4<f32> {
             crest = max(crest, d.w);
             compression = max(compression, a.y);
             slope = max(slope, sqrt(max(a.w, 0.0)));
+            // Water particles in a linear deep-water wave travel in circles at angular rate
+            // omega = sqrt(g*k), so the orbital velocity has the same shape as the displacement
+            // scaled by that cascade's omega. Taking k from the cascade's own tile length gives a
+            // per-cascade omega for free: short cascades contribute fast, small motion and long
+            // swell contributes slow, large motion, which is the correct weighting.
+            //
+            // This is an approximation, not the exact time derivative (that would need a second
+            // inverse transform of -i*omega*h). It gets the direction and the relative magnitude
+            // right, which is what the spray needs.
+            let k_peak = TAU / max(tile, 1.0);
+            let omega = sqrt(G * k_peak);
+            velocity += d.xyz * omega;
         }
     }
     let domain_origin = floor((frame.cam_pos.xz - vec2<f32>(128.0)) / 4.0) * 4.0;
@@ -107,7 +130,11 @@ fn crest_source(world_xz: vec2<f32>) -> vec4<f32> {
     let history_break = smoothstep(0.45, 0.85, foam);
     // A little slope sensitivity lets a steep wind-torn top shed spray before it fully folds.
     let breaking = clamp(max(history_break, jacobian_break * crest_break) + slope * 0.04, 0.0, 1.0);
-    return vec4<f32>(displacement, breaking);
+    var out: CrestSource;
+    out.displacement = displacement;
+    out.breaking = breaking;
+    out.velocity = velocity;
+    return out;
 }
 
 // The interaction solver follows the camera in a snapped 256m domain.  Reading
@@ -160,29 +187,36 @@ fn vs_whitewater(
     // Low water quality drops spray entirely along with the screen-space reflections.
     let spray_enabled = step(0.5, wp.debug_params.y) * (1.0 - step(0.5, wp.sea_params.z));
     let spray_activity = clamp(wp.debug_params.z, 0.0, 1.0);
-    let source_strength = max(crest.w, interaction_splash) * spray_enabled * spray_activity;
+    let source_strength = max(crest.breaking, interaction_splash) * spray_enabled * spray_activity;
 
     // Ballistics with air drag, rather than a scripted parabola. Closed-form solution of
     // dv/dt = -g - v/tau:
     //     v(t) = (v0 + g*tau) * exp(-t/tau) - g*tau
     //     y(t) = (v0 + g*tau) * tau * (1 - exp(-t/tau)) - g*tau*t
     // and the same relaxation horizontally, toward the wind velocity instead of toward zero.
-    // The old model drifted spray ~1.1 m over its whole life at 11 m/s of wind, so droplets
-    // fell more or less straight back into the crest they came from.
     let decay = 1.0 - exp(-t / DRAG_TAU);
-    let v0_up = 1.3 + source_strength * 6.5;
-    let vert = (v0_up + G * DRAG_TAU) * DRAG_TAU * decay - G * DRAG_TAU * t;
     let wind = normalize(wp.fft_wind_sea.xy + vec2<f32>(1e-4, 0.0));
     let wind_vel = wind * max(wp.fft_wind_sea.z, 0.0);
-    // A small outward ejection so a burst opens up instead of travelling as a rigid clump.
-    let eject = (random * 2.0 - vec2<f32>(1.0)) * (0.8 + source_strength * 2.2);
-    let horiz = wind_vel * t + (eject - wind_vel) * DRAG_TAU * decay;
 
-    let crest_y = wp.sea_level + crest.y + interaction.r * 2.5;
+    // The droplet inherits the motion of the water it came from. Previously every particle left
+    // with the same upward burst plus wind drift, so spray had no relationship to the direction
+    // its wave was travelling — which is what made it read as an effect layer painted over the
+    // ocean rather than water torn off a moving crest.
+    let surface_vel = crest.velocity;
+    // Ejection along the crest's own motion, plus a normal-ish upward component from the break
+    // itself and a random cone so a burst opens out instead of moving as a rigid clump.
+    let scatter = (random * 2.0 - vec2<f32>(1.0)) * (0.6 + source_strength * 1.8);
+    let v0_up = max(surface_vel.y, 0.0) * 0.85 + 0.9 + source_strength * 4.8;
+    let v0_horiz = surface_vel.xz * 0.75 + scatter;
+
+    let vert = (v0_up + G * DRAG_TAU) * DRAG_TAU * decay - G * DRAG_TAU * t;
+    let horiz = wind_vel * t + (v0_horiz - wind_vel) * DRAG_TAU * decay;
+
+    let crest_y = wp.sea_level + crest.displacement.y + interaction.r * 2.5;
     let world = vec3<f32>(
-        source_xz.x + crest.x * 0.75 + horiz.x,
+        source_xz.x + crest.displacement.x * 0.75 + horiz.x,
         crest_y + max(vert, 0.0),
-        source_xz.y + crest.z * 0.75 + horiz.y,
+        source_xz.y + crest.displacement.z * 0.75 + horiz.y,
     );
     let world_rel = world - frame.cam_pos.xyz;
     let corner = quad_corner(vertex_index);

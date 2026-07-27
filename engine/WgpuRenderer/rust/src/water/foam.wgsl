@@ -24,6 +24,33 @@ fn sample_history(uv: vec2<f32>) -> vec4<f32> {
     let inside = step(0.0, uv.x) * step(0.0, uv.y) * step(uv.x, 1.0) * step(uv.y, 1.0);
     return textureSampleLevel(previous_foam, field_sampler, clamp(uv, vec2<f32>(0.001), vec2<f32>(0.999)), 0.0) * inside;
 }
+// WTR-080 — foam diffusion.
+//
+// Foam is a material, not a decal. Bubbles push each other apart, so a patch widens and its edge
+// softens as it ages. Without this the field only ever advects and decays, keeping whatever shape
+// it was injected with — which is why the foam read as sharp procedural noise sitting on the water
+// rather than something spreading through it.
+//
+// The kernel is deliberately anisotropic: a raft of foam is drawn out ALONG the current carrying
+// it and stays narrow across it. That directionality is what keeps this from looking like a
+// uniform gaussian blur, which is the usual failure mode of foam diffusion.
+fn diffuse_history(centre_uv: vec2<f32>, texel: vec2<f32>, flow: vec2<f32>, radius: f32) -> vec4<f32> {
+    let along = normalize(flow + vec2<f32>(1e-4, 0.0));
+    let across = vec2<f32>(-along.y, along.x);
+    let ra = along * texel * radius * 2.1;
+    let rc = across * texel * radius * 0.9;
+    var sum = sample_history(centre_uv) * 4.0;
+    sum = sum + sample_history(centre_uv + ra);
+    sum = sum + sample_history(centre_uv - ra);
+    sum = sum + sample_history(centre_uv + rc);
+    sum = sum + sample_history(centre_uv - rc);
+    sum = sum + sample_history(centre_uv + ra * 0.6 + rc * 0.6);
+    sum = sum + sample_history(centre_uv - ra * 0.6 + rc * 0.6);
+    sum = sum + sample_history(centre_uv + ra * 0.6 - rc * 0.6);
+    sum = sum + sample_history(centre_uv - ra * 0.6 - rc * 0.6);
+    return sum / 12.0;
+}
+
 fn fft_source(world: vec2<f32>) -> f32 {
     if (water.fft_control.x <= 0.5) { return 0.0; }
     var source = 0.0;
@@ -78,24 +105,44 @@ fn foam_update(@builtin(global_invocation_id) id: vec3<u32>) {
 
     let previous_world = world - surface_velocity * dt;
     let previous_uv = (previous_world - interaction_params.previous_domain.xy) * interaction_params.previous_domain.w;
-    let history = sample_history(previous_uv);
+    let sharp_history = sample_history(previous_uv);
+    let spread_history = diffuse_history(previous_uv, texel, surface_velocity, 1.6);
+    // Per-channel diffusion rates, because the three foam types physically behave differently:
+    // aerated breaker foam spreads fast, a vessel wake holds a defined line far longer (it is
+    // continuously re-injected along the hull path, so smearing it destroys the shape that makes
+    // it readable), and suspended air disperses fastest of all.
+    let history = vec4<f32>(
+        mix(sharp_history.r, spread_history.r, 0.35),
+        mix(sharp_history.g, spread_history.g, 0.22),
+        mix(sharp_history.b, spread_history.b, 0.70),
+        sharp_history.a);
 
     // WTR-081 — Physical breaking energy and interaction aeration injection
     let fft_breaker = fft_source(world);
     let aeration = clamp(centre_inter.b, 0.0, 1.0);
     let wake_breaker = clamp(convergence * 0.35 + centre_inter.g * 0.15 + aeration, 0.0, 1.0);
 
-    // Dissipation and decay rates
-    let breaker_decay = history.r * exp(-dt * 3.5);
-    let wake_decay = history.g * exp(-dt * 2.8);
-    let aeration_decay = history.b * exp(-dt * 4.2);
+    // Dissipation and decay rates. The rate now depends on coverage: a thin, unreplenished film
+    // ruptures far faster than a thick fresh raft, so foam dissolves with an accelerating tail
+    // instead of fading uniformly. This is the ageing behaviour, obtained without spending a
+    // texture channel on an explicit age (all four are already in use).
+    let breaker_decay = history.r * exp(-dt * mix(5.2, 2.6, clamp(history.r, 0.0, 1.0)));
+    let wake_decay = history.g * exp(-dt * mix(4.0, 2.2, clamp(history.g, 0.0, 1.0)));
+    let aeration_decay = history.b * exp(-dt * mix(6.0, 3.4, clamp(history.b, 0.0, 1.0)));
 
     let breaker_injection = 1.0 - exp(-fft_breaker * dt);
     let wake_injection = 1.0 - exp(-wake_breaker * dt * 1.50);
 
-    let breaker_foam = 1.0 - (1.0 - breaker_decay) * (1.0 - breaker_injection);
-    let wake_foam = 1.0 - (1.0 - wake_decay) * (1.0 - wake_injection);
+    let breaker_raw = 1.0 - (1.0 - breaker_decay) * (1.0 - breaker_injection);
+    let wake_raw = 1.0 - (1.0 - wake_decay) * (1.0 - wake_injection);
     let air_entrainment = max(aeration_decay, aeration);
+    // Diffusion on its own turns foam into a soft grey wash — the exact "blurred texture pasted on
+    // the ocean" failure. Re-applying a mild S-curve restores a defined edge at the new, wider
+    // extent, so the result reads as foam that has spread rather than foam that has been blurred.
+    // smoothstep's own polynomial preserves 0 and 1 exactly, so downstream thresholds in the water
+    // shader keep their meaning.
+    let breaker_foam = breaker_raw * breaker_raw * (3.0 - 2.0 * breaker_raw);
+    let wake_foam = wake_raw * wake_raw * (3.0 - 2.0 * wake_raw);
 
     let edge = min(min(uv.x, uv.y), min(1.0 - uv.x, 1.0 - uv.y));
     let edge_mask = smoothstep(0.002, 0.018, edge);

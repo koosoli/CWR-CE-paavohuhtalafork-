@@ -378,15 +378,39 @@ fn sample_fft_dynamics_filtered(xz: vec2<f32>, layer: i32, length_m: f32) -> vec
     return texture_bicubic_dynamics(uv, layer);
 }
 
-fn fft_geometry_disp(xz: vec2<f32>, dist: f32) -> vec3<f32> {
+fn fft_geometry_disp(xz: vec2<f32>, dist: f32, shore_factor: f32) -> vec3<f32> {
     var disp = vec3<f32>(0.0);
     // Approximate per-vertex view direction from the undisplaced base position — good
     // enough for LOD weighting (the displaced position differs by metres at most).
     let approx_rel = vec3<f32>(xz.x, wp.sea_level, xz.y) - frame.cam_pos.xyz;
     let view_dir = approx_rel / max(length(approx_rel), 1e-3);
+    // Shoaling redistributes the spectrum. A long swell entering shallow water slows, shortens and
+    // steepens, so energy moves from the long cascades into the short ones; conversely open ocean
+    // should be dominated by long swell rather than the same chop that appears at the beach.
+    // shore_factor is the CPU-side shoaling coordinate (0 = deep, 1 = at the beach) and is now
+    // continuous across CDLOD nodes, so using it here introduces no seam.
+    let shoal = clamp(shore_factor, 0.0, 1.0);
+    // The redistribution must be ENERGY PRESERVING. Applying the per-cascade bias directly dropped
+    // near-shore displacement by about a third, because a disabled cascade (preset 1 runs 88/57/16
+    // and leaves layer 3 off) received the boost while every live cascade received the cut — so the
+    // surface sank near the beach and left a visible gap at the waterline. Accumulating both the
+    // biased and unbiased weights and rescaling by their ratio moves energy BETWEEN cascades
+    // without removing any, whatever subset of cascades a preset happens to enable.
+    var weight_biased = 0.0;
+    var weight_plain = 0.0;
     for (var layer = 0; layer < 4; layer = layer + 1) {
         let w = compute_cascade_weights(layer, dist, view_dir);
-        disp = disp + fft_sample(xz, layer).xyz * w.geometry_weight;
+        // Cascade 0 is the longest domain and 3 the shortest (see fft_cascade_lengths), so bias
+        // toward low layers offshore and high layers inshore.
+        let long_wave = 1.0 - f32(layer) / 3.0;
+        let shoal_weight = mix(1.0, mix(0.55, 1.45, 1.0 - long_wave), shoal);
+        let combined = w.geometry_weight * shoal_weight;
+        disp = disp + fft_sample(xz, layer).xyz * combined;
+        weight_biased = weight_biased + combined;
+        weight_plain = weight_plain + w.geometry_weight;
+    }
+    if (weight_biased > 1e-4) {
+        disp = disp * (weight_plain / weight_biased);
     }
     return disp;
 }
@@ -395,7 +419,10 @@ fn world_to_material_pos(world_xz: vec2<f32>, dist: f32) -> vec2<f32> {
     var q = world_xz;
     if (wp.fft_control.x > 0.5) {
         for (var i = 0; i < 3; i = i + 1) {
-            let disp_xz = fft_geometry_disp(q, dist).xz;
+            // Shoaling bias is intentionally omitted from the inversion iteration: it only needs
+            // to converge on the undisplaced material coordinate, and feeding a depth-dependent
+            // weight into a fixed-point iteration would make convergence depth-dependent too.
+            let disp_xz = fft_geometry_disp(q, dist, 0.0).xz;
             q = world_xz - disp_xz;
         }
     }
@@ -404,7 +431,7 @@ fn world_to_material_pos(world_xz: vec2<f32>, dist: f32) -> vec2<f32> {
 
 fn whitewater_surface_transition(world_xz: vec2<f32>, dist: f32) -> f32 {
     let mat_q = world_to_material_pos(world_xz, dist);
-    let disp = fft_geometry_disp(mat_q, dist);
+    let disp = fft_geometry_disp(mat_q, dist, 0.0);
     return disp.y;
 }
 
@@ -475,7 +502,7 @@ fn vs_water(
 
     var disp = gerstner_disp(base_xz, dist);
     if (wp.fft_control.x > 0.5) {
-        disp = fft_geometry_disp(base_xz, dist);
+        disp = fft_geometry_disp(base_xz, dist, shore_factor);
     }
     disp = disp + shore_breaker_disp(base_xz, shore_dir, shore_factor);
     let interaction = interaction_sample(base_xz);
@@ -1064,8 +1091,14 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // Deep: Rich Navy Blue (Linear = [0.001, 0.022, 0.14])
     let shallow_preset = vec3<f32>(0.005, 0.28, 0.38);
     let deep_preset = vec3<f32>(0.001, 0.022, 0.14);
-    let shallow_col = select(shallow, shallow_preset, length(shallow) <= 0.01);
-    let deep_col = select(deep, deep_preset, length(deep) <= 0.01);
+    // The "was a colour authored?" test used a 0.01 length threshold. In LINEAR space that is not a
+    // near-zero epsilon at all — it is brighter than any plausible deep-ocean body colour. A deep
+    // blue of (0.002, 0.011, 0.036) in gamma decodes to about (0.0002, 0.0009, 0.0028) linear, whose
+    // length is ~0.003, so the guard declared it "unset" and silently substituted the much brighter
+    // hardcoded preset below. That is why every attempt to darken the deep water did nothing: the
+    // authored value was being thrown away precisely because it was dark. 1e-6 is an actual epsilon.
+    let shallow_col = select(shallow, shallow_preset, length(shallow) <= 1e-6);
+    let deep_col = select(deep, deep_preset, length(deep) <= 1e-6);
 
     // The old ramp floored the extinction at 0.15/m, which saturated to the deep colour by ~20 m
     // of column depth no matter where the clarity slider sat — so a bay and the open ocean were
@@ -1077,7 +1110,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // body is a deeper, denser blue rather than a lighter navy tint of the same brightness. The
     // falloff is deliberately front-loaded (sqrt rather than squared) so the surface goes dark
     // quickly as the bottom drops away, instead of staying bright until it is already far out.
-    let deep_darkening = mix(1.0, 0.30, sqrt(depth_tint));
+    // Mild. Stacked on top of an already-dark deep colour this was crushing the body to black,
+    // leaving only the reflection visible — the deep colour itself now carries the darkening.
+    let deep_darkening = mix(1.0, 0.80, sqrt(depth_tint));
     let ocean_body = mix(shallow_col, deep_col, depth_tint) * deep_darkening;
 
     let amb_ao = sky_vis_ao(in.base_xz);
@@ -1142,7 +1177,15 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // direct-light block below contributes only specular + subsurface scattering and nothing is
     // counted twice.
     let body_radiance = ocean_body * (sun_ambient * amb_ao + sun_diffuse * ndl * sun_vis * (1.0 - physical_fresnel));
-    let seabed_through = refracted.color * rgb_transmittance + body_radiance * (1.0 - rgb_transmittance);
+    // You were right that the water was simply too transparent. Beer-Lambert extinction alone is not
+    // enough: clear water still passes most blue-green light over tens of metres, so the refracted
+    // scene kept showing through and the sea never read as a body with a colour of its own. Real
+    // water looks opaque well before extinction kills the transmitted image, because INSCATTERED
+    // light accumulates along the path and drowns it. This scalar visibility term models that
+    // buildup, so past roughly eight metres of column the surface shows its own colour.
+    let seabed_visibility = exp(-water_depth * max(wp.color_ext * 1.6, 0.05));
+    let seabed_share = rgb_transmittance * seabed_visibility;
+    let seabed_through = refracted.color * seabed_share + body_radiance * (1.0 - seabed_share);
     let physical_transmitted = mix(body_radiance, seabed_through, refracted.valid);
 
     let physical_look = wp.look_params.x > 0.5;
@@ -1227,7 +1270,32 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
 
     const GODOT_SSS_MODIFIER = vec3<f32>(0.9, 1.15, 0.85);
     let wave_height = state.displacement.y;
-    let sss_height = max(0.0, wave_height + 2.5) * pow(max(dot(l, -v), 0.0), 4.0) *
+    // WTR-LOOK — crest-thickness translucency.
+    //
+    // The reference gates its subsurface term on `wave_height + 2.5`: a crude stand-in for "how
+    // much water is there to glow", which is really just elevation. It cannot tell a thin, sharp,
+    // about-to-break crest (which genuinely transmits light, because there are only centimetres of
+    // water between the sun and the eye) from the broad shoulder of a swell at the same height
+    // (which is metres thick and should stay opaque).
+    //
+    // Everything needed for a real thinness estimate is already computed for the foam path:
+    //   crest_energy — how sharply the surface is peaked
+    //   curvature    — positive curvature means a convex, thinning ridge
+    //   compression  — the collapsing Jacobian of a crest folding over, i.e. the thinnest state
+    // Foam works against transmission: an aerated, broken crest scatters light diffusely instead
+    // of transmitting it, so it must reduce the effect rather than add to it.
+    let crest_sharpness = smoothstep(0.010, 0.075, state.crest_energy);
+    let ridge_convexity = smoothstep(0.004, 0.045, state.curvature);
+    let fold_thinning = smoothstep(0.020, 0.16, state.compression);
+    // Elevation still matters — a trough is thick by definition — but it is now one term among
+    // four rather than the whole estimate.
+    let elevation_term = smoothstep(0.0, 0.55, max(wave_height, 0.0));
+    let thinness = clamp(
+        (crest_sharpness * 0.42 + ridge_convexity * 0.22 + fold_thinning * 0.26 + elevation_term * 0.10) *
+        (1.0 - state.foam_density * 0.75), 0.0, 1.0);
+    // The reference's backlighting geometry is kept verbatim: transmission peaks when the sun is
+    // behind the wave (dot(l, -v)) and grazing the surface (the 0.5 - 0.5*dot(l, n) term).
+    let sss_height = thinness * 2.5 * pow(max(dot(l, -v), 0.0), 4.0) *
         pow(0.5 - 0.5 * dot(l, n), 3.0);
     let sss_near = 0.5 * pow(godot_nv, 2.0);
     let lambertian = 0.5 * godot_nl;
@@ -1258,9 +1326,24 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         // Multiplying it by a navy deep tint (linear red ~0.001) is what erased the backlit crest
         // glow. The 0.35 normaliser maps the reference's Godot-side energy onto our HDR sun
         // radiance so a gain of 1.0 is the intended look.
-        let sss = (sss_height + sss_near) / (1.0 + light_mask);
-        rgb = rgb + GODOT_SSS_MODIFIER * sun_diffuse * sss * (1.0 - physical_fresnel) * sun_vis *
-            max(wp.look_params.z, 0.0) * 0.35;
+        // These two terms are physically different things and must NOT share a near-white tint.
+        //
+        // sss_height is genuine transmission: sunlight passing THROUGH a thin backlit crest. It
+        // travels only centimetres of water, so it emerges bright and turquoise — tint it with the
+        // shallow (short-path) colour.
+        //
+        // sss_near is 0.5 * ndv^2 — a view-dependent wrap-lighting fudge with no backlighting
+        // geometry in it at all. The reference gets away with a near-white value there because
+        // Godot's DIFFUSE_LIGHT is scaled differently; multiplied by our real HDR sun radiance it
+        // became a constant whitish wash over every water pixel facing the camera. THAT is what made
+        // the sea read as a desaturated translucent silver mirror rather than coloured water. It is
+        // light scattered from just below the surface, so it must carry the water's own colour.
+        let transmit_tint = shallow_col * 6.0 * GODOT_SSS_MODIFIER;
+        let sss_gain = max(wp.look_params.z, 0.0);
+        rgb = rgb + transmit_tint * sun_diffuse * (sss_height / (1.0 + light_mask)) *
+            (1.0 - physical_fresnel) * sun_vis * sss_gain * 0.35;
+        rgb = rgb + ocean_body * 2.5 * sun_diffuse * (sss_near / (1.0 + light_mask)) *
+            (1.0 - physical_fresnel) * sun_vis * sss_gain * 0.35;
         // Foam direct light is deliberately NOT added here: the foam block below replaces rgb
         // wherever combined_foam is non-zero, so adding it twice would only brighten the seam.
     } else {
@@ -1336,7 +1419,17 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         smoothstep(0.008, 0.085, max(surface_wave, 0.0));
     let jacobian_break = smoothstep(0.035, 0.22, state.compression);
     let crest_shape = smoothstep(0.42, 0.68, foam_noise(in.base_xz * 1.5 - spray_wind * wp.time * 0.18, wp.time));
-    let breaker_foam = crest_top * mix(0.28, 0.72, jacobian_break) * crest_shape;
+    // Ocean vs coast. A wave breaks when it can no longer support its own steepness, and shoaling
+    // water forces that much sooner: the bottom compresses the orbital motion, the crest steepens
+    // and spills. Over deep water the same sea state carries long swell that mostly does not break.
+    // Gating the breaker terms on the reconstructed column depth is what separates open ocean from
+    // a coastline instead of scattering identical whitecaps across both.
+    let deep_water = smoothstep(6.0, 45.0, water_depth); // 0 = shoaling, 1 = open ocean
+    // Shallow water breaks more readily, but the earlier 1.55x boost turned every bay into solid
+    // whitewater. A modest bias is enough to separate coast from open ocean.
+    let break_readiness = mix(1.05, 0.55, deep_water);
+    let breaker_foam = clamp(crest_top * mix(0.28, 0.72, jacobian_break) * crest_shape * break_readiness,
+        0.0, 1.0);
     // Sparse short-lived flecks sell wind-torn shore break and whitecap spindrift
     // without a separate particle system or a broad white surface layer.
     let spray_flecks = (foam_band * shore_break + breaker_foam) *

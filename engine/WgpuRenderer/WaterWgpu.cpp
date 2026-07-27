@@ -533,7 +533,9 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     {
         _cameraSubmerged = cameraPos.Y() < localSurface - 0.03f;
     }
-    _params.fft_control.w = _cameraSubmerged ? 1.0f : 0.0f;
+    // Gates BOTH the fullscreen underwater compositor (Rust reads this lane as "player submerged")
+    // and the water shader's own underwater tint. Off unless the Water tab enables it.
+    _params.fft_control.w = (_cameraSubmerged && look.underwaterEffect) ? 1.0f : 0.0f;
     // WTR-001 — deterministic FFT seed. The authored default (1337.0, set in BuildQuadtree)
     // already keeps the random field stable across frames; allow the dev tab to override it,
     // so a frozen frame is reproducible regardless of seq-of-edits to the spectrum. Setting a

@@ -116,6 +116,12 @@ pub struct Renderer {
     underwater_target: Option<(wgpu::Texture, wgpu::TextureView)>,
     underwater_size: (u32, u32),
     post_source_underwater: bool,
+    // Per-frame inputs for the underwater compositor's per-pixel waterline: camera height above the
+    // local water surface (negative = submerged) and the unprojection matrix for view-ray
+    // reconstruction. Held on the renderer because the compositor is invoked from three separate
+    // places in the frame plan, and threading two more arguments through each of them (and through
+    // run_tonemap) would be noise.
+    underwater_view: (f32, [f32; 16], [f32; 4]),
     // Bloom pyramid, built alongside the tonemap on the HDR path; the resolve adds it.
     bloom: Option<Bloom>,
     // Eye adaptation / auto-exposure; produces a 1x1 exposure scale the resolve applies.
@@ -561,6 +567,7 @@ impl Renderer {
             underwater_target: None,
             underwater_size: (0, 0),
             post_source_underwater: false,
+            underwater_view: (-1.0, [0.0; 16], [0.004, 0.020, 0.055, 0.16]),
             bloom,
             exposure,
             exposure_params: ffi::WgrExposure::default(),
@@ -733,6 +740,9 @@ impl Renderer {
                 depth,
                 target,
                 time,
+                self.underwater_view.0,
+                self.underwater_view.1,
+                self.underwater_view.2,
             );
             self.gpu_timers
                 .end(encoder, TimerRegion::UnderwaterComposite);
@@ -1220,16 +1230,40 @@ impl Renderer {
             );
         }
         self.ensure_hdr(self.config.width, self.config.height);
-        let underwater_time =
-            self.water
-                .underwater_params()
-                .and_then(|(_sea_level, time, player_submerged)| {
-                    // Use the water draw camera, not an unrelated terrain/scene batch. The visual
-                    // submersion boundary is the actual camera crossing the gameplay sea plane.
-                    cameras
-                        .get(water_camera)
-                        .and_then(|_| player_submerged.then_some(time))
-                });
+        // The compositor now resolves the waterline per pixel, so it must also run while the eye is
+        // just ABOVE the surface — that is exactly the half-in/half-out case. Without this band the
+        // pass would still be all-or-nothing, just with a smoother interior.
+        // 0: back to submerged-only. The near-surface band existed for the per-pixel waterline,
+        // which has been withdrawn until the compositor itself is rebuilt.
+        const UNDERWATER_NEAR_SURFACE_BAND: f32 = 0.0;
+        let underwater_state = self.water.underwater_params().and_then(
+            |(sea_level, time, player_submerged)| {
+                // Use the water draw camera, not an unrelated terrain/scene batch. The visual
+                // submersion boundary is the actual camera crossing the gameplay sea plane.
+                cameras.get(water_camera).and_then(|cam| {
+                    let cam_above = cam.cam_pos[1] - sea_level;
+                    let engage = player_submerged || cam_above < UNDERWATER_NEAR_SURFACE_BAND;
+                    engage.then(|| {
+                        // Same separate-inverse-in-f64 treatment the frame UBO uses: the
+                        // reversed-Z infinite-far projection is ill-conditioned in f32 and
+                        // inverting the combined matrix smears its z-row into x/y.
+                        let view = glam::DMat4::from_cols_array(&cam.view.map(f64::from));
+                        let proj = glam::DMat4::from_cols_array(&cam.proj.map(f64::from));
+                        let inv_vp = (view.inverse() * proj.inverse()).as_mat4().to_cols_array();
+                        (time, cam_above, inv_vp)
+                    })
+                })
+            },
+        );
+        let underwater_time = underwater_state.map(|(time, _, _)| time);
+        let underwater_body = self
+            .water
+            .underwater_body()
+            .map(|(rgb, ext)| [rgb[0], rgb[1], rgb[2], ext])
+            .unwrap_or([0.004, 0.020, 0.055, 0.16]);
+        self.underwater_view = underwater_state
+            .map(|(_, above, inv_vp)| (above, inv_vp, underwater_body))
+            .unwrap_or((-1.0, [0.0; 16], underwater_body));
         if underwater_time.is_some() && !self.hdr_enabled {
             self.ensure_underwater_target(self.config.width, self.config.height);
         }
@@ -2203,6 +2237,9 @@ impl Renderer {
                     depth,
                     &color,
                     underwater_time.expect("underwater time"),
+                    self.underwater_view.0,
+                    self.underwater_view.1,
+                    self.underwater_view.2,
                 );
                 self.gpu_timers
                     .end(&mut encoder, TimerRegion::UnderwaterComposite);
@@ -2239,6 +2276,9 @@ impl Renderer {
                 depth,
                 &color,
                 underwater_time.expect("underwater time"),
+                self.underwater_view.0,
+                self.underwater_view.1,
+                self.underwater_view.2,
             );
             self.gpu_timers
                 .end(&mut encoder, TimerRegion::UnderwaterComposite);

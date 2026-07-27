@@ -366,7 +366,13 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
                 // Spring-damper buoyancy follows the local CPU water plane; it never snaps
                 // position or alters legacy move/freefall state. The normal-derived roughness
                 // modestly increases drag on steeper water without affecting player input.
-                pForce[1] += GetMass() * (16.0f * immersion - speed[1] * 5.0f);
+                // Stiffness sets the float height: equilibrium sits where stiffness*immersion = g,
+                // so pos.Y settles at waterPlaneY + (0.75 - g/stiffness). At the old 16 that was
+                // only +0.14 m — the swimmer rode almost level with the surface and every crest
+                // washed over them. 26 lifts equilibrium to about +0.38 m so the head stays clear
+                // of ordinary waves and only larger crests submerge it. Damping is raised with it
+                // to keep the same settling behaviour rather than letting the stiffer spring ring.
+                pForce[1] += GetMass() * (26.0f * immersion - speed[1] * 6.5f);
                 const float waterVelocityX = (front.velocityX + center.velocityX + back.velocityX) * (1.0f / 3.0f);
                 const float waterVelocityZ = (front.velocityZ + center.velocityZ + back.velocityZ) * (1.0f / 3.0f);
                 const float waterRoughness = (front.roughness + center.roughness + back.roughness) * (1.0f / 3.0f);
