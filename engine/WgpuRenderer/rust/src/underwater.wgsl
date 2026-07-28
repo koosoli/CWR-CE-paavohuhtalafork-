@@ -10,6 +10,14 @@ struct Params {
     body_color_ext: vec4<f32>, // xyz = water deep body colour (gamma), w = extinction (1/m)
 };
 
+// Distance assigned to a cleared/far depth, and the ceiling on any path length: far enough
+// that transmittance has saturated, so the exact value cannot show.
+const FAR_PATH_M: f32 = 120.0;
+// Radiance of light scattered back out of the volume. The one magnitude this model cannot get
+// from an authored value — the deep colour supplies the hue (see below).
+const INSCATTER_RADIANCE: f32 = 0.16;
+const CAUSTIC_STRENGTH: f32 = 0.055;
+
 fn srgb_to_linear_v3(c: vec3<f32>) -> vec3<f32> {
     let lo = c / 12.92;
     let hi = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
@@ -56,15 +64,54 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let sample_uv = select(in.uv, warped_uv, use_warp);
     let depth = select(base_depth, warped_depth, use_warp);
     let color = textureSampleLevel(scene_tex, scene_samp, sample_uv, 0.0).rgb;
-    // Restored to the original tuning. Deriving the fog from the water body colour and the
-    // per-pixel waterline both made this worse in practice, so this is back to exactly what it was
-    // before this session touched it. It is a crude approximation — `0.12/depth` is not a real path
-    // length and the caustic is a sine — and it should be REBUILT rather than retinted. Until then
-    // it is off by default (Water tab -> "Underwater effect").
-    let path_m = clamp(0.12 / max(depth, 0.002), 0.5, 60.0);
-    let transmittance = exp(-vec3<f32>(0.075, 0.035, 0.015) * path_m);
-    let haze = vec3<f32>(0.018, 0.115, 0.145);
-    let caustic = 1.0 + 0.035 * sin(in.uv.x * 90.0 + params.time * 1.7) * sin(in.uv.y * 74.0 - params.time * 1.3);
-    let fog = 1.0 - exp(-path_m * 0.045);
-    return vec4<f32>(mix(color * transmittance * caustic, haze, fog), 1.0);
+
+    // TRUE path length, in metres. The old `0.12 / depth` was not a length at all: `depth` is
+    // reversed-Z (proportional to 1/distance), so that expression was distance scaled by an
+    // arbitrary constant, and every extinction coefficient below it had to be tuned against a
+    // meaningless unit. `inv_view_proj` was already being uploaded for exactly this and was
+    // never read. Unproject the pixel to a camera-relative position the way water.wgsl's
+    // seabed_depth does (forward ndc.z = 1 - stored) and take its distance from the eye.
+    // With the camera submerged the whole view ray is inside the water, so that distance IS
+    // the path light travelled through it.
+    let ndc_xy = vec2<f32>(sample_uv.x * 2.0 - 1.0, 1.0 - sample_uv.y * 2.0);
+    var path_m = FAR_PATH_M;
+    var world_rel = vec3<f32>(0.0);
+    // depth ~ 0 is the reversed-Z far/cleared value: nothing was drawn down this ray, so the
+    // unproject would divide by a ~0 w. Treat it as maximally far (dense haze), as before.
+    if (depth > 1e-6) {
+        let h = params.inv_view_proj * vec4<f32>(ndc_xy, 1.0 - depth, 1.0);
+        world_rel = h.xyz / h.w;
+        path_m = clamp(length(world_rel), 0.0, FAR_PATH_M);
+    }
+
+    // Beer-Lambert against the AUTHORED body colour and extinction, both of which the shader
+    // previously ignored in favour of hardcoded constants — the same dead-control pattern that
+    // made the surface unfixable for six passes. body_color_ext.xyz is authored in gamma, hence
+    // the srgb decode that was defined here and never called.
+    //
+    // pow(deep, path*ext) is exp(-sigma*path) with the per-channel sigma implied by the authored
+    // colour: after one extinction length the transmittance IS the authored deep colour. So the
+    // Water tab's deep colour now sets what the water does to light, rather than being a swatch
+    // that nothing reads.
+    let deep_linear = srgb_to_linear_v3(clamp(params.body_color_ext.xyz, vec3<f32>(1e-4), vec3<f32>(1.0)));
+    let ext = max(params.body_color_ext.w, 1e-3);
+    let transmittance = pow(deep_linear, vec3<f32>(path_m * ext));
+
+    // In-scattered light keeps the authored HUE but not its (near-black) brightness: a deep body
+    // colour describes absorption, while the haze you actually see is sunlight scattered back out
+    // of the volume. Normalising to the brightest channel preserves the authored tint and leaves
+    // one honest magnitude constant instead of three invented ones.
+    let peak = max(max(deep_linear.r, deep_linear.g), max(deep_linear.b, 1e-4));
+    let haze = deep_linear / peak * INSCATTER_RADIANCE;
+
+    // World-anchored caustics. The old pair of sines ran in SCREEN space, so the pattern swam
+    // across the scene whenever the camera turned — it read as a lens artefact rather than light
+    // on a surface. Keyed to the unprojected world position it stays put on the seabed.
+    let caustic_xz = world_rel.xz;
+    let caustic = 1.0 + CAUSTIC_STRENGTH *
+        sin(caustic_xz.x * 1.9 + params.time * 1.7) *
+        sin(caustic_xz.y * 1.6 - params.time * 1.3) *
+        transmittance.g;
+
+    return vec4<f32>(color * transmittance * caustic + haze * (vec3<f32>(1.0) - transmittance), 1.0);
 }

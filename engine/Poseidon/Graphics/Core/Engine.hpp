@@ -1292,7 +1292,7 @@ class Engine : public IGraphicsEngine
         // Neutral multipliers reproduce GodotOceanWaves' authored cascade values.
         // Those physical spectrum coefficients are already metre-scaled; multiplying
         // them by 2.4 after removing the erroneous IFFT normalization was excessive.
-        float waveAmp = 0.40f;       // calmer gameplay default; 1 = authored reference amplitude
+        float waveAmp = 1.00f;       // authored reference amplitude (was a calmer 0.40 default)
         float waveChoppy = 1.0f;     // 1 = reference horizontal displacement
         float waveSpeed = 1.0f;      // 1 = reference dispersion time
         float waveScale = 1.0f;      // 1 = reference cascade wavelengths
