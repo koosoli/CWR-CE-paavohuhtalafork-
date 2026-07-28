@@ -52,10 +52,26 @@ pub enum Region {
     UnderwaterFroxel = 16,    // reserved — no underwater froxel pass exists yet
     UnderwaterComposite = 17, // fullscreen underwater compositor (includes caustics cost)
     Caustics = 18,            // reserved — caustics ride the underwater/water shaders today
+    // --- GRS-A: grass. The three placement dispatches are standalone compute
+    // passes, so they bracket on the encoder like the water regions above. The
+    // draw regions are ops inside the shared main/shadow render passes and can
+    // only be bracketed with TIMESTAMP_QUERY_INSIDE_PASSES; without that
+    // feature they stay at -1 ("n/a") while the compute rows still report.
+    GrassPlaceNear = 19,
+    GrassPlaceMid = 20,
+    GrassPlaceFar = 21,
+    GrassPrepass = 22, // depth/normal prepass (near + mid)
+    GrassColor = 23,   // colour pass (far + mid + near)
+    GrassShadow = 24,  // near blades into the cascade depth map
 }
 
 /// Region count — the FFI getter's element contract (WGR_GPU_TIMER_REGION_COUNT).
-pub const REGION_COUNT: usize = 19;
+pub const REGION_COUNT: usize = 25;
+/// Water occupies [0, WATER_REGION_COUNT); grass occupies the remainder. The two
+/// debug tabs slice the shared array with these so neither shows the other's rows.
+/// Consumed on the C++ side (Engine::kWaterGpuRegionEnd) and by the layout test.
+#[allow(dead_code)]
+pub const WATER_REGION_COUNT: usize = 19;
 
 const QUERY_COUNT: u32 = (REGION_COUNT * 2) as u32;
 const BUFFER_SIZE: u64 = QUERY_COUNT as u64 * wgpu::QUERY_SIZE as u64;
@@ -81,6 +97,9 @@ struct Slot {
 }
 
 struct Inner {
+    // TIMESTAMP_QUERY_INSIDE_PASSES: lets begin_pass/end_pass bracket draws that
+    // live inside a shared render pass (grass is a Plan3dOp, not its own pass).
+    inside_passes: bool,
     query_set: wgpu::QuerySet,
     resolve_buf: wgpu::Buffer,
     slots: Vec<Slot>,
@@ -98,7 +117,8 @@ pub struct GpuTimers {
 
 impl GpuTimers {
     /// `enabled` = the device was created with TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS.
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, enabled: bool) -> Self {
+    /// `inside_passes` = TIMESTAMP_QUERY_INSIDE_PASSES was also available.
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, enabled: bool, inside_passes: bool) -> Self {
         if !enabled {
             return Self { inner: None };
         }
@@ -126,6 +146,7 @@ impl GpuTimers {
             .collect();
         Self {
             inner: Some(Inner {
+                inside_passes,
                 query_set,
                 resolve_buf,
                 slots,
@@ -162,6 +183,29 @@ impl GpuTimers {
             inner
                 .written
                 .set(inner.written.get() | (1u32 << region as u32));
+        }
+    }
+
+    /// Open a region bracket from INSIDE a render pass. No-op unless the adapter
+    /// offered TIMESTAMP_QUERY_INSIDE_PASSES. Use for draws that share a pass with
+    /// other work (grass colour/prepass/shadow ops inside the 3D plan).
+    pub fn begin_pass(&self, pass: &mut wgpu::RenderPass<'_>, region: Region) {
+        if let Some(inner) = &self.inner {
+            if inner.inside_passes {
+                pass.write_timestamp(&inner.query_set, region as u32 * 2);
+            }
+        }
+    }
+
+    /// Close an in-pass bracket and mark it measured this frame.
+    pub fn end_pass(&self, pass: &mut wgpu::RenderPass<'_>, region: Region) {
+        if let Some(inner) = &self.inner {
+            if inner.inside_passes {
+                pass.write_timestamp(&inner.query_set, region as u32 * 2 + 1);
+                inner
+                    .written
+                    .set(inner.written.get() | (1u32 << region as u32));
+            }
         }
     }
 
@@ -274,13 +318,18 @@ mod tests {
     // count + a few pinned indices catches accidental reordering on either side.
     #[test]
     fn region_indices_stay_ffi_stable() {
-        assert_eq!(REGION_COUNT, 19);
+        assert_eq!(REGION_COUNT, 25);
         assert_eq!(Region::SpectrumInit as u32, 0);
         assert_eq!(Region::FftCompose as u32, 4);
         assert_eq!(Region::Interaction as u32, 5);
         assert_eq!(Region::PlanarSky as u32, 8);
         assert_eq!(Region::WaterDraw as u32, 15);
         assert_eq!(Region::Caustics as u32, 18);
+        // Water rows must stay contiguous at the front so the two tabs can slice
+        // the shared array by range.
+        assert_eq!(WATER_REGION_COUNT, 19);
+        assert_eq!(Region::GrassPlaceNear as u32, WATER_REGION_COUNT as u32);
+        assert_eq!(Region::GrassShadow as u32, 24);
         // Every region's begin/end pair fits the query set.
         assert!(QUERY_COUNT as usize == REGION_COUNT * 2);
         // A u32 written mask covers all regions.

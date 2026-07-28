@@ -929,7 +929,23 @@ class Engine : public IGraphicsEngine
         // default 60 m field affordable while the inner cards remain detailed.
         float density = 1.0f;
         float spacing = 0.20f;
+        // Detail radius: drives the dense near cards and the mid blade ring.
+        // Both are bounded by their placement grids, so raising this past
+        // roughly 64 m has no effect -- the outer field is `farRadius`.
         float radius = 60.0f;
+        // Outer terrain-cover ring. 0 = off (the historical behaviour: grass
+        // simply ends at the mid ring). When on it MUST stay above the mid
+        // ring's reach or the far LOD's accept band is empty, so the mapping
+        // in EngineWgpu floors it -- there is no silently-dead middle ground.
+        // Off by default: the flat coverage quads read as a second green
+        // surface over the terrain and look worse than no distant grass.
+        float farRadius = 0.0f;
+        // Density noise: breaks the field into thicker and thinner patches so
+        // coverage is not uniform. Scale is the noise frequency (1/metres);
+        // strength 0 = flat density. 0.55 reproduces the previous hardcoded
+        // 0.45..1.35 coverage range.
+        float densityNoiseScale = 0.075f;
+        float densityNoiseStrength = 0.55f;
         float densityBoost = 4.0f; // turns base spacing into a denser placement grid
         float height = 1.25f;      // authored blade height multiplier
         // The default follows the weather system that also drives smoke,
@@ -957,6 +973,17 @@ class Engine : public IGraphicsEngine
 
       // The active terrain's material layers.  WGPU exposes these so the dev
       // overlay can explicitly choose which painted surfaces receive blades.
+      // GRS-A — grass instance accounting for the Grass tab's benchmark table.
+      // Counts come from an async readback of the GPU placement counters, so they
+      // lag the displayed frame by a few frames. Returns false on non-wgpu backends.
+      struct GrassStatsOut
+      {
+          unsigned nearInstances = 0, midInstances = 0, farInstances = 0;
+          unsigned nearCandidates = 0, midCandidates = 0, farCandidates = 0;
+          unsigned nearVertices = 0, midVertices = 0, farVertices = 0;
+      };
+      virtual bool GetGrassStats(GrassStatsOut& /*out*/) const { return false; }
+
       virtual int GetGrassSurfaceCount() const { return 0; }
       virtual const char* GetGrassLoadedMapName() const { return ""; }
       virtual const char* GetGrassSurfaceName(int /*index*/) const { return ""; }
@@ -1435,6 +1462,17 @@ class Engine : public IGraphicsEngine
     // stays backend-agnostic. APPENDED at the class end (vtable-slot note above).
     virtual int GetWaterGpuTimings(float* /*outMs*/, int /*maxCount*/) const { return 0; }
     virtual const char* GetWaterGpuTimingName(int /*region*/) const { return ""; }
+
+    // GetWaterGpuTimings returns ONE shared region array covering every timed
+    // subsystem; each debug tab slices its own range. Mirrors WgrGpuTimerRegion
+    // in wgpu_renderer.hpp (append only, never reorder).
+    enum : int
+    {
+        kWaterGpuRegionBegin = 0,
+        kWaterGpuRegionEnd = 19,
+        kGrassGpuRegionBegin = 19,
+        kGrassGpuRegionEnd = 25,
+    };
 
   protected:
     // Post-hook fires from OnWindowResized so apps can re-run the aspect policy

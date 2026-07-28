@@ -12,7 +12,12 @@ struct GrassParams {
     interactor_x: f32, interactor_z: f32, interactor_radius: f32, interactor_strength: f32,
     tracks: array<GrassTrack, 96>, debug_flags: vec4<f32>, render_flags: vec4<f32>,
 };
-struct GrassInstance { pos_seed: vec4<f32> };
+// Must mirror grass.wgsl's 32-byte layout exactly: both shaders bind the same
+// instance buffer through the shared `data_layout`.
+struct GrassInstance {
+    pos_seed: vec4<f32>,
+    packed: vec4<u32>,
+};
 
 @group(0) @binding(0) var<uniform> shadow: ShadowPass;
 @group(1) @binding(0) var<uniform> terrain: TerrainParams;
@@ -53,9 +58,11 @@ fn sample_wind_field(world_xz: vec2<f32>, height_t: f32, seed: f32) -> vec4<f32>
     let strength = clamp(grass.wind_strength, 0.0, 3.0);
     let base_angle = grass.wind_direction * 0.01745329252;
     let base_direction = vec2<f32>(cos(base_angle), sin(base_angle));
-    let broad_scroll = base_direction * terrain.time * (16.0 + strength * 9.0);
-    let gust_scroll = base_direction * terrain.time * (30.0 + strength * 15.0);
-    let direction_noise = clump_noise(world_xz.yx + broad_scroll, 0.006, 0x0d7e31a5u);
+    // Negated scroll: see the convention note in grass.wgsl. Both copies must
+    // agree or shadows drift against the blades that cast them.
+    let broad_scroll = -base_direction * terrain.time * (16.0 + strength * 9.0);
+    let gust_scroll = -base_direction * terrain.time * (30.0 + strength * 15.0);
+    let direction_noise = clump_noise(world_xz + broad_scroll, 0.006, 0x0d7e31a5u);
     let gust_noise = clump_noise(world_xz + gust_scroll, 0.022, 0xa12f7c59u);
     let gust = mix(0.18, 1.0, pow(smoothstep(0.40, 0.84, gust_noise), 2.0));
     let direction_angle = base_angle + (direction_noise - 0.5) * min(strength, 1.5) * 1.10;
@@ -77,6 +84,14 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let height_seed = mix(hash11(inst.xz + 2.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
     let height = mix(0.35, 1.05, height_seed) * grass.blade_height;
     let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
+    // Flattening cached by cs_place. Without this the shadow pass rebuilt an
+    // upright blade, so grass a player had walked flat kept casting a full
+    // standing shadow.
+    let inst_packed = instances[instance_index].packed;
+    let crush_dir = unpack2x16snorm(inst_packed.x);
+    let crush = unpack2x16unorm(inst_packed.y).x;
+    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
+    let crushed_height = height * (1.0 - 0.78 * crush);
     let card = vertex_index / 30u;
     let packed = vertex_index % 30u;
     let segment = packed / 6u;
@@ -88,9 +103,9 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let wind = sample_wind_field(inst.xz, t, seed);
     let wind_bend = vec3<f32>(wind.x, 0.0, wind.y) * grass.wind_strength *
         (0.035 + 0.21 * wind.z + wind.w);
-    let bend = static_bend + wind_bend;
+    let bend = static_bend + wind_bend + crush_bend;
     let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * pow(max(1.0 - t, 0.0), 0.65);
     let lateral = select(axis * width, -axis * width, left);
-    let world = inst.xyz + lateral + vec3<f32>(0.0, height * t, 0.0) + bend * (t * t);
+    let world = inst.xyz + lateral + vec3<f32>(0.0, crushed_height * t, 0.0) + bend * (t * t);
     return shadow.light_vp * vec4<f32>(world - shadow.cam_pos.xyz, 1.0);
 }

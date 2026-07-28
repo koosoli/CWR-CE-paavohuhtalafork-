@@ -1498,8 +1498,14 @@ void DrawGrassTab()
     ImGui::TextDisabled("Raises density beyond the base grid. Very high values reduce the maximum usable radius.");
     changed |= ImGui::SliderFloat("Base spacing (m)", &grass.spacing, 0.10f, 0.75f, "%.2f");
     ImGui::TextDisabled("Distance between candidates before the density boost; lower values make grass substantially denser.");
-    changed |= ImGui::SliderFloat("Radius (m)", &grass.radius, 8.0f, 5000.0f, "%.0f");
-    ImGui::TextDisabled("Total grass radius (up to 5 km). Dense cards cover the inner ring; scalable GPU distant grass fills the outer field.");
+    changed |= ImGui::SliderFloat("Detail radius (m)", &grass.radius, 8.0f, 200.0f, "%.0f");
+    ImGui::TextDisabled("Dense cards plus the mid blade ring. Both are bounded by their placement grids, so values past ~64 m have no further effect.");
+    changed |= ImGui::SliderFloat("Far radius (m)", &grass.farRadius, 0.0f, 5000.0f, "%.0f");
+    ImGui::TextDisabled("Outer terrain-cover proxy. 0 = off (grass ends at the mid ring). Any other value is floored past the mid ring, and its dispatch is skipped entirely when off.");
+    changed |= ImGui::SliderFloat("Density noise scale", &grass.densityNoiseScale, 0.002f, 0.5f, "%.3f");
+    ImGui::TextDisabled("Patch frequency in 1/metres. 0.075 gives ~13 m patches; lower = broader sweeps, higher = finer mottling.");
+    changed |= ImGui::SliderFloat("Density noise strength", &grass.densityNoiseStrength, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("0 = perfectly uniform coverage; 1 = bare ground between dense clumps. Scaled by Field clumping below, and does not affect the far ring.");
     changed |= ImGui::SliderFloat("Blade height", &grass.height, 0.10f, 3.0f, "%.2fx");
     changed |= ImGui::Checkbox("Use live world wind", &grass.useLiveWind);
     changed |= ImGui::SliderFloat("Wind strength", &grass.windStrength, 0.0f, 3.0f, "%.2f");
@@ -1510,7 +1516,15 @@ void DrawGrassTab()
     changed |= ImGui::SliderFloat("Backlight transmission", &grass.transmission, 0.0f, 1.0f, "%.2f");
     const float effectiveSpacing = std::max(0.10f, grass.spacing / std::sqrt(std::max(1.0f, grass.densityBoost)));
     const float nearDetailRadius = std::min(grass.radius, effectiveSpacing * 255.0f);
-    ImGui::TextDisabled("LOD field: detailed %.0f m, mid blades beyond it, distant terrain-cover proxy to %.0f m.", nearDetailRadius, grass.radius);
+    const float midReach = std::min(160.0f, std::max(nearDetailRadius + 10.0f, nearDetailRadius * 2.5f));
+    if (grass.farRadius <= 0.0f)
+        ImGui::TextDisabled("LOD field: detailed %.0f m, mid blades to %.0f m, no far ring.", nearDetailRadius, midReach);
+    else
+    {
+        const float farReach = std::clamp(grass.farRadius, midReach + 8.0f, 5000.0f);
+        ImGui::TextDisabled("LOD field: detailed %.0f m, mid blades to %.0f m, far cover %.0f-%.0f m.", nearDetailRadius,
+                            midReach, midReach, farReach);
+    }
     ImGui::TextDisabled("Wind: travelling direction field plus local gusts; roots stay pinned and player/vehicle tracks persist for one minute.");
 
     ImGui::Separator();
@@ -1527,6 +1541,9 @@ void DrawGrassTab()
         grass.densityBoost = 4.0f;
         grass.spacing = 0.20f;
         grass.radius = 60.0f;
+        grass.farRadius = 0.0f;
+        grass.densityNoiseScale = 0.075f;
+        grass.densityNoiseStrength = 0.55f;
         grass.height = 1.25f;
         grass.useLiveWind = true;
         grass.windStrength = 1.2f;
@@ -1546,6 +1563,93 @@ void DrawGrassTab()
 
       if (changed)
         GEngine->SetGrassSettings(grass);
+
+    // GRS-A — grass benchmark panel, mirroring the Water tab's WTR-002 table.
+    // Both GPU timings and instance counts are harvested asynchronously, so they
+    // lag the displayed frame by the readback ring depth (~2-3 frames).
+    ImGui::Separator();
+    ImGui::TextUnformatted("Benchmark (GRS-A)");
+
+    Engine::GrassStatsOut stats;
+    if (GEngine->GetGrassStats(stats) &&
+        ImGui::BeginTable("grsCounts", 5, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+    {
+        ImGui::TableSetupColumn("LOD");
+        ImGui::TableSetupColumn("instances");
+        ImGui::TableSetupColumn("candidates");
+        ImGui::TableSetupColumn("accepted");
+        ImGui::TableSetupColumn("vertices");
+        ImGui::TableHeadersRow();
+        struct Row
+        {
+            const char* name;
+            unsigned instances, candidates, vertices;
+        };
+        const Row rows[] = {
+            {"Near", stats.nearInstances, stats.nearCandidates, stats.nearVertices},
+            {"Mid", stats.midInstances, stats.midCandidates, stats.midVertices},
+            {"Far", stats.farInstances, stats.farCandidates, stats.farVertices},
+        };
+        unsigned totalInstances = 0, totalVertices = 0;
+        for (const Row& r : rows)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(r.name);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", r.instances);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", r.candidates);
+            ImGui::TableNextColumn();
+            ImGui::Text("%.2f%%", r.candidates ? 100.0 * r.instances / r.candidates : 0.0);
+            ImGui::TableNextColumn();
+            ImGui::Text("%u", r.vertices);
+            totalInstances += r.instances;
+            totalVertices += r.vertices;
+        }
+        ImGui::EndTable();
+        ImGui::Text("Total: %u instances, %u vertices submitted", totalInstances, totalVertices);
+        ImGui::SetItemTooltip("Vertices are the geometry the colour pass submits. The prepass "
+                              "re-submits near+mid, and the shadow pass re-submits near, so the "
+                              "frame's true grass vertex load is higher than this row.");
+        if (stats.farInstances == 0 && grass.farRadius > 0.0f)
+            ImGui::TextDisabled("Far ring is on but empty — check geography exclusions for this map.");
+    }
+
+    float gpuMs[32];
+    const int gpuRegions = GEngine->GetWaterGpuTimings(gpuMs, 32);
+    if (gpuRegions <= 0)
+    {
+        ImGui::TextDisabled("GPU timings unavailable (adapter lacks TIMESTAMP_QUERY / non-wgpu backend).");
+    }
+    else if (ImGui::BeginTable("grsGpuTimings", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+    {
+        float gpuTotal = 0.0f;
+        const int last = std::min(gpuRegions, (int)Engine::kGrassGpuRegionEnd);
+        for (int i = (int)Engine::kGrassGpuRegionBegin; i < last; ++i)
+        {
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted(GEngine->GetWaterGpuTimingName(i));
+            ImGui::TableNextColumn();
+            if (gpuMs[i] < 0.0f)
+                ImGui::TextDisabled("n/a");
+            else
+            {
+                ImGui::Text("%.3f ms", gpuMs[i]);
+                gpuTotal += gpuMs[i];
+            }
+        }
+        ImGui::EndTable();
+        ImGui::Text("Measured grass total: %.3f ms", gpuTotal);
+        ImGui::SetItemTooltip("Placement rows are exact (standalone compute passes). The draw "
+                              "rows need TIMESTAMP_QUERY_INSIDE_PASSES and read \"n/a\" without "
+                              "it, because grass draws share a render pass with the rest of the "
+                              "3D plan. Passes can overlap on the GPU, so this is not wall-clock.");
+    }
+
+    ImGui::TextDisabled("A/B a change: note instances + ms here, apply the change, compare. "
+                        "Keep the camera still -- placement is camera-relative.");
 }
 
 void DrawFoliageTab()
@@ -2723,7 +2827,9 @@ void DrawWaterTab()
     else if (ImGui::BeginTable("wtrGpuTimings", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
     {
         float gpuTotal = 0.0f;
-        for (int i = 0; i < gpuRegions; ++i)
+        // Grass shares the region array; its rows live in the Grass tab.
+        const int waterRegions = std::min(gpuRegions, (int)Engine::kWaterGpuRegionEnd);
+        for (int i = 0; i < waterRegions; ++i)
         {
             ImGui::TableNextRow();
             ImGui::TableNextColumn();

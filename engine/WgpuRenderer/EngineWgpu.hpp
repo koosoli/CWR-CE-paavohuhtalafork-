@@ -171,6 +171,9 @@ class EngineWgpu : public EngineDummy
     int GetWaterGpuTimings(float* outMs, int maxCount) const override;
     const char* GetWaterGpuTimingName(int region) const override;
 
+    // GRS-A — grass instance counts, read back from wgr_get_grass_stats.
+    bool GetGrassStats(GrassStatsOut& out) const override;
+
     // GPU-driven cull DEBUG (ImGui Culling tab): only meaningful when GPU-driven is on.
     bool SupportsCullDebug() const override { return _renderer != nullptr && _gpuDriven; }
     CullDebugSettings GetCullDebugSettings() const override { return _cullDebug; }

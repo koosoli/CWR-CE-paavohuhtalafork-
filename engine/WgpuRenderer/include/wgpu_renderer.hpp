@@ -698,8 +698,8 @@ struct WgrGrassParams
     float transmission;    /* backlit thin-blade scattering strength */
     float cast_shadows;    /* 0 = omit close grass from cascade shadow maps */
     float apply_fog;       /* 0 = leave procedural grass unfogged (diagnostic) */
-    float _pad0;
-    float _pad1;
+    float density_noise_scale;    /* coverage-noise frequency (1/metres) */
+    float density_noise_strength; /* 0 = uniform density; 1 = bare patches to dense clumps */
 };
 
 // --- Water (GPU CDLOD surface) -----------------------------------------------
@@ -854,7 +854,35 @@ enum WgrGpuTimerRegion : uint32_t
     WGR_GPU_TIMER_UNDERWATER_FROXEL = 16,   // reserved — no underwater froxel pass yet
     WGR_GPU_TIMER_UNDERWATER_COMPOSITE = 17, // fullscreen underwater compositor (incl. caustics)
     WGR_GPU_TIMER_CAUSTICS = 18,            // reserved — rides the underwater/water shaders
-    WGR_GPU_TIMER_REGION_COUNT = 19,
+    /* Water rows end here; the Water tab slices [0, WATER_REGION_COUNT). */
+    WGR_GPU_TIMER_WATER_REGION_COUNT = 19,
+    /* GRS-A — grass. The three placement dispatches are standalone compute passes and
+     * bracket on the encoder. The draw rows share a render pass with the rest of the
+     * 3D plan, so they need TIMESTAMP_QUERY_INSIDE_PASSES and read "n/a" without it. */
+    WGR_GPU_TIMER_GRASS_PLACE_NEAR = 19,    // cs_place dispatch (512x512 candidates)
+    WGR_GPU_TIMER_GRASS_PLACE_MID = 20,     // cs_place_mid dispatch (384x384)
+    WGR_GPU_TIMER_GRASS_PLACE_FAR = 21,     // cs_place_far dispatch (384x384)
+    WGR_GPU_TIMER_GRASS_PREPASS = 22,       // grass depth/normal prepass (near + mid)
+    WGR_GPU_TIMER_GRASS_COLOR = 23,         // grass colour pass (far + mid + near)
+    WGR_GPU_TIMER_GRASS_SHADOW = 24,        // near blades into the cascade depth map
+    WGR_GPU_TIMER_REGION_COUNT = 25,
+};
+
+/* GRS-A — grass instance accounting (mirrors WgrGrassStats in rust/src/ffi.rs).
+ * Read back asynchronously from the three atomic placement counters, so the values
+ * lag the displayed frame by the readback ring depth (~2-3 frames). `candidates`
+ * are the fixed dispatch sizes, so accepted/candidates is the acceptance rate. */
+struct WgrGrassStats
+{
+    uint32_t near_instances;
+    uint32_t mid_instances;
+    uint32_t far_instances;
+    uint32_t near_candidates;
+    uint32_t mid_candidates;
+    uint32_t far_candidates;
+    uint32_t near_vertices;
+    uint32_t mid_vertices;
+    uint32_t far_vertices;
 };
 
 enum WgrWaterKind : uint32_t { WGR_WATER_KIND_OCEAN = 0, WGR_WATER_KIND_RIVER = 1 };
@@ -1250,6 +1278,9 @@ extern "C"
      * each frame. Returns the region count written (min of WGR_GPU_TIMER_REGION_COUNT
      * and out_len), or 0 when the adapter lacks timestamp queries. */
     WGR_API uint32_t wgr_get_gpu_timings(WgrRenderer* renderer, float* out_ms, uint32_t out_len);
+
+    /* GRS-A — latest grass instance counts. Returns 1 on success, 0 when unavailable. */
+    WGR_API uint32_t wgr_get_grass_stats(WgrRenderer* renderer, WgrGrassStats* out);
 
     /* Push the consolidated ImGui-tweakable render params (tonemap, exposure, sky look,
      * terrain sun-shadow, sky-visibility) in one block. The two terrain setters are diffed

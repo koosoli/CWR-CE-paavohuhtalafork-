@@ -2774,8 +2774,33 @@ const char* EngineWgpu::GetWaterGpuTimingName(int region) const
         "Underwater froxel",     // WGR_GPU_TIMER_UNDERWATER_FROXEL (reserved — no pass yet)
         "Underwater composite",  // WGR_GPU_TIMER_UNDERWATER_COMPOSITE (incl. caustics)
         "Caustics",              // WGR_GPU_TIMER_CAUSTICS (reserved — rides the shaders)
+        "Place near (compute)",  // WGR_GPU_TIMER_GRASS_PLACE_NEAR
+        "Place mid (compute)",   // WGR_GPU_TIMER_GRASS_PLACE_MID
+        "Place far (compute)",   // WGR_GPU_TIMER_GRASS_PLACE_FAR
+        "Grass prepass",         // WGR_GPU_TIMER_GRASS_PREPASS (needs in-pass timestamps)
+        "Grass colour",          // WGR_GPU_TIMER_GRASS_COLOR (needs in-pass timestamps)
+        "Grass shadow",          // WGR_GPU_TIMER_GRASS_SHADOW (needs in-pass timestamps)
     };
     return (region >= 0 && region < (int)WGR_GPU_TIMER_REGION_COUNT) ? kNames[region] : "";
+}
+
+bool EngineWgpu::GetGrassStats(GrassStatsOut& out) const
+{
+    if (!_renderer)
+        return false;
+    WgrGrassStats s{};
+    if (wgr_get_grass_stats(_renderer, &s) == 0)
+        return false;
+    out.nearInstances = s.near_instances;
+    out.midInstances = s.mid_instances;
+    out.farInstances = s.far_instances;
+    out.nearCandidates = s.near_candidates;
+    out.midCandidates = s.mid_candidates;
+    out.farCandidates = s.far_candidates;
+    out.nearVertices = s.near_vertices;
+    out.midVertices = s.mid_vertices;
+    out.farVertices = s.far_vertices;
+    return true;
 }
 
 void EngineWgpu::UpdateAutoTonemap()
@@ -2894,7 +2919,20 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
               params.wind_strength = std::clamp(windXZ * 0.20f * settings.windStrength, 0.0f, 3.0f);
           }
       }
-      params.far_radius = std::clamp(settings.radius, params.near_radius, 5000.0f);
+      // The far ring must start beyond the mid ring, whose reach the shader
+      // derives from `near_radius` (capped at ~64 m by the mid placement grid).
+      // Clamping the far radius to `settings.radius` -- as this did while both
+      // came from one slider -- made the far accept band empty for every
+      // radius below ~65 m, including the 60 m default: the outer LOD ran its
+      // full candidate dispatch every frame and emitted nothing.
+      // 0 disables the outer ring entirely (and skips its dispatch); any other
+      // value is floored past the mid ring so it can never land in the dead band.
+      const float midReach = std::min(160.0f, std::max(params.near_radius + 10.0f, params.near_radius * 2.5f));
+      params.far_radius = settings.farRadius <= 0.0f
+                              ? 0.0f
+                              : std::clamp(settings.farRadius, midReach + 8.0f, 5000.0f);
+      params.density_noise_scale = std::clamp(settings.densityNoiseScale, 0.002f, 0.5f);
+      params.density_noise_strength = std::clamp(settings.densityNoiseStrength, 0.0f, 1.0f);
       // Everon/Eden's legacy geography marks normal terrain as excluded. The
       // terrain renderer identifies it from the actual uploaded WRP, so grass
       // works without requiring the user to discover a diagnostic checkbox.

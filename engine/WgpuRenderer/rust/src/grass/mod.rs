@@ -36,14 +36,19 @@ struct GrassParams {
     transmission: f32,
     cast_shadows: f32,
     apply_fog: f32,
-    _pad0: f32,
-    _pad1: f32,
+    density_noise_scale: f32,
+    density_noise_strength: f32,
 }
 
+/// Mirrors `GrassInstance` in grass.wgsl and grass_shadow.wgsl (32 B). `packed`
+/// carries what the compute placement pass resolves once per blade -- currently
+/// the flattening direction/strength that both vertex shaders used to rebuild
+/// per vertex from the 96-entry track ring.
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct GrassInstance {
     pos_seed: [f32; 4],
+    packed: [u32; 4],
 }
 
 pub enum GrassPass {
@@ -52,9 +57,38 @@ pub enum GrassPass {
     Prepass,
 }
 
+/// GRS-A instance accounting. Counts are the compacted instance totals read back
+/// from the three atomic placement counters; the candidate totals are the fixed
+/// dispatch sizes, so `accepted / candidates` is the placement acceptance rate.
+#[derive(Clone, Copy, Default)]
+pub struct GrassStats {
+    pub near_instances: u32,
+    pub mid_instances: u32,
+    pub far_instances: u32,
+    pub near_candidates: u32,
+    pub mid_candidates: u32,
+    pub far_candidates: u32,
+    pub near_vertices: u32,
+    pub mid_vertices: u32,
+    pub far_vertices: u32,
+}
+
+// Round-robin readback of the three placement counters. Same non-blocking
+// discipline as gpu_timers: copy in the frame encoder, map_async after submit,
+// drain with a Poll next frame. A saturated ring just skips a sample.
+const STATS_SLOTS: usize = 3;
+const STATS_BYTES: u64 = 16; // three u32 counts at offsets 0/4/8, padded
+
+enum StatsSlot {
+    Idle,
+    Pending,
+    InFlight(std::sync::mpsc::Receiver<Result<(), wgpu::BufferAsyncError>>),
+}
+
 pub struct Grass {
     enabled: bool,
     casts_shadows: bool,
+    far_enabled: bool,
     terrain_params: wgpu::Buffer,
     grass_params: wgpu::Buffer,
     placement_count: wgpu::Buffer,
@@ -85,6 +119,8 @@ pub struct Grass {
     far_color_pipeline: wgpu::RenderPipeline,
     far_color_no_write_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
+    stats_buffers: Vec<(wgpu::Buffer, StatsSlot)>,
+    stats: GrassStats,
 }
 
 impl Grass {
@@ -148,7 +184,9 @@ impl Grass {
             blade_height: 1.0,
             wind_strength: 0.75,
             wind_direction: 0.0,
-            far_radius: radius,
+            // The far ring's accept band opens past the mid ring's reach, so a
+            // far radius equal to the detail radius emits nothing at all.
+            far_radius: (radius * 5.0).clamp(60.0, 5000.0),
             interactor_x: 0.0,
             interactor_z: 0.0,
             interactor_radius: 0.0,
@@ -160,8 +198,8 @@ impl Grass {
             transmission: 0.45,
             cast_shadows: 1.0,
             apply_fog: 1.0,
-            _pad0: 0.0,
-            _pad1: 0.0,
+            density_noise_scale: 0.075,
+            density_noise_strength: 0.55,
         };
         queue.write_buffer(&grass_params, 0, bytemuck::bytes_of(&params));
 
@@ -535,6 +573,8 @@ impl Grass {
         Self {
             enabled,
             casts_shadows: true,
+            // Matches the GrassSettings default (farRadius = 0, outer ring off).
+            far_enabled: false,
             terrain_params,
             grass_params,
             placement_count,
@@ -565,6 +605,25 @@ impl Grass {
             far_color_pipeline,
             far_color_no_write_pipeline,
             shadow_pipeline,
+            stats_buffers: (0..STATS_SLOTS)
+                .map(|i| {
+                    (
+                        device.create_buffer(&wgpu::BufferDescriptor {
+                            label: Some(&format!("wgr_grass_stats_readback_{i}")),
+                            size: STATS_BYTES,
+                            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                            mapped_at_creation: false,
+                        }),
+                        StatsSlot::Idle,
+                    )
+                })
+                .collect(),
+            stats: GrassStats {
+                near_candidates: MAX_INSTANCES,
+                mid_candidates: MAX_MID_INSTANCES,
+                far_candidates: MAX_FAR_INSTANCES,
+                ..Default::default()
+            },
         }
     }
 
@@ -633,11 +692,14 @@ impl Grass {
             transmission: params.transmission.clamp(0.0, 1.0),
             cast_shadows: if params.cast_shadows != 0.0 { 1.0 } else { 0.0 },
             apply_fog: if params.apply_fog != 0.0 { 1.0 } else { 0.0 },
-            _pad0: 0.0,
-            _pad1: 0.0,
+            density_noise_scale: params.density_noise_scale.clamp(0.002, 0.5),
+            density_noise_strength: params.density_noise_strength.clamp(0.0, 1.0),
         };
         self.enabled = params.enabled != 0.0;
         self.casts_shadows = params.cast_shadows != 0.0;
+        // A zero far radius means the outer ring is off: skip its whole dispatch
+        // rather than running 147k candidate threads that all reject.
+        self.far_enabled = params.far_radius > 1.0;
         queue.write_buffer(&self.grass_params, 0, bytemuck::bytes_of(&params));
     }
 
@@ -664,14 +726,17 @@ impl Grass {
     }
 
     pub fn dispatch(
-        &self,
+        &mut self,
         encoder: &mut wgpu::CommandEncoder,
         camera_bind: &wgpu::BindGroup,
         camera_offset: u32,
+        timers: &crate::gpu_timers::GpuTimers,
     ) {
         if !self.enabled || !self.have_heightmap {
             return;
         }
+        use crate::gpu_timers::Region;
+        timers.begin(encoder, Region::GrassPlaceNear);
         let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("wgr_grass_place"),
             timestamp_writes: None,
@@ -682,6 +747,8 @@ impl Grass {
         pass.set_bind_group(2, &self.data_bind, &[]);
         pass.dispatch_workgroups(GRID_DIM / 8, GRID_DIM / 8, 1);
         drop(pass);
+        timers.end(encoder, Region::GrassPlaceNear);
+        timers.begin(encoder, Region::GrassPlaceMid);
         let mut mid_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("wgr_grass_place_mid"),
             timestamp_writes: None,
@@ -692,6 +759,9 @@ impl Grass {
         mid_pass.set_bind_group(2, &self.mid_data_bind, &[]);
         mid_pass.dispatch_workgroups(MID_GRID_DIM / 8, MID_GRID_DIM / 8, 1);
         drop(mid_pass);
+        timers.end(encoder, Region::GrassPlaceMid);
+        if self.far_enabled {
+        timers.begin(encoder, Region::GrassPlaceFar);
         let mut far_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
             label: Some("wgr_grass_place_far"),
             timestamp_writes: None,
@@ -702,12 +772,82 @@ impl Grass {
         far_pass.set_bind_group(2, &self.far_data_bind, &[]);
         far_pass.dispatch_workgroups(FAR_GRID_DIM / 8, FAR_GRID_DIM / 8, 1);
         drop(far_pass);
+        timers.end(encoder, Region::GrassPlaceFar);
+        }
         // The render pass consumes a dedicated indirect-argument buffer. Keeping the
         // atomic placement counter separate avoids a STORAGE_READ_WRITE/INDIRECT
         // conflict in wgpu's command-encoder validation.
         encoder.copy_buffer_to_buffer(&self.placement_count, 0, &self.indirect, 4, 4);
         encoder.copy_buffer_to_buffer(&self.mid_placement_count, 0, &self.mid_indirect, 4, 4);
         encoder.copy_buffer_to_buffer(&self.far_placement_count, 0, &self.far_indirect, 4, 4);
+        // Same three counters into a mappable slot for the Grass tab's counts.
+        if let Some((buf, state)) = self
+            .stats_buffers
+            .iter_mut()
+            .find(|(_, s)| matches!(s, StatsSlot::Idle))
+        {
+            encoder.copy_buffer_to_buffer(&self.placement_count, 0, buf, 0, 4);
+            encoder.copy_buffer_to_buffer(&self.mid_placement_count, 0, buf, 4, 4);
+            encoder.copy_buffer_to_buffer(&self.far_placement_count, 0, buf, 8, 4);
+            *state = StatsSlot::Pending;
+        }
+    }
+
+    /// Kick map_async on freshly copied slots and drain completed ones. Call once
+    /// per frame after queue.submit, alongside GpuTimers::harvest.
+    pub fn harvest_stats(&mut self, device: &wgpu::Device) {
+        for (buf, state) in &mut self.stats_buffers {
+            if matches!(state, StatsSlot::Pending) {
+                let (tx, rx) = std::sync::mpsc::channel();
+                buf.slice(..).map_async(wgpu::MapMode::Read, move |r| {
+                    let _ = tx.send(r);
+                });
+                *state = StatsSlot::InFlight(rx);
+            }
+        }
+        let _ = device.poll(wgpu::PollType::Poll);
+        for (buf, state) in &mut self.stats_buffers {
+            let StatsSlot::InFlight(rx) = state else {
+                continue;
+            };
+            match rx.try_recv() {
+                Ok(Ok(())) => {
+                    {
+                        let data = buf.slice(..).get_mapped_range();
+                        let word = |i: usize| {
+                            u32::from_le_bytes(data[i * 4..i * 4 + 4].try_into().unwrap())
+                        };
+                        // The compute pass keeps counting past capacity, so clamp
+                        // to the buffer size the draw is actually limited to.
+                        self.stats.near_instances = word(0).min(MAX_INSTANCES);
+                        self.stats.mid_instances = word(1).min(MAX_MID_INSTANCES);
+                        self.stats.far_instances = word(2).min(MAX_FAR_INSTANCES);
+                    }
+                    buf.unmap();
+                    *state = StatsSlot::Idle;
+                }
+                Ok(Err(_)) | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    *state = StatsSlot::Idle;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
+        // Vertex counts mirror reset_indirect's per-LOD vertex-per-instance values.
+        self.stats.near_vertices = self.stats.near_instances * 60;
+        self.stats.mid_vertices = self.stats.mid_instances * 24;
+        self.stats.far_vertices = self.stats.far_instances * 6;
+    }
+
+    pub fn stats(&self) -> GrassStats {
+        if !self.enabled || !self.have_heightmap {
+            return GrassStats {
+                near_candidates: MAX_INSTANCES,
+                mid_candidates: MAX_MID_INSTANCES,
+                far_candidates: MAX_FAR_INSTANCES,
+                ..Default::default()
+            };
+        }
+        self.stats
     }
 
     pub fn reset_indirect(&self, queue: &wgpu::Queue) {
@@ -728,10 +868,19 @@ impl Grass {
         camera_bind: &wgpu::BindGroup,
         camera_offset: u32,
         kind: GrassPass,
+        timers: &crate::gpu_timers::GpuTimers,
     ) {
         if !self.enabled || !self.have_heightmap {
             return;
         }
+        use crate::gpu_timers::Region;
+        // Grass draws are ops inside the shared 3D pass, so these brackets need
+        // TIMESTAMP_QUERY_INSIDE_PASSES; they no-op (row reads "n/a") without it.
+        let region = match kind {
+            GrassPass::Prepass => Region::GrassPrepass,
+            _ => Region::GrassColor,
+        };
+        timers.begin_pass(pass, region);
         let pipeline = match kind {
             GrassPass::Color => &self.color_pipeline,
             GrassPass::ColorNoWrite => &self.color_no_write_pipeline,
@@ -740,7 +889,7 @@ impl Grass {
         // Far grass skips the normal/depth prepass: it is a sparse, one-triangle
         // visual fill. Draw it before the dense near cards so near blades retain
         // normal depth writing and naturally cover the transition.
-        if !matches!(kind, GrassPass::Prepass) {
+        if self.far_enabled && !matches!(kind, GrassPass::Prepass) {
             let far_pipeline = match kind {
                 GrassPass::Color => &self.far_color_pipeline,
                 GrassPass::ColorNoWrite => &self.far_color_no_write_pipeline,
@@ -767,18 +916,28 @@ impl Grass {
         pass.set_bind_group(1, &self.terrain_bind, &[]);
         pass.set_bind_group(2, &self.data_bind, &[]);
         pass.draw_indirect(&self.indirect, 0);
+        timers.end_pass(pass, region);
     }
 
     /// Dense near blades are the only grass LOD that casts. This keeps the
     /// cascade cost bounded while matching the close-range silhouettes that
     /// players can actually see moving in the wind.
-    pub fn draw_shadow(&self, pass: &mut wgpu::RenderPass<'_>, shadow_bind: &wgpu::BindGroup, shadow_offset: u32) {
+    pub fn draw_shadow(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        shadow_bind: &wgpu::BindGroup,
+        shadow_offset: u32,
+        timers: &crate::gpu_timers::GpuTimers,
+    ) {
         if !self.casts_shadows || !self.enabled || !self.have_heightmap { return; }
+        use crate::gpu_timers::Region;
+        timers.begin_pass(pass, Region::GrassShadow);
         pass.set_pipeline(&self.shadow_pipeline);
         pass.set_bind_group(0, shadow_bind, &[shadow_offset]);
         pass.set_bind_group(1, &self.terrain_bind, &[]);
         pass.set_bind_group(2, &self.data_bind, &[]);
         pass.draw_indirect(&self.indirect, 0);
+        timers.end_pass(pass, Region::GrassShadow);
     }
 
     pub fn casts_shadows(&self) -> bool { self.casts_shadows && self.enabled && self.have_heightmap }

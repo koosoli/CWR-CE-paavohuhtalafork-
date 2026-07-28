@@ -266,8 +266,17 @@ impl Renderer {
         let ts_features =
             wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TIMESTAMP_QUERY_INSIDE_ENCODERS;
         let ts_enabled = adapter.features().contains(ts_features);
+        // GRS-A: grass colour/prepass/shadow are ops inside shared render passes,
+        // so isolating them needs in-pass timestamps. Requested separately — its
+        // absence only costs the grass draw rows, not the encoder-level regions.
+        let ts_inside_passes =
+            ts_enabled && adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
         let ts_request = if ts_enabled {
-            ts_features
+            if ts_inside_passes {
+                ts_features | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
+            } else {
+                ts_features
+            }
         } else {
             wgpu::Features::empty()
         };
@@ -519,11 +528,20 @@ impl Renderer {
         // the scene pipelines, and self-tonemaps when that is an LDR-direct swapchain.
         let sky = Sky::new(&device, &queue, color_format, sample_count);
         // WTR-002 — the timestamp query set + readback ring (inert when unsupported).
-        let gpu_timers = GpuTimers::new(&device, &queue, ts_enabled);
+        let gpu_timers = GpuTimers::new(&device, &queue, ts_enabled, ts_inside_passes);
         if gpu_timers.enabled() {
             log.log(
                 log_level::INFO,
                 "WTR-002 GPU timestamp instrumentation enabled",
+            );
+            log.log(
+                log_level::INFO,
+                if ts_inside_passes {
+                    "GRS-A in-pass timestamps enabled; grass draw rows will report"
+                } else {
+                    "adapter lacks TIMESTAMP_QUERY_INSIDE_PASSES; grass draw rows read n/a \
+                     (placement rows still report)"
+                },
             );
         } else {
             log.log(
@@ -673,6 +691,11 @@ impl Renderer {
     // Non-blocking: values are harvested by render_frame, this is a plain copy.
     fn gpu_timings(&self, out: &mut [f32]) -> u32 {
         self.gpu_timers.timings(out)
+    }
+
+    // GRS-A — latest grass instance counts (same async-readback discipline).
+    fn grass_stats(&self) -> crate::grass::GrassStats {
+        self.grass.stats()
     }
 
     // Tonemap the HDR scene target onto `dst` (the swapchain). No-op if the tonemap
@@ -1327,7 +1350,8 @@ impl Renderer {
         {
             self.grass.reset_indirect(&self.queue);
             let offset = (batch.camera as u64 * self.gfx3d.camera_stride()) as u32;
-            self.grass.dispatch(&mut encoder, camera_bind, offset);
+            self.grass
+                .dispatch(&mut encoder, camera_bind, offset, &self.gpu_timers);
         }
 
         // Update the half-resolution reflected target every visible above-water frame. Reusing
@@ -1528,7 +1552,7 @@ impl Renderer {
         // (here and below) name each phase in a RenderDoc capture.
         encoder.push_debug_group("wgr_shadow_cascades");
         self.gfx3d
-            .render_shadow_passes(&mut encoder, &self.textures, shadow, shadow_casters, &self.grass);
+            .render_shadow_passes(&mut encoder, &self.textures, shadow, shadow_casters, &self.grass, &self.gpu_timers);
         encoder.pop_debug_group();
 
         // Amortized terrain sun-shadow sweep (long-range heightfield self-shadow),
@@ -1782,7 +1806,7 @@ impl Renderer {
                             } else {
                                 GrassPass::Color
                             };
-                            renderer.grass.draw(pass, cam, off, kind);
+                            renderer.grass.draw(pass, cam, off, kind, &renderer.gpu_timers);
                         }
                     }
                     // Water is drawn in a dedicated pass after this sub-pass (it samples the
@@ -1911,7 +1935,8 @@ impl Renderer {
                                 (grass_batches.get(*arg as usize), self.gfx3d.camera_bind())
                             {
                                 let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
-                                self.grass.draw(&mut pp, cam, off, GrassPass::Prepass);
+                                self.grass
+                                    .draw(&mut pp, cam, off, GrassPass::Prepass, &self.gpu_timers);
                             }
                         }
                         _ => {}
@@ -2321,6 +2346,7 @@ impl Renderer {
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
         self.gpu_timers.harvest(&self.device);
+        self.grass.harvest_stats(&self.device);
         Ok(())
     }
 

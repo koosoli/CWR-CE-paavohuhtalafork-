@@ -41,10 +41,21 @@ struct GrassParams {
     interactor_strength: f32,
     tracks: array<GrassTrack, 96>,
     debug_flags: vec4<f32>,
+    // .x = apply_fog, .y = density noise scale, .z = density noise strength
     render_flags: vec4<f32>,
 };
 
-struct GrassInstance { pos_seed: vec4<f32> };
+// 32 bytes. `pos_seed` stays f32 for world precision; everything the compute
+// placement pass can resolve once per blade rides in `packed`, because the
+// vertex shaders re-derived it for all 60 (near) / 24 (mid) vertices of an
+// instance from inputs that only ever depended on the instance position.
+//   packed.x = pack2x16snorm(flatten direction)
+//   packed.y = pack2x16unorm(flatten strength, unused)
+//   packed.z, packed.w = reserved (cached wind, archetype/palette)
+struct GrassInstance {
+    pos_seed: vec4<f32>,
+    packed: vec4<u32>,
+};
 
 // A low-frequency travelling direction field plus a tighter gust field. This
 // is the reference project's two-noise wind idea, implemented from the
@@ -117,15 +128,32 @@ fn clump_noise(world_xz: vec2<f32>, frequency: f32, salt: u32) -> f32 {
     return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
 }
 
+// Coverage multiplier from a world-space noise map, so density is patchy rather
+// than uniform. Strength 0 = flat; 0.55 reproduces the previous hardcoded
+// 0.45..1.35 range. `clumping` stays the master blend so it can still be
+// dialled out entirely from the Grass tab.
+fn density_field(world_xz: vec2<f32>) -> f32 {
+    let strength = clamp(grass.render_flags.z, 0.0, 1.0);
+    let scale = max(grass.render_flags.y, 0.002);
+    let field = clump_noise(world_xz, scale, 0xc7136d5bu);
+    let patchy = mix(1.0 - strength, 1.0 + strength * 0.64, field);
+    return mix(1.0, patchy, grass.debug_flags.y);
+}
+
 fn sample_wind_field(world_xz: vec2<f32>, height_t: f32, seed: f32) -> WindField {
     let strength = clamp(grass.wind_strength, 0.0, 3.0);
     let base_angle = grass.wind_direction * 0.01745329252;
     let base_direction = vec2<f32>(cos(base_angle), sin(base_angle));
     // Advect two fields at distinct scales.  The broad field turns coherent
     // gusts gradually; the smaller field supplies strength and tip flutter.
-    let broad_scroll = base_direction * terrain.time * (16.0 + strength * 9.0);
-    let gust_scroll = base_direction * terrain.time * (30.0 + strength * 15.0);
-    let direction_noise = clump_noise(world_xz.yx + broad_scroll, 0.006, 0x0d7e31a5u);
+    //
+    // Convention: `wind_direction` is the direction the wind travels TOWARD,
+    // which is also the direction blades bend. Sampling noise at `p + v*t`
+    // makes the pattern travel along `-v`, so the scroll is negated -- gust
+    // fronts previously swept across the field opposite to the blades' lean.
+    let broad_scroll = -base_direction * terrain.time * (16.0 + strength * 9.0);
+    let gust_scroll = -base_direction * terrain.time * (30.0 + strength * 15.0);
+    let direction_noise = clump_noise(world_xz + broad_scroll, 0.006, 0x0d7e31a5u);
     let gust_noise = clump_noise(world_xz + gust_scroll, 0.022, 0xa12f7c59u);
     // There is always a small travelling sway. Stronger, soft-edged gusts
     // ride on top of it instead of leaving most of the field motionless,
@@ -177,6 +205,45 @@ fn sample_normal(world_xz: vec2<f32>) -> vec3<f32> {
     return normalize(vec3<f32>(-(hx1 - hx0), 2.0 * s, -(hz1 - hz0)));
 }
 
+// Player/vehicle contact and the persistent track ring, resolved once per
+// accepted blade. Returns xy = flatten direction, z = strength.
+//
+// This used to run per VERTEX in vs_grass/vs_grass_mid: a 96-iteration loop
+// with a length() and two smoothsteps, repeated 60 times per near blade even
+// though every input is the instance position. The shadow shader skipped it
+// entirely, so flattened grass still cast upright shadows.
+fn eval_flatten(world_xz: vec2<f32>) -> vec3<f32> {
+    let interactor_delta = world_xz - vec2<f32>(grass.interactor_x, grass.interactor_z);
+    let interactor_distance = length(interactor_delta);
+    var strength = 0.0;
+    if (grass.interactor_radius > 0.01) {
+        strength = (1.0 - smoothstep(grass.interactor_radius * 0.25, grass.interactor_radius, interactor_distance)) *
+            grass.interactor_strength;
+    }
+    var direction = select(vec2<f32>(0.0), interactor_delta / interactor_distance, interactor_distance > 0.001);
+    // Recent contact stamps fade from strongly flattened to fully recovered
+    // between 25 and 60 seconds, leaving a readable trail.
+    for (var i = 0u; i < 96u; i = i + 1u) {
+        let track = grass.tracks[i];
+        if (track.radius <= 0.01 || track.age >= 60.0) { continue; }
+        let delta = world_xz - vec2<f32>(track.x, track.z);
+        let distance = length(delta);
+        let imprint = (1.0 - smoothstep(track.radius * 0.20, track.radius, distance)) *
+            (1.0 - smoothstep(25.0, 60.0, track.age));
+        if (imprint > strength) {
+            strength = imprint;
+            direction = select(vec2<f32>(0.0), delta / distance, distance > 0.001);
+        }
+    }
+    return vec3<f32>(direction, strength);
+}
+
+fn pack_flatten(flatten: vec3<f32>) -> vec4<u32> {
+    return vec4<u32>(pack2x16snorm(clamp(flatten.xy, vec2<f32>(-1.0), vec2<f32>(1.0))),
+                     pack2x16unorm(vec2<f32>(clamp(flatten.z, 0.0, 1.0), 0.0)),
+                     0u, 0u);
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn cs_place(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= GRID_DIM || gid.y >= GRID_DIM || grass.enabled < 0.5) { return; }
@@ -191,8 +258,7 @@ fn cs_place(@builtin(global_invocation_id) gid: vec3<u32>) {
     let jitter = (hash_cell2(cell_id, 0x19a8b437u) - vec2<f32>(0.5)) * (grass.spacing * 1.85);
     let world_xz = cell_world + jitter;
     let delta = world_xz - frame.cam_pos.xz;
-    let field = clump_noise(world_xz, 0.075, 0xc7136d5bu);
-    let coverage = grass.density * mix(1.0, mix(0.45, 1.35, field), grass.debug_flags.y);
+    let coverage = grass.density * density_field(world_xz);
     if (dot(delta, delta) > grass.near_radius * grass.near_radius || seed > coverage) { return; }
     let map_max = terrain.world_origin + vec2<f32>(f32(terrain.hm_width - 1u), f32(terrain.hm_height - 1u)) * terrain.terrain_grid;
     if (any(world_xz < terrain.world_origin) || any(world_xz >= map_max)) { return; }
@@ -216,6 +282,7 @@ fn cs_place(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_index = atomicAdd(&placement_count[0], 1u);
     if (out_index >= MAX_INSTANCES) { return; }
     instances[out_index].pos_seed = vec4<f32>(world_xz.x, y, world_xz.y, seed);
+    instances[out_index].packed = pack_flatten(eval_flatten(world_xz));
 }
 
 // The middle ring uses a stable half-density grid and a simplified two-segment
@@ -237,8 +304,7 @@ fn cs_place_mid(@builtin(global_invocation_id) gid: vec3<u32>) {
     let world_xz = cell_world + jitter;
     let delta = world_xz - frame.cam_pos.xz;
     let distance2 = dot(delta, delta);
-    let field = clump_noise(world_xz, 0.075, 0xc7136d5bu);
-    let coverage = grass.density * 0.95 * mix(1.0, mix(0.45, 1.35, field), grass.debug_flags.y);
+    let coverage = grass.density * 0.95 * density_field(world_xz);
     // A small overlap avoids a bare annulus at the detailed/mid and mid/far joins.
     let mid_start = max(0.0, grass.near_radius - mid_spacing * 1.5);
     if (distance2 < mid_start * mid_start || distance2 > mid_end * mid_end || seed > coverage) { return; }
@@ -256,6 +322,7 @@ fn cs_place_mid(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_index = atomicAdd(&placement_count[0], 1u);
     if (out_index >= MAX_MID_INSTANCES) { return; }
     instances[out_index].pos_seed = vec4<f32>(world_xz.x, y, world_xz.y, seed);
+    instances[out_index].packed = pack_flatten(eval_flatten(world_xz));
 }
 
 // Coarse outer ring: a terrain-conforming coverage field. This follows the
@@ -302,6 +369,8 @@ fn cs_place_far(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_index = atomicAdd(&placement_count[0], 1u);
     if (out_index >= MAX_FAR_INSTANCES) { return; }
     instances[out_index].pos_seed = vec4<f32>(world_xz.x, y, world_xz.y, seed);
+    // The outer coverage proxy is a ground-conforming quad: nothing to flatten.
+    instances[out_index].packed = vec4<u32>(0u);
 }
 
 struct VsOut {
@@ -325,28 +394,11 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let height = mix(0.35, 1.05, height_seed) * grass.blade_height;
     let width = mix(0.018, 0.045, hash11(inst.xz + 9.0));
     let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
-    let interactor_delta = inst.xz - vec2<f32>(grass.interactor_x, grass.interactor_z);
-    let interactor_distance = length(interactor_delta);
-    var crush = 0.0;
-    if (grass.interactor_radius > 0.01) {
-        crush = (1.0 - smoothstep(grass.interactor_radius * 0.25, grass.interactor_radius, interactor_distance)) *
-            grass.interactor_strength;
-    }
-    var crush_dir = select(vec2<f32>(0.0), interactor_delta / interactor_distance, interactor_distance > 0.001);
-    // Reapply recent contact stamps.  They fade from strongly flattened to
-    // fully recovered between 12 and 28 seconds, leaving a readable trail.
-    for (var i = 0u; i < 96u; i = i + 1u) {
-        let track = grass.tracks[i];
-        if (track.radius <= 0.01 || track.age >= 60.0) { continue; }
-        let delta = inst.xz - vec2<f32>(track.x, track.z);
-        let distance = length(delta);
-        let imprint = (1.0 - smoothstep(track.radius * 0.20, track.radius, distance)) *
-            (1.0 - smoothstep(25.0, 60.0, track.age));
-        if (imprint > crush) {
-            crush = imprint;
-            crush_dir = select(vec2<f32>(0.0), delta / distance, distance > 0.001);
-        }
-    }
+    // Resolved once per blade in cs_place; the shadow pass reads the same bytes.
+    // Named `inst_packed`: `packed` is already the vertex-index decode below.
+    let inst_packed = instances[instance_index].packed;
+    let crush_dir = unpack2x16snorm(inst_packed.x);
+    let crush = unpack2x16unorm(inst_packed.y).x;
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
     let crushed_height = height * (1.0 - 0.78 * crush);
     // Two crossed ribbons, each built from five quads. Every vertex samples
@@ -398,20 +450,9 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let height = mix(0.32, 0.92, height_seed) * grass.blade_height;
     let width = mix(0.024, 0.055, hash11(inst.xz + 23.0));
     let static_bend = forward * mix(0.04, 0.14, hash11(inst.xz + 71.0));
-    var crush = 0.0;
-    var crush_dir = vec2<f32>(0.0);
-    for (var i = 0u; i < 96u; i = i + 1u) {
-        let track = grass.tracks[i];
-        if (track.radius <= 0.01 || track.age >= 60.0) { continue; }
-        let delta = inst.xz - vec2<f32>(track.x, track.z);
-        let distance = length(delta);
-        let imprint = (1.0 - smoothstep(track.radius * 0.20, track.radius, distance)) *
-            (1.0 - smoothstep(25.0, 60.0, track.age));
-        if (imprint > crush) {
-            crush = imprint;
-            crush_dir = select(vec2<f32>(0.0), delta / distance, distance > 0.001);
-        }
-    }
+    let inst_packed = instances[instance_index].packed;
+    let crush_dir = unpack2x16snorm(inst_packed.x);
+    let crush = unpack2x16unorm(inst_packed.y).x;
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
     let crushed_height = height * (1.0 - 0.78 * crush);
     let card = vertex_index / 12u;

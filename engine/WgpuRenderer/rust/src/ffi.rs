@@ -786,8 +786,8 @@ pub struct WgrGrassParams {
     pub transmission: f32,
     pub cast_shadows: f32,
     pub apply_fog: f32,
-    pub _pad0: f32,
-    pub _pad1: f32,
+    pub density_noise_scale: f32,
+    pub density_noise_strength: f32,
 }
 
 // Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.
@@ -1807,6 +1807,59 @@ pub unsafe extern "C" fn wgr_get_gpu_timings(
         let out = unsafe { std::slice::from_raw_parts_mut(out_ms, out_len as usize) };
         let count = renderer.gpu_timings(out);
         count.min(out_len)
+    }))
+    .unwrap_or(0)
+}
+
+/// GRS-A — grass instance accounting for the Grass tab, mirroring `WgrGrassStats`
+/// in wgpu_renderer.hpp. Counts come from a non-blocking readback of the three
+/// atomic placement counters, so they lag the displayed frame by the ring depth
+/// (~2-3 frames), exactly like the GPU timings.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct WgrGrassStats {
+    pub near_instances: u32,
+    pub mid_instances: u32,
+    pub far_instances: u32,
+    pub near_candidates: u32,
+    pub mid_candidates: u32,
+    pub far_candidates: u32,
+    pub near_vertices: u32,
+    pub mid_vertices: u32,
+    pub far_vertices: u32,
+}
+
+/// Fill `out` with the latest grass instance counts. Returns 1 on success, 0 when
+/// the renderer or `out` is null.
+///
+/// # Safety
+/// `renderer` must be a live `WgrRenderer` or null; `out` must point to a valid
+/// `WgrGrassStats`, or be null (in which case 0 is returned).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_get_grass_stats(
+    renderer: *mut WgrRenderer,
+    out: *mut WgrGrassStats,
+) -> u32 {
+    if renderer.is_null() || out.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &*renderer };
+        let s = renderer.grass_stats();
+        unsafe {
+            *out = WgrGrassStats {
+                near_instances: s.near_instances,
+                mid_instances: s.mid_instances,
+                far_instances: s.far_instances,
+                near_candidates: s.near_candidates,
+                mid_candidates: s.mid_candidates,
+                far_candidates: s.far_candidates,
+                near_vertices: s.near_vertices,
+                mid_vertices: s.mid_vertices,
+                far_vertices: s.far_vertices,
+            };
+        }
+        1
     }))
     .unwrap_or(0)
 }

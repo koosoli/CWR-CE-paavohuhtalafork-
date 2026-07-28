@@ -2836,6 +2836,7 @@ impl Gfx3d {
         pass: &WgrShadowPass,
         casters: &[WgrShadowCaster],
         grass: &Grass,
+        timers: &crate::gpu_timers::GpuTimers,
     ) {
         let count = pass.count.min(MAX_CASCADES);
         // The GPU-driven set casts on its own, so render even with no CPU casters (as long as
@@ -2951,7 +2952,7 @@ impl Gfx3d {
             // GPU-driven retained set casts into this cascade (no-op when GPU-driven is off,
             // or when the cascade has no survivors). Drawn last into the same depth attachment.
             self.draw_gpu_driven_shadow(&mut rp, textures, pass_ubo_off, c);
-            grass.draw_shadow(&mut rp, pass_bind, pass_ubo_off);
+            grass.draw_shadow(&mut rp, pass_bind, pass_ubo_off, timers);
         }
     }
 
