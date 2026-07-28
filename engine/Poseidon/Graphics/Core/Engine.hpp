@@ -1382,6 +1382,11 @@ class Engine : public IGraphicsEngine
         // Dev-only performance mode: drops SSR, planar reflection and their scene sampling from
         // the water fragment shader. Off by default.
         bool lowQuality = false;
+        // Coast-aware CDLOD geometry density. GodotOceanWaves uses a camera-following clipmap
+        // with Low/High/High8K meshes; our terrain-integrated equivalent changes how far each
+        // fine CDLOD level remains active while preserving shoreline pruning and horizon coverage.
+        // 0 = Performance, 1 = Balanced, 2 = Reference High (default), 3 = Ultra.
+        int geometryQuality = 2;
 
         // Scene-referred underwater compositor. It reconstructs metric view-ray distance, limits
         // extinction to the portion of each ray below the surface, and uses the authored

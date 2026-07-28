@@ -344,9 +344,10 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset, uint32_t seedX
 
 WaterWgpu::WaterWgpu(EngineWgpu& engine, WgrRenderer* renderer) : _engine(engine), _renderer(renderer)
 {
-    // Water can afford a coarser base LOD than terrain: this plan's surface is flat,
-    // so near-shore tessellation buys nothing until the sibling plan adds waves.
-    _baseMult = EnvFloat("WGR_WATER_LOD_BASE", 8.0f);
+    // Preserve WGR_WATER_LOD_BASE as an expert scale over the Water-tab geometry
+    // presets. 8 was the former fixed default, so an unset environment is neutral.
+    _baseMultScale = std::max(0.125f, EnvFloat("WGR_WATER_LOD_BASE", 8.0f) / 8.0f);
+    _baseMult = 8.0f * _baseMultScale;
     _lodRatio = EnvFloat("WGR_WATER_LOD_RATIO", 2.0f);
     _morphRegion = std::clamp(EnvFloat("WGR_WATER_MORPH", 0.50f), 0.05f, 1.0f);
     // >= 1 keeps at least the map; 3 gives ~one map width of ocean past each edge,
@@ -477,6 +478,23 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     if (_rootIndex < 0)
     {
         return;
+    }
+
+    // GodotOceanWaves swaps between camera-following clipmap meshes. A literal
+    // 512 m demo clipmap cannot replace this renderer's terrain-aware shoreline
+    // pruning and off-map horizon coverage, so expose the equivalent quantity:
+    // how far fine CDLOD patches remain active. Recomputing the small range array
+    // is immediate and does not rebuild the quadtree or any GPU resource.
+    constexpr std::array<float, 4> GeometryBaseMult = {4.0f, 6.0f, 8.0f, 12.0f};
+    const int geometryQuality = std::clamp(look.geometryQuality, 0, 3);
+    const float desiredBaseMult = GeometryBaseMult[geometryQuality] * _baseMultScale;
+    if (_activeGeometryQuality != geometryQuality || std::abs(_baseMult - desiredBaseMult) > 0.001f)
+    {
+        _activeGeometryQuality = geometryQuality;
+        _baseMult = desiredBaseMult;
+        ComputeCdlodRanges(_leafSize * _baseMult, _lodRatio, _numLevels, _ranges);
+        LOG_INFO(Graphics, "Water geometry quality applied: preset={} baseMult={:.2f} range0={:.0f}m",
+                 geometryQuality, _baseMult, _ranges.empty() ? 0.0f : _ranges[0]);
     }
 
     Camera* camera = scene.GetCamera();
@@ -832,17 +850,17 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
             histogram[std::min<size_t>(n.lod, histogram.size() - 1)]++;
         }
         static std::array<int, 16> lastHistogram{};
-        static bool loggedConfig = false;
+        static float lastLoggedBaseMult = -1.0f;
         // The histogram changes on almost every frame the camera moves, so edge-triggering
         // alone produced ~25 rows/second. Rate-limit to one row every 2 s.
         static std::chrono::steady_clock::time_point lastLog{};
         const auto nowClock = std::chrono::steady_clock::now();
         const bool rateOk = (nowClock - lastLog) >= std::chrono::seconds(2);
-        if (!loggedConfig)
+        if (std::abs(lastLoggedBaseMult - _baseMult) > 0.001f)
         {
             LOG_INFO(Graphics, "Water CDLOD config: leafSize={:.1f}m levels={} baseMult={:.1f} ratio={:.2f} range0={:.0f}m",
                      _leafSize, _numLevels, _baseMult, _lodRatio, _ranges.empty() ? 0.0f : _ranges[0]);
-            loggedConfig = true;
+            lastLoggedBaseMult = _baseMult;
         }
         // WTR-002 timings, mirrored into the log. The ImGui Water tab already shows these,
         // but a screenshot cannot be diffed against a previous build and is easy to confuse

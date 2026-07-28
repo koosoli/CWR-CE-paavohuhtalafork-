@@ -2620,6 +2620,19 @@ void DrawWaterTab()
                           "sky, terrain, objects, clouds and mip chain are still drawn whenever water "
                           "is visible (about 1 ms), so the saving is smaller than it sounds. Gating "
                           "that render on water screen coverage is still outstanding.");
+    const char* geometryPresets[] = {
+        "Performance (4x CDLOD range)",
+        "Balanced (6x CDLOD range)",
+        "Reference High (8x CDLOD range)",
+        "Ultra (12x CDLOD range)"
+    };
+    changed |= ImGui::Combo("Wave mesh quality", &s.geometryQuality, geometryPresets,
+                            IM_ARRAYSIZE(geometryPresets));
+    ImGui::SetItemTooltip("Live coast-aware equivalent of GodotOceanWaves' clipmap mesh-quality selector. "
+                          "Higher settings retain dense wave geometry farther from the camera. Reference "
+                          "High is the default; Performance roughly halves visible water triangles, while "
+                          "Ultra is intended for screenshots or fast GPUs. Shoreline pruning and the ocean "
+                          "horizon remain active at every setting.");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Coast (depth-based colour + soft shoreline)");

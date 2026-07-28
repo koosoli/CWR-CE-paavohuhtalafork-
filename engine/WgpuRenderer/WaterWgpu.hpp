@@ -66,8 +66,11 @@ class WaterWgpu : public IWaterRenderer
     // world height (highest possible sea surface + a wave-crest margin).
     float _seaThreshold = 0.0f;
 
-    // LOD tuning, read from the environment once at construction.
+    // LOD tuning. The environment value remains an expert multiplier over the live
+    // Water-tab quality preset rather than silently overriding that control.
     float _baseMult;
+    float _baseMultScale;
+    int _activeGeometryQuality = -1;
     float _lodRatio;
     float _morphRegion;
     // How far the ocean extends past the map, as a multiple of the map size (the tree
