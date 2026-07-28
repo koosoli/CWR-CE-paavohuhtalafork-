@@ -1322,6 +1322,10 @@ mod tests {
             shader.contains("let reflection_lod = (0.14 + 0.86 * roughness * roughness) * max_mip")
         );
         assert!(shader.contains("planar_refl.a * 0.68 * (1.0 - ssr.a * 0.80)"));
+        assert!(shader.contains(
+            "let ssr_distance_weight = 1.0 - smoothstep(180.0, 320.0, length(in.world_pos))"
+        ));
+        assert!(shader.contains("if (ssr_distance_weight > 0.002)"));
 
         let texel = 1.0 / 960.0_f32; // a representative half-res 1920px target
         let roughness = 0.20_f32;
@@ -1334,6 +1338,16 @@ mod tests {
 
         let planar_weight = 1.0 - 1.0 * 0.80;
         assert!(planar_weight > 0.0 && planar_weight < 1.0);
+    }
+
+    #[test]
+    fn procedural_water_detail_skips_zero_contribution_work() {
+        let shader = include_str!("water.wgsl");
+        assert!(shader.contains("if (strength <= 1e-5)"));
+        assert!(shader.contains("if (foam_band > 0.001 && wp.foam_intensity > 0.001)"));
+        assert!(shader.contains("let foam_history_sample = state.foam_history_sample"));
+        assert!(shader.contains("if (crest_top > 0.001)"));
+        assert!(shader.contains("if (unstructured_foam > 0.001)"));
     }
 
     #[test]

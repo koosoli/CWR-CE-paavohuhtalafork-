@@ -786,6 +786,17 @@ fn micro_fbm(p: vec2<f32>, t: f32) -> f32 {
 }
 
 fn micro_normal(xz: vec2<f32>, dist: f32, water_depth: f32, base_normal: vec3<f32>, fft_slope_variance: f32) -> vec3<f32> {
+    let distance_fade = wave_fade(dist);
+    let coast_fade = smoothstep(max(wp.coast_fade, 0.1), max(wp.coast_fade * 3.0, 0.3), water_depth);
+    let steep_fade = 1.0 - smoothstep(0.10, 0.38, 1.0 - base_normal.y);
+    let fft_roughness_fade = 1.0 - smoothstep(0.035, 0.20, fft_slope_variance);
+    let strength = 0.050 * distance_fade * coast_fade * steep_fade * fft_roughness_fade;
+    // Most helicopter/horizon pixels have already faded this shading-only detail to
+    // zero. Avoid eighteen procedural-noise evaluations when their final multiplier
+    // is zero (or far below a visible normal change).
+    if (strength <= 1e-5) {
+        return base_normal;
+    }
     let p0 = xz * 0.48;
     // Domain warp breaks up the otherwise regular fBm cells without introducing a texture.
     let warp = vec2<f32>(vnoise(p0 * 0.23 + vec2<f32>(11.0, 5.0)),
@@ -796,11 +807,6 @@ fn micro_normal(xz: vec2<f32>, dist: f32, water_depth: f32, base_normal: vec3<f3
         micro_fbm(p + vec2<f32>(e, 0.0), wp.time) - micro_fbm(p - vec2<f32>(e, 0.0), wp.time),
         micro_fbm(p + vec2<f32>(0.0, e), wp.time) - micro_fbm(p - vec2<f32>(0.0, e), wp.time)
     ) / (2.0 * e);
-    let distance_fade = wave_fade(dist);
-    let coast_fade = smoothstep(max(wp.coast_fade, 0.1), max(wp.coast_fade * 3.0, 0.3), water_depth);
-    let steep_fade = 1.0 - smoothstep(0.10, 0.38, 1.0 - base_normal.y);
-    let fft_roughness_fade = 1.0 - smoothstep(0.035, 0.20, fft_slope_variance);
-    let strength = 0.050 * distance_fade * coast_fade * steep_fade * fft_roughness_fade;
     return normalize(vec3<f32>(base_normal.x - slope.x * strength, base_normal.y, base_normal.z - slope.y * strength));
 }
 
@@ -1140,6 +1146,7 @@ struct WaterSurfaceState {
     interaction_velocity: f32,
     aeration: f32,
     foam_density: f32,
+    foam_history_sample: vec4<f32>,
 };
 
 fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
@@ -1223,6 +1230,7 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
     // through the same mapping used by the material path keeps the state/debug data
     // aligned with visible wake and whitecap foam after the camera has moved.
     let foam_sample = persistent_foam_sample(in.base_xz);
+    state.foam_history_sample = foam_sample;
     state.foam_density = clamp(foam_sample.r + foam_sample.g * 1.25 + foam_sample.b * 0.75, 0.0, 1.0);
     state.aeration = max(state.aeration, foam_sample.b);
     
@@ -1331,7 +1339,15 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     var ssr = vec4<f32>(0.0);
     var planar_refl = vec4<f32>(0.0);
     if (!low_quality) {
-        ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
+        // SSR is the expensive 20-step depth march. It is valuable around the camera,
+        // where nearby terrain/boats need parallax, but distant ocean already has the
+        // reflected-camera result and previously paid this march for almost no accepted
+        // hits. Fade ownership smoothly to planar before skipping the march entirely.
+        let ssr_distance_weight = 1.0 - smoothstep(180.0, 320.0, length(in.world_pos));
+        if (ssr_distance_weight > 0.002) {
+            ssr = reflected_scene(in.world_pos, refl_dir, normal_variation);
+            ssr.a = ssr.a * ssr_distance_weight;
+        }
         planar_refl = planar_reflection(in.world_pos, base_normal, roughness);
     }
     refl = mix(refl, ssr.rgb, ssr.a);
@@ -1605,21 +1621,25 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let foam_band = smoothstep(0.0, 0.06, ft) * (1.0 - smoothstep(0.35, 1.95, ft));
     // coast_flow points toward land. Sampling x + v*t moves a pattern in -v, so
     // the old wash visibly travelled offshore. x - v*t makes each band advance landward.
-    let shore_speed = 0.38 + shore_break * 0.82;
-    let coast_noise = foam_noise(in.base_xz - coast_flow * wp.time * shore_speed + river_flow * wp.time, wp.time);
+    var foam = 0.0;
+    if (foam_band > 0.001 && wp.foam_intensity > 0.001) {
+        let shore_speed = 0.38 + shore_break * 0.82;
+        let coast_noise = foam_noise(in.base_xz - coast_flow * wp.time * shore_speed + river_flow * wp.time, wp.time);
 
-    // `coast_flow` is the reconstructed water-depth gradient toward land. Build elongated
-    // streaks perpendicular to that direction so wash follows the actual shoreline contour.
-    let shoreward = normalize(coast_flow + spray_wind * 0.001);
-    let shoreline_tangent = vec2<f32>(-shoreward.y, shoreward.x);
-    let shoreline_streak = vnoise(vec2<f32>(
-        dot(in.base_xz, shoreline_tangent) * 0.74 + wp.time * 0.10,
-        dot(in.base_xz, shoreward) * 0.19 - wp.time * shore_speed
-    ));
-    let coast_pattern = max(coast_noise, smoothstep(0.52, 0.72, shoreline_streak));
-    let foam = clamp(foam_band * (0.35 + coast_pattern * 0.95) * max(wp.foam_intensity, 0.0) *
-        (1.0 + shore_break * 0.65), 0.0, 1.0);
-    let foam_history_sample = persistent_foam_sample(in.base_xz);
+        // `coast_flow` is the reconstructed water-depth gradient toward land. Build elongated
+        // streaks perpendicular to that direction so wash follows the actual shoreline contour.
+        let shoreward = normalize(coast_flow + spray_wind * 0.001);
+        let shoreline_tangent = vec2<f32>(-shoreward.y, shoreward.x);
+        let shoreline_streak = vnoise(vec2<f32>(
+            dot(in.base_xz, shoreline_tangent) * 0.74 + wp.time * 0.10,
+            dot(in.base_xz, shoreward) * 0.19 - wp.time * shore_speed
+        ));
+        let coast_pattern = max(coast_noise, smoothstep(0.52, 0.72, shoreline_streak));
+        foam = clamp(foam_band * (0.35 + coast_pattern * 0.95) * max(wp.foam_intensity, 0.0) *
+            (1.0 + shore_break * 0.65), 0.0, 1.0);
+    }
+    // evaluate_water_surface already fetched this texel for crest translucency.
+    let foam_history_sample = state.foam_history_sample;
     let persistent_foam = clamp((foam_history_sample.r + foam_history_sample.g * 1.5) * (0.65 + foam_history_sample.b * 0.45), 0.0, 1.0);
     // Whitecaps belong on the *top* of a breaking crest. Godot stores the
     // negative-Jacobian accumulation in normal-map alpha, then thresholds that
@@ -1630,23 +1650,25 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let crest_top = smoothstep(0.035, 0.16, state.crest_energy) *
         smoothstep(0.008, 0.085, max(surface_wave, 0.0));
     let jacobian_break = smoothstep(0.035, 0.22, state.compression);
-    let crest_shape = smoothstep(0.42, 0.68, foam_noise(in.base_xz * 1.5 - spray_wind * wp.time * 0.18, wp.time));
-    // Ocean vs coast. A wave breaks when it can no longer support its own steepness, and shoaling
-    // water forces that much sooner: the bottom compresses the orbital motion, the crest steepens
-    // and spills. Over deep water the same sea state carries long swell that mostly does not break.
-    // Gating the breaker terms on the reconstructed column depth is what separates open ocean from
-    // a coastline instead of scattering identical whitecaps across both.
-    let deep_water = smoothstep(6.0, 45.0, water_depth); // 0 = shoaling, 1 = open ocean
-    // Shallow water breaks more readily, but the earlier 1.55x boost turned every bay into solid
-    // whitewater. A modest bias is enough to separate coast from open ocean.
-    let break_readiness = mix(1.05, 0.55, deep_water);
-    let breaker_foam = clamp(crest_top * mix(0.28, 0.72, jacobian_break) * crest_shape * break_readiness,
-        0.0, 1.0);
+    var breaker_foam = 0.0;
+    if (crest_top > 0.001) {
+        let crest_shape = smoothstep(0.42, 0.68, foam_noise(in.base_xz * 1.5 - spray_wind * wp.time * 0.18, wp.time));
+        // Ocean vs coast. A wave breaks when it can no longer support its own steepness, and shoaling
+        // water forces that much sooner: the bottom compresses the orbital motion, the crest steepens
+        // and spills. Over deep water the same sea state carries long swell that mostly does not break.
+        let deep_water = smoothstep(6.0, 45.0, water_depth); // 0 = shoaling, 1 = open ocean
+        let break_readiness = mix(1.05, 0.55, deep_water);
+        breaker_foam = clamp(crest_top * mix(0.28, 0.72, jacobian_break) * crest_shape * break_readiness,
+            0.0, 1.0);
+    }
     // Sparse short-lived flecks sell wind-torn shore break and whitecap spindrift
     // without a separate particle system or a broad white surface layer.
-    let spray_flecks = (foam_band * shore_break + breaker_foam) *
-        smoothstep(0.78, 0.93, foam_noise(in.base_xz * 4.6 + spray_wind * wp.time * 1.8, wp.time)) * 0.26;
-    let foam_structure = foam_noise(in.base_xz * 2.7 + spray_wind * wp.time * 0.45, wp.time);
+    let spray_source = foam_band * shore_break + breaker_foam;
+    var spray_flecks = 0.0;
+    if (spray_source > 0.001) {
+        spray_flecks = spray_source *
+            smoothstep(0.78, 0.93, foam_noise(in.base_xz * 4.6 + spray_wind * wp.time * 1.8, wp.time)) * 0.26;
+    }
     // "Foam intensity" used to scale ONLY the shoreline band, while persistent foam and breaker
     // whitecaps ignored it — so there was no control anywhere that reduced total foam coverage. That
     // matters more than it sounds: foam is composited OVER the body colour, so once coverage is high
@@ -1654,8 +1676,13 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // the shallow/deep colours are set to (even black). Making the slider authoritative over every
     // foam source gives an actual coverage control.
     let foam_scale = max(wp.foam_intensity, 0.0);
-    let combined_foam = clamp((max(foam, max(persistent_foam, breaker_foam) * foam_scale) +
-        spray_flecks * foam_scale) * mix(0.46, 1.0, foam_structure), 0.0, 1.0);
+    let unstructured_foam = max(foam, max(persistent_foam, breaker_foam) * foam_scale) +
+        spray_flecks * foam_scale;
+    var combined_foam = 0.0;
+    if (unstructured_foam > 0.001) {
+        let foam_structure = foam_noise(in.base_xz * 2.7 + spray_wind * wp.time * 0.45, wp.time);
+        combined_foam = clamp(unstructured_foam * mix(0.46, 1.0, foam_structure), 0.0, 1.0);
+    }
     // Bubbles form a broad, rough dielectric layer: mostly sky/sun-lit diffuse scattering with
     // only a subdued dielectric highlight. This is material response, never an emissive overlay.
     var foam_color = vec3<f32>(0.0);
