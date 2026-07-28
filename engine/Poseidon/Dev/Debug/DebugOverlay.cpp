@@ -1506,6 +1506,26 @@ void DrawGrassTab()
     ImGui::TextDisabled("Patch frequency in 1/metres. 0.075 gives ~13 m patches; lower = broader sweeps, higher = finer mottling.");
     changed |= ImGui::SliderFloat("Density noise strength", &grass.densityNoiseStrength, 0.0f, 1.0f, "%.2f");
     ImGui::TextDisabled("0 = perfectly uniform coverage; 1 = bare ground between dense clumps. Scaled by Field clumping below, and does not affect the far ring.");
+
+    changed |= ImGui::Checkbox("Mid LOD: photographed tuft cards", &grass.midPhotoTuft);
+    ImGui::TextDisabled("Off = procedural crossed ribbons (default). On = crossed cards using the game's own "
+                        "trava1_pmp2 texture; that 2001 photo is grey-teal rather than green, so it needs "
+                        "colour correction to sit right next to the near grass.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Species mix");
+    changed |= ImGui::SliderFloat("Weed %", &grass.weedPercent, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("Broad flat leaves (clover, ragged weed). Wider and shorter than grass.");
+    changed |= ImGui::SliderFloat("Flower %", &grass.flowerPercent, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("Daisy and poppy heads on slim untapered stems. Clamped so weed + flower never exceeds 100%%.");
+    // Mirror the renderer's clamp so the readout cannot claim an impossible mix.
+    {
+        const float weed = std::clamp(grass.weedPercent, 0.0f, 1.0f);
+        const float flower = std::clamp(grass.flowerPercent, 0.0f, 1.0f - weed);
+        ImGui::TextDisabled("Effective mix: %.0f%% grass, %.0f%% weed, %.0f%% flower. Chosen per clump (~25 m "
+                            "patches), so these are area fractions, not per-blade odds.",
+                            (1.0f - weed - flower) * 100.0f, weed * 100.0f, flower * 100.0f);
+    }
     changed |= ImGui::SliderFloat("Blade height", &grass.height, 0.10f, 3.0f, "%.2fx");
     changed |= ImGui::Checkbox("Use live world wind", &grass.useLiveWind);
     changed |= ImGui::SliderFloat("Wind strength", &grass.windStrength, 0.0f, 3.0f, "%.2f");
@@ -1544,6 +1564,8 @@ void DrawGrassTab()
         grass.farRadius = 1.0f;
         grass.densityNoiseScale = 0.075f;
         grass.densityNoiseStrength = 0.55f;
+        grass.weedPercent = 0.12f;
+        grass.flowerPercent = 0.05f;
         grass.height = 1.25f;
         grass.useLiveWind = true;
         grass.windStrength = 1.2f;

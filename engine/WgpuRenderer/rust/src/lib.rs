@@ -2528,6 +2528,12 @@ impl Renderer {
             .set_geography(&self.device, &self.queue, width, height, values);
     }
 
+    // GRS-E — the game's decoded grass-tuft PAA for the mid LOD's crossed cards.
+    fn grass_set_tuft(&mut self, width: u32, height: u32, rgba: &[u8]) {
+        self.grass
+            .set_tuft(&self.device, &self.queue, width, height, rgba);
+    }
+
     fn grass_set_params(&mut self, params: WgrGrassParams) {
         self.grass.set_params(&self.queue, params);
     }

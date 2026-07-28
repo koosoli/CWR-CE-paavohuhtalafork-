@@ -700,6 +700,13 @@ struct WgrGrassParams
     float apply_fog;       /* 0 = leave procedural grass unfogged (diagnostic) */
     float density_noise_scale;    /* coverage-noise frequency (1/metres) */
     float density_noise_strength; /* 0 = uniform density; 1 = bare patches to dense clumps */
+    /* Species mix, as fractions of all placed plants. Grass takes the remainder,
+     * so weed + flower is clamped to <= 1. Selection is per clump, not per blade. */
+    float weed_percent;
+    float flower_percent;
+    float _pad0;
+    /* 0 = mid LOD keeps the procedural ribbons (default); nonzero = photo tuft cards. */
+    float use_photo_tuft;
 };
 
 // --- Water (GPU CDLOD surface) -----------------------------------------------
@@ -1088,7 +1095,7 @@ static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match th
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrGrassParams) == 1616, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassParams) == 1632, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterParams) == 240, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 40, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
@@ -1251,6 +1258,13 @@ extern "C"
     WGR_API void wgr_grass_set_geography(WgrRenderer* renderer, uint32_t width, uint32_t height,
                                          const uint32_t* geography);
     WGR_API void wgr_grass_set_params(WgrRenderer* renderer, const WgrGrassParams* params);
+
+    /* GRS-E — upload the photographed grass-tuft texture used by the mid LOD's crossed
+     * cards. `rgba` is width*height RGBA8 (the game's own PAA/PAC decoded through
+     * DecodePAABuffer). Cutout alpha: the mid fragment shader alpha-tests it. Passing
+     * width or height 0 clears it, and the mid ring falls back to procedural ribbons. */
+    WGR_API void wgr_grass_set_tuft(WgrRenderer* renderer, uint32_t width, uint32_t height,
+                                    const uint8_t* rgba);
 
     /* The terrain sun-shadow and sky-visibility knobs are pushed through the consolidated
      * WgrRenderParams block (wgr_set_render_params), not their own setters. See below and

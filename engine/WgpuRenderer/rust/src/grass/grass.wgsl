@@ -43,6 +43,8 @@ struct GrassParams {
     debug_flags: vec4<f32>,
     // .x = apply_fog, .y = density noise scale, .z = density noise strength
     render_flags: vec4<f32>,
+    // .x = weed fraction, .y = flower fraction (grass takes the remainder)
+    species_mix: vec4<f32>,
 };
 
 // 32 bytes. `pos_seed` stays f32 for world precision; everything the compute
@@ -73,6 +75,12 @@ struct WindField {
 @group(2) @binding(0) var<uniform> grass: GrassParams;
 @group(2) @binding(1) var<storage, read_write> instances: array<GrassInstance>;
 @group(2) @binding(2) var<storage, read_write> placement_count: array<atomic<u32>>;
+// GRS-D blade albedo: one layer per archetype, mipped. Fragment stage only.
+@group(2) @binding(3) var blade_tex: texture_2d_array<f32>;
+@group(2) @binding(4) var blade_samp: sampler;
+// GRS-E: the game's own photographed grass tuft, used by the mid LOD's crossed
+// cards. Cutout alpha -- fs_grass_mid alpha-tests it.
+@group(2) @binding(5) var tuft_tex: texture_2d<f32>;
 
 const GRID_DIM: u32 = 512u;
 const MAX_INSTANCES: u32 = 262144u;
@@ -80,6 +88,7 @@ const FAR_GRID_DIM: u32 = 384u;
 const MAX_FAR_INSTANCES: u32 = 147456u;
 const MID_GRID_DIM: u32 = 384u;
 const MAX_MID_INSTANCES: u32 = 147456u;
+const LAYERS: u32 = 8u;
 const BLADE_SEGMENTS: u32 = 5u;
 const VERTS_PER_CARD: u32 = BLADE_SEGMENTS * 6u;
 
@@ -126,6 +135,13 @@ fn clump_noise(world_xz: vec2<f32>, frequency: f32, salt: u32) -> f32 {
     let c = hash_cell01(base + vec2<i32>(0, 1), salt);
     let d = hash_cell01(base + vec2<i32>(1, 1), salt);
     return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
+
+// Blade texture detail is a near-LOD feature: a 64x256 blade texture on a
+// ribbon a few pixels wide aliases badly, and the mid ring starts past 25 m.
+// Fading by distance covers both LODs with one fragment shader.
+fn blade_texture_strength(world_rel: vec3<f32>) -> f32 {
+    return 1.0 - smoothstep(14.0, 35.0, length(world_rel));
 }
 
 // Outer edge of the mid blade ring, shared by cs_place_mid (which grows up to it)
@@ -251,10 +267,52 @@ fn eval_flatten(world_xz: vec2<f32>) -> vec3<f32> {
     return vec3<f32>(direction, strength);
 }
 
-fn pack_flatten(flatten: vec3<f32>) -> vec4<u32> {
+// Species layers in blade_atlas.rs: 0..4 grass, 4..6 weed, 6..8 flower.
+const SPECIES_GRASS_END: u32 = 4u;
+const SPECIES_WEED_END: u32 = 6u;
+
+// Species, chosen per CLUMP rather than per blade. Two independent fields:
+// a coarse one decides which GROUP a patch belongs to (so weeds and flowers
+// appear in drifts, the way they actually grow), and a finer one varies the
+// member within that group. Picking independently per blade would turn eight
+// distinct silhouettes into uniform visual noise.
+fn pick_species(world_xz: vec2<f32>) -> u32 {
+    let weed = clamp(grass.species_mix.x, 0.0, 1.0);
+    let flower = clamp(grass.species_mix.y, 0.0, 1.0 - weed);
+    // Coarse patch field (~25 m) -> group.
+    let group_noise = clump_noise(world_xz, 0.04, 0x6f2ad913u);
+    // Finer field (~7 m) -> member of that group.
+    let member = clump_noise(world_xz, 0.14, 0x2b91f4d7u);
+    if (group_noise < flower) {
+        return SPECIES_WEED_END + min(u32(member * f32(LAYERS - SPECIES_WEED_END)),
+                                      LAYERS - SPECIES_WEED_END - 1u);
+    }
+    if (group_noise < flower + weed) {
+        return SPECIES_GRASS_END + min(u32(member * f32(SPECIES_WEED_END - SPECIES_GRASS_END)),
+                                       SPECIES_WEED_END - SPECIES_GRASS_END - 1u);
+    }
+    return min(u32(member * f32(SPECIES_GRASS_END)), SPECIES_GRASS_END - 1u);
+}
+
+// Per-species blade shape. Weeds are broader and shorter; flowers are narrower
+// stems that must NOT taper away at the tip or the petal head would be drawn on
+// a point. Returns (width scale, height scale, taper exponent).
+fn species_shape(species: u32) -> vec3<f32> {
+    if (species >= SPECIES_WEED_END) {
+        // Flower: slim stem, taller, and a near-constant width so the head reads.
+        return vec3<f32>(0.85, 1.15, 0.18);
+    }
+    if (species >= SPECIES_GRASS_END) {
+        // Weed: broad flat leaf, shorter, blunt tip.
+        return vec3<f32>(1.9, 0.82, 0.42);
+    }
+    return vec3<f32>(1.0, 1.0, 0.65);
+}
+
+fn pack_flatten(flatten: vec3<f32>, species: u32) -> vec4<u32> {
     return vec4<u32>(pack2x16snorm(clamp(flatten.xy, vec2<f32>(-1.0), vec2<f32>(1.0))),
                      pack2x16unorm(vec2<f32>(clamp(flatten.z, 0.0, 1.0), 0.0)),
-                     0u, 0u);
+                     0u, species & 7u);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -295,7 +353,7 @@ fn cs_place(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_index = atomicAdd(&placement_count[0], 1u);
     if (out_index >= MAX_INSTANCES) { return; }
     instances[out_index].pos_seed = vec4<f32>(world_xz.x, y, world_xz.y, seed);
-    instances[out_index].packed = pack_flatten(eval_flatten(world_xz));
+    instances[out_index].packed = pack_flatten(eval_flatten(world_xz), pick_species(world_xz));
 }
 
 // The middle ring uses a stable half-density grid and a simplified two-segment
@@ -335,7 +393,7 @@ fn cs_place_mid(@builtin(global_invocation_id) gid: vec3<u32>) {
     let out_index = atomicAdd(&placement_count[0], 1u);
     if (out_index >= MAX_MID_INSTANCES) { return; }
     instances[out_index].pos_seed = vec4<f32>(world_xz.x, y, world_xz.y, seed);
-    instances[out_index].packed = pack_flatten(eval_flatten(world_xz));
+    instances[out_index].packed = pack_flatten(eval_flatten(world_xz), pick_species(world_xz));
 }
 
 // Coarse outer ring: a terrain-conforming coverage field. This follows the
@@ -393,6 +451,10 @@ struct VsOut {
     @location(2) height_t: f32,
     @location(3) seed: f32,
     @location(4) wind_gust: f32,
+    // .xy = blade UV (u across the ribbon, v = 1 - height_t), .z = archetype
+    // layer, .w = texture strength (faded out by distance so sub-pixel blades
+    // sample flat colour instead of sparkling).
+    @location(5) blade_uv: vec4<f32>,
 };
 
 @vertex
@@ -404,12 +466,15 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let side = vec3<f32>(cos(angle), 0.0, -sin(angle));
     let forward = vec3<f32>(sin(angle), 0.0, cos(angle));
     let height_seed = mix(hash11(inst.xz + 2.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
-    let height = mix(0.35, 1.05, height_seed) * grass.blade_height;
-    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0));
-    let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
     // Resolved once per blade in cs_place; the shadow pass reads the same bytes.
     // Named `inst_packed`: `packed` is already the vertex-index decode below.
     let inst_packed = instances[instance_index].packed;
+    // Species drives shape as well as albedo: a broad weed leaf and a flower
+    // stem are not the same ribbon with a different texture on it.
+    let shape = species_shape(inst_packed.w & 7u);
+    let height = mix(0.35, 1.05, height_seed) * grass.blade_height * shape.y;
+    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x;
+    let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush = unpack2x16unorm(inst_packed.y).x;
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
@@ -427,7 +492,9 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let wind = sample_wind_field(inst.xz, t, seed);
     let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
         (0.035 + 0.21 * wind.gust + wind.turbulence);
-    let taper = pow(max(1.0 - t, 0.0), 0.65);
+    // Flowers use a near-flat taper exponent so the stem keeps its width up to
+    // the tip -- a petal head painted on a point would vanish.
+    let taper = pow(max(1.0 - t, 0.0), shape.z);
     let half_width = width * taper;
     let curve = (static_bend + wind_bend + crush_bend) * (t * t);
     let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (static_bend + wind_bend + crush_bend) * (2.0 * t);
@@ -448,6 +515,8 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     out.height_t = t;
     out.seed = seed;
     out.wind_gust = wind.gust;
+    out.blade_uv = vec4<f32>(select(1.0, 0.0, left), 1.0 - t, f32(inst_packed.w & 7u),
+                             blade_texture_strength(rel));
     return out;
 }
 
@@ -460,10 +529,13 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let side = vec3<f32>(cos(angle), 0.0, -sin(angle));
     let forward = vec3<f32>(sin(angle), 0.0, cos(angle));
     let height_seed = mix(hash11(inst.xz + 13.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
-    let height = mix(0.32, 0.92, height_seed) * grass.blade_height;
-    let width = mix(0.024, 0.055, hash11(inst.xz + 23.0));
-    let static_bend = forward * mix(0.04, 0.14, hash11(inst.xz + 71.0));
     let inst_packed = instances[instance_index].packed;
+    // Same species shape as the near path, so a plant does not change
+    // proportions as it crosses the near/mid boundary.
+    let shape = species_shape(inst_packed.w & 7u);
+    let height = mix(0.32, 0.92, height_seed) * grass.blade_height * shape.y;
+    let width = mix(0.024, 0.055, hash11(inst.xz + 23.0)) * shape.x;
+    let static_bend = forward * mix(0.04, 0.14, hash11(inst.xz + 71.0));
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush = unpack2x16unorm(inst_packed.y).x;
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
@@ -485,7 +557,7 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let blade_normal = normalize(cross(blade_axis, tangent));
     let view_dir = normalize(frame.cam_pos.xyz - inst.xyz);
     let edge_on = pow(1.0 - abs(dot(blade_normal, view_dir)), 4.0);
-    let lateral = select(blade_axis, -blade_axis, left) * width * pow(max(1.0 - t, 0.0), 0.7) * (1.0 + edge_on * 1.25);
+    let lateral = select(blade_axis, -blade_axis, left) * width * pow(max(1.0 - t, 0.0), shape.z) * (1.0 + edge_on * 1.25);
     let rel = inst.xyz + lateral + vec3<f32>(0.0, crushed_height * t, 0.0) + curve - frame.cam_pos.xyz;
     var out: VsOut;
     out.clip = reverse_z(frame.proj * frame.view * vec4<f32>(rel, 1.0));
@@ -494,6 +566,70 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     out.height_t = t;
     out.seed = seed;
     out.wind_gust = wind.gust;
+    out.blade_uv = vec4<f32>(select(1.0, 0.0, left), 1.0 - t, f32(inst_packed.w & 7u),
+                             blade_texture_strength(rel));
+    return out;
+}
+
+// GRS-E — Arma-style mid LOD: two crossed quads carrying the game's own
+// photographed tuft, instead of one procedural blade. One instance now stands
+// for a clump rather than a single plant, which is why the mid ring can be far
+// sparser and still read as continuous cover.
+//
+// 12 vertices (2 cards x 6) against the procedural path's 24, and the photo
+// supplies detail no closed-form function reproduces. The trade is the alpha
+// test: fs_grass_mid_tuft discards, so this path gives up early-Z. That is
+// acceptable here and NOT on the dense near ring, which stays opaque ribbons.
+@vertex
+fn vs_grass_mid_tuft(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) instance_index: u32) -> VsOut {
+    let inst = instances[instance_index].pos_seed;
+    let seed = inst.w;
+    let inst_packed = instances[instance_index].packed;
+    let field = clump_noise(inst.xz, 0.075, 0x48ac2f19u);
+    let angle = mix(seed * 6.2831853, field * 6.2831853, grass.debug_flags.y);
+    // Two cards at 90 degrees, so the clump keeps volume from any viewing angle.
+    let card = vertex_index / 6u;
+    let card_angle = angle + select(0.0, 1.5707963, card != 0u);
+    let axis = vec3<f32>(cos(card_angle), 0.0, sin(card_angle));
+
+    let corner = vertex_index % 6u;
+    // Quad: (0,0) (1,0) (1,1) / (0,0) (1,1) (0,1) in (u, vertical) space.
+    let right = corner == 1u || corner == 2u || corner == 4u;
+    let top = corner == 2u || corner == 4u || corner == 5u;
+    let u = select(0.0, 1.0, right);
+    let vh = select(0.0, 1.0, top);
+
+    let height_seed = mix(hash11(inst.xz + 13.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
+    // A tuft is a clump, so it is wider and taller than the single blade this
+    // instance used to represent.
+    let height = mix(0.34, 0.78, height_seed) * grass.blade_height * 1.7;
+    let half_width = height * mix(0.55, 0.85, hash11(inst.xz + 23.0));
+
+    let crush_dir = unpack2x16snorm(inst_packed.x);
+    let crush = unpack2x16unorm(inst_packed.y).x;
+    let crushed_height = height * (1.0 - 0.78 * crush);
+    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
+
+    let wind = sample_wind_field(inst.xz, vh, seed);
+    let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
+        (0.030 + 0.18 * wind.gust + wind.turbulence);
+    // The whole card leans; roots stay pinned. Quadratic in height, as the
+    // procedural blades bend, so a clump does not shear against its neighbours.
+    let lean = (wind_bend + crush_bend) * (vh * vh);
+    let lateral = axis * (u - 0.5) * 2.0 * half_width;
+    let rel = inst.xyz + lateral + vec3<f32>(0.0, crushed_height * vh, 0.0) + lean - frame.cam_pos.xyz;
+
+    var out: VsOut;
+    out.clip = reverse_z(frame.proj * frame.view * vec4<f32>(rel, 1.0));
+    out.world_rel = rel;
+    // Card normal faces the viewer's side of the plane; the fragment shader
+    // pulls it upright anyway, so a flat billboard normal is enough here.
+    out.normal = normalize(vec3<f32>(-axis.z, 1.15, axis.x));
+    out.height_t = vh;
+    out.seed = seed;
+    out.wind_gust = wind.gust;
+    // Texture v runs 0 at the top of the tuft image, so flip the vertical param.
+    out.blade_uv = vec4<f32>(u, 1.0 - vh, 0.0, 1.0);
     return out;
 }
 
@@ -521,6 +657,8 @@ fn vs_grass_far(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     out.height_t = 0.65;
     out.seed = inst.w;
     out.wind_gust = sample_wind_field(inst.xz, 0.65, inst.w).gust;
+    // The outer coverage quad has no blade to texture; fs_grass_far ignores this.
+    out.blade_uv = vec4<f32>(0.0);
     return out;
 }
 
@@ -536,7 +674,18 @@ fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
     // A restrained, field-coherent highlight makes gusts readable without
     // turning grass into emissive green waves.
     let gust_highlight = 1.0 + in.wind_gust * clamp(grass.wind_strength, 0.0, 1.5) * (0.035 + 0.075 * in.height_t);
-    let albedo = mix(base, tip, in.height_t) * root * variation * gust_highlight;
+    let procedural = mix(base, tip, in.height_t) * root * variation * gust_highlight;
+    // GRS-D: the archetype layer supplies midrib, fibre and dry-tip detail. It
+    // is blended toward the procedural colour by distance so the field-scale
+    // tint, gust highlight and per-blade variation all still apply -- the
+    // texture adds surface detail, it does not replace the palette.
+    // The layer already carries the species' own root-to-tip gradient, so it
+    // REPLACES the procedural ramp rather than multiplying it. Multiplying was
+    // wrong: the atlas averages ~0.17 linear, so `procedural * blade * 2` scaled
+    // near grass to about a third of its brightness while barely showing detail.
+    let blade = textureSample(blade_tex, blade_samp, in.blade_uv.xy, i32(in.blade_uv.z));
+    let textured = blade.rgb * variation * gust_highlight;
+    let albedo = mix(procedural, textured, in.blade_uv.w);
     // Bend card normals toward an upright rounded-blade normal. This avoids
     // the flat dark-side look of a raw ribbon while preserving its silhouette.
     let n = normalize(mix(normalize(in.normal), vec3<f32>(0.0, 1.0, 0.0), 0.24));
@@ -572,6 +721,60 @@ fn fs_grass_far(in: VsOut) -> @location(0) vec4<f32> {
     let lit = albedo * (ambient + direct);
     let fogged = apply_fog(lit, in.world_rel);
     return vec4<f32>(select(lit, fogged, grass.render_flags.x >= 0.5), 1.0);
+}
+
+// GRS-E — photographed tuft card. Alpha-tested cutout, so it must discard in
+// BOTH the colour and prepass entries or the prepass would stamp opaque
+// rectangles into the depth/normal buffer.
+const TUFT_ALPHA_CUTOFF: f32 = 0.5;
+
+@fragment
+fn fs_grass_mid_tuft(in: VsOut) -> @location(0) vec4<f32> {
+    let tex = textureSample(tuft_tex, blade_samp, in.blade_uv.xy);
+    if (tex.a < TUFT_ALPHA_CUTOFF) { discard; }
+    let world = in.world_rel + frame.cam_pos.xyz;
+    // The photo already carries base-to-tip shading, so only the field-scale
+    // tint and gust highlight are applied on top -- re-adding the procedural
+    // root darkening would double up what the photograph already shows.
+    let field_tint = clump_noise(world.xz, 0.16, 0x5e3a91c7u);
+    let variation = mix(1.0, mix(0.82, 1.16, mix(in.seed, field_tint, 0.55)), grass.debug_flags.z);
+    let gust_highlight = 1.0 + in.wind_gust * clamp(grass.wind_strength, 0.0, 1.5) * 0.05;
+    // The source photograph's opaque texels average (0.322, 0.375, 0.334) --
+    // blue sits ABOVE red, so its actual hue is grey-teal. Boosting saturation
+    // does not help: saturation is a push about the luma axis, so it preserves
+    // hue and only made the teal stronger.
+    //
+    // Instead, drive a grass palette with the photo's LUMINANCE. Every bit of
+    // photographic structure (blade edges, clumping, tonal variation) is carried
+    // by luma; only the hue is replaced. `0.361` is the measured mean luma of the
+    // opaque texels, so the normalised term averages 1.0 and the palette colour
+    // is the resulting average albedo.
+    let luma = dot(tex.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let luma_norm = luma / 0.361;
+    let dry = vec3<f32>(0.30, 0.30, 0.11);
+    let lush = vec3<f32>(0.22, 0.36, 0.10);
+    let palette = mix(dry, lush, clamp(field_tint, 0.0, 1.0));
+    // Keep a little of the photo's own chroma so the field is not flatly uniform,
+    // but not enough to drag the hue back toward teal.
+    let chroma = (tex.rgb - vec3<f32>(luma)) * 0.25;
+    let albedo = max(palette * luma_norm + chroma, vec3<f32>(0.0)) * variation * gust_highlight;
+    let n = normalize(mix(normalize(in.normal), vec3<f32>(0.0, 1.0, 0.0), 0.35));
+    let light_dir = normalize(frame.sun_dir_world.xyz);
+    let ndl = max(dot(n, light_dir), 0.0);
+    let wrap = max((dot(n, light_dir) + 0.35) / 1.35, 0.0);
+    let terrain_shadow = terrain_sun_shadow(world.xz, world.y);
+    let direct = frame.sun_diffuse.rgb * mix(ndl, wrap, 0.5) * (1.0 - terrain_shadow);
+    let ambient = sky_irradiance(normalize(mix(n, vec3<f32>(0.0, 1.0, 0.0), 0.45))) * sky_vis_ao(world.xz);
+    let lit = albedo * (ambient + direct);
+    let fogged = apply_fog(lit, in.world_rel);
+    return vec4<f32>(select(lit, fogged, grass.render_flags.x >= 0.5), 1.0);
+}
+
+@fragment
+fn fs_grass_mid_tuft_prepass(in: VsOut) -> @location(0) vec2<f32> {
+    if (textureSample(tuft_tex, blade_samp, in.blade_uv.xy).a < TUFT_ALPHA_CUTOFF) { discard; }
+    let normal_view = (frame.view * vec4<f32>(normalize(in.normal), 0.0)).xyz;
+    return oct_encode(normalize(normal_view));
 }
 
 @fragment

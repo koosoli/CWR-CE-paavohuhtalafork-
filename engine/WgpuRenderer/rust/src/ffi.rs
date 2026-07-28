@@ -788,6 +788,10 @@ pub struct WgrGrassParams {
     pub apply_fog: f32,
     pub density_noise_scale: f32,
     pub density_noise_strength: f32,
+    pub weed_percent: f32,
+    pub flower_percent: f32,
+    pub _pad0: f32,
+    pub use_photo_tuft: f32,
 }
 
 // Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.
@@ -1001,7 +1005,8 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
-const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1616);
+// 1632 = 102 * 16: the species-mix vec4 keeps the UBO 16-byte aligned.
+const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1632);
 const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 240);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
@@ -1641,6 +1646,29 @@ pub unsafe extern "C" fn wgr_grass_set_geography(
         let count = width as usize * height as usize;
         let values = unsafe { std::slice::from_raw_parts(values, count) };
         renderer.grass_set_geography(width, height, values);
+    }));
+}
+
+/// GRS-E — upload the photographed grass-tuft texture for the mid LOD's crossed
+/// cards. `rgba` is `width * height` RGBA8 texels.
+///
+/// # Safety
+/// `renderer` must be live; `rgba` must point to at least `width * height * 4` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_grass_set_tuft(
+    renderer: *mut WgrRenderer,
+    width: u32,
+    height: u32,
+    rgba: *const u8,
+) {
+    if renderer.is_null() || rgba.is_null() || width == 0 || height == 0 {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let bytes = width as usize * height as usize * 4;
+        let rgba = unsafe { std::slice::from_raw_parts(rgba, bytes) };
+        renderer.grass_set_tuft(width, height, rgba);
     }));
 }
 

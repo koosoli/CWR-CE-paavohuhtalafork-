@@ -11,6 +11,7 @@ struct GrassParams {
     blade_height: f32, wind_strength: f32, wind_direction: f32, far_radius: f32,
     interactor_x: f32, interactor_z: f32, interactor_radius: f32, interactor_strength: f32,
     tracks: array<GrassTrack, 96>, debug_flags: vec4<f32>, render_flags: vec4<f32>,
+    species_mix: vec4<f32>,
 };
 // Must mirror grass.wgsl's 32-byte layout exactly: both shaders bind the same
 // instance buffer through the shared `data_layout`.
@@ -82,7 +83,13 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let side = vec3<f32>(cos(angle), 0.0, -sin(angle));
     let forward = vec3<f32>(sin(angle), 0.0, cos(angle));
     let height_seed = mix(hash11(inst.xz + 2.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
-    let height = mix(0.35, 1.05, height_seed) * grass.blade_height;
+    // Species shape must mirror grass.wgsl's species_shape(): a broad weed leaf
+    // casts a broad shadow, and a flower stem must not taper to a point.
+    let species = instances[instance_index].packed.w & 7u;
+    var shape = vec3<f32>(1.0, 1.0, 0.65);
+    if (species >= 6u) { shape = vec3<f32>(0.85, 1.15, 0.18); }
+    else if (species >= 4u) { shape = vec3<f32>(1.9, 0.82, 0.42); }
+    let height = mix(0.35, 1.05, height_seed) * grass.blade_height * shape.y;
     let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
     // Flattening cached by cs_place. Without this the shadow pass rebuilt an
     // upright blade, so grass a player had walked flat kept casting a full
@@ -104,7 +111,7 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let wind_bend = vec3<f32>(wind.x, 0.0, wind.y) * grass.wind_strength *
         (0.035 + 0.21 * wind.z + wind.w);
     let bend = static_bend + wind_bend + crush_bend;
-    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * pow(max(1.0 - t, 0.0), 0.65);
+    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x * pow(max(1.0 - t, 0.0), shape.z);
     let lateral = select(axis * width, -axis * width, left);
     let world = inst.xyz + lateral + vec3<f32>(0.0, crushed_height * t, 0.0) + bend * (t * t);
     return shadow.light_vp * vec4<f32>(world - shadow.cam_pos.xyz, 1.0);

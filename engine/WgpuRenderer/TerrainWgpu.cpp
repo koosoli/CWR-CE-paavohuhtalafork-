@@ -6,8 +6,11 @@
 
 #include <Poseidon/Core/Global.hpp> // Glob.time (coast wet-band animation clock)
 #include <Poseidon/Foundation/Logging/Logging.hpp>
+#include <Poseidon/Graphics/Textures/PAADecoder.hpp>
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
+#include <Poseidon/IO/FileServer.hpp>
 #include <Poseidon/IO/ParamFileExt.hpp>
+#include <Poseidon/IO/Streams/QStream.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
@@ -367,6 +370,56 @@ void TerrainWgpu::UploadGeography(const Landscape& land)
              grassLayerNames.empty() ? "none matched" : grassLayerNames);
     LOG_INFO(Graphics, "Wgpu terrain texture layers: [{}]", allLayerNames);
     wgr_grass_set_geography(_renderer, static_cast<uint32_t>(n), static_cast<uint32_t>(n), geography.data());
+    UploadGrassTuft();
+}
+
+// GRS-E — hand the renderer the game's own photographed grass tuft for the mid
+// LOD's crossed cards. This is the one genuinely photographic source available:
+// the procedural blade atlas can supply structure but not real-world detail.
+//
+// Read through the VFS so the PBO-packed original is found, and decoded with the
+// same DecodePAABuffer every other texture goes through. Uploaded once — the
+// renderer keeps it across landscape switches.
+void TerrainWgpu::UploadGrassTuft()
+{
+    if (!_renderer || _grassTuftUploaded)
+    {
+        return;
+    }
+    // Side-view tuft from Data.pbo. `trava` is Czech for grass; the side-on
+    // variant is the one that suits a crossed billboard (trava2 is top-down).
+    static constexpr const char* kCandidates[] = {
+        "data\\trava1_pmp2.pac",
+        "data\\trava2_pmp.pac",
+    };
+    for (const char* name : kCandidates)
+    {
+        QIFStream in;
+        GFileServer->Open(in, name);
+        const int size = in.fail() ? 0 : in.rest();
+        if (size <= 0)
+        {
+            continue;
+        }
+        std::vector<char> fileData(static_cast<size_t>(size));
+        in.read(fileData.data(), size);
+        const size_t len = strlen(name);
+        const bool isPaa = len >= 4 && (name[len - 1] == 'a' || name[len - 1] == 'A');
+        const Poseidon::DecodedImage img =
+            Poseidon::DecodePAABuffer(fileData.data(), static_cast<size_t>(size), isPaa);
+        if (!img.valid())
+        {
+            LOG_WARN(Graphics, "Wgpu grass: '{}' found but failed to decode", name);
+            continue;
+        }
+        wgr_grass_set_tuft(_renderer, static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height),
+                           img.rgba.data());
+        _grassTuftUploaded = true;
+        LOG_INFO(Graphics, "Wgpu grass: mid-LOD tuft '{}' uploaded ({}x{})", name, img.width, img.height);
+        return;
+    }
+    // Not fatal: the mid ring keeps its procedural ribbons.
+    LOG_WARN(Graphics, "Wgpu grass: no grass-tuft texture found; mid LOD stays procedural");
 }
 
 int TerrainWgpu::GrassSurfaceCount() const

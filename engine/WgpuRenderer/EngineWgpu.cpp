@@ -2933,6 +2933,9 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
                               : std::clamp(settings.farRadius, midReach + 8.0f, 5000.0f);
       params.density_noise_scale = std::clamp(settings.densityNoiseScale, 0.002f, 0.5f);
       params.density_noise_strength = std::clamp(settings.densityNoiseStrength, 0.0f, 1.0f);
+      params.use_photo_tuft = settings.midPhotoTuft ? 1.0f : 0.0f;
+      params.weed_percent = std::clamp(settings.weedPercent, 0.0f, 1.0f);
+      params.flower_percent = std::clamp(settings.flowerPercent, 0.0f, 1.0f - params.weed_percent);
       // Everon/Eden's legacy geography marks normal terrain as excluded. The
       // terrain renderer identifies it from the actual uploaded WRP, so grass
       // works without requiring the user to discover a diagnostic checkbox.

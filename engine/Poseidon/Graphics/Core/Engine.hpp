@@ -946,6 +946,16 @@ class Engine : public IGraphicsEngine
         // 0.45..1.35 coverage range.
         float densityNoiseScale = 0.075f;
         float densityNoiseStrength = 0.55f;
+        // Species mix as fractions of all placed plants; grass takes whatever
+        // these two leave. Chosen per clump, so weeds and flowers appear in
+        // drifts rather than sprinkled evenly.
+        float weedPercent = 0.12f;
+        float flowerPercent = 0.05f;
+        // Mid LOD geometry. Off = the procedural crossed ribbons. On = crossed
+        // cards carrying the game's photographed tuft (data\trava1_pmp2.pac).
+        // Off by default: that 2001 texture is measurably grey-teal rather than
+        // green, so the procedural ribbons read better without colour surgery.
+        bool midPhotoTuft = false;
         float densityBoost = 4.0f; // turns base spacing into a denser placement grid
         float height = 1.25f;      // authored blade height multiplier
         // The default follows the weather system that also drives smoke,

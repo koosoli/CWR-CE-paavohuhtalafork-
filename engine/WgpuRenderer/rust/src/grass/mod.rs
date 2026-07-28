@@ -1,3 +1,5 @@
+mod blade_atlas;
+
 use crate::ffi::{WgrGrassParams, WgrGrassTrack, WgrTerrainParams, WGR_GRASS_TRACK_COUNT};
 use crate::gfx3d::{DEPTH_FORMAT, NORMAL_FORMAT};
 use crate::terrain::Terrain;
@@ -38,6 +40,12 @@ struct GrassParams {
     apply_fog: f32,
     density_noise_scale: f32,
     density_noise_strength: f32,
+    // Species mix; grass takes whatever the two do not. Kept as a trailing vec4
+    // so the UBO stays 16-byte aligned (1632 B = 102 * 16).
+    weed_percent: f32,
+    flower_percent: f32,
+    _pad0: f32,
+    use_photo_tuft: f32,
 }
 
 /// Mirrors `GrassInstance` in grass.wgsl and grass_shadow.wgsl (32 B). `packed`
@@ -116,11 +124,30 @@ pub struct Grass {
     mid_prepass_pipeline: wgpu::RenderPipeline,
     mid_color_pipeline: wgpu::RenderPipeline,
     mid_color_no_write_pipeline: wgpu::RenderPipeline,
+    mid_tuft_prepass_pipeline: wgpu::RenderPipeline,
+    mid_tuft_color_pipeline: wgpu::RenderPipeline,
+    mid_tuft_color_no_write_pipeline: wgpu::RenderPipeline,
     far_color_pipeline: wgpu::RenderPipeline,
     far_color_no_write_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     stats_buffers: Vec<(wgpu::Buffer, StatsSlot)>,
     stats: GrassStats,
+    // GRS-E: kept so the three data binds can be rebuilt when the tuft arrives
+    // (a bind group holds its resources, so a new texture needs new groups).
+    data_layout: wgpu::BindGroupLayout,
+    instances: wgpu::Buffer,
+    mid_instances: wgpu::Buffer,
+    far_instances: wgpu::Buffer,
+    blade_view: wgpu::TextureView,
+    blade_sampler: wgpu::Sampler,
+    tuft_view: wgpu::TextureView,
+    have_tuft: bool,
+    // have_tuft = the PAA loaded; tuft_enabled = the Grass tab also asked for it.
+    // Default off: the procedural mid ribbons are the known-good look.
+    tuft_enabled: bool,
+    // Last pushed params, so set_tuft can re-publish them with the tuft flag set
+    // without waiting for the Grass tab to touch a slider.
+    last_params: GrassParams,
 }
 
 impl Grass {
@@ -200,6 +227,10 @@ impl Grass {
             apply_fog: 1.0,
             density_noise_scale: 0.075,
             density_noise_strength: 0.55,
+            weed_percent: 0.12,
+            flower_percent: 0.05,
+            _pad0: 0.0,
+            use_photo_tuft: 0.0,
         };
         queue.write_buffer(&grass_params, 0, bytemuck::bytes_of(&params));
 
@@ -401,7 +432,51 @@ impl Grass {
                     },
                     count: None,
                 },
+                // GRS-D blade albedo. Fragment-only, so the shadow pipeline (which
+                // shares this layout but has no fragment stage) simply omits them:
+                // a shader's bindings only need to be a subset of the layout.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+                // GRS-E photographed tuft for the mid LOD's crossed cards.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 5,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
+        });
+        let blade_view = blade_atlas::create(device, queue);
+        let tuft_view = blade_atlas::create_tuft_placeholder(device, queue);
+        let blade_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("wgr_grass_blade_sampler"),
+            // Repeat across the blade width so the edge lift wraps cleanly;
+            // clamp along its length so the tip row never bleeds to the root.
+            address_mode_u: wgpu::AddressMode::Repeat,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            ..Default::default()
         });
         let terrain_bind = make_terrain_bind(
             device,
@@ -416,6 +491,9 @@ impl Grass {
             &grass_params,
             &instances,
             &placement_count,
+            &blade_view,
+            &blade_sampler,
+            &tuft_view,
         );
         let mid_data_bind = make_data_bind(
             device,
@@ -423,6 +501,9 @@ impl Grass {
             &grass_params,
             &mid_instances,
             &mid_placement_count,
+            &blade_view,
+            &blade_sampler,
+            &tuft_view,
         );
         let far_data_bind = make_data_bind(
             device,
@@ -430,6 +511,9 @@ impl Grass {
             &grass_params,
             &far_instances,
             &far_placement_count,
+            &blade_view,
+            &blade_sampler,
+            &tuft_view,
         );
         let shader = crate::shaders::make_module(
             device,
@@ -533,6 +617,29 @@ impl Grass {
             surface_format,
             false,
         );
+        // GRS-E photographed tuft cards; used instead of the procedural mid
+        // blades once the game has uploaded the decoded PAA.
+        let mid_tuft_prepass_pipeline = make_pipeline(
+            "wgr_grass_mid_tuft_prepass",
+            "vs_grass_mid_tuft",
+            "fs_grass_mid_tuft_prepass",
+            NORMAL_FORMAT,
+            true,
+        );
+        let mid_tuft_color_pipeline = make_pipeline(
+            "wgr_grass_mid_tuft_color",
+            "vs_grass_mid_tuft",
+            "fs_grass_mid_tuft",
+            surface_format,
+            true,
+        );
+        let mid_tuft_color_no_write_pipeline = make_pipeline(
+            "wgr_grass_mid_tuft_color_no_write",
+            "vs_grass_mid_tuft",
+            "fs_grass_mid_tuft",
+            surface_format,
+            false,
+        );
         let far_color_pipeline = make_pipeline("wgr_grass_far_color", "vs_grass_far", "fs_grass_far", surface_format, false);
         let far_color_no_write_pipeline = make_pipeline(
             "wgr_grass_far_color_no_write",
@@ -602,6 +709,9 @@ impl Grass {
             mid_prepass_pipeline,
             mid_color_pipeline,
             mid_color_no_write_pipeline,
+            mid_tuft_prepass_pipeline,
+            mid_tuft_color_pipeline,
+            mid_tuft_color_no_write_pipeline,
             far_color_pipeline,
             far_color_no_write_pipeline,
             shadow_pipeline,
@@ -624,8 +734,44 @@ impl Grass {
                 far_candidates: MAX_FAR_INSTANCES,
                 ..Default::default()
             },
+            data_layout,
+            instances,
+            mid_instances,
+            far_instances,
+            blade_view,
+            blade_sampler,
+            tuft_view,
+            have_tuft: false,
+            tuft_enabled: false,
+            last_params: params,
         }
     }
+
+    /// GRS-E — receive the game's decoded grass-tuft PAA. Rebuilds the three data
+    /// bind groups, since a bind group captures the texture view it was made with.
+    pub fn set_tuft(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32, rgba: &[u8]) {
+        let Some(view) = blade_atlas::create_tuft(device, queue, width, height, rgba) else {
+            return;
+        };
+        self.tuft_view = view;
+        self.have_tuft = true;
+        let rebuild = |instances: &wgpu::Buffer, count: &wgpu::Buffer| {
+            make_data_bind(
+                device,
+                &self.data_layout,
+                &self.grass_params,
+                instances,
+                count,
+                &self.blade_view,
+                &self.blade_sampler,
+                &self.tuft_view,
+            )
+        };
+        self.data_bind = rebuild(&self.instances, &self.placement_count);
+        self.mid_data_bind = rebuild(&self.mid_instances, &self.mid_placement_count);
+        self.far_data_bind = rebuild(&self.far_instances, &self.far_placement_count);
+    }
+
 
     pub fn set_geography(
         &mut self,
@@ -694,12 +840,22 @@ impl Grass {
             apply_fog: if params.apply_fog != 0.0 { 1.0 } else { 0.0 },
             density_noise_scale: params.density_noise_scale.clamp(0.002, 0.5),
             density_noise_strength: params.density_noise_strength.clamp(0.0, 1.0),
+            // Clamp the pair so grass never goes negative if both are pushed up.
+            weed_percent: params.weed_percent.clamp(0.0, 1.0),
+            flower_percent: params
+                .flower_percent
+                .clamp(0.0, 1.0 - params.weed_percent.clamp(0.0, 1.0)),
+            _pad0: 0.0,
+            use_photo_tuft: params.use_photo_tuft,
         };
+        self.last_params = params;
         self.enabled = params.enabled != 0.0;
         self.casts_shadows = params.cast_shadows != 0.0;
         // A zero far radius means the outer ring is off: skip its whole dispatch
         // rather than running 147k candidate threads that all reject.
         self.far_enabled = params.far_radius > 1.0;
+        // The photo cards need BOTH the texture and the dev-tool opt-in.
+        self.tuft_enabled = self.have_tuft && params.use_photo_tuft != 0.0;
         queue.write_buffer(&self.grass_params, 0, bytemuck::bytes_of(&params));
     }
 
@@ -834,7 +990,7 @@ impl Grass {
         }
         // Vertex counts mirror reset_indirect's per-LOD vertex-per-instance values.
         self.stats.near_vertices = self.stats.near_instances * 60;
-        self.stats.mid_vertices = self.stats.mid_instances * 24;
+        self.stats.mid_vertices = self.stats.mid_instances * if self.tuft_enabled { 12 } else { 24 };
         self.stats.far_vertices = self.stats.far_instances * 6;
     }
 
@@ -856,8 +1012,10 @@ impl Grass {
         queue.write_buffer(&self.far_placement_count, 0, bytemuck::bytes_of(&0u32));
         // Two crossed five-segment blade ribbons (2 cards * 5 quads * 6 verts).
         queue.write_buffer(&self.indirect, 0, bytemuck::cast_slice(&[60u32, 0, 0, 0]));
-        // Two crossed two-segment ribbons (2 cards * 2 quads * 6 verts).
-        queue.write_buffer(&self.mid_indirect, 0, bytemuck::cast_slice(&[24u32, 0, 0, 0]));
+        // Mid geometry depends on which path is live: 12 verts for two crossed
+        // photographed tuft quads, 24 for the two-segment procedural ribbons.
+        let mid_verts: u32 = if self.tuft_enabled { 12 } else { 24 };
+        queue.write_buffer(&self.mid_indirect, 0, bytemuck::cast_slice(&[mid_verts, 0, 0, 0]));
         // Far LOD is one terrain-conforming coverage quad per compacted cell.
         queue.write_buffer(&self.far_indirect, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
     }
@@ -901,10 +1059,15 @@ impl Grass {
             pass.set_bind_group(2, &self.far_data_bind, &[]);
             pass.draw_indirect(&self.far_indirect, 0);
         }
-        let mid_pipeline = match kind {
-            GrassPass::Color => &self.mid_color_pipeline,
-            GrassPass::ColorNoWrite => &self.mid_color_no_write_pipeline,
-            GrassPass::Prepass => &self.mid_prepass_pipeline,
+        // GRS-E: photographed tuft cards once the game has uploaded the PAA,
+        // procedural ribbons until then (and if the texture is missing).
+        let mid_pipeline = match (kind, self.tuft_enabled) {
+            (GrassPass::Color, true) => &self.mid_tuft_color_pipeline,
+            (GrassPass::ColorNoWrite, true) => &self.mid_tuft_color_no_write_pipeline,
+            (GrassPass::Prepass, true) => &self.mid_tuft_prepass_pipeline,
+            (GrassPass::Color, false) => &self.mid_color_pipeline,
+            (GrassPass::ColorNoWrite, false) => &self.mid_color_no_write_pipeline,
+            (GrassPass::Prepass, false) => &self.mid_prepass_pipeline,
         };
         pass.set_pipeline(mid_pipeline);
         pass.set_bind_group(0, camera_bind, &[camera_offset]);
@@ -993,6 +1156,9 @@ fn make_data_bind(
     params: &wgpu::Buffer,
     instances: &wgpu::Buffer,
     placement_count: &wgpu::Buffer,
+    blade_view: &wgpu::TextureView,
+    blade_sampler: &wgpu::Sampler,
+    tuft_view: &wgpu::TextureView,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgr_grass_data_bind"),
@@ -1009,6 +1175,18 @@ fn make_data_bind(
             wgpu::BindGroupEntry {
                 binding: 2,
                 resource: placement_count.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 3,
+                resource: wgpu::BindingResource::TextureView(blade_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 4,
+                resource: wgpu::BindingResource::Sampler(blade_sampler),
+            },
+            wgpu::BindGroupEntry {
+                binding: 5,
+                resource: wgpu::BindingResource::TextureView(tuft_view),
             },
         ],
     })

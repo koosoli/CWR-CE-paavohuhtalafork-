@@ -23,6 +23,8 @@ class TerrainWgpu : public ITerrainRenderer
 
     void DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd) override;
     int GrassSurfaceCount() const;
+    // GRS-E: upload the game's photographed grass tuft for the mid LOD (once).
+    void UploadGrassTuft();
     const char* GrassLoadedMapName() const { return _uploadedName.c_str(); }
     const char* GrassSurfaceName(int index) const;
     bool GrassSurfaceEnabled(int index) const;
@@ -82,6 +84,7 @@ class TerrainWgpu : public ITerrainRenderer
     // Terrain layers are map-specific.  The explicit selection is deliberately
     // kept outside GeographyInfo so the dev panel can reclassify a surface live.
     std::vector<std::string> _grassSurfaceNames;
+    bool _grassTuftUploaded = false;
     std::vector<bool> _grassSurfaceEnabled;
     bool _grassNeedsCompatibilityOverride = false;
 
