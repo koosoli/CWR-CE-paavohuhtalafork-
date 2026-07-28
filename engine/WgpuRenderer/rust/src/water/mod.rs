@@ -858,6 +858,15 @@ impl Water {
             .map(|p| (p.sea_level, p.time, p.fft_control[3] > 0.5))
     }
 
+    /// True when the live Water-tab performance mode has disabled reflection work.
+    /// This is queried before frame encoding so the renderer can avoid creating the
+    /// reflected camera and recording a planar pass the water shader cannot sample.
+    pub fn low_quality(&self) -> bool {
+        self.last_params
+            .map(|p| p.sea_params[2] > 0.5)
+            .unwrap_or(false)
+    }
+
     /// The water's own body colour and extinction, so the underwater compositor can fog the scene
     /// in the SAME colour the surface is tinted with. It previously used a hardcoded cyan haze,
     /// which is why submerging looked like a different substance from the water you swam into.

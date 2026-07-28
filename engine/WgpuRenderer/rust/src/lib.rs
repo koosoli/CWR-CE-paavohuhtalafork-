@@ -1206,6 +1206,7 @@ impl Renderer {
             .unwrap_or(main_scene_cam);
         let planar_sea = self.water.underwater_params().map(|p| p.0);
         let planar_active = planar_sea.is_some()
+            && !self.water.low_quality()
             && !water_batches.is_empty()
             && cameras
                 .get(water_camera)

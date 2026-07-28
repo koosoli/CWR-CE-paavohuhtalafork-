@@ -2615,11 +2615,9 @@ void DrawWaterTab()
                           "separately, preserving the above-water part of a half-submerged view. "
                           "World-anchored caustics remain visible on nearby seabed geometry.");
     changed |= ImGui::Checkbox("Low water quality (performance)", &s.lowQuality);
-    ImGui::SetItemTooltip("Drops SSR/planar SAMPLING and bicubic filtering from the water shader. Note "
-                          "it does NOT skip rendering the planar reflection itself — the reflected "
-                          "sky, terrain, objects, clouds and mip chain are still drawn whenever water "
-                          "is visible (about 1 ms), so the saving is smaller than it sounds. Gating "
-                          "that render on water screen coverage is still outstanding.");
+    ImGui::SetItemTooltip("Drops SSR, planar reflection, bicubic filtering and the two smallest wave "
+                          "cascades. The reflected camera and its sky, terrain, objects, clouds and mip "
+                          "passes are not rendered, saving their full GPU cost.");
     const char* geometryPresets[] = {
         "Performance (4x CDLOD range)",
         "Balanced (6x CDLOD range)",
