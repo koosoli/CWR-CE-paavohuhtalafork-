@@ -1348,6 +1348,8 @@ mod tests {
         assert!(shader.contains("let foam_history_sample = state.foam_history_sample"));
         assert!(shader.contains("if (crest_top > 0.001)"));
         assert!(shader.contains("if (unstructured_foam > 0.001)"));
+        assert!(shader.contains("if (raw_length > 0.0)"));
+        assert!(!shader.contains("lost_variance = lost_variance"));
     }
 
     #[test]

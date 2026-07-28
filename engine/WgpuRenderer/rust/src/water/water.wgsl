@@ -1162,20 +1162,22 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
     var fft_comp = 0.0;
     var fft_curv = 0.0;
     
-    var lost_variance = 0.0;
     if (wp.fft_control.x > 0.5) {
         let view_dir = normalize(in.world_pos);
         n = fft_normal_with_weights(in.base_xz, dist, view_dir);
         for (var layer = 0; layer < 4; layer = layer + 1) {
-            let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
-            let uv = fft_aperiodic_uv(in.base_xz, length_m, layer, wp.warp_amp);
-            let aux = textureSampleLevel(fft_auxiliary, fft_samp, uv, layer, 0.0);
-            let w = compute_cascade_weights(layer, dist, view_dir);
-            fft_slope_var = fft_slope_var + aux.w;
-            lost_variance = lost_variance + aux.w * (1.0 - w.normal_weight);
-            fft_crest = max(fft_crest, textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0).w);
-            fft_comp = max(fft_comp, aux.y);
-            fft_curv = max(fft_curv, aux.z);
+            let raw_length = wp.fft_cascade_lengths[layer];
+            // The reference preset deliberately leaves layer 3 disabled. It used to
+            // pay two texture fetches plus projected-weight math here before multiplying
+            // nothing by nothing. Disabled layers contain no surface diagnostics.
+            if (raw_length > 0.0) {
+                let uv = fft_aperiodic_uv(in.base_xz, raw_length, layer, wp.warp_amp);
+                let aux = textureSampleLevel(fft_auxiliary, fft_samp, uv, layer, 0.0);
+                fft_slope_var = fft_slope_var + aux.w;
+                fft_crest = max(fft_crest, textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0).w);
+                fft_comp = max(fft_comp, aux.y);
+                fft_curv = max(fft_curv, aux.z);
+            }
         }
     }
     
