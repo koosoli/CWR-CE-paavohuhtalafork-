@@ -844,14 +844,54 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
                      _leafSize, _numLevels, _baseMult, _lodRatio, _ranges.empty() ? 0.0f : _ranges[0]);
             loggedConfig = true;
         }
-        if (histogram != lastHistogram && rateOk)
+        // WTR-002 timings, mirrored into the log. The ImGui Water tab already shows these,
+        // but a screenshot cannot be diffed against a previous build and is easy to confuse
+        // with a stale capture; a timestamped log row can. Same 2 s budget as the histogram.
+        if (rateOk)
         {
-            LOG_INFO(Graphics,
-                     "Water CDLOD nodes: total={} lod0={} lod1={} lod2={} lod3={} lod4={} lod5+={} tris={}",
-                     _selected.size(), histogram[0], histogram[1], histogram[2], histogram[3], histogram[4],
-                     histogram[5] + histogram[6] + histogram[7] + histogram[8] + histogram[9],
-                     _selected.size() * 96u * 96u * 2u);
-            lastHistogram = histogram;
+            float ms[WGR_GPU_TIMER_WATER_REGION_COUNT] = {};
+            const int count = _engine.GetWaterGpuTimings(ms, WGR_GPU_TIMER_WATER_REGION_COUNT);
+            if (count > WGR_GPU_TIMER_WATER_DRAW)
+            {
+                // -1 means the pass never ran this frame ("n/a" in the tab); report it as 0
+                // in the total but keep the raw value in the per-region text.
+                float total = 0.0f;
+                for (int i = 0; i < count; ++i)
+                {
+                    if (ms[i] > 0.0f)
+                    {
+                        total += ms[i];
+                    }
+                }
+                LOG_INFO(Graphics,
+                         "Water GPU ms: evolve={:.3f} fftH={:.3f} fftV={:.3f} compose={:.3f} "
+                         "draw={:.3f} foam={:.3f} interaction={:.3f} planar={:.3f} total={:.3f}",
+                         ms[WGR_GPU_TIMER_SPECTRUM_EVOLVE], ms[WGR_GPU_TIMER_FFT_HORIZONTAL],
+                         ms[WGR_GPU_TIMER_FFT_VERTICAL], ms[WGR_GPU_TIMER_FFT_COMPOSE],
+                         ms[WGR_GPU_TIMER_WATER_DRAW], ms[WGR_GPU_TIMER_FOAM],
+                         ms[WGR_GPU_TIMER_INTERACTION],
+                         std::max(ms[WGR_GPU_TIMER_PLANAR_SKY], 0.0f) +
+                             std::max(ms[WGR_GPU_TIMER_PLANAR_TERRAIN], 0.0f) +
+                             std::max(ms[WGR_GPU_TIMER_PLANAR_OBJECTS], 0.0f) +
+                             std::max(ms[WGR_GPU_TIMER_PLANAR_CLOUDS], 0.0f) +
+                             std::max(ms[WGR_GPU_TIMER_PLANAR_MIPS], 0.0f),
+                         total);
+            }
+        }
+        if (rateOk)
+        {
+            if (histogram != lastHistogram)
+            {
+                LOG_INFO(Graphics,
+                         "Water CDLOD nodes: total={} lod0={} lod1={} lod2={} lod3={} lod4={} lod5+={} tris={}",
+                         _selected.size(), histogram[0], histogram[1], histogram[2], histogram[3], histogram[4],
+                         histogram[5] + histogram[6] + histogram[7] + histogram[8] + histogram[9],
+                         _selected.size() * 96u * 96u * 2u);
+                lastHistogram = histogram;
+            }
+            // Stamp the budget here, not inside the histogram branch: a static camera leaves
+            // the histogram unchanged, which would hold rateOk true forever and let the
+            // timings row above log every single frame.
             lastLog = nowClock;
         }
     }
