@@ -1349,10 +1349,10 @@ class Engine : public IGraphicsEngine
         // by the terrain shader via WgrTerrainParams. wetDarken = 1 disables it.
         float wetHeight = 0.26f;   // m above sea level the damp band reaches
         float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
-        // Master switch for water splash particles: the CPU rifle-impact spray and the GPU
-        // whitewater/spray billboard emitter. Keep this opt-in: ordinary rifle impacts should
-        // not fill the view with spray, while the Water tab can still enable the full emitter.
-        bool rifleImpactSpray = false;
+        // Master switch for water splash particles: the restrained CPU rifle-impact spray and
+        // the GPU whitewater/spray billboard emitter. Enabled by default; activity remains at
+        // 0.25 so ordinary impacts and crest spray stay subtle.
+        bool rifleImpactSpray = true;
         // Multiplier for the GPU whitewater/splash billboard emitter.
         float waterSplashParticleActivity = 0.25f;
 

@@ -467,6 +467,9 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         return;
     }
     const Engine::WaterSettings& look = _engine.WaterLook();
+    // Keep gameplay-side rifle droplets in lockstep with the renderer setting even
+    // when the developer overlay has never been opened.
+    SetRifleWaterImpactSprayEnabled(look.rifleImpactSpray);
     if (!look.enabled)
     {
         // Water suppressed from the tab: draw nothing (the seabed shows, for A/B).
@@ -610,8 +613,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
                        lengthMultiplier);
 
     // y gates the GPU whitewater/spray billboard pass and z controls its activity.
-    // It is deliberately off by default: ordinary rifle impacts should keep their
-    // ripple without spawning a large particle field. x remains the debug-view selector.
+    // The authored default is enabled at a restrained 0.25 activity. x remains the
+    // debug-view selector.
     // w carries the live viewport height in pixels so the shader's per-cascade
     // projected-pixel filtering (compute_cascade_weights) uses the real backbuffer
     // height instead of a hardcoded 1080.

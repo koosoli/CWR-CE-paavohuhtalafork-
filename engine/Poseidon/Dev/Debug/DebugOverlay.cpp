@@ -2521,7 +2521,8 @@ void DrawWaterTab()
     // Keep this immediately below the master Water switch: it controls the old CPU
     // impact presentation and must be easy to find during gameplay testing.
     changed |= ImGui::Checkbox("Water splash particles", &s.rifleImpactSpray);
-    ImGui::SetItemTooltip("Off by default. Enables/disables the GPU whitewater and water-impact particle billboards. Ripples and foam remain active.");
+    ImGui::SetItemTooltip("On by default at restrained activity. Enables/disables GPU whitewater "
+                          "and water-impact particle billboards. Ripples and foam remain active.");
     SetRifleWaterImpactSprayEnabled(s.rifleImpactSpray);
     ImGui::BeginDisabled(!s.rifleImpactSpray);
     changed |= ImGui::SliderFloat("Splash particle activity", &s.waterSplashParticleActivity, 0.0f, 1.0f, "%.2f");

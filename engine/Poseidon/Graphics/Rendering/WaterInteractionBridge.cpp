@@ -12,7 +12,7 @@ std::array<HydroWaterInteractionEvent, HydroMaxWaterInteractions> pendingEvents;
 uint32_t pendingCount = 0;
 std::mutex pendingEventsMutex;
 std::atomic<float> playerWaterDepth{0.0f};
-std::atomic<bool> rifleWaterImpactSprayEnabled{false};
+std::atomic<bool> rifleWaterImpactSprayEnabled{true};
 } // namespace
 
 void SubmitWaterInteraction(const HydroWaterInteractionEvent& event)
