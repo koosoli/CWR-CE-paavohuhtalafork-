@@ -209,6 +209,15 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Derivatives must run in uniform control flow — before the discard.
     let dwx = dpdx(in.world_pos);
     let dwy = dpdy(in.world_pos);
+    // The reflected camera carries an absolute-world water clip plane in Frame.
+    // Terrain already honours it; apply the same plane to retained/skinned objects
+    // so submerged geometry cannot leak into or occlude the planar reflection.
+    // Main cameras upload a zero plane, making this branch compile to a cheap no-op.
+    let clip_len2 = dot(frame.clip_plane.xyz, frame.clip_plane.xyz);
+    if (clip_len2 > 0.0 &&
+        dot(frame.clip_plane.xyz, in.world_pos + frame.cam_pos.xyz) + frame.clip_plane.w < 0.0) {
+        discard;
+    }
     // Per-draw material for this draw slot (base_instance == draw slot). Its emissive.w
     // packs the bindless texture + sampler indices ((tex_slot << 3) | sampler); the index
     // is uniform across a derivative quad (one instance per primitive), so implicit-mip

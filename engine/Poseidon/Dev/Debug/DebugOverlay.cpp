@@ -2544,6 +2544,22 @@ void DrawWaterTab()
         changed = true;
     }
     ImGui::SetItemTooltip("WTR-036C / WTR-037: Toggle between production non-harmonic coprime cascades, GodotOceanWaves reference parity preset, and legacy harmonic cascades.");
+    const char* fftResolutionPresets[] = {
+        "256 (Performance)",
+        "512 (Optimized default)",
+        "1024 (Godot reference)"
+    };
+    int fftResolutionIndex = s.fftResolution == 256 ? 0 : (s.fftResolution == 1024 ? 2 : 1);
+    if (ImGui::Combo("FFT resolution", &fftResolutionIndex, fftResolutionPresets,
+                     IM_ARRAYSIZE(fftResolutionPresets)))
+    {
+        static constexpr int resolutions[] = {256, 512, 1024};
+        s.fftResolution = resolutions[fftResolutionIndex];
+        changed = true;
+    }
+    ImGui::SetItemTooltip("Live spectral-map resolution. 1024 matches GodotOceanWaves; 512 retains "
+                          "the important long-wave modes at roughly one quarter of its FFT cost. "
+                          "Changing this rebuilds only the water FFT resources.");
 
     changed |= ImGui::SliderFloat("Amplitude", &s.waveAmp, 0.0f, 4.0f, "%.2f");
     ImGui::SetItemTooltip("Overall wave height scale. Kept gentle so boats never float in air.");

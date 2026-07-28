@@ -238,13 +238,14 @@ static float SeaStateLengthMultiplier(float amplitude)
     return std::max(std::pow(ratio, 0.75f), 1.0f);
 }
 
-static void ApplyCascadePreset(WgrRenderer* renderer, int preset, uint32_t seedXor = 0,
+static void ApplyCascadePreset(WgrRenderer* renderer, int preset, int fftResolution = 512,
+                               uint32_t seedXor = 0,
                                float windMultiplier = 1.0f, float lengthMultiplier = 1.0f)
 {
     WgrWaterCascadeConfig c{};
     c.enabled = 1;
-    // Informational only — the actual allocation is FFT_RESOLUTION in fft.rs (512).
-    c.resolution = 512;
+    c.resolution = static_cast<uint32_t>(
+        fftResolution == 256 || fftResolution == 1024 ? fftResolution : 512);
     c.displacement_scale = 1.0f;
     c.horiz_displacement_scale = 1.0f;
     c.normal_scale = 1.0f;
@@ -442,6 +443,7 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // build honours it; 0 when the override is disabled.
     const auto& fz0 = _engine.WaterLook().freeze;
     ApplyCascadePreset(_renderer, _engine.WaterLook().cascadePreset,
+                       _engine.WaterLook().fftResolution,
                        fz0.fftSeed >= 0 ? static_cast<uint32_t>(fz0.fftSeed) : 0u);
 }
 
@@ -608,7 +610,7 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     }
     // WTR-001: per-frame preset push carries the dev-tab seed override (>= 0) as the xor
     // so toggling it live re-randomises h0 deterministically on the next spectrum rebuild.
-    ApplyCascadePreset(_renderer, look.cascadePreset,
+    ApplyCascadePreset(_renderer, look.cascadePreset, look.fftResolution,
                        fz.fftSeed >= 0 ? static_cast<uint32_t>(fz.fftSeed) : 0u, windMultiplier,
                        lengthMultiplier);
 
@@ -631,13 +633,18 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
                           look.seaStateCoupling ? SeaStateResidualAmplitude(look.waveAmp) : look.waveAmp,
                           look.lowQuality ? 1.0f : 0.0f, look.shoreWaveGain};
     // Runtime proof that the Water tab reaches the actual renderer. This is deliberately
-    // edge-triggered: one log row per edited amplitude, not one row per frame.
+    // edge-triggered: one log row per edited amplitude/resolution, not one row per frame.
     static float lastLoggedWaveAmp = -1.0f;
-    if (std::abs(lastLoggedWaveAmp - look.waveAmp) > 0.0001f)
+    static int lastLoggedFftResolution = 0;
+    if (std::abs(lastLoggedWaveAmp - look.waveAmp) > 0.0001f ||
+        lastLoggedFftResolution != look.fftResolution)
     {
-        LOG_INFO(Graphics, "Water look applied: amplitude={:.3f}, choppiness={:.3f}, speed={:.3f}, preset={}",
-                 look.waveAmp, look.waveChoppy, look.waveSpeed, look.cascadePreset);
+        LOG_INFO(Graphics,
+                 "Water look applied: amplitude={:.3f}, choppiness={:.3f}, speed={:.3f}, preset={}, FFT={}x{}",
+                 look.waveAmp, look.waveChoppy, look.waveSpeed, look.cascadePreset,
+                 look.fftResolution, look.fftResolution);
         lastLoggedWaveAmp = look.waveAmp;
+        lastLoggedFftResolution = look.fftResolution;
     }
     wgr_water_set_params(_renderer, &_params);
 

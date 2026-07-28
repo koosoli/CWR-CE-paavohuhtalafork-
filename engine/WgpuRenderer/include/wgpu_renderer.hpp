@@ -808,7 +808,7 @@ struct WgrWaterParams
 struct WgrWaterCascadeConfig
 {
     uint32_t enabled;
-    uint32_t resolution; /* informational only — the FFT allocation is fixed at FFT_RESOLUTION */
+    uint32_t resolution; /* live FFT tier: 256, 512, or Godot-reference 1024 */
     float tile_length_x;
     float tile_length_y;
     float displacement_scale;
@@ -850,7 +850,7 @@ enum WgrWaterFreezeBits : uint32_t
  * `Region` in rust/src/gpu_timers.rs — append only, never reorder). Regions marked
  * "reserved" name spec rows whose standalone pass doesn't exist yet; they always report
  * -1 ms ("n/a") so the tab rows + ABI are already in place when those passes land.
- * SSR/refraction are fragment work inside WATER_DRAW; caustics ride UNDERWATER_COMPOSITE. */
+ * SSR/refraction remain fragment work inside WATER_DRAW. */
 enum WgrGpuTimerRegion : uint32_t
 {
     WGR_GPU_TIMER_SPECTRUM_INIT = 0,        // h0 spectrum generation (spectrum-dirty frames only)
@@ -869,9 +869,9 @@ enum WgrGpuTimerRegion : uint32_t
     WGR_GPU_TIMER_WATER_SSR = 13,           // reserved — in-shader inside WATER_DRAW
     WGR_GPU_TIMER_WATER_REFRACTION = 14,    // reserved — in-shader inside WATER_DRAW
     WGR_GPU_TIMER_WATER_DRAW = 15,          // water surface pass (includes SSR + refraction)
-    WGR_GPU_TIMER_UNDERWATER_FROXEL = 16,   // reserved — no underwater froxel pass yet
-    WGR_GPU_TIMER_UNDERWATER_COMPOSITE = 17, // fullscreen underwater compositor (incl. caustics)
-    WGR_GPU_TIMER_CAUSTICS = 18,            // reserved — rides the underwater/water shaders
+    WGR_GPU_TIMER_UNDERWATER_FROXEL = 16,   // camera frustum volume lighting compute
+    WGR_GPU_TIMER_UNDERWATER_COMPOSITE = 17, // fullscreen waterline-aware compositor
+    WGR_GPU_TIMER_CAUSTICS = 18,            // FFT-derived camera-centred caustic compute
     /* Water rows end here; the Water tab slices [0, WATER_REGION_COUNT). */
     WGR_GPU_TIMER_WATER_REGION_COUNT = 19,
     /* GRS-A — grass. The three placement dispatches are standalone compute passes and
@@ -906,8 +906,8 @@ struct WgrGrassStats
 enum WgrWaterKind : uint32_t { WGR_WATER_KIND_OCEAN = 0, WGR_WATER_KIND_RIVER = 1 };
 /* WTR-003 — water debug view selector, written to WgrWaterParams.debug_params.x. The water
  * fragment shader maps these to on-surface diagnostics; 0 is normal shading. Views whose
- * backing pass does not exist yet (underwater froxel/in-scattering, god rays, caustics,
- * whitewater) are listed for a stable UI but render black until those passes land. The
+ * backing pass does not exist yet (the whitewater pool/overflow diagnostics) are listed
+ * for a stable UI but render black until those passes land. The
  * ordering mirrors the Water tab combo and the shader's debug_view() switch. */
 enum WgrWaterDebugView : uint32_t
 {
@@ -941,10 +941,10 @@ enum WgrWaterDebugView : uint32_t
     WGR_WATER_DEBUG_REFRACTION_VALIDITY = 27,// refracted scene hit validity
     WGR_WATER_DEBUG_REFRACTION_PATH = 28,    // refraction path length (column depth)
     WGR_WATER_DEBUG_TRANSMITTANCE = 29,      // RGB transmittance
-    WGR_WATER_DEBUG_UNDERWATER_EXTINCTION = 30,  // reserved — underwater pass
-    WGR_WATER_DEBUG_UNDERWATER_INSCATTER = 31,   // reserved — underwater pass
-    WGR_WATER_DEBUG_GODRAY_VISIBILITY = 32,      // reserved — no god-ray pass yet
-    WGR_WATER_DEBUG_CAUSTIC_INTENSITY = 33,      // reserved — caustics ride the shaders
+    WGR_WATER_DEBUG_UNDERWATER_EXTINCTION = 30,  // froxel RGB transmission
+    WGR_WATER_DEBUG_UNDERWATER_INSCATTER = 31,   // froxel in-scattered radiance
+    WGR_WATER_DEBUG_GODRAY_VISIBILITY = 32,      // terrain + cascade shadow visibility
+    WGR_WATER_DEBUG_CAUSTIC_INTENSITY = 33,      // FFT-derived caustic intensity
     WGR_WATER_DEBUG_WHITEWATER_STATE = 34,       // reserved — no whitewater pass yet
     WGR_WATER_DEBUG_WHITEWATER_POOL = 35,        // reserved — no whitewater pass yet
     WGR_WATER_DEBUG_PARTICLE_OVERFLOW = 36,      // reserved — no whitewater pass yet

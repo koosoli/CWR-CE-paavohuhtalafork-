@@ -529,7 +529,7 @@ impl Renderer {
             log.log(
                 log_level::INFO,
                 &format!(
-                    "Hydro FFT ocean enabled: four {0}x{0} cascade maps",
+                    "Hydro FFT ocean enabled: initial {0}x{0} cascade maps; live tiers 256/512/1024",
                     water::FFT_RESOLUTION
                 ),
             );

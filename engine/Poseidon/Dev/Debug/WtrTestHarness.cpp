@@ -20,12 +20,12 @@ WtrTestHarness::WtrTestHarness()
         {2, "WTR-Test-02 — Pitch Sweep", "Reflection ownership & pitch-stability verification", WtrTestAvailability::Available, "Available"},
         {3, "WTR-Test-03 — Ocean Altitude", "Altitude sequence (2m to 2000m) & horizon swell", WtrTestAvailability::Available, "Available"},
         {4, "WTR-Test-04 — Projectile Grid", "Edge-triggered impact solver ring propagation", WtrTestAvailability::Available, "Available"},
-        {5, "WTR-Test-05 — Vessel Wake & Drag", "Vessel displacement wake & stern foam", WtrTestAvailability::Partial, "Partial: Hull displacement active; vessel drag vector pass in progress"},
+        {5, "WTR-Test-05 — Vessel Wake & Drag", "Vessel displacement wake & stern foam", WtrTestAvailability::Available, "Available"},
         {6, "WTR-Test-06 — Wind-Sea & Swell", "JONSWAP spectrum, directional spreading, cross-swell", WtrTestAvailability::Available, "Available"},
         {7, "WTR-Test-07 — Shoreline Swash", "Swash oscillation, coast fade, intertidal sand dampening", WtrTestAvailability::Available, "Available"},
         {8, "WTR-Test-08 — Persistent Foam", "Crest foam generation, history advection, decay", WtrTestAvailability::Available, "Available"},
-        {9, "WTR-Test-09 — Underwater Froxels", "Submerged volumetric lighting & in-scattering", WtrTestAvailability::Blocked, "Blocked: Volumetric froxel pass not yet built"},
-        {10, "WTR-Test-10 — Caustics & Sun Shafts", "Seabed directional caustics & sun shafts", WtrTestAvailability::Blocked, "Blocked: Caustics compute pass not yet built"}
+        {9, "WTR-Test-09 — Underwater Froxels", "Submerged volumetric lighting & in-scattering", WtrTestAvailability::Available, "Available"},
+        {10, "WTR-Test-10 — Caustics & Sun Shafts", "Seabed directional caustics & sun shafts", WtrTestAvailability::Available, "Available"}
     };
 }
 
@@ -166,6 +166,16 @@ void WtrTestHarness::ApplyPresetSettings(int presetId, Engine::WaterSettings& se
         settings.foamIntensity = 1.5f;
         settings.debugView = 16; // Persistent foam history
         break;
+    case 9: // Underwater froxel volume
+        settings.waveAmp = 0.65f;
+        settings.underwaterEffect = true;
+        settings.debugView = 31; // In-scattering
+        break;
+    case 10: // FFT caustics + shadowed sun shafts
+        settings.waveAmp = 0.80f;
+        settings.underwaterEffect = true;
+        settings.debugView = 33; // Caustic intensity
+        break;
     default:
         break;
     }
@@ -215,9 +225,24 @@ void WtrTestHarness::ComputeCameraTransform(float t, Vector3& camPos, Vector3& c
         camPos = Vector3(128.0f, 40.0f, 128.0f);
         camRot = Vector3(-85.0f, 0.0f, 0.0f);
         break;
+    case 5: // Vessel wake: follow the deterministic synthetic stern emitter
+    {
+        const float wakeZ = 128.0f + 4.0f * t;
+        camPos = Vector3(138.0f, 8.0f, wakeZ - 18.0f);
+        camRot = Vector3(-22.0f, -25.0f, 0.0f);
+        break;
+    }
     case 7: // Shoreline Swash: Linear camera motion
         camPos = Vector3(50.0f + 5.0f * std::fmod(t, 20.0f), 3.0f, 100.0f);
         camRot = Vector3(-10.0f, 90.0f, 0.0f);
+        break;
+    case 9: // Underwater froxels: slow submerged pitch/yaw sweep
+        camPos = Vector3(128.0f, -2.0f, 128.0f);
+        camRot = Vector3(-8.0f + 10.0f * std::sin(t * 0.20f), 18.0f * std::sin(t * 0.12f), 0.0f);
+        break;
+    case 10: // Caustics: shallow submerged view aimed at the seabed
+        camPos = Vector3(128.0f, -0.75f, 128.0f);
+        camRot = Vector3(-42.0f, 12.0f * std::sin(t * 0.16f), 0.0f);
         break;
     default:
         break;
@@ -263,6 +288,32 @@ void WtrTestHarness::InjectEdgeTriggeredEvents(Engine::WaterSettings& settings)
             SubmitWaterInteraction(ev);
             _triggeredEventCount++;
         }
+    }
+    else if (_currentPresetId == 5) // Deterministic moving large-body stern wake
+    {
+        // Retain one continuous emitter by using the same stable id every frame.
+        // It travels north at 4 m/s; the interaction shader gates its Kelvin wedge
+        // behind the stern and derives foam from the same trailing velocity field.
+        HydroWaterInteractionEvent ev{};
+        ev.positionRadius[0] = 128.0f;
+        ev.positionRadius[1] = 128.0f + 4.0f * _testTime;
+        ev.positionRadius[2] = 3.0f;
+        ev.positionRadius[3] = 0.48f;
+        ev.velocityKind[0] = 0.0f;
+        ev.velocityKind[1] = 0.0f;
+        ev.velocityKind[2] = 4.0f;
+        ev.velocityKind[3] = static_cast<float>(HydroWaterInteractionContinuous);
+        ev.timeLifeFoamMass[0] = 0.0f;
+        ev.timeLifeFoamMass[1] = 1.0f;
+        ev.timeLifeFoamMass[2] = 0.38f;
+        ev.timeLifeFoamMass[3] = 4242.0f; // stable retained-emitter id
+        ev.directionDepthFlags[0] = 0.0f;
+        ev.directionDepthFlags[1] = 1.0f;
+        ev.directionDepthFlags[2] = 0.0f;
+        ev.directionDepthFlags[3] =
+            static_cast<float>(HydroWaterInteractionCapsule | HydroWaterInteractionLargeBody);
+        SubmitWaterInteraction(ev);
+        _triggeredEventCount++;
     }
 }
 

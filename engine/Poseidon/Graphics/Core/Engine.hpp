@@ -1387,6 +1387,10 @@ class Engine : public IGraphicsEngine
         // fine CDLOD level remains active while preserving shoreline pruning and horizon coverage.
         // 0 = Performance, 1 = Balanced, 2 = Reference High (default), 3 = Ultra.
         int geometryQuality = 2;
+        // Live FFT spectral-map resolution. 512 is the optimized gameplay default;
+        // 1024 matches GodotOceanWaves' authored map size, while 256 is the low tier.
+        // Resource reconstruction happens only when this value changes.
+        int fftResolution = 512;
 
         // Scene-referred underwater compositor. It reconstructs metric view-ray distance, limits
         // extinction to the portion of each ray below the surface, and uses the authored

@@ -1443,7 +1443,8 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
 
     // WTR-003 — debug views replace the lit output (view 0 = normal shading). Aggregated
     // FFT diagnostics + the interaction/foam/reflection/refraction intermediates computed
-    // above; reserved views (underwater/god-ray/caustic/whitewater) fall through to black.
+    // above; compositor-owned underwater/god-ray/caustic views are handled after this pass,
+    // while the still-reserved whitewater pool/overflow diagnostics fall through to black.
     let dbg_view = i32(wp.debug_params.x + 0.5);
     if (dbg_view > 0) {
         var fft_disp = vec3<f32>(0.0);

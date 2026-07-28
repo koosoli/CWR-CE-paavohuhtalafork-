@@ -1,8 +1,10 @@
 use bytemuck::Zeroable;
 use wgpu::util::DeviceExt;
 
-// 512 rather than GodotOceanWaves' 1024. The FFT is the most expensive pass in the water system
-// and scales as O(N^2 log N), so halving the resolution is close to a 4x saving.
+// The optimized gameplay default is 512. GodotOceanWaves' 1024 reference resolution and a
+// 256 performance tier are live-selectable; changing tier reconstructs only the FFT resources.
+// The FFT is the most expensive water pass and scales as O(N^2 log N), so 512 keeps the short
+// wave detail that matters in motion without forcing the roughly 4x reference cost on everyone.
 //
 // This costs less visually than it sounds, because of how k is indexed: the spectrum builds
 // k = 2*pi*(id - N/2)/L, so the mode SPACING (2*pi/L) is set by the cascade length and does not
@@ -12,17 +14,11 @@ use wgpu::util::DeviceExt;
 // is effectively unchanged; what is lost is the finest ripple detail.
 //
 // The de-tiling warp (Water tab "De-tile warp") is what keeps the ocean from reading as a repeating
-// grid at distance, not the raw mode count. Raise this back to 1024, and FFT_STAGES to 10, if
-// distant tiling returns.
+// grid at distance, not the raw mode count.
 pub const FFT_RESOLUTION: u32 = 512;
 const FFT_LAYERS: u32 = 4;
-// log2(FFT_RESOLUTION) — must be kept in lockstep with the resolution above.
-const FFT_STAGES: u32 = 9;
-// fft_row.wgsl hardcodes FFT_N / FFT_BITS / FFT_THREADS and sizes its workgroup array from
-// them (WGSL has no way to take those from a uniform). Catch a resolution change here rather
-// than as a silently wrong ocean.
-const _: () = assert!(1u32 << FFT_STAGES == FFT_RESOLUTION);
-const _: () = assert!(FFT_RESOLUTION == 512, "fft_row.wgsl FFT_N/FFT_BITS must be updated too");
+pub const FFT_MIN_RESOLUTION: u32 = 256;
+pub const FFT_MAX_RESOLUTION: u32 = 1024;
 // Spectra packed into RGBA32F texture pairs: pack0 = (hx,hy),(hz,dhy_dx); pack1 = (dhy_dz,dhx_dx),
 // (dhz_dz,dhz_dx). A third pack exists in the bindings but carries no data — see dispatch().
 const FFT_ACTIVE_PACKS: u32 = 2;
@@ -57,6 +53,7 @@ struct StageParams {
 }
 
 pub struct Fft {
+    resolution: u32,
     displacement: wgpu::TextureView,
     dynamics: wgpu::TextureView,
     auxiliary: wgpu::TextureView,
@@ -84,20 +81,24 @@ impl Fft {
     pub fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        composer: &mut naga_oil::compose::Composer,
         water_params: &wgpu::Buffer,
         storage_supported: bool,
+        requested_resolution: u32,
     ) -> Option<Self> {
         if !storage_supported || std::env::var("WGR_WATER_FFT").ok().as_deref() == Some("0") {
             return None;
         }
+        let resolution = match requested_resolution {
+            FFT_MIN_RESOLUTION | FFT_RESOLUTION | FFT_MAX_RESOLUTION => requested_resolution,
+            _ => FFT_RESOLUTION,
+        };
         let array_view = |format, usage, label: &str| {
             device
                 .create_texture(&wgpu::TextureDescriptor {
                     label: Some(label),
                     size: wgpu::Extent3d {
-                        width: FFT_RESOLUTION,
-                        height: FFT_RESOLUTION,
+                        width: resolution,
+                        height: resolution,
                         depth_or_array_layers: FFT_LAYERS,
                     },
                     mip_level_count: 1,
@@ -395,14 +396,14 @@ impl Fft {
             let offset = (axis as u64 * aligned) as usize;
             bytes[offset..offset + 16].copy_from_slice(bytemuck::bytes_of(&StageParams {
                 data: [
-                    FFT_RESOLUTION,
+                    resolution,
                     // 0 = transform along x (rows), 1 = along y (columns).
                     axis,
+                    resolution.ilog2(),
                     // GodotOceanWaves synthesizes physical Fourier-series
                     // coefficients and intentionally leaves its inverse FFT
                     // unnormalised. Dividing the final stage by N^2 reduced a
                     // 256x256 ocean by 65,536 and made it visually flat.
-                    0,
                     0,
                 ],
             }));
@@ -517,8 +518,13 @@ impl Fft {
                 },
             ],
         });
-        let mut pipeline = |label, source, entry, layout: &wgpu::BindGroupLayout| {
-            let shader = crate::shaders::make_module(device, composer, label, source, label);
+        let pipeline = |label, source: &'static str, entry, layout: &wgpu::BindGroupLayout| {
+            // FFT shaders are deliberately standalone WGSL (no naga-oil imports), allowing
+            // this resource set to be reconstructed live when the dev quality tier changes.
+            let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+                label: Some(label),
+                source: wgpu::ShaderSource::Wgsl(source.into()),
+            });
             device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
                 label: Some(label),
                 layout: Some(
@@ -535,6 +541,7 @@ impl Fft {
             })
         };
         Some(Self {
+            resolution,
             displacement,
             dynamics,
             auxiliary,
@@ -585,6 +592,9 @@ impl Fft {
     }
     pub fn active_layers(&self) -> u32 {
         self.active_layers
+    }
+    pub fn resolution(&self) -> u32 {
+        self.resolution
     }
     pub fn cascade_config_buffer(&self) -> &wgpu::Buffer {
         &self.cascade_config_ubo
@@ -650,7 +660,7 @@ impl Fft {
             let mut pass = compute(encoder, "wgr_water_fft_spectrum_init");
             pass.set_pipeline(&self.h0_init_pipeline);
             pass.set_bind_group(0, &self.h0_init_bind, &[]);
-            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, layers);
+            pass.dispatch_workgroups(self.resolution / 8, self.resolution / 8, layers);
             drop(pass);
             timers.end(encoder, Region::SpectrumInit);
             self.spectrum_dirty = false;
@@ -660,7 +670,7 @@ impl Fft {
             let mut pass = compute(encoder, "wgr_water_fft_spectrum_evolve");
             pass.set_pipeline(&self.spectrum_pipeline);
             pass.set_bind_group(0, &self.spectrum_bind, &[]);
-            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, layers);
+            pass.dispatch_workgroups(self.resolution / 8, self.resolution / 8, layers);
         }
         timers.end(encoder, Region::SpectrumEvolve);
         for axis in 0..2 {
@@ -688,8 +698,8 @@ impl Fft {
                     let index = (axis * 3 + pack) as usize;
                     pass.set_bind_group(0, &self.stage_binds[index], &[axis * self.stage_alignment]);
                     // One workgroup per line of the transform, per cascade layer. Each
-                    // workgroup is 256 threads covering FFT_RESOLUTION points, two per thread.
-                    pass.dispatch_workgroups(FFT_RESOLUTION, layers, 1);
+                    // One 256-thread workgroup covers each complete transform line.
+                    pass.dispatch_workgroups(self.resolution, layers, 1);
                 }
             }
             timers.end(encoder, region);
@@ -699,7 +709,7 @@ impl Fft {
             let mut pass = compute(encoder, "wgr_water_fft_compose");
             pass.set_pipeline(&self.compose_pipeline);
             pass.set_bind_group(0, &self.compose_bind, &[]);
-            pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, layers);
+            pass.dispatch_workgroups(self.resolution / 8, self.resolution / 8, layers);
         }
         timers.end(encoder, Region::FftCompose);
     }
@@ -941,22 +951,26 @@ mod tests {
     }
 
     #[test]
-    fn fft_row_transform_constants_match_the_rust_resolution() {
+    fn fft_row_supports_every_live_resolution_tier() {
         let row = include_str!("fft_row.wgsl");
-        // The kernel sizes its workgroup array from these, so a resolution change that
-        // updated only fft.rs would transform the wrong number of points.
-        assert!(row.contains(&format!("FFT_N: u32 = {}u", super::FFT_RESOLUTION)));
-        assert!(row.contains(&format!("FFT_BITS: u32 = {}u", super::FFT_STAGES)));
-        // One thread per butterfly: N/2 threads, and the workgroup must declare that many.
-        assert!(row.contains(&format!(
-            "FFT_THREADS: u32 = {}u",
-            super::FFT_RESOLUTION / 2
-        )));
-        assert!(row.contains(&format!("workgroup_size({}, 1, 1)", super::FFT_RESOLUTION / 2)));
+        // The workgroup array is sized for the largest live tier; N/log2(N) come
+        // from the uniform so the same validated pipeline handles all three.
+        assert!(row.contains("let fft_n = stage_params.data.x"));
+        assert!(row.contains("let fft_bits = stage_params.data.z"));
+        assert!(row.contains("FFT_THREADS: u32 = 256u"));
+        assert!(row.contains("workgroup_size(256, 1, 1)"));
         assert!(row.contains(&format!(
             "array<vec4<f32>, {}>",
-            super::FFT_RESOLUTION
+            super::FFT_MAX_RESOLUTION
         )));
+        for n in [
+            super::FFT_MIN_RESOLUTION,
+            super::FFT_RESOLUTION,
+            super::FFT_MAX_RESOLUTION,
+        ] {
+            assert!(n.is_power_of_two());
+            assert!(n <= 1024);
+        }
         // Spectrum coefficients already include dkx*dky and are summed as a
         // physical Fourier series, matching GodotOceanWaves. A conventional
         // DFT 1/N^2 normalisation here makes every visible wave disappear.
@@ -969,24 +983,25 @@ mod tests {
     // corruption on some drivers, so pin it here rather than trusting the reasoning.
     #[test]
     fn in_place_butterfly_pairs_partition_every_stage() {
-        const N: usize = super::FFT_RESOLUTION as usize;
-        for stage in 0..super::FFT_STAGES {
-            let span = 1usize << stage;
-            let width = span << 1;
-            let mut touched = vec![0u8; N];
-            for thread in 0..N / 2 {
-                let group = thread / span;
-                let j = thread % span;
-                let i0 = group * width + j;
-                let i1 = i0 + span;
-                assert!(i1 < N, "stage {stage} thread {thread} index out of range");
-                touched[i0] += 1;
-                touched[i1] += 1;
+        for n in [256usize, 512, 1024] {
+            for stage in 0..n.ilog2() {
+                let span = 1usize << stage;
+                let width = span << 1;
+                let mut touched = vec![0u8; n];
+                for butterfly in 0..n / 2 {
+                    let group = butterfly / span;
+                    let j = butterfly % span;
+                    let i0 = group * width + j;
+                    let i1 = i0 + span;
+                    assert!(i1 < n, "N={n} stage {stage} index out of range");
+                    touched[i0] += 1;
+                    touched[i1] += 1;
+                }
+                assert!(
+                    touched.iter().all(|&c| c == 1),
+                    "N={n} stage {stage} does not partition the line"
+                );
             }
-            assert!(
-                touched.iter().all(|&c| c == 1),
-                "stage {stage} does not partition the line"
-            );
         }
     }
 
@@ -994,7 +1009,6 @@ mod tests {
     // or the load would drop and duplicate spectrum bins.
     #[test]
     fn bit_reversal_is_a_permutation_at_the_transform_width() {
-        const N: u32 = super::FFT_RESOLUTION;
         let bit_reverse = |v: u32, bits: u32| {
             let mut x = v;
             let mut out = 0u32;
@@ -1004,13 +1018,16 @@ mod tests {
             }
             out
         };
-        let mut seen = vec![false; N as usize];
-        for i in 0..N {
-            let r = bit_reverse(i, super::FFT_STAGES);
-            assert!(r < N);
-            assert!(!seen[r as usize], "bit reversal collided at {i}");
-            seen[r as usize] = true;
-            assert_eq!(bit_reverse(r, super::FFT_STAGES), i);
+        for n in [256u32, 512, 1024] {
+            let bits = n.ilog2();
+            let mut seen = vec![false; n as usize];
+            for i in 0..n {
+                let r = bit_reverse(i, bits);
+                assert!(r < n);
+                assert!(!seen[r as usize], "N={n} bit reversal collided at {i}");
+                seen[r as usize] = true;
+                assert_eq!(bit_reverse(r, bits), i);
+            }
         }
     }
 }

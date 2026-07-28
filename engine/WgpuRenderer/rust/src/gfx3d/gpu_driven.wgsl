@@ -224,6 +224,14 @@ fn vs_gpu(
 fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     let dwx = dpdx(in.world_pos);
     let dwy = dpdy(in.world_pos);
+    // Keep the GPU-driven set on the same reflected-view waterline clip as terrain
+    // and retained objects. Without this, below-water buildings/vehicles could be
+    // reflected or write depth in front of valid above-water reflection geometry.
+    let clip_len2 = dot(frame.clip_plane.xyz, frame.clip_plane.xyz);
+    if (clip_len2 > 0.0 &&
+        dot(frame.clip_plane.xyz, in.world_pos + frame.cam_pos.xyz) + frame.clip_plane.w < 0.0) {
+        discard;
+    }
     let sm = section_materials[in.section];
     // The section id is uniform across a derivative quad (one section per primitive), so the
     // bindless index stays uniform and implicit-mip sampling is legal.

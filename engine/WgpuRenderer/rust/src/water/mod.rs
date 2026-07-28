@@ -71,6 +71,7 @@ pub struct Water {
     heightmap_gen: u64,
     interaction: Interaction,
     fft: Option<Fft>,
+    fft_storage_supported: bool,
     foam: Option<Foam>,
     fft_fallback_view: wgpu::TextureView,
     fft_sampler: wgpu::Sampler,
@@ -503,7 +504,13 @@ impl Water {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
-        let fft = Fft::new(device, queue, composer, &params_ubo, fft_storage_supported);
+        let fft = Fft::new(
+            device,
+            queue,
+            &params_ubo,
+            fft_storage_supported,
+            FFT_RESOLUTION,
+        );
         let foam_fallback_view = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("wgr_water_foam_fallback"),
@@ -743,6 +750,7 @@ impl Water {
             heightmap_gen: u64::MAX,
             interaction,
             fft,
+            fft_storage_supported,
             foam,
             fft_fallback_view,
             fft_sampler,
@@ -848,6 +856,32 @@ impl Water {
         index: u32,
         config: crate::ffi::WgrWaterCascadeConfig,
     ) {
+        // Resolution is a real live quality control, not informational metadata.
+        // Rebuild only when an enabled preset supplies one of the supported tiers;
+        // disabled tail cascades use resolution=0 and must not switch us back.
+        let requested = config.resolution;
+        let valid_resolution = matches!(
+            requested,
+            fft::FFT_MIN_RESOLUTION | FFT_RESOLUTION | fft::FFT_MAX_RESOLUTION
+        );
+        let needs_rebuild = valid_resolution
+            && self
+                .fft
+                .as_ref()
+                .is_none_or(|current| current.resolution() != requested);
+        if needs_rebuild && self.fft_storage_supported {
+            self.fft = Fft::new(
+                device,
+                queue,
+                &self.params_ubo,
+                self.fft_storage_supported,
+                requested,
+            );
+            if let (Some(fft), Some(params)) = (&mut self.fft, self.last_params.as_ref()) {
+                fft.set_params(params);
+            }
+            self.rebuild_group1(device);
+        }
         if let Some(fft) = &mut self.fft {
             fft.set_cascade_config(device, queue, index, config);
         }
