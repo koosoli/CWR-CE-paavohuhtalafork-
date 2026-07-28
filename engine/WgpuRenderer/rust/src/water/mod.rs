@@ -64,6 +64,10 @@ pub struct Water {
     planar_sampler: wgpu::Sampler,
     planar_params: wgpu::Buffer,
     planar_gen: u64,
+    // Terrain heightmap + its world->texel mapping, for the vertex-stage seabed clamp.
+    heightmap_view: wgpu::TextureView,
+    conform_params: wgpu::Buffer,
+    heightmap_gen: u64,
     interaction: Interaction,
     fft: Option<Fft>,
     foam: Option<Foam>,
@@ -256,6 +260,38 @@ impl Water {
                     },
                     count: None,
                 },
+                // The terrain heightmap, sampled in the VERTEX stage so the displaced surface
+                // can be clamped to stay above the seabed. Without this the vertex shader has
+                // no idea where the ground is — `seabed_depth()` reconstructs it from the depth
+                // buffer, which only exists per fragment, far too late to move a vertex. A wave
+                // trough could therefore sink under a shallow beach, where the depth test
+                // (correctly) hid it and tore a moving hole in the shoreline.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 17,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Its world->texel mapping. WgrWaterParams already carries world_origin /
+                // terrain_grid / hm_width / hm_height, but those are filled independently by
+                // WaterWgpu; binding the terrain's own conform params next to the terrain's own
+                // texture means the sampling cannot silently disagree with the texture it reads.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 18,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: wgpu::BufferSize::new(std::mem::size_of::<
+                            crate::terrain::TerrainConformParams,
+                        >() as u64),
+                    },
+                    count: None,
+                },
             ],
         });
 
@@ -378,6 +414,36 @@ impl Water {
             min_filter: wgpu::FilterMode::Linear,
             ..Default::default()
         });
+        // 1x1 stand-in heightmap so the bind is valid before a world loads. Its conform
+        // params default to enabled = 0, which makes the seabed clamp a no-op — open ocean
+        // with no terrain behaves exactly as before.
+        let heightmap_view = device
+            .create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgr_water_dummy_heightmap"),
+                size: wgpu::Extent3d {
+                    width: 1,
+                    height: 1,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::R32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING,
+                view_formats: &[],
+            })
+            .create_view(&Default::default());
+        let conform_params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_water_conform_params"),
+            size: std::mem::size_of::<crate::terrain::TerrainConformParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        queue.write_buffer(
+            &conform_params,
+            0,
+            bytemuck::bytes_of(&<crate::terrain::TerrainConformParams as bytemuck::Zeroable>::zeroed()),
+        );
         let planar_view = device
             .create_texture(&wgpu::TextureDescriptor {
                 label: Some("wgr_water_dummy_planar"),
@@ -495,6 +561,8 @@ impl Water {
             &planar_view,
             &planar_sampler,
             &planar_params,
+            &heightmap_view,
+            &conform_params,
         );
 
         let (grid_vbuf, grid_ibuf, grid_index_count) = build_grid(device);
@@ -669,6 +737,9 @@ impl Water {
             planar_sampler,
             planar_params,
             planar_gen: u64::MAX,
+            heightmap_view,
+            conform_params,
+            heightmap_gen: u64::MAX,
             interaction,
             fft,
             foam,
@@ -751,6 +822,8 @@ impl Water {
             &self.planar_view,
             &self.planar_sampler,
             &self.planar_params,
+            &self.heightmap_view,
+            &self.conform_params,
         );
     }
 
@@ -899,6 +972,26 @@ impl Water {
         }
     }
 
+    // Lend the terrain heightmap to the water vertex stage so the surface can be clamped
+    // above the seabed. The params are small and change with the world, so they are written
+    // every call; the bind group is only rebuilt when the texture itself was reallocated.
+    pub fn set_heightmap(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        heightmap: &wgpu::TextureView,
+        view_gen: u64,
+        params: &crate::terrain::TerrainConformParams,
+    ) {
+        queue.write_buffer(&self.conform_params, 0, bytemuck::bytes_of(params));
+        if self.heightmap_gen == view_gen {
+            return;
+        }
+        self.heightmap_view = heightmap.clone();
+        self.heightmap_gen = view_gen;
+        self.rebuild_group1(device);
+    }
+
     pub fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, nodes: &[WgrWaterNode]) {
         self.instance_count = nodes.len() as u32;
         if nodes.is_empty() {
@@ -992,6 +1085,8 @@ fn build_group1(
     planar: &wgpu::TextureView,
     planar_sampler: &wgpu::Sampler,
     planar_params: &wgpu::Buffer,
+    heightmap: &wgpu::TextureView,
+    conform_params: &wgpu::Buffer,
 ) -> wgpu::BindGroup {
     device.create_bind_group(&wgpu::BindGroupDescriptor {
         label: Some("wgr_water_group1_bind"),
@@ -1064,6 +1159,14 @@ fn build_group1(
             wgpu::BindGroupEntry {
                 binding: 16,
                 resource: planar_params.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 17,
+                resource: wgpu::BindingResource::TextureView(heightmap),
+            },
+            wgpu::BindGroupEntry {
+                binding: 18,
+                resource: conform_params.as_entire_binding(),
             },
         ],
     })

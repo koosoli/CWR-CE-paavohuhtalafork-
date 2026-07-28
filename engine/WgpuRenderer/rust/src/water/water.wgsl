@@ -517,6 +517,76 @@ struct VsOut {
     @location(4) shore_factor: f32,
 };
 
+// Terrain heightmap for the vertex-stage seabed clamp (see clamp_to_seabed below).
+struct ConformParams {
+    origin: vec2<f32>,     // world xz of heightmap texel (0,0)
+    terrain_grid: f32,     // world metres per texel
+    enabled: f32,          // 0 until a world is loaded — clamp is a no-op then
+    hm_width: u32,
+    hm_height: u32,
+};
+@group(1) @binding(17) var seabed_heightmap: texture_2d<f32>;
+@group(1) @binding(18) var<uniform> cf: ConformParams;
+
+fn seabed_load(ix: i32, iz: i32) -> f32 {
+    let cx = clamp(ix, 0, i32(cf.hm_width) - 1);
+    let cz = clamp(iz, 0, i32(cf.hm_height) - 1);
+    return textureLoad(seabed_heightmap, vec2<i32>(cx, cz), 0).x;
+}
+
+// Ground height under a world-xz. Must reproduce terrain.wgsl's `sample_height` exactly,
+// including its diagonal split: a bilinear approximation would sit above the true surface
+// on one triangle of every cell and reintroduce the tear it exists to prevent.
+fn seabed_height(world_xz: vec2<f32>) -> f32 {
+    let t = (world_xz - cf.origin) / max(cf.terrain_grid, 1e-4);
+    let base = floor(t);
+    let ix = i32(base.x);
+    let iz = i32(base.y);
+    let f = t - base;
+    let y00 = seabed_load(ix, iz);
+    let y01 = seabed_load(ix + 1, iz);
+    let y10 = seabed_load(ix, iz + 1);
+    let y11 = seabed_load(ix + 1, iz + 1);
+    if (f.x <= 1.0 - f.y) {
+        return y00 + (y10 - y00) * f.y + (y01 - y00) * f.x;
+    }
+    return y10 + (y01 - y11) - (y10 - y11) * f.x - (y01 - y11) * f.y;
+}
+
+// THE coast-gap guarantee.
+//
+// Water is a plane at sea level, cut against the land by the depth test — terrain draws
+// first and occludes it. That cut is only correct while the water surface stays ABOVE the
+// ground. FFT displacement moves it vertically by up to wave_amp, and on a shallow beach
+// the seabed sits barely below sea level, so a trough pushed the surface under the sand;
+// the depth test then hid it and tore a hole along the waterline that grew with amplitude.
+// Four previous fixes tuned opacity (shoal weight, swash, shore fades) and could not work,
+// because the hole is geometry, not alpha.
+//
+// Clamping the displaced height to the ground makes the failure impossible by construction
+// rather than unlikely: if y >= seabed + margin everywhere, no wave height, sea state or
+// camera angle can put the surface behind the terrain.
+//
+// It is also the physically right constraint. Wave height is depth-limited (H ~ 0.78 * d):
+// real water cannot hold a trough deeper than its own depth either. Waves therefore flatten
+// into the beach as they shoal instead of being clipped by it.
+fn clamp_to_seabed(world_xz: vec2<f32>, y: f32) -> f32 {
+    if (cf.enabled < 0.5) {
+        return y;
+    }
+    // Sits just above the ground so the surface never coincides with terrain depth exactly,
+    // which would z-fight along the waterline instead of tearing.
+    //
+    // Capped at sea level, and that cap is load-bearing: the water grid is drawn across the
+    // whole CDLOD tree, INCLUDING over dry land, where it is meant to stay at sea level and
+    // be occluded by the terrain above it. An uncapped max() lifted those vertices up onto
+    // the ground, painting the sea over beaches and hillsides. Seaward of the waterline the
+    // seabed is below sea level, so the cap is inactive and the clamp does its job; landward
+    // the floor collapses to sea level and the surface is occluded exactly as before.
+    let floor_y = min(seabed_height(world_xz) + 0.02, wp.sea_level);
+    return max(y, floor_y);
+}
+
 override skirt_k: f32 = 0.0;
 
 @vertex
@@ -551,7 +621,12 @@ fn vs_water(
     disp = disp + shore_breaker_disp(base_xz, shore_dir, shore_factor);
     let interaction = interaction_sample(base_xz);
     let y = wp.sea_level + disp.y + interaction.r * 2.5 - grid_in.z * (size / GRID_N) * skirt_k;
-    let world_rel = vec3<f32>(base_xz.x + disp.x, y, base_xz.y + disp.z) - frame.cam_pos.xyz;
+    // Horizontal choppiness moves the vertex too, so clamp against the ground under the
+    // DISPLACED xz — that is where this vertex actually lands and where it would otherwise
+    // punch through the beach.
+    let displaced_xz = vec2<f32>(base_xz.x + disp.x, base_xz.y + disp.z);
+    let clamped_y = clamp_to_seabed(displaced_xz, y);
+    let world_rel = vec3<f32>(displaced_xz.x, clamped_y, displaced_xz.y) - frame.cam_pos.xyz;
 
     var out: VsOut;
     out.clip = reverse_z(frame.proj * frame.view * vec4<f32>(world_rel, 1.0));

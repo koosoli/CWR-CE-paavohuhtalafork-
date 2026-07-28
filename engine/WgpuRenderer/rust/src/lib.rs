@@ -2116,6 +2116,15 @@ impl Renderer {
                 // so gen 0 binds it once; a no-op thereafter.
                 self.water
                     .set_env_view(&self.device, self.sky.env_view(), 0);
+                // Lend the terrain heightmap to water's vertex stage, so a wave trough cannot
+                // displace the surface below the seabed and be cut away by the depth test.
+                self.water.set_heightmap(
+                    &self.device,
+                    &self.queue,
+                    &self.terrain.heightmap_view(),
+                    self.terrain.heightmap_gen(),
+                    &self.terrain.conform_params(),
+                );
                 if let Some(cam) = self.gfx3d.camera_bind() {
                     // WTR-002 — the water draw includes the in-shader SSR + refraction cost
                     // (they are fragment work, not separable passes; see gpu_timers.rs).
