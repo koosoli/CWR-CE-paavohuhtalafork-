@@ -6,16 +6,15 @@
 
 #include <Poseidon/Core/Global.hpp> // Glob.time (coast wet-band animation clock)
 #include <Poseidon/Foundation/Logging/Logging.hpp>
-#include <Poseidon/Graphics/Textures/PAADecoder.hpp>
+#include <stb_image.h>
 #include <Poseidon/Graphics/Textures/TextureBank.hpp>
-#include <Poseidon/IO/FileServer.hpp>
 #include <Poseidon/IO/ParamFileExt.hpp>
-#include <Poseidon/IO/Streams/QStream.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstdint>
@@ -365,61 +364,124 @@ void TerrainWgpu::UploadGeography(const Landscape& land)
         LOG_WARN(Graphics, "Wgpu grass: legacy geography still had no usable cells; relaxed blanket hard-object flags -> {} cells",
                  grassRenderableCellCount);
     }
-    LOG_INFO(Graphics, "Wgpu grass texture mask: {} layer(s), {} / {} surface cells, {} renderable after geography [{}]",
-             grassLayerCount, grassCellCount, geography.size(), grassRenderableCellCount,
+    // What the shader will ACTUALLY place. grass.wgsl splits the mask: hard
+    // exclusions (water/road/track/hard objects) always apply, forest only when
+    // the compatibility override is off. `grassRenderableCellCount` above uses
+    // the combined mask, so it under-reports whenever the override is active.
+    size_t hardOnlyCells = 0;
+    for (uint32_t cell : geography)
+    {
+        if ((cell & GrassTextureCell) != 0 && (cell & 0x00000c63u) == 0)
+            ++hardOnlyCells;
+    }
+    LOG_INFO(Graphics,
+             "Wgpu grass texture mask: {} layer(s), {} / {} surface cells, {} renderable after geography, "
+             "{} with forest relaxed (road/water/building always excluded) [{}]",
+             grassLayerCount, grassCellCount, geography.size(), grassRenderableCellCount, hardOnlyCells,
              grassLayerNames.empty() ? "none matched" : grassLayerNames);
     LOG_INFO(Graphics, "Wgpu terrain texture layers: [{}]", allLayerNames);
     wgr_grass_set_geography(_renderer, static_cast<uint32_t>(n), static_cast<uint32_t>(n), geography.data());
     UploadGrassTuft();
+    UploadGrassBladeAtlas();
 }
 
-// GRS-E — hand the renderer the game's own photographed grass tuft for the mid
-// LOD's crossed cards. This is the one genuinely photographic source available:
-// the procedural blade atlas can supply structure but not real-world detail.
+// GRS-E — upload an authored photographed grass clump for the mid LOD's crossed
+// cards. Entirely OPTIONAL: its absence must change nothing except how the mid
+// ring is drawn.
 //
-// Read through the VFS so the PBO-packed original is found, and decoded with the
-// same DecodePAABuffer every other texture goes through. Uploaded once — the
-// renderer keeps it across landscape switches.
+// If no texture is found, `have_tuft` stays false on the renderer side and the
+// mid ring keeps its procedural crossed ribbons -- the long-standing look. That
+// is the only fallback, deliberately. The game also ships a 2001 grass PAA
+// (data/trava1_pmp2.pac), but its opaque texels average (0.322, 0.375, 0.334):
+// blue level with red, i.e. grey-teal rather than green. Falling back to that
+// would hand anyone without this asset a WORSE picture than no photo cards at
+// all, so it is reachable only by pointing WGR_GRASS_TUFT at a converted copy.
 void TerrainWgpu::UploadGrassTuft()
 {
     if (!_renderer || _grassTuftUploaded)
     {
         return;
     }
-    // Side-view tuft from Data.pbo. `trava` is Czech for grass; the side-on
-    // variant is the one that suits a crossed billboard (trava2 is top-down).
-    static constexpr const char* kCandidates[] = {
-        "data\\trava1_pmp2.pac",
-        "data\\trava2_pmp.pac",
+    // Read straight off disk rather than the VFS: the file sits beside the
+    // binaries, not in a PBO. stb_image is already vendored for the JPEG loader.
+    const char* overridePath = std::getenv("WGR_GRASS_TUFT");
+    const char* candidates[] = {
+        overridePath,
+        "assets/grass/meadow-grass-clump-alpha-1024.png",
     };
-    for (const char* name : kCandidates)
+    for (const char* authored : candidates)
     {
-        QIFStream in;
-        GFileServer->Open(in, name);
-        const int size = in.fail() ? 0 : in.rest();
-        if (size <= 0)
+        if (authored == nullptr || *authored == '\0')
         {
             continue;
         }
-        std::vector<char> fileData(static_cast<size_t>(size));
-        in.read(fileData.data(), size);
-        const size_t len = strlen(name);
-        const bool isPaa = len >= 4 && (name[len - 1] == 'a' || name[len - 1] == 'A');
-        const Poseidon::DecodedImage img =
-            Poseidon::DecodePAABuffer(fileData.data(), static_cast<size_t>(size), isPaa);
-        if (!img.valid())
+        int w = 0, h = 0, channels = 0;
+        uint8_t* pixels = stbi_load(authored, &w, &h, &channels, 4); // force RGBA
+        if (pixels == nullptr)
         {
-            LOG_WARN(Graphics, "Wgpu grass: '{}' found but failed to decode", name);
             continue;
         }
-        wgr_grass_set_tuft(_renderer, static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height),
-                           img.rgba.data());
+        wgr_grass_set_tuft(_renderer, static_cast<uint32_t>(w), static_cast<uint32_t>(h), pixels);
+        stbi_image_free(pixels);
         _grassTuftUploaded = true;
-        LOG_INFO(Graphics, "Wgpu grass: mid-LOD tuft '{}' uploaded ({}x{})", name, img.width, img.height);
+        LOG_INFO(Graphics, "Wgpu grass: mid-LOD clump texture uploaded ({}x{}, {} src channels) from '{}'", w, h,
+                 channels, authored);
         return;
     }
-    // Not fatal: the mid ring keeps its procedural ribbons.
-    LOG_WARN(Graphics, "Wgpu grass: no grass-tuft texture found; mid LOD stays procedural");
+    // Expected for anyone without the optional asset -- INFO, not a warning.
+    LOG_INFO(Graphics, "Wgpu grass: no mid-LOD clump texture; mid ring uses procedural ribbons");
+}
+
+// GRS-F — replace only the near ribbon's procedural surface detail. The near
+// grass keeps its existing per-blade geometry, density and wind; these are
+// opaque texture layers, not alpha-cutout cards.
+void TerrainWgpu::UploadGrassBladeAtlas()
+{
+    if (!_renderer || _grassBladeAtlasUploaded)
+    {
+        return;
+    }
+    constexpr std::array<const char*, 8> BladePaths = {
+        "assets/grass/meadow-grass-blade-0.png",
+        "assets/grass/meadow-grass-blade-1.png",
+        "assets/grass/meadow-grass-blade-2.png",
+        "assets/grass/meadow-grass-blade-3.png",
+        "assets/grass/meadow-grass-blade-4.png",
+        "assets/grass/meadow-grass-blade-5.png",
+        "assets/grass/meadow-grass-blade-6.png",
+        "assets/grass/meadow-grass-blade-7.png",
+    };
+
+    int width = 0;
+    int height = 0;
+    std::vector<uint8_t> layers;
+    for (const char* path : BladePaths)
+    {
+        int w = 0;
+        int h = 0;
+        int channels = 0;
+        uint8_t* pixels = stbi_load(path, &w, &h, &channels, 4); // force opaque RGBA upload
+        if (pixels == nullptr || (width != 0 && (w != width || h != height)))
+        {
+            stbi_image_free(pixels);
+            LOG_INFO(Graphics, "Wgpu grass: no complete near-blade photo atlas; near ring uses procedural surface detail");
+            return;
+        }
+        if (width == 0)
+        {
+            width = w;
+            height = h;
+            layers.reserve(static_cast<size_t>(width) * static_cast<size_t>(height) * 4u * BladePaths.size());
+        }
+        layers.insert(layers.end(), pixels, pixels + static_cast<size_t>(width) * static_cast<size_t>(height) * 4u);
+        stbi_image_free(pixels);
+    }
+
+    wgr_grass_set_blade_atlas(_renderer, static_cast<uint32_t>(width), static_cast<uint32_t>(height),
+                              static_cast<uint32_t>(BladePaths.size()), layers.data());
+    _grassBladeAtlasUploaded = true;
+    LOG_INFO(Graphics, "Wgpu grass: near-LOD photo blade atlas uploaded ({} layers, {}x{})", BladePaths.size(), width,
+             height);
 }
 
 int TerrainWgpu::GrassSurfaceCount() const

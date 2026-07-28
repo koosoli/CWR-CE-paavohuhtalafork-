@@ -12,6 +12,8 @@ struct GrassParams {
     interactor_x: f32, interactor_z: f32, interactor_radius: f32, interactor_strength: f32,
     tracks: array<GrassTrack, 96>, debug_flags: vec4<f32>, render_flags: vec4<f32>,
     species_mix: vec4<f32>,
+    // Layout must mirror grass.wgsl exactly -- same uniform buffer.
+    look: vec4<f32>,
 };
 // Must mirror grass.wgsl's 32-byte layout exactly: both shaders bind the same
 // instance buffer through the shared `data_layout`.
@@ -111,7 +113,10 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let wind_bend = vec3<f32>(wind.x, 0.0, wind.y) * grass.wind_strength *
         (0.035 + 0.21 * wind.z + wind.w);
     let bend = static_bend + wind_bend + crush_bend;
-    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x * pow(max(1.0 - t, 0.0), shape.z);
+    // species_mix.z mirrors the Grass-tab blade width multiplier, or a widened
+    // blade would cast the shadow of a thin one.
+    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x *
+        max(grass.species_mix.z, 0.05) * pow(max(1.0 - t, 0.0), shape.z);
     let lateral = select(axis * width, -axis * width, left);
     let world = inst.xyz + lateral + vec3<f32>(0.0, crushed_height * t, 0.0) + bend * (t * t);
     return shadow.light_vp * vec4<f32>(world - shadow.cam_pos.xyz, 1.0);

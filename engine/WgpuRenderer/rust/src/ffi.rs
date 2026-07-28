@@ -790,8 +790,12 @@ pub struct WgrGrassParams {
     pub density_noise_strength: f32,
     pub weed_percent: f32,
     pub flower_percent: f32,
-    pub _pad0: f32,
+    pub blade_width_scale: f32,
     pub use_photo_tuft: f32,
+    pub saturation: f32,
+    pub dry_patches: f32,
+    pub dry_patch_scale: f32,
+    pub _pad3: f32,
 }
 
 // Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.
@@ -1005,8 +1009,8 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
-// 1632 = 102 * 16: the species-mix vec4 keeps the UBO 16-byte aligned.
-const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1632);
+// 1648 = 103 * 16: the look vec4 keeps the UBO 16-byte aligned.
+const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1648);
 const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 240);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
@@ -1669,6 +1673,32 @@ pub unsafe extern "C" fn wgr_grass_set_tuft(
         let bytes = width as usize * height as usize * 4;
         let rgba = unsafe { std::slice::from_raw_parts(rgba, bytes) };
         renderer.grass_set_tuft(width, height, rgba);
+    }));
+}
+
+/// Upload the opaque, photographed blade-surface texture array used by the
+/// near grass geometry. `rgba` is layer-major RGBA8 with `layers` images of
+/// identical `width * height` dimensions.
+///
+/// # Safety
+/// `renderer` must be live; `rgba` must point to at least
+/// `width * height * layers * 4` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_grass_set_blade_atlas(
+    renderer: *mut WgrRenderer,
+    width: u32,
+    height: u32,
+    layers: u32,
+    rgba: *const u8,
+) {
+    if renderer.is_null() || rgba.is_null() || width == 0 || height == 0 || layers == 0 {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        let renderer = unsafe { &mut *renderer };
+        let bytes = width as usize * height as usize * layers as usize * 4;
+        let rgba = unsafe { std::slice::from_raw_parts(rgba, bytes) };
+        renderer.grass_set_blade_atlas(width, height, layers, rgba);
     }));
 }
 

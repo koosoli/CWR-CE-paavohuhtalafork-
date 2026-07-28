@@ -1491,7 +1491,9 @@ void DrawGrassTab()
     changed |= ImGui::Checkbox("Apply grass distance fog", &grass.applyFog);
     ImGui::TextDisabled("Both are grass-only visual controls; turn either off to inspect the procedural field.");
     changed |= ImGui::Checkbox("Ignore terrain exclusions (diagnostic)", &grass.ignoreGeographyExclusions);
-    ImGui::TextDisabled("Use only to diagnose a legacy map with no grass: this also permits grass on roads, forests and buildings.");
+    ImGui::TextDisabled("Relaxes only the FOREST flags, which some legacy Everon WRPs set across ordinary ground. "
+                        "Water, roads, tracks and buildings stay excluded either way -- there is no setting that "
+                        "puts grass on a road.");
     changed |= ImGui::SliderFloat("Coverage", &grass.density, 0.05f, 1.0f, "%.2f");
     ImGui::TextDisabled("Retained fraction of procedural candidate blades. 1.00 uses every candidate.");
     changed |= ImGui::SliderFloat("Density boost", &grass.densityBoost, 1.0f, 4.0f, "%.1fx");
@@ -1506,6 +1508,23 @@ void DrawGrassTab()
     ImGui::TextDisabled("Patch frequency in 1/metres. 0.075 gives ~13 m patches; lower = broader sweeps, higher = finer mottling.");
     changed |= ImGui::SliderFloat("Density noise strength", &grass.densityNoiseStrength, 0.0f, 1.0f, "%.2f");
     ImGui::TextDisabled("0 = perfectly uniform coverage; 1 = bare ground between dense clumps. Scaled by Field clumping below, and does not affect the far ring.");
+
+    changed |= ImGui::SliderFloat("Colour saturation", &grass.saturation, 0.0f, 2.0f, "%.2f");
+    ImGui::TextDisabled("1.00 = untouched, 0.00 = greyscale. Pushed about the luma axis, so brightness is "
+                        "unchanged -- this pulls colour out without darkening. Applies to near blades, mid "
+                        "ribbons/clump cards and the far proxy together.");
+    changed |= ImGui::SliderFloat("Dry patches", &grass.dryPatches, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("Fraction of the field that bleaches toward dry straw. 0 = uniformly green. Tips dry "
+                        "before roots, and it uses its own noise field so dry ground does not line up with "
+                        "thin ground.");
+    changed |= ImGui::SliderFloat("Dry patch size", &grass.dryPatchScale, 0.002f, 0.3f, "%.3f");
+    ImGui::TextDisabled("Noise frequency in 1/metres: 0.03 gives ~33 m patches, higher values break the field "
+                        "into smaller dry spots.");
+    changed |= ImGui::SliderFloat("Blade width", &grass.bladeWidth, 0.25f, 6.0f, "%.2fx");
+    ImGui::TextDisabled("1.00 = the long-standing look. The near-LOD blade texture only becomes visible above "
+                        "roughly 3x: a stock 3 cm blade is about 4 pixels wide on screen, and a 64-pixel-wide "
+                        "texture is averaged down to flat colour before it is ever drawn. Wider blades read as "
+                        "broad leaves rather than fine grass, so this is a look choice, not a fix.");
 
     changed |= ImGui::Checkbox("Mid LOD: photographed tuft cards", &grass.midPhotoTuft);
     ImGui::TextDisabled("Off = procedural crossed ribbons (default). On = crossed cards using the game's own "
@@ -1564,6 +1583,10 @@ void DrawGrassTab()
         grass.farRadius = 1.0f;
         grass.densityNoiseScale = 0.075f;
         grass.densityNoiseStrength = 0.55f;
+        grass.bladeWidth = 1.0f;
+        grass.saturation = 0.78f;
+        grass.dryPatches = 0.35f;
+        grass.dryPatchScale = 0.030f;
         grass.weedPercent = 0.12f;
         grass.flowerPercent = 0.05f;
         grass.height = 1.25f;
@@ -1571,7 +1594,7 @@ void DrawGrassTab()
         grass.windStrength = 1.2f;
         grass.clumping = 0.55f;
         grass.colorVariation = 0.35f;
-        grass.transmission = 0.45f;
+        grass.transmission = 0.10f;
         grass.castShadows = true;
         grass.applyFog = true;
         changed = true;
@@ -2587,14 +2610,17 @@ void DrawWaterTab()
     ImGui::SetItemTooltip("Strength of the shoaling swell that runs in toward the beach. The train "
                           "grows (Green's law) and its crests sharpen as the water shallows.");
     changed |= ImGui::Checkbox("Underwater effect", &s.underwaterEffect);
-    ImGui::SetItemTooltip("Fullscreen underwater compositor. OFF by default: it is still the original "
-                          "crude approximation (a 0.12/depth stand-in for path length, fixed RGB "
-                          "transmittance, a sine caustic) and reads worse than no effect. Needs "
-                          "rebuilding, not retuning.");
+    ImGui::SetItemTooltip("Fullscreen underwater compositor. Still the original crude approximation "
+                          "(a 0.12/depth stand-in for path length, fixed RGB transmittance, a sine "
+                          "caustic) — it needs rebuilding, not retuning. It is also all-or-nothing: "
+                          "it cannot render a wave cutting across the screen with the eye half "
+                          "submerged. Switch it off if that bothers you more than losing the effect.");
     changed |= ImGui::Checkbox("Low water quality (performance)", &s.lowQuality);
-    ImGui::SetItemTooltip("Drops screen-space and planar reflections from the water shader — the two "
-                          "dominant fragment costs. Sky reflection, waves, foam and refraction are "
-                          "unchanged. Off by default.");
+    ImGui::SetItemTooltip("Drops SSR/planar SAMPLING and bicubic filtering from the water shader. Note "
+                          "it does NOT skip rendering the planar reflection itself — the reflected "
+                          "sky, terrain, objects, clouds and mip chain are still drawn whenever water "
+                          "is visible (about 1 ms), so the saving is smaller than it sounds. Gating "
+                          "that render on water screen coverage is still outstanding.");
 
     ImGui::Separator();
     ImGui::TextUnformatted("Coast (depth-based colour + soft shoreline)");

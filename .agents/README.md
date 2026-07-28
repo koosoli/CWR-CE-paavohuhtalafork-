@@ -25,6 +25,17 @@ cmd /c ".\ColdWarAssault.exe --render wgpu --window --dev --log-file cwr.log"
 
 > **NEVER** copy only `ColdWarAssault.exe` or only `wgpu_renderer.dll`. Copying only one binary causes an instant `Entry Point Not Found` crash on startup!
 
+> [!IMPORTANT]
+> **Step 2b — deploy the `assets/` tree as well.** Some renderer features read
+> loose files relative to the working directory (the game install), not from a
+> PBO. The grass system is the first: `assets/grass/*.png`. A missing asset does
+> **not** crash — it silently degrades to a procedural fallback, so the symptom is
+> "my texture change did nothing", not an error.
+>
+> ```powershell
+> New-Item -ItemType Directory -Force -Path "D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\assets\grass" | Out-Null; Copy-Item -Path "assets\grass\*" -Destination "D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\assets\grass\" -Recurse -Force
+> ```
+
 ---
 
 ### RULE 2: Mandatory Verification Before Ending Your Turn
@@ -74,3 +85,4 @@ if (!_horizontObject)
 2. **[WGSL_CODING_RULES.md](WGSL_CODING_RULES.md)**: Full WGSL syntax pitfall guide and solution examples.
 3. **[CWR-CE Water System Master Plan.md](CWR-CE%20Water%20System%20Master%20Plan.md)**: Technical roadmap for the water rendering pipeline.
 4. **[SMOKE_TEST_INSTRUCTIONS.md](SMOKE_TEST_INSTRUCTIONS.md)**: In-game verification commands and test scenes.
+5. **[GRASS_BLADE_TEXTURE_HANDOFF.md](GRASS_BLADE_TEXTURE_HANDOFF.md)**: Where grass textures live, how to add single-blade photo textures to the near LOD, and the colour-space / alpha / bind-group traps that come with it.

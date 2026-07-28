@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -646,15 +647,20 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     constexpr float kFixedStep = 1.0f / 60.0f;
     const float rawDt = fz.freezeInteraction ? 0.0f : (fz.fixedDelta > 0.0f ? fz.fixedDelta : (now - _lastInteractionTime));
     s_interactionAccumulator += std::clamp(rawDt, 0.0f, 0.1f);
-    float dt = kFixedStep;
-    if (s_interactionAccumulator >= kFixedStep)
-    {
-        s_interactionAccumulator -= kFixedStep;
-    }
-    else if (rawDt == 0.0f)
-    {
-        dt = 0.0f;
-    }
+    // The accumulator existed but `dt` was set to kFixedStep unconditionally and the accumulator
+    // was only drained when it happened to hold a full step. That advanced the simulation by 1/60 s
+    // EVERY frame regardless of real elapsed time: at 120 fps the water ran at roughly twice speed,
+    // and below 60 fps it drained only one step per frame and fell progressively behind.
+    //
+    // There is one compute dispatch per frame, so catching up means handing the solver a dt worth
+    // several steps rather than looping. Capped at three so a hitch or a loading stall cannot
+    // deliver one enormous step and blow the solver up.
+    constexpr int kMaxCatchUpSteps = 3;
+    const int steps = std::min(static_cast<int>(s_interactionAccumulator / kFixedStep), kMaxCatchUpSteps);
+    float dt = kFixedStep * static_cast<float>(steps);
+    s_interactionAccumulator -= dt;
+    // Drop any excess beyond the catch-up cap instead of letting it accumulate forever.
+    s_interactionAccumulator = std::min(s_interactionAccumulator, kFixedStep * kMaxCatchUpSteps);
 
     std::array<WgrWaterInteractionEvent, WGR_MAX_WATER_INTERACTIONS> events{};
     uint32_t eventCount = 0;
@@ -813,6 +819,42 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _selected.clear();
     SelectVisibleCdlod(_tree, _rootIndex, _numLevels, _ranges, _morphRegion, *camera, rx0, rz0, rx1, rz1,
                        belowSea, emit);
+
+    // WTR-LOD diagnostic: the per-LOD mesh-density work only pays off if the selection
+    // actually spreads across levels. With _baseMult = 8 and a 32-texel leaf, ranges[0]
+    // may already exceed the draw distance, in which case every visible node is level 0
+    // and coarse index buffers would buy nothing. Edge-triggered on the histogram so this
+    // is a handful of log rows, not one per frame.
+    {
+        std::array<int, 16> histogram{};
+        for (const WgrWaterNode& n : _selected)
+        {
+            histogram[std::min<size_t>(n.lod, histogram.size() - 1)]++;
+        }
+        static std::array<int, 16> lastHistogram{};
+        static bool loggedConfig = false;
+        // The histogram changes on almost every frame the camera moves, so edge-triggering
+        // alone produced ~25 rows/second. Rate-limit to one row every 2 s.
+        static std::chrono::steady_clock::time_point lastLog{};
+        const auto nowClock = std::chrono::steady_clock::now();
+        const bool rateOk = (nowClock - lastLog) >= std::chrono::seconds(2);
+        if (!loggedConfig)
+        {
+            LOG_INFO(Graphics, "Water CDLOD config: leafSize={:.1f}m levels={} baseMult={:.1f} ratio={:.2f} range0={:.0f}m",
+                     _leafSize, _numLevels, _baseMult, _lodRatio, _ranges.empty() ? 0.0f : _ranges[0]);
+            loggedConfig = true;
+        }
+        if (histogram != lastHistogram && rateOk)
+        {
+            LOG_INFO(Graphics,
+                     "Water CDLOD nodes: total={} lod0={} lod1={} lod2={} lod3={} lod4={} lod5+={} tris={}",
+                     _selected.size(), histogram[0], histogram[1], histogram[2], histogram[3], histogram[4],
+                     histogram[5] + histogram[6] + histogram[7] + histogram[8] + histogram[9],
+                     _selected.size() * 96u * 96u * 2u);
+            lastHistogram = histogram;
+            lastLog = nowClock;
+        }
+    }
 
     _engine.SubmitWater(_selected);
 }

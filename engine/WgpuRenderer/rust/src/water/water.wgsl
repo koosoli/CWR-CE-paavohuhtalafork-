@@ -52,9 +52,11 @@ struct WaterParams {
     sea_params: vec4<f32>,   // WTR-LOOK: x = sea-state coupling, y = residual spectrum amp, z = low quality, w = shore breaker gain
 };
 
-// Must match the render mesh in water/mod.rs.  It is intentionally denser than
-// WaterWgpu's CDLOD leaf span so near-field FFT displacement stays smooth.
-const GRID_N: f32 = 192.0;
+// Must match GRID_N in water/mod.rs -- this drives the CDLOD morph target, so a
+// mismatch cracks every LOD boundary. Intentionally denser than WaterWgpu's CDLOD
+// leaf span so near-field FFT displacement stays smooth; see the sizing note in
+// water/mod.rs for why 96 is above the shader's own cascade cutoff.
+const GRID_N: f32 = 96.0;
 
 @group(1) @binding(0) var<uniform> wp: WaterParams;
 // Opaque scene depth from the prepass, farthest-sample resolved (single-sample: 1x aspect or the

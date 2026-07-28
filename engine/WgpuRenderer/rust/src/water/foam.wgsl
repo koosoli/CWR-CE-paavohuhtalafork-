@@ -91,17 +91,35 @@ fn foam_update(@builtin(global_invocation_id) id: vec3<u32>) {
     let inter_u = textureSampleLevel(interaction_field, field_sampler, clamp(interaction_uv + vec2<f32>(0.0, texel.y), vec2<f32>(0.001), vec2<f32>(0.999)), 0.0);
 
     let cell_spacing = max(interaction_params.domain.z / size.x, 0.01);
-    let dvx_dx = (inter_r.g - inter_l.g) / (2.0 * cell_spacing);
-    let dvy_dy = (inter_u.g - inter_d.g) / (2.0 * cell_spacing);
-    let divergence = dvx_dx + dvy_dy;
+    // The interaction field's .g channel is ONE SCALAR (vertical/impulse velocity). It was being
+    // read as if it were the x component of the velocity in one difference and the y component in
+    // the other, so "divergence" and "vorticity" were differences of the same scalar along two axes
+    // — not the divergence and curl of any actual vector field.
+    //
+    // The physically meaningful 2D flow here is the down-slope flow of the ripple height (.r):
+    // water accelerates away from a crest and toward a trough, so the horizontal velocity is
+    // proportional to -grad(h). Its divergence is then -laplacian(h), which is exactly the
+    // convergence signal foam wants (foam gathers where the surface flow piles up).
+    let dh_dx = (inter_r.r - inter_l.r) / (2.0 * cell_spacing);
+    let dh_dz = (inter_u.r - inter_d.r) / (2.0 * cell_spacing);
+    let ripple_flow = -vec2<f32>(dh_dx, dh_dz) * 1.5;
+    let laplacian_h = (inter_r.r + inter_l.r + inter_u.r + inter_d.r - 4.0 * centre_inter.r) /
+        (cell_spacing * cell_spacing);
+    let divergence = -laplacian_h * 1.5;
     let convergence = smoothstep(0.0, -0.6, divergence);
-    let vorticity = abs(dvy_dy - dvx_dx);
+    // A height-derived flow is a gradient field, so its true curl is zero. Use the flow magnitude as
+    // the "churn" signal the foam shader actually consumes from this channel instead of a curl that
+    // cannot exist.
+    let vorticity = length(ripple_flow);
 
     // WTR-085 — Composite physical foam advection velocity (interaction velocity + ambient current + wind drift)
     let flow_dir = normalize(water.flow_direction_speed.xy + vec2<f32>(1e-4, 0.0)) * max(water.flow_direction_speed.z, 0.0);
     let wind_dir = normalize(water.fft_wind_sea.xy + vec2<f32>(1e-4, 0.0));
     let wind_drift = wind_dir * (0.08 + max(water.fft_wind_sea.z, 0.0) * 0.010);
-    let surface_velocity = vec2<f32>(centre_inter.g * 0.4) + flow_dir + wind_drift;
+    // Was `vec2<f32>(centre_inter.g * 0.4)`, which fills BOTH components with the same scalar — so
+    // every ripple advected foam along a perfect 45-degree diagonal regardless of the actual flow.
+    // The ripple's real horizontal flow is the down-slope term computed above.
+    let surface_velocity = ripple_flow * 0.4 + flow_dir + wind_drift;
 
     let previous_world = world - surface_velocity * dt;
     let previous_uv = (previous_world - interaction_params.previous_domain.xy) * interaction_params.previous_domain.w;

@@ -704,9 +704,20 @@ struct WgrGrassParams
      * so weed + flower is clamped to <= 1. Selection is per clump, not per blade. */
     float weed_percent;
     float flower_percent;
-    float _pad0;
+    /* Blade width multiplier, 1.0 = stock. Wider blades give the near-LOD texture
+     * pixels to land in: a 3 cm blade is only ~4 px on screen, where a 64 px-wide
+     * texture averages to flat colour before it is ever drawn. */
+    float blade_width_scale;
     /* 0 = mid LOD keeps the procedural ribbons (default); nonzero = photo tuft cards. */
     float use_photo_tuft;
+    /* Grass albedo saturation about its luma. 1.0 = untouched, 0.0 = greyscale.
+     * Applied to near blades, mid ribbons/clump cards and the far proxy alike. */
+    float saturation;
+    /* Sun-bleached patches: fraction of the field that dries toward straw, and
+     * the patch size (noise frequency, 1/metres). */
+    float dry_patches;
+    float dry_patch_scale;
+    float _pad3;
 };
 
 // --- Water (GPU CDLOD surface) -----------------------------------------------
@@ -1095,7 +1106,7 @@ static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match th
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrGrassParams) == 1632, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassParams) == 1648, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterParams) == 240, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 40, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
@@ -1265,6 +1276,13 @@ extern "C"
      * width or height 0 clears it, and the mid ring falls back to procedural ribbons. */
     WGR_API void wgr_grass_set_tuft(WgrRenderer* renderer, uint32_t width, uint32_t height,
                                     const uint8_t* rgba);
+
+    /* Upload opaque, modern-PNG blade-surface layers for the near grass geometry.
+     * `rgba` is layer-major, with `layers` same-sized width*height RGBA8 images.
+     * The blade mesh supplies the silhouette, so alpha is ignored and no discard
+     * is enabled by this path. */
+    WGR_API void wgr_grass_set_blade_atlas(WgrRenderer* renderer, uint32_t width, uint32_t height,
+                                           uint32_t layers, const uint8_t* rgba);
 
     /* The terrain sun-shadow and sky-visibility knobs are pushed through the consolidated
      * WgrRenderParams block (wgr_set_render_params), not their own setters. See below and

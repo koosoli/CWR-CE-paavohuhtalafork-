@@ -11,11 +11,29 @@ use crate::ffi::{WgrWaterInteractionEvent, WgrWaterInteractionParams};
 use foam::Foam;
 
 // Grid mesh resolution: GRID_N quads per axis, (GRID_N+1)^2 vertices, u16 indices.
-// This deliberately exceeds the CDLOD leaf span used by WaterWgpu: a 32m near leaf
-// now has ~0.17m wave samples instead of one displaced vertex per metre.  FFT waves
-// are geometric displacement, so the former 32x32 mesh visibly faceted crests into
-// low-poly pyramids even though the spectrum texture itself was smooth.
-const GRID_N: u32 = 192;
+// This deliberately exceeds the CDLOD leaf span used by WaterWgpu, because FFT waves
+// are geometric displacement: the original 32x32 mesh faceted crests into low-poly
+// pyramids even though the spectrum texture itself was smooth.
+//
+// MUST match GRID_N in water.wgsl. The vertex shader derives the CDLOD morph target
+// from it (grid_coarse = round(grid*GRID_N*0.5)*2/GRID_N); a mismatch morphs toward
+// the wrong lattice and cracks every LOD boundary.
+//
+// Why 96 and not 192 (measured 2026-07-28, Everon, 800x600):
+//   leafSize 200 m, ranges[0] 1600 m, ratio 2 -> a lod-L node is 200*2^L m wide and
+//   lives out to 1600*2^L m. Node size and distance double together, so EVERY LOD
+//   band bottoms out at the same projected quad size -- 0.39 px at 192. That is the
+//   reason a per-LOD index-buffer ladder buys nothing here: the bands are already
+//   equal in screen space, and striding the far ones would only make distant water
+//   coarser than near water.
+//   The real budget comes from the shader: compute_cascade_weights zeroes a cascade's
+//   geometry_weight below ~1.5-4 projected px, and cascades shorter than 20 m carry no
+//   displacement at all. At 192 the shortest surviving wavelength was sampled by ~10-19
+//   vertices; 96 still gives ~5-10, well above the ~4 needed for a smooth crest, and
+//   quarters the triangle count (186 nodes x 73,728 -> x 18,432).
+//   Sub-pixel triangles also shade a full 2x2 fragment quad each, so this cuts the
+//   water draw's fragment work as well as its vertex work.
+const GRID_N: u32 = 96;
 // Matches the GodotOceanWaves reference emitter.  These are procedural GPU instances
 // rather than CPU-owned particles: only crests that pass the FFT breaking test reach
 // the fragment stage, so the cost scales with visible whitewater rather than a CPU

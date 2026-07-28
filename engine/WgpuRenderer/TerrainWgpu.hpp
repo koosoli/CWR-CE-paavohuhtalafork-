@@ -25,6 +25,8 @@ class TerrainWgpu : public ITerrainRenderer
     int GrassSurfaceCount() const;
     // GRS-E: upload the game's photographed grass tuft for the mid LOD (once).
     void UploadGrassTuft();
+    // GRS-F: upload eight opaque photo layers for the near blade geometry (once).
+    void UploadGrassBladeAtlas();
     const char* GrassLoadedMapName() const { return _uploadedName.c_str(); }
     const char* GrassSurfaceName(int index) const;
     bool GrassSurfaceEnabled(int index) const;
@@ -85,6 +87,7 @@ class TerrainWgpu : public ITerrainRenderer
     // kept outside GeographyInfo so the dev panel can reclassify a surface live.
     std::vector<std::string> _grassSurfaceNames;
     bool _grassTuftUploaded = false;
+    bool _grassBladeAtlasUploaded = false;
     std::vector<bool> _grassSurfaceEnabled;
     bool _grassNeedsCompatibilityOverride = false;
 

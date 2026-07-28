@@ -949,13 +949,32 @@ class Engine : public IGraphicsEngine
         // Species mix as fractions of all placed plants; grass takes whatever
         // these two leave. Chosen per clump, so weeds and flowers appear in
         // drifts rather than sprinkled evenly.
+        // Blade width multiplier. 1.0 is the long-standing look; the near-LOD
+        // photo texture only becomes visible above roughly 3.0, because a stock
+        // 3 cm blade is about 4 pixels wide on screen and a 64 px texture is
+        // averaged to flat colour before it reaches a pixel.
+        float bladeWidth = 1.0f;
+        // Albedo saturation about luma. 1.0 = untouched; lower desaturates the
+        // whole field. Brightness is preserved, so this only pulls colour out.
+        // 0.78 is the authored default -- the raw palette reads too vivid
+        // against CWA's muted terrain.
+        float saturation = 0.78f;
+        // Sun-bleached patches: fraction of the field that dries toward straw, and
+        // the patch size (noise frequency, 1/metres). Its own noise field, so dry
+        // ground does not line up with thin ground.
+        float dryPatches = 0.35f;
+        float dryPatchScale = 0.030f;
         float weedPercent = 0.12f;
         float flowerPercent = 0.05f;
         // Mid LOD geometry. Off = the procedural crossed ribbons. On = crossed
-        // cards carrying the game's photographed tuft (data\trava1_pmp2.pac).
-        // Off by default: that 2001 texture is measurably grey-teal rather than
-        // green, so the procedural ribbons read better without colour surgery.
-        bool midPhotoTuft = false;
+        // cards carrying a photographed grass clump.
+        //
+        // On by default now that assets/grass/meadow-grass-clump-alpha-1024.png
+        // ships: measured opaque mean (0.525, 0.622, 0.127) -- green on every
+        // texel, hard binary alpha, no baked lighting. The legacy PAA fallback
+        // (data\trava1_pmp2.pac) is grey-teal, so if only that is present the
+        // mid ring looks desaturated and this is worth turning off.
+        bool midPhotoTuft = true;
         float densityBoost = 4.0f; // turns base spacing into a denser placement grid
         float height = 1.25f;      // authored blade height multiplier
         // The default follows the weather system that also drives smoke,
@@ -968,7 +987,7 @@ class Engine : public IGraphicsEngine
         // hashes, so they do not make blades swim when the camera moves.
         float clumping = 0.55f;
         float colorVariation = 0.35f;
-        float transmission = 0.45f;
+        float transmission = 0.10f;
         // These are deliberately grass-only controls: terrain and other
         // world geometry retain the renderer's regular shadow/fog settings.
         bool castShadows = true;

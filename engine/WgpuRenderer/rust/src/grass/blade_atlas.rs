@@ -449,6 +449,78 @@ pub fn create(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
     })
 }
 
+/// Upload authored, opaque blade-surface images as the species array used by
+/// the near LOD. The geometry remains responsible for each blade's silhouette,
+/// so this deliberately uses plain colour mips and never enables alpha tests.
+pub fn create_from_images(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    width: u32,
+    height: u32,
+    layers: u32,
+    rgba: &[u8],
+) -> Option<wgpu::TextureView> {
+    let layer_bytes = width as usize * height as usize * 4;
+    if width == 0 || height == 0 || layers != LAYERS || rgba.len() != layer_bytes * layers as usize {
+        return None;
+    }
+    let mip_levels = 32 - width.max(height).leading_zeros();
+    let texture = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("wgr_grass_blade_photo_atlas"),
+        size: wgpu::Extent3d {
+            width,
+            height,
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: mip_levels,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        // These files are modern authored PNGs, so sampling must linearise them
+        // before the grass lighting calculations.
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+
+    for layer in 0..layers {
+        let start = layer as usize * layer_bytes;
+        let mut data = rgba[start..start + layer_bytes].to_vec();
+        let (mut w, mut h) = (width, height);
+        for mip in 0..mip_levels {
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: mip,
+                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &data,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(w * 4),
+                    rows_per_image: Some(h),
+                },
+                wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
+                },
+            );
+            if mip + 1 < mip_levels {
+                let (next, nw, nh) = downsample(&data, w, h);
+                data = next;
+                w = nw;
+                h = nh;
+            }
+        }
+    }
+
+    Some(texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

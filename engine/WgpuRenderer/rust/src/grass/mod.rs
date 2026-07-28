@@ -44,8 +44,14 @@ struct GrassParams {
     // so the UBO stays 16-byte aligned (1632 B = 102 * 16).
     weed_percent: f32,
     flower_percent: f32,
-    _pad0: f32,
+    blade_width_scale: f32,
     use_photo_tuft: f32,
+    // Albedo saturation about luma; 1.0 = untouched. Trailing vec4 keeps the
+    // UBO 16-byte aligned (1648 B = 103 * 16).
+    saturation: f32,
+    dry_patches: f32,
+    dry_patch_scale: f32,
+    _pad3: f32,
 }
 
 /// Mirrors `GrassInstance` in grass.wgsl and grass_shadow.wgsl (32 B). `packed`
@@ -140,6 +146,7 @@ pub struct Grass {
     far_instances: wgpu::Buffer,
     blade_view: wgpu::TextureView,
     blade_sampler: wgpu::Sampler,
+    have_blade_atlas: bool,
     tuft_view: wgpu::TextureView,
     have_tuft: bool,
     // have_tuft = the PAA loaded; tuft_enabled = the Grass tab also asked for it.
@@ -229,8 +236,12 @@ impl Grass {
             density_noise_strength: 0.55,
             weed_percent: 0.12,
             flower_percent: 0.05,
-            _pad0: 0.0,
+            blade_width_scale: 1.0,
             use_photo_tuft: 0.0,
+            saturation: 1.0,
+            dry_patches: 0.35,
+            dry_patch_scale: 0.030,
+            _pad3: 0.0,
         };
         queue.write_buffer(&grass_params, 0, bytemuck::bytes_of(&params));
 
@@ -476,6 +487,7 @@ impl Grass {
             mag_filter: wgpu::FilterMode::Linear,
             min_filter: wgpu::FilterMode::Linear,
             mipmap_filter: wgpu::MipmapFilterMode::Linear,
+            anisotropy_clamp: 8,
             ..Default::default()
         });
         let terrain_bind = make_terrain_bind(
@@ -740,6 +752,7 @@ impl Grass {
             far_instances,
             blade_view,
             blade_sampler,
+            have_blade_atlas: false,
             tuft_view,
             have_tuft: false,
             tuft_enabled: false,
@@ -755,6 +768,40 @@ impl Grass {
         };
         self.tuft_view = view;
         self.have_tuft = true;
+        let rebuild = |instances: &wgpu::Buffer, count: &wgpu::Buffer| {
+            make_data_bind(
+                device,
+                &self.data_layout,
+                &self.grass_params,
+                instances,
+                count,
+                &self.blade_view,
+                &self.blade_sampler,
+                &self.tuft_view,
+            )
+        };
+        self.data_bind = rebuild(&self.instances, &self.placement_count);
+        self.mid_data_bind = rebuild(&self.mid_instances, &self.mid_placement_count);
+        self.far_data_bind = rebuild(&self.far_instances, &self.far_placement_count);
+    }
+
+    /// Replace the procedural near-blade surface atlas with supplied opaque
+    /// photo layers. A bind group captures its texture view, so all LOD binds
+    /// must be rebuilt even though only the near shader samples this texture.
+    pub fn set_blade_atlas(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        layers: u32,
+        rgba: &[u8],
+    ) {
+        let Some(view) = blade_atlas::create_from_images(device, queue, width, height, layers, rgba) else {
+            return;
+        };
+        self.blade_view = view;
+        self.have_blade_atlas = true;
         let rebuild = |instances: &wgpu::Buffer, count: &wgpu::Buffer| {
             make_data_bind(
                 device,
@@ -845,8 +892,12 @@ impl Grass {
             flower_percent: params
                 .flower_percent
                 .clamp(0.0, 1.0 - params.weed_percent.clamp(0.0, 1.0)),
-            _pad0: 0.0,
+            blade_width_scale: params.blade_width_scale.clamp(0.25, 6.0),
             use_photo_tuft: params.use_photo_tuft,
+            saturation: params.saturation.clamp(0.0, 2.0),
+            dry_patches: params.dry_patches.clamp(0.0, 1.0),
+            dry_patch_scale: params.dry_patch_scale.clamp(0.002, 0.3),
+            _pad3: 0.0,
         };
         self.last_params = params;
         self.enabled = params.enabled != 0.0;

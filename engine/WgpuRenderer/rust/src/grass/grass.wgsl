@@ -41,10 +41,16 @@ struct GrassParams {
     interactor_strength: f32,
     tracks: array<GrassTrack, 96>,
     debug_flags: vec4<f32>,
-    // .x = apply_fog, .y = density noise scale, .z = density noise strength
+    // MUST match the tail of GrassParams in grass/mod.rs, four scalars per vec4:
+    //   .x = cast_shadows, .y = apply_fog,
+    //   .z = density noise scale, .w = density noise strength
     render_flags: vec4<f32>,
-    // .x = weed fraction, .y = flower fraction (grass takes the remainder)
+    //   .x = weed fraction, .y = flower fraction (grass takes the remainder),
+    //   .z = blade width scale, .w = use_photo_tuft
     species_mix: vec4<f32>,
+    //   .x = albedo saturation (1.0 = untouched)
+    //   .y = dry-patch amount, .z = dry-patch noise scale, .w spare
+    look: vec4<f32>,
 };
 
 // 32 bytes. `pos_seed` stays f32 for world precision; everything the compute
@@ -89,6 +95,21 @@ const MAX_FAR_INSTANCES: u32 = 147456u;
 const MID_GRID_DIM: u32 = 384u;
 const MAX_MID_INSTANCES: u32 = 147456u;
 const LAYERS: u32 = 8u;
+
+// Geography bits, mirroring GeographyInfo in engine/Poseidon/AI/Path/AITypes.hpp:
+//   0-1 waterDepth, 2 full, 3 forestInner, 4 forestOuter, 5 road, 6 track,
+//   7 slow, 8-9 howManyObjects, 10-11 howManyHardObjects, 12-14 gradient.
+//
+// HARD exclusions are never bypassed, not even by the legacy compatibility
+// path: grass on a road or inside a building is always wrong, and no amount of
+// bad 2001 map data makes it right. Water is here for the same reason.
+const GEO_EXCLUDE_HARD: u32 = 0x00000c63u; // waterDepth | road | track | howManyHardObjects
+// SOFT exclusions the diagnostic override may relax. Some legacy Everon WRP
+// revisions mark broad ordinary ground as forest, which would otherwise leave
+// the whole island bare.
+const GEO_EXCLUDE_SOFT: u32 = 0x00000018u; // forestInner | forestOuter
+// Bit 2 (`full`) is deliberately in NEITHER: legacy Everon marks normal ground
+// with it, so excluding it removes every blade from valid grass terrain.
 const BLADE_SEGMENTS: u32 = 5u;
 const VERTS_PER_CARD: u32 = BLADE_SEGMENTS * 6u;
 
@@ -137,6 +158,38 @@ fn clump_noise(world_xz: vec2<f32>, frequency: f32, salt: u32) -> f32 {
     return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
 }
 
+// Sun-bleached patches: broad areas of the field shift toward dry straw and
+// brighten, the way real meadow burns off unevenly. Driven by its own coarse
+// noise field rather than the density or tint fields, so dry ground does not
+// correlate with thin ground -- correlated variation reads as one pattern
+// rather than several.
+//
+// `height_t` biases it up the blade: tips dry out first, roots stay green.
+fn dry_patch(colour: vec3<f32>, world_xz: vec2<f32>, height_t: f32) -> vec3<f32> {
+    let amount = clamp(grass.look.y, 0.0, 1.0);
+    if (amount <= 0.001) { return colour; }
+    let scale = max(grass.look.z, 0.002);
+    let field = clump_noise(world_xz, scale, 0x93b5e1a7u);
+    // Only the top of the noise range dries, so this makes PATCHES rather than
+    // washing the whole field. Raising `amount` widens the band that qualifies.
+    // Not `patch`: that is a WGSL reserved keyword and fails composition.
+    let patch_mask = smoothstep(1.0 - amount, 1.0 - amount * 0.30, field);
+    let dry = patch_mask * (0.45 + 0.55 * height_t);
+    // Straw keeps the source's luminance structure so blade detail survives.
+    let luma = dot(colour, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let straw = vec3<f32>(0.74, 0.66, 0.32) * (0.55 + 1.35 * luma);
+    return mix(colour, straw, dry);
+}
+
+// Grass albedo saturation, pushed about the luma axis so brightness is
+// unchanged. Applied to every grass LOD from one control, before lighting, so
+// what the sun does to the field is unaffected.
+fn grass_saturation(colour: vec3<f32>) -> vec3<f32> {
+    let amount = clamp(grass.look.x, 0.0, 2.0);
+    let luma = dot(colour, vec3<f32>(0.2126, 0.7152, 0.0722));
+    return max(mix(vec3<f32>(luma), colour, amount), vec3<f32>(0.0));
+}
+
 // Blade texture detail is a near-LOD feature: a 64x256 blade texture on a
 // ribbon a few pixels wide aliases badly, and the mid ring starts past 25 m.
 // Fading by distance covers both LODs with one fragment shader.
@@ -162,8 +215,8 @@ fn mid_ring_end() -> f32 {
 // 0.45..1.35 range. `clumping` stays the master blend so it can still be
 // dialled out entirely from the Grass tab.
 fn density_field(world_xz: vec2<f32>) -> f32 {
-    let strength = clamp(grass.render_flags.z, 0.0, 1.0);
-    let scale = max(grass.render_flags.y, 0.002);
+    let strength = clamp(grass.render_flags.w, 0.0, 1.0);
+    let scale = max(grass.render_flags.z, 0.002);
     let field = clump_noise(world_xz, scale, 0xc7136d5bu);
     let patchy = mix(1.0 - strength, 1.0 + strength * 0.64, field);
     return mix(1.0, patchy, grass.debug_flags.y);
@@ -342,7 +395,8 @@ fn cs_place(@builtin(global_invocation_id) gid: vec3<u32>) {
     // marks broad normal ground with it, so rejecting it removes every blade
     // despite the surface being valid grass terrain.
     if ((geo & 0x80000000u) == 0u) { return; }
-    if (grass.debug_flags.x < 0.5 && (geo & 0x00000c7bu) != 0u) { return; }
+    if ((geo & GEO_EXCLUDE_HARD) != 0u) { return; }
+    if (grass.debug_flags.x < 0.5 && (geo & GEO_EXCLUDE_SOFT) != 0u) { return; }
     let y = sample_height(world_xz);
     if (y <= terrain.sea_level + 0.35) { return; }
     let normal = sample_normal(world_xz);
@@ -383,8 +437,8 @@ fn cs_place_mid(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (any(world_xz < terrain.world_origin) || any(world_xz >= map_max)) { return; }
     let geocell = clamp(vec2<i32>(floor((world_xz - terrain.world_origin) / terrain.land_grid)), vec2<i32>(0), vec2<i32>(i32(terrain.land_range) - 1));
     let geo = textureLoad(geography, geocell, 0).x;
-    if ((geo & 0x80000000u) == 0u ||
-        (grass.debug_flags.x < 0.5 && (geo & 0x00000c7bu) != 0u)) { return; }
+    if ((geo & 0x80000000u) == 0u || (geo & GEO_EXCLUDE_HARD) != 0u) { return; }
+    if (grass.debug_flags.x < 0.5 && (geo & GEO_EXCLUDE_SOFT) != 0u) { return; }
     let y = sample_height(world_xz);
     if (y <= terrain.sea_level + 0.35 || sample_normal(world_xz).y < 0.70) { return; }
     let rel = vec3<f32>(world_xz.x, y, world_xz.y) - frame.cam_pos.xyz;
@@ -428,8 +482,8 @@ fn cs_place_far(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (any(world_xz < terrain.world_origin) || any(world_xz >= map_max)) { return; }
     let geocell = clamp(vec2<i32>(floor((world_xz - terrain.world_origin) / terrain.land_grid)), vec2<i32>(0), vec2<i32>(i32(terrain.land_range) - 1));
     let geo = textureLoad(geography, geocell, 0).x;
-    if ((geo & 0x80000000u) == 0u ||
-        (grass.debug_flags.x < 0.5 && (geo & 0x00000c7bu) != 0u)) { return; }
+    if ((geo & 0x80000000u) == 0u || (geo & GEO_EXCLUDE_HARD) != 0u) { return; }
+    if (grass.debug_flags.x < 0.5 && (geo & GEO_EXCLUDE_SOFT) != 0u) { return; }
     let y = sample_height(world_xz);
     if (y <= terrain.sea_level + 0.35) { return; }
     let normal = sample_normal(world_xz);
@@ -473,7 +527,8 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     // stem are not the same ribbon with a different texture on it.
     let shape = species_shape(inst_packed.w & 7u);
     let height = mix(0.35, 1.05, height_seed) * grass.blade_height * shape.y;
-    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x;
+    // species_mix.z is the Grass-tab blade width multiplier (1.0 = stock look).
+    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x * max(grass.species_mix.z, 0.05);
     let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush = unpack2x16unorm(inst_packed.y).x;
@@ -534,7 +589,7 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     // proportions as it crosses the near/mid boundary.
     let shape = species_shape(inst_packed.w & 7u);
     let height = mix(0.32, 0.92, height_seed) * grass.blade_height * shape.y;
-    let width = mix(0.024, 0.055, hash11(inst.xz + 23.0)) * shape.x;
+    let width = mix(0.024, 0.055, hash11(inst.xz + 23.0)) * shape.x * max(grass.species_mix.z, 0.05);
     let static_bend = forward * mix(0.04, 0.14, hash11(inst.xz + 71.0));
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush = unpack2x16unorm(inst_packed.y).x;
@@ -628,8 +683,17 @@ fn vs_grass_mid_tuft(@builtin(vertex_index) vertex_index: u32, @builtin(instance
     out.height_t = vh;
     out.seed = seed;
     out.wind_gust = wind.gust;
+    // Variation from ONE source image, so scattered clumps do not read as the
+    // same stamp repeated: mirror half of them, and take a slightly different
+    // horizontal slice per clump. Both are deterministic in world space, so a
+    // clump keeps its identity as the camera moves.
+    let mirror = hash11(inst.xz + 5.0) < 0.5;
+    let slice = mix(0.0, 0.18, hash11(inst.xz + 41.0));
+    var uu = mix(slice, 1.0 - slice, u);
+    if (mirror) { uu = 1.0 - uu; }
     // Texture v runs 0 at the top of the tuft image, so flip the vertical param.
-    out.blade_uv = vec4<f32>(u, 1.0 - vh, 0.0, 1.0);
+    // The source has its clump base on the bottom edge, so v maps straight.
+    out.blade_uv = vec4<f32>(uu, 1.0 - vh, 0.0, 1.0);
     return out;
 }
 
@@ -683,9 +747,12 @@ fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
     // REPLACES the procedural ramp rather than multiplying it. Multiplying was
     // wrong: the atlas averages ~0.17 linear, so `procedural * blade * 2` scaled
     // near grass to about a third of its brightness while barely showing detail.
+    // Photo veins can alias as sub-pixel blades move in the wind. A small
+    // positive mip bias stabilises that fine detail while keeping it readable
+    // at the close ranges where this near-LOD texture is actually visible.
     let blade = textureSample(blade_tex, blade_samp, in.blade_uv.xy, i32(in.blade_uv.z));
     let textured = blade.rgb * variation * gust_highlight;
-    let albedo = mix(procedural, textured, in.blade_uv.w);
+    let albedo = grass_saturation(dry_patch(mix(procedural, textured, in.blade_uv.w), world.xz, in.height_t));
     // Bend card normals toward an upright rounded-blade normal. This avoids
     // the flat dark-side look of a raw ribbon while preserving its silhouette.
     let n = normalize(mix(normalize(in.normal), vec3<f32>(0.0, 1.0, 0.0), 0.24));
@@ -700,7 +767,7 @@ fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
     let subsurface = vec3<f32>(1.0, 0.72, 0.18) * transmission * frame.sun_diffuse.rgb * (1.0 - terrain_shadow);
     let lit = albedo * (ambient + direct + subsurface);
     let fogged = apply_fog(lit, in.world_rel);
-    return vec4<f32>(select(lit, fogged, grass.render_flags.x >= 0.5), 1.0);
+    return vec4<f32>(select(lit, fogged, grass.render_flags.y >= 0.5), 1.0);
 }
 
 @fragment
@@ -711,7 +778,7 @@ fn fs_grass_far(in: VsOut) -> @location(0) vec4<f32> {
     // field, not bright individual blades. The same aerial fog removes it
     // naturally at the horizon.
     let gust_highlight = 1.0 + in.wind_gust * clamp(grass.wind_strength, 0.0, 1.5) * 0.05;
-    let albedo = mix(vec3<f32>(0.075, 0.135, 0.028), vec3<f32>(0.19, 0.27, 0.055), field_noise) * gust_highlight;
+    let albedo = grass_saturation(dry_patch(mix(vec3<f32>(0.075, 0.135, 0.028), vec3<f32>(0.19, 0.27, 0.055), field_noise) * gust_highlight, world.xz, 0.65));
     let n = normalize(mix(in.normal, vec3<f32>(0.0, 1.0, 0.0), 0.65));
     let light_dir = normalize(frame.sun_dir_world.xyz);
     let diffuse = max((dot(n, light_dir) + 0.35) / 1.35, 0.0);
@@ -720,7 +787,7 @@ fn fs_grass_far(in: VsOut) -> @location(0) vec4<f32> {
     let ambient = sky_irradiance(n) * sky_vis_ao(world.xz);
     let lit = albedo * (ambient + direct);
     let fogged = apply_fog(lit, in.world_rel);
-    return vec4<f32>(select(lit, fogged, grass.render_flags.x >= 0.5), 1.0);
+    return vec4<f32>(select(lit, fogged, grass.render_flags.y >= 0.5), 1.0);
 }
 
 // GRS-E — photographed tuft card. Alpha-tested cutout, so it must discard in
@@ -739,25 +806,13 @@ fn fs_grass_mid_tuft(in: VsOut) -> @location(0) vec4<f32> {
     let field_tint = clump_noise(world.xz, 0.16, 0x5e3a91c7u);
     let variation = mix(1.0, mix(0.82, 1.16, mix(in.seed, field_tint, 0.55)), grass.debug_flags.z);
     let gust_highlight = 1.0 + in.wind_gust * clamp(grass.wind_strength, 0.0, 1.5) * 0.05;
-    // The source photograph's opaque texels average (0.322, 0.375, 0.334) --
-    // blue sits ABOVE red, so its actual hue is grey-teal. Boosting saturation
-    // does not help: saturation is a push about the luma axis, so it preserves
-    // hue and only made the teal stronger.
-    //
-    // Instead, drive a grass palette with the photo's LUMINANCE. Every bit of
-    // photographic structure (blade edges, clumping, tonal variation) is carried
-    // by luma; only the hue is replaced. `0.361` is the measured mean luma of the
-    // opaque texels, so the normalised term averages 1.0 and the palette colour
-    // is the resulting average albedo.
-    let luma = dot(tex.rgb, vec3<f32>(0.2126, 0.7152, 0.0722));
-    let luma_norm = luma / 0.361;
-    let dry = vec3<f32>(0.30, 0.30, 0.11);
-    let lush = vec3<f32>(0.22, 0.36, 0.10);
-    let palette = mix(dry, lush, clamp(field_tint, 0.0, 1.0));
-    // Keep a little of the photo's own chroma so the field is not flatly uniform,
-    // but not enough to drag the hue back toward teal.
-    let chroma = (tex.rgb - vec3<f32>(luma)) * 0.25;
-    let albedo = max(palette * luma_norm + chroma, vec3<f32>(0.0)) * variation * gust_highlight;
+    // The authored clump is already the right colour -- measured opaque mean
+    // (0.525, 0.622, 0.127), green on every texel -- so its own albedo is used
+    // directly. No palette substitution: that was only needed for the legacy
+    // 2001 PAA fallback, whose hue is grey-teal. If that fallback is ever the
+    // active texture the mid ring will look desaturated, which is why the
+    // authored PNG is preferred at load time.
+    let albedo = grass_saturation(dry_patch(tex.rgb * variation * gust_highlight, world.xz, in.height_t));
     let n = normalize(mix(normalize(in.normal), vec3<f32>(0.0, 1.0, 0.0), 0.35));
     let light_dir = normalize(frame.sun_dir_world.xyz);
     let ndl = max(dot(n, light_dir), 0.0);
@@ -767,7 +822,7 @@ fn fs_grass_mid_tuft(in: VsOut) -> @location(0) vec4<f32> {
     let ambient = sky_irradiance(normalize(mix(n, vec3<f32>(0.0, 1.0, 0.0), 0.45))) * sky_vis_ao(world.xz);
     let lit = albedo * (ambient + direct);
     let fogged = apply_fog(lit, in.world_rel);
-    return vec4<f32>(select(lit, fogged, grass.render_flags.x >= 0.5), 1.0);
+    return vec4<f32>(select(lit, fogged, grass.render_flags.y >= 0.5), 1.0);
 }
 
 @fragment
