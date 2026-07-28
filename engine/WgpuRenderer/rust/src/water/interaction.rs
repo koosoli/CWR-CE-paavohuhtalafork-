@@ -274,4 +274,12 @@ mod tests {
             .collect();
         assert_eq!(retained.len(), 1);
     }
+
+    #[test]
+    fn kelvin_wake_is_vessel_only_and_trails_the_stern() {
+        let shader = include_str!("interaction.wgsl");
+        assert!(shader.contains("let wake_behind"));
+        assert!(shader.contains("(flags & (1u << 12u)) != 0u"));
+        assert!(shader.contains("continuous * large_body * kelvin_wedge"));
+    }
 }

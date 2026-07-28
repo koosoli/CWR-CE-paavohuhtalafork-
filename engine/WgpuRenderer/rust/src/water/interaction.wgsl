@@ -84,8 +84,11 @@ fn interaction_update(@builtin(global_invocation_id) id: vec3<u32>) {
         let perp_dir = vec2<f32>(-direction.y, direction.x);
         let lateral_dist = abs(dot(delta, perp_dir));
         let kelvin_angle_sin = lateral_dist / max(distance, 0.01);
-        let kelvin_wedge = smoothstep(0.38, 0.28, kelvin_angle_sin);
-        let kelvin_wake = continuous * kelvin_wedge * (sin(q * 14.0) * 0.75 - core * 1.1);
+        let wake_behind = smoothstep(0.0, radius * 0.18, -dot(delta, direction));
+        let large_body = select(0.0, 1.0, (flags & (1u << 12u)) != 0u);
+        let kelvin_wedge = smoothstep(0.38, 0.28, kelvin_angle_sin) * wake_behind;
+        let kelvin_wake = continuous * large_body * kelvin_wedge *
+            (sin(q * 14.0) * 0.75 - core * 1.1);
 
         let capillary_ring1 = exp(-((q - 0.55) * (q - 0.55)) * 30.0);
         let capillary_ring2 = exp(-((q - 1.25) * (q - 1.25)) * 18.0);
