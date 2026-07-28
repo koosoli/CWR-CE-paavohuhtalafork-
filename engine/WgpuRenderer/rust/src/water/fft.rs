@@ -583,6 +583,9 @@ impl Fft {
     pub fn auxiliary_view(&self) -> &wgpu::TextureView {
         &self.auxiliary
     }
+    pub fn active_layers(&self) -> u32 {
+        self.active_layers
+    }
     pub fn cascade_config_buffer(&self) -> &wgpu::Buffer {
         &self.cascade_config_ubo
     }

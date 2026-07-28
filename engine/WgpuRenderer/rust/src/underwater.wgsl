@@ -3,17 +3,19 @@
 // exactly as Frame.inv_view_proj does — it is inverted view-and-proj-separately in f64 on the Rust
 // side, because the reversed-Z infinite-far projection is ill-conditioned to invert in f32.
 struct Params {
-    time: f32,
-    cam_above: f32,
-    camera_xz: vec2<f32>,
+    time_height_range_ext: vec4<f32>,
+    camera_pos_layers: vec4<f32>,
+    sun_dir_debug: vec4<f32>,
+    sun_radiance: vec4<f32>,
     inv_view_proj: mat4x4<f32>,
-    shallow_color_ext: vec4<f32>, // xyz = shallow colour (gamma), w = extinction control
-    deep_color: vec4<f32>,        // xyz = deep colour (gamma)
+    shallow_color: vec4<f32>,
+    deep_color: vec4<f32>,
+    cascade_lengths: vec4<f32>,
+    water_controls: vec4<f32>,
 };
 
 // Cleared reversed-Z depth has no finite target. This is far enough for the water volume to
 // converge without letting an infinite path turn the screen into one flat colour.
-const FAR_PATH_M: f32 = 120.0;
 const CAUSTIC_STRENGTH: f32 = 0.16;
 
 fn srgb_to_linear_v3(c: vec3<f32>) -> vec3<f32> {
@@ -47,6 +49,8 @@ fn water_path_length(ray_dir: vec3<f32>, target_distance: f32, cam_above: f32) -
 @group(0) @binding(1) var scene_samp: sampler;
 @group(0) @binding(2) var scene_depth: texture_depth_2d;
 @group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(4) var underwater_froxel: texture_3d<f32>;
+@group(0) @binding(5) var caustic_tex: texture_2d<f32>;
 
 struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
 
@@ -72,8 +76,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Keep this in screen space and below three pixels so it reads as water volume,
     // not a camera shake.
     let wave = vec2<f32>(
-        sin(in.uv.y * 17.0 + params.time * 1.10) + sin(in.uv.x * 9.0 - params.time * 0.63),
-        sin(in.uv.x * 15.0 - params.time * 0.92) + sin(in.uv.y * 7.0 + params.time * 0.48)
+        sin(in.uv.y * 17.0 + params.time_height_range_ext.x * 1.10) +
+            sin(in.uv.x * 9.0 - params.time_height_range_ext.x * 0.63),
+        sin(in.uv.x * 15.0 - params.time_height_range_ext.x * 0.92) +
+            sin(in.uv.y * 7.0 + params.time_height_range_ext.x * 0.48)
     ) * 0.5;
     let warp_limit = 3.0 / dims_f;
     let warped_uv = clamp(in.uv + wave * warp_limit, vec2<f32>(0.001), vec2<f32>(0.999));
@@ -90,16 +96,18 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let ray_h = params.inv_view_proj * vec4<f32>(ndc_xy, 0.5, 1.0);
     let ray_point = ray_h.xyz / max(abs(ray_h.w), 1e-5) * sign(ray_h.w);
     var ray_dir = safe_normalize(ray_point);
-    var target_distance = FAR_PATH_M;
+    let max_path_m = params.time_height_range_ext.z;
+    var target_distance = max_path_m;
     var world_rel = ray_dir * target_distance;
     if (depth > 1e-6) {
         let h = params.inv_view_proj * vec4<f32>(ndc_xy, 1.0 - depth, 1.0);
         world_rel = h.xyz / max(abs(h.w), 1e-5) * sign(h.w);
-        target_distance = clamp(length(world_rel), 0.0, FAR_PATH_M);
+        target_distance = clamp(length(world_rel), 0.0, max_path_m);
         ray_dir = safe_normalize(world_rel);
     }
 
-    let path_m = water_path_length(ray_dir, target_distance, params.cam_above);
+    let cam_above = params.time_height_range_ext.y;
+    let path_m = water_path_length(ray_dir, target_distance, cam_above);
     if (path_m <= 1e-4) {
         // The compositor runs in a small band above the surface for split waterline views.
         // Rays that never enter water must remain completely untouched, including refraction.
@@ -110,34 +118,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // Use the same physically plausible RGB absorption curve as the surface shader. The previous
     // rewrite used pow(deep_colour, path*extinction); the authored deep swatch is very dark, so
     // that destroyed almost all transmission within a few metres and left only uniform blue haze.
-    let ext = max(params.shallow_color_ext.w, 1e-3);
+    let ext = max(params.time_height_range_ext.w, 1e-3);
     let extinction_rgb = vec3<f32>(0.280, 0.065, 0.020) * max(ext * 2.5, 0.12);
     let transmittance = exp(-extinction_rgb * path_m);
 
-    // In-scattering begins turquoise in the clear near field and becomes the authored deep-ocean
-    // hue only over a long path. Its density is deliberately separate from absorption: suspended
-    // particles veil contrast gradually, while blue-green light can still transmit much farther.
-    let shallow_linear = srgb_to_linear_v3(clamp(params.shallow_color_ext.xyz, vec3<f32>(1e-4), vec3<f32>(1.0)));
-    let deep_linear = srgb_to_linear_v3(clamp(params.deep_color.xyz, vec3<f32>(1e-4), vec3<f32>(1.0)));
-    let tint_depth = smoothstep(8.0, 70.0, path_m + max(-params.cam_above, 0.0) * 2.0);
-    let volume_tint = mix(shallow_linear, deep_linear, tint_depth);
-    let tint_peak = max(max(volume_tint.r, volume_tint.g), max(volume_tint.b, 1e-4));
-    let tint_unit = volume_tint / tint_peak;
-    let surface_light = exp(-max(-params.cam_above, 0.0) * 0.12);
-    let upward_light = clamp(ray_dir.y, 0.0, 1.0) * surface_light;
-    let haze_radiance = tint_unit * mix(0.070, 0.120, upward_light);
-    let scatter_density = max(ext * 0.10, 0.012);
-    let scatter = 1.0 - exp(-path_m * scatter_density);
+    // The frustum-aligned volume carries integrated, terrain/object-shadowed in-scattering.
+    // A single trilinear sample replaces the former uniform blue haze.
+    let froxel_w = sqrt(clamp(target_distance / max(max_path_m, 1e-3), 0.0, 1.0));
+    let volume = textureSampleLevel(
+        underwater_froxel,
+        scene_samp,
+        vec3<f32>(in.uv, froxel_w),
+        0.0
+    );
 
-    // World-anchored, geometry-only caustics. Absolute X/Z prevents the pattern sliding when the
-    // camera swims, while the multi-wave interference avoids a screen-space checkerboard.
-    let world_xz = params.camera_xz + world_rel.xz;
-    let caustic_wave =
-        sin(world_xz.x * 1.73 + params.time * 1.45) +
-        sin(world_xz.y * 1.37 - params.time * 1.17) +
-        sin((world_xz.x + world_xz.y) * 0.91 - params.time * 0.63);
-    let caustic_pattern = pow(clamp(caustic_wave * 0.18 + 0.48, 0.0, 1.0), 5.0);
+    // FFT compression and curvature generate a camera-centred world-space caustic field.
+    let world_xz = params.camera_pos_layers.xz + world_rel.xz;
+    let caustic_uv = (world_xz - params.camera_pos_layers.xz) / 256.0 + 0.5;
+    let caustic_pattern = textureSampleLevel(
+        caustic_tex,
+        scene_samp,
+        clamp(caustic_uv, vec2<f32>(0.0), vec2<f32>(1.0)),
+        0.0
+    ).r;
     let geometry_mask = select(0.0, 1.0, depth > 1e-6);
+    let surface_light = exp(-max(-cam_above, 0.0) * 0.12);
     let caustic = 1.0 + CAUSTIC_STRENGTH * caustic_pattern *
         exp(-path_m * 0.055) * geometry_mask * surface_light;
 
@@ -145,6 +150,19 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // sky into the same blue fog as the seabed. This is a single analytic term, not a ray march.
     let surface_veil = vec3<f32>(0.010, 0.035, 0.042) *
         pow(clamp(ray_dir.y, 0.0, 1.0), 3.0) * surface_light;
-    let result = color * transmittance * caustic + haze_radiance * scatter + surface_veil;
+    let debug_view = i32(params.sun_dir_debug.w);
+    if (debug_view == 30) {
+        return vec4<f32>(transmittance, 1.0);
+    }
+    if (debug_view == 31) {
+        return vec4<f32>(volume.rgb * 8.0, 1.0);
+    }
+    if (debug_view == 32) {
+        return vec4<f32>(vec3<f32>(volume.a), 1.0);
+    }
+    if (debug_view == 33) {
+        return vec4<f32>(vec3<f32>(caustic_pattern), 1.0);
+    }
+    let result = color * transmittance * caustic + volume.rgb + surface_veil;
     return vec4<f32>(result, 1.0);
 }

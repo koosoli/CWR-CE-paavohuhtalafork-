@@ -885,6 +885,38 @@ impl Water {
         })
     }
 
+    /// FFT fields consumed by the underwater caustic compute pass. The fallback array
+    /// is a valid zero texture, so the compositor remains operational on Gerstner-only
+    /// adapters without a second binding path.
+    pub fn underwater_fft_views(&self) -> (wgpu::TextureView, wgpu::TextureView) {
+        (
+            self.fft
+                .as_ref()
+                .map_or(&self.fft_fallback_view, |f| f.dynamics_view())
+                .clone(),
+            self.fft
+                .as_ref()
+                .map_or(&self.fft_fallback_view, |f| f.auxiliary_view())
+                .clone(),
+        )
+    }
+
+    /// Spectrum controls needed to map the camera-centred caustic field to the same
+    /// aperiodic world coordinates as the visible water surface.
+    pub fn underwater_spectrum(&self) -> ([f32; 4], u32, f32, f32, f32) {
+        self.last_params
+            .map(|p| {
+                (
+                    p.fft_cascade_lengths,
+                    self.fft.as_ref().map_or(0, |f| f.active_layers()),
+                    p.warp_amp,
+                    p.sea_level,
+                    p.debug_params[0],
+                )
+            })
+            .unwrap_or(([1.0; 4], 0, 0.0, 0.0, 0.0))
+    }
+
     pub fn fft_enabled(&self) -> bool {
         self.fft.is_some()
     }

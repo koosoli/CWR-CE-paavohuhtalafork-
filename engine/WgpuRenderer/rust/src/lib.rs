@@ -59,10 +59,18 @@ struct PlanarTarget {
 #[derive(Clone, Copy)]
 struct UnderwaterView {
     cam_above: f32,
-    camera_xz: [f32; 2],
+    camera_pos: [f32; 3],
     inv_view_proj: [f32; 16],
     shallow_color_ext: [f32; 4],
     deep_color: [f32; 4],
+    sun_dir: [f32; 3],
+    sun_radiance: [f32; 3],
+    camera_shadow: ffi::WgrCameraShadow,
+    cascade_lengths: [f32; 4],
+    active_layers: u32,
+    warp_amp: f32,
+    sea_level: f32,
+    debug_view: f32,
 }
 
 // Like env_f32 but keeps a 0 value (env_f32 filters to >0 for scales). Used for the
@@ -532,7 +540,7 @@ impl Renderer {
             );
         }
         let tonemap = hdr_enabled.then(|| Tonemap::new(&device, config.format));
-        let underwater = Underwater::new(&device, color_format);
+        let underwater = Underwater::new(&device, color_format, fft_storage_supported);
         let bloom = hdr_enabled.then(|| Bloom::new(&device, HDR_FORMAT));
         let planar_mips = PlanarMips::new(&device, HDR_FORMAT);
         let exposure = hdr_enabled.then(|| Exposure::new(&device, &queue));
@@ -599,10 +607,18 @@ impl Renderer {
             post_source_underwater: false,
             underwater_view: UnderwaterView {
                 cam_above: -1.0,
-                camera_xz: [0.0; 2],
+                camera_pos: [0.0; 3],
                 inv_view_proj: [0.0; 16],
                 shallow_color_ext: [0.070, 0.290, 0.320, 0.16],
                 deep_color: [0.014, 0.105, 0.240, 0.0],
+                sun_dir: [0.0, 1.0, 0.0],
+                sun_radiance: [1.0; 3],
+                camera_shadow: unsafe { std::mem::zeroed() },
+                cascade_lengths: [1.0; 4],
+                active_layers: 0,
+                warp_amp: 0.0,
+                sea_level: 0.0,
+                debug_view: 0.0,
             },
             bloom,
             exposure,
@@ -755,7 +771,7 @@ impl Renderer {
             drop(pass);
             encoder.pop_debug_group();
         }
-        let post_source = if let Some(time) = underwater_time {
+        let post_source = if underwater_time.is_some() {
             // The compositor reads a single-sample reversed-Z depth target, including
             // when the HDR scene colour was MSAA-resolved above.
             self.gfx3d.resolve_water_depth(encoder);
@@ -775,17 +791,10 @@ impl Renderer {
                 .begin(encoder, TimerRegion::UnderwaterComposite);
             self.underwater.render(
                 &self.device,
-                &self.queue,
                 encoder,
                 source,
                 depth,
                 target,
-                time,
-                self.underwater_view.cam_above,
-                self.underwater_view.camera_xz,
-                self.underwater_view.inv_view_proj,
-                self.underwater_view.shallow_color_ext,
-                self.underwater_view.deep_color,
             );
             self.gpu_timers
                 .end(encoder, TimerRegion::UnderwaterComposite);
@@ -1303,7 +1312,7 @@ impl Renderer {
                         (
                             time,
                             effective_above,
-                            [cam.cam_pos[0], cam.cam_pos[2]],
+                            *cam,
                             inv_vp,
                         )
                     })
@@ -1324,20 +1333,47 @@ impl Renderer {
                 [0.070, 0.290, 0.320, 0.16],
                 [0.014, 0.105, 0.240, 0.0],
             ));
+        let underwater_spectrum = self.water.underwater_spectrum();
         self.underwater_view = underwater_state
-            .map(|(_, above, camera_xz, inv_vp)| UnderwaterView {
+            .map(|(_, above, cam, inv_vp)| UnderwaterView {
                 cam_above: above,
-                camera_xz,
+                camera_pos: [cam.cam_pos[0], cam.cam_pos[1], cam.cam_pos[2]],
                 inv_view_proj: inv_vp,
                 shallow_color_ext: underwater_body.0,
                 deep_color: underwater_body.1,
+                // WgrCamera carries the sun's travel direction; volumetric scattering
+                // needs the surface-to-sun direction.
+                sun_dir: [
+                    -cam.sun_dir_world[0],
+                    -cam.sun_dir_world[1],
+                    -cam.sun_dir_world[2],
+                ],
+                sun_radiance: [
+                    cam.sun_diffuse[0],
+                    cam.sun_diffuse[1],
+                    cam.sun_diffuse[2],
+                ],
+                camera_shadow: cam.shadow,
+                cascade_lengths: underwater_spectrum.0,
+                active_layers: underwater_spectrum.1,
+                warp_amp: underwater_spectrum.2,
+                sea_level: underwater_spectrum.3,
+                debug_view: underwater_spectrum.4,
             })
             .unwrap_or(UnderwaterView {
                 cam_above: -1.0,
-                camera_xz: [0.0; 2],
+                camera_pos: [0.0; 3],
                 inv_view_proj: [0.0; 16],
                 shallow_color_ext: underwater_body.0,
                 deep_color: underwater_body.1,
+                sun_dir: [0.0, 1.0, 0.0],
+                sun_radiance: [1.0; 3],
+                camera_shadow: unsafe { std::mem::zeroed() },
+                cascade_lengths: underwater_spectrum.0,
+                active_layers: underwater_spectrum.1,
+                warp_amp: underwater_spectrum.2,
+                sea_level: underwater_spectrum.3,
+                debug_view: underwater_spectrum.4,
             });
         if underwater_time.is_some() && !self.hdr_enabled {
             self.ensure_underwater_target(self.config.width, self.config.height);
@@ -1751,6 +1787,52 @@ impl Renderer {
             self.sky.render(&mut pass);
             drop(pass);
             encoder.pop_debug_group();
+        }
+
+        // The underwater volume is genuinely view-local work, so keep it completely
+        // dormant above water. The FFT has already evolved and both shadow systems have
+        // already rendered on this encoder; wgpu inserts the required compute-read barriers.
+        if let Some(time) = underwater_time {
+            let view = self.underwater_view;
+            self.underwater.upload(
+                &self.queue,
+                time,
+                view.cam_above,
+                view.camera_pos,
+                view.inv_view_proj,
+                view.shallow_color_ext,
+                view.deep_color,
+                view.sun_dir,
+                view.sun_radiance,
+                view.cascade_lengths,
+                view.active_layers,
+                view.warp_amp,
+                view.sea_level,
+                view.debug_view,
+                &shadow_mapping,
+                &view.camera_shadow,
+            );
+            let (fft_dynamics, fft_auxiliary) = self.water.underwater_fft_views();
+            self.gpu_timers
+                .begin(&mut encoder, TimerRegion::UnderwaterFroxel);
+            self.underwater.render_froxel(
+                &self.device,
+                &mut encoder,
+                &shadow_mask_view,
+                self.gfx3d.shadow_sample_view(),
+            );
+            self.gpu_timers
+                .end(&mut encoder, TimerRegion::UnderwaterFroxel);
+            self.gpu_timers
+                .begin(&mut encoder, TimerRegion::Caustics);
+            self.underwater.render_caustics(
+                &self.device,
+                &mut encoder,
+                &fft_dynamics,
+                &fft_auxiliary,
+            );
+            self.gpu_timers
+                .end(&mut encoder, TimerRegion::Caustics);
         }
 
         // Fog is now applied per-fragment in the forward shaders by sampling the aerial
@@ -2317,17 +2399,10 @@ impl Renderer {
                     .begin(&mut encoder, TimerRegion::UnderwaterComposite);
                 self.underwater.render(
                     &self.device,
-                    &self.queue,
                     &mut encoder,
                     &scene_view,
                     depth,
                     &color,
-                    underwater_time.expect("underwater time"),
-                    self.underwater_view.cam_above,
-                    self.underwater_view.camera_xz,
-                    self.underwater_view.inv_view_proj,
-                    self.underwater_view.shallow_color_ext,
-                    self.underwater_view.deep_color,
                 );
                 self.gpu_timers
                     .end(&mut encoder, TimerRegion::UnderwaterComposite);
@@ -2358,17 +2433,10 @@ impl Renderer {
                 .begin(&mut encoder, TimerRegion::UnderwaterComposite);
             self.underwater.render(
                 &self.device,
-                &self.queue,
                 &mut encoder,
                 &scene_view,
                 depth,
                 &color,
-                underwater_time.expect("underwater time"),
-                self.underwater_view.cam_above,
-                self.underwater_view.camera_xz,
-                self.underwater_view.inv_view_proj,
-                self.underwater_view.shallow_color_ext,
-                self.underwater_view.deep_color,
             );
             self.gpu_timers
                 .end(&mut encoder, TimerRegion::UnderwaterComposite);
