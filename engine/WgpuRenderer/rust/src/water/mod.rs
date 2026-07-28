@@ -1247,6 +1247,18 @@ fn build_grid(device: &wgpu::Device) -> (wgpu::Buffer, wgpu::Buffer, u32) {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn shoreline_geometry_uses_world_continuous_height_field_inputs() {
+        let shader = include_str!("water.wgsl");
+        assert!(shader.contains("let has_seabed = seabed_contains(base_xz)"));
+        assert!(shader.contains(
+            "vertex_shore_factor = 1.0 - smoothstep(2.0, 30.0, local_depth)"
+        ));
+        assert!(shader.contains("fft_geometry_disp(base_xz, dist, vertex_shore_factor)"));
+        assert!(!shader.contains("fft_geometry_disp(base_xz, dist, shore_factor)"));
+        assert!(shader.contains("disp.x * horizontal_keep"));
+    }
+
+    #[test]
     fn ggx_water_lobe_is_finite_and_broadens_with_slope_variance() {
         let roughness = |variance: f32, micro_slope: f32| {
             let legacy_floor = (2.0_f32 / 242.0).sqrt();

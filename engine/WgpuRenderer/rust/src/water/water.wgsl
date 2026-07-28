@@ -534,6 +534,15 @@ fn seabed_load(ix: i32, iz: i32) -> f32 {
     return textureLoad(seabed_heightmap, vec2<i32>(cx, cz), 0).x;
 }
 
+fn seabed_contains(world_xz: vec2<f32>) -> bool {
+    if (cf.enabled <= 0.5 || cf.hm_width < 2u || cf.hm_height < 2u) {
+        return false;
+    }
+    let t = (world_xz - cf.origin) / max(cf.terrain_grid, 1e-4);
+    return t.x >= 0.0 && t.y >= 0.0 &&
+        t.x <= f32(cf.hm_width - 1u) && t.y <= f32(cf.hm_height - 1u);
+}
+
 // Ground height under a world-xz. Must reproduce terrain.wgsl's `sample_height` exactly,
 // including its diagonal split: a bilinear approximation would sit above the true surface
 // on one triangle of every cell and reintroduce the tear it exists to prevent.
@@ -553,6 +562,23 @@ fn seabed_height(world_xz: vec2<f32>) -> f32 {
     return y10 + (y01 - y11) - (y10 - y11) * f.x - (y01 - y11) * f.y;
 }
 
+// Direction of rising terrain, hence toward land. This is only evaluated when the optional
+// analytic shore-breaker train is enabled. Unlike the old per-CDLOD-node value, every
+// instance sharing a world-space edge obtains the same result at that edge.
+fn seabed_shore_direction(world_xz: vec2<f32>) -> vec2<f32> {
+    let t = (world_xz - cf.origin) / max(cf.terrain_grid, 1e-4);
+    let ix = i32(round(t.x));
+    let iz = i32(round(t.y));
+    let radius = 4;
+    let gx = seabed_load(ix + radius, iz) - seabed_load(ix - radius, iz);
+    let gz = seabed_load(ix, iz + radius) - seabed_load(ix, iz - radius);
+    let gradient = vec2<f32>(gx, gz);
+    if (length(gradient) <= 1e-5) {
+        return vec2<f32>(1.0, 0.0);
+    }
+    return normalize(gradient);
+}
+
 // THE coast-gap guarantee.
 //
 // Water is a plane at sea level, cut against the land by the depth test — terrain draws
@@ -570,10 +596,7 @@ fn seabed_height(world_xz: vec2<f32>) -> f32 {
 // It is also the physically right constraint. Wave height is depth-limited (H ~ 0.78 * d):
 // real water cannot hold a trough deeper than its own depth either. Waves therefore flatten
 // into the beach as they shoal instead of being clipped by it.
-fn clamp_to_seabed(world_xz: vec2<f32>, y: f32) -> f32 {
-    if (cf.enabled < 0.5) {
-        return y;
-    }
+fn clamp_to_seabed_height(seabed_y: f32, y: f32) -> f32 {
     // Sits just above the ground so the surface never coincides with terrain depth exactly,
     // which would z-fight along the waterline instead of tearing.
     //
@@ -583,7 +606,7 @@ fn clamp_to_seabed(world_xz: vec2<f32>, y: f32) -> f32 {
     // the ground, painting the sea over beaches and hillsides. Seaward of the waterline the
     // seabed is below sea level, so the cap is inactive and the clamp does its job; landward
     // the floor collapses to sea level and the surface is occluded exactly as before.
-    let floor_y = min(seabed_height(world_xz) + 0.02, wp.sea_level);
+    let floor_y = min(seabed_y + 0.02, wp.sea_level);
     return max(y, floor_y);
 }
 
@@ -614,18 +637,41 @@ fn vs_water(
     let grid_coarse = (round(gidx * 0.5) * 2.0) / GRID_N;
     let base_xz = origin + mix(grid, grid_coarse, morph_k) * size;
 
+    // The old shoaling coordinate and direction were evaluated once at each CDLOD node's
+    // centre, then used to deform every vertex in that node. Adjacent nodes consequently
+    // displaced their shared edge by different amounts, creating long triangular shoreline
+    // wedges. Derive geometry-affecting values from the terrain height at the vertex instead:
+    // a shared world position now produces identical output regardless of its owning node.
+    var vertex_shore_factor = shore_factor;
+    var vertex_shore_dir = shore_dir;
+    var base_seabed = wp.sea_level - 1000.0;
+    var horizontal_keep = 1.0;
+    let has_seabed = seabed_contains(base_xz);
+    if (has_seabed) {
+        base_seabed = seabed_height(base_xz);
+        let local_depth = max(wp.sea_level - base_seabed, 0.0);
+        vertex_shore_factor = 1.0 - smoothstep(2.0, 30.0, local_depth);
+        // Bottom friction constrains horizontal orbital motion at the beach. This also keeps
+        // the base-position seabed sample valid where a tear can occur, avoiding a second
+        // heightmap interpolation and preserving the previous vertex texture-fetch cost.
+        horizontal_keep = smoothstep(0.08, 2.0, local_depth);
+        if (wp.sea_params.w > 0.001) {
+            vertex_shore_dir = seabed_shore_direction(base_xz);
+        }
+    }
+
     var disp = gerstner_disp(base_xz, dist);
     if (wp.fft_control.x > 0.5) {
-        disp = fft_geometry_disp(base_xz, dist, shore_factor);
+        disp = fft_geometry_disp(base_xz, dist, vertex_shore_factor);
     }
-    disp = disp + shore_breaker_disp(base_xz, shore_dir, shore_factor);
+    disp = disp + shore_breaker_disp(base_xz, vertex_shore_dir, vertex_shore_factor);
+    disp = vec3<f32>(disp.x * horizontal_keep, disp.y, disp.z * horizontal_keep);
     let interaction = interaction_sample(base_xz);
     let y = wp.sea_level + disp.y + interaction.r * 2.5 - grid_in.z * (size / GRID_N) * skirt_k;
-    // Horizontal choppiness moves the vertex too, so clamp against the ground under the
-    // DISPLACED xz — that is where this vertex actually lands and where it would otherwise
-    // punch through the beach.
+    // Horizontal movement has faded to zero where the clamp is load-bearing, so the single
+    // base-position seabed sample remains conservative without another four texture loads.
     let displaced_xz = vec2<f32>(base_xz.x + disp.x, base_xz.y + disp.z);
-    let clamped_y = clamp_to_seabed(displaced_xz, y);
+    let clamped_y = select(y, clamp_to_seabed_height(base_seabed, y), has_seabed);
     let world_rel = vec3<f32>(displaced_xz.x, clamped_y, displaced_xz.y) - frame.cam_pos.xyz;
 
     var out: VsOut;
@@ -633,8 +679,8 @@ fn vs_water(
     out.world_pos = world_rel;
     out.base_xz = base_xz;
     out.fog = fog_factor(length(world_rel));
-    out.shore_dir = shore_dir;
-    out.shore_factor = shore_factor;
+    out.shore_dir = vertex_shore_dir;
+    out.shore_factor = vertex_shore_factor;
     return out;
 }
 
