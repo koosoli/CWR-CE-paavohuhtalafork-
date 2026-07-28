@@ -241,12 +241,15 @@ fn shore_breaker_normal(p: vec2<f32>, shore_dir: vec2<f32>, shore_factor: f32) -
     return normalize(vec3<f32>(-w.dir.x * slope, 1.0, -w.dir.y * slope));
 }
 
-fn texture_bicubic_displacement(uv: vec2<f32>, layer: i32) -> vec4<f32> {
+fn texture_bicubic_displacement_at(uv: vec2<f32>, layer: i32, magnified: bool) -> vec4<f32> {
     // Low quality: one hardware bilinear tap instead of the four-tap B-spline reconstruction.
     // The bicubic filters run per cascade in both the vertex and fragment stages, so they are the
     // bulk of the water draw — this is where a performance mode has to cut, not in the planar
     // reflection (measured at 0.34 ms of a 30 ms frame).
-    if (wp.sea_params.z > 0.5) {
+    //
+    // `magnified` is false once this cascade's texels are smaller than a pixel, where the four-tap
+    // reconstruction is indistinguishable from the hardware bilinear tap it is built from.
+    if (wp.sea_params.z > 0.5 || !magnified) {
         return textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0);
     }
     let dims = vec2<f32>(textureDimensions(fft_displacement));
@@ -274,14 +277,18 @@ fn texture_bicubic_displacement(uv: vec2<f32>, layer: i32) -> vec4<f32> {
 }
 
 // Sample absolute xz so camera-relative rendering never changes FFT phase.
-fn fft_sample(xz: vec2<f32>, layer: i32) -> vec4<f32> {
+fn fft_sample(xz: vec2<f32>, layer: i32, dist: f32) -> vec4<f32> {
     let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
+    let dims = f32(textureDimensions(fft_displacement).x);
+    let texel_m = length_m / max(dims, 1.0);
+    let pixel_m = dist * 2.0 / (max(wp.debug_params.w, 1.0) * max(frame.proj[1][1], 1e-3));
+    let magnified = texel_m > pixel_m;
     // Preserve the Water-tab convention: scale > 1 means longer waves.  The
     // spectrum stays stable; only the world-space lookup is dilated.
     let scale = max(wp.wave_scale, 0.01);
     let scaled_xz = xz / scale;
     let uv = fft_aperiodic_uv(scaled_xz, length_m, layer, wp.warp_amp);
-    let s = texture_bicubic_displacement(uv, layer);
+    let s = texture_bicubic_displacement_at(uv, layer, magnified);
     // Dilating the lookup changes the wavelength but NOT the stored displacement, so the control
     // used to alter steepness instead of scale: at 0.25 the waves came out four times shorter at
     // unchanged height, which is why the surface went spiky. Scaling the displacement by the same
@@ -369,10 +376,27 @@ fn texture_bicubic_dynamics(uv: vec2<f32>, layer: i32) -> vec4<f32> {
     return mix(mix(s00, s10, w.x), mix(s01, s11, w.x), w.y);
 }
 
-fn sample_fft_dynamics_filtered(xz: vec2<f32>, layer: i32, length_m: f32) -> vec4<f32> {
+fn sample_fft_dynamics_filtered(xz: vec2<f32>, layer: i32, length_m: f32, dist: f32) -> vec4<f32> {
     let scaled_xz = xz / max(wp.wave_scale, 0.01);
     let uv = fft_aperiodic_uv(scaled_xz, length_m, layer, wp.warp_amp);
     if (wp.sea_params.z > 0.5) {
+        return textureSampleLevel(fft_dynamics, fft_samp, uv, layer, 0.0);
+    }
+    // Bicubic reconstruction only matters while a cascade's texels are MAGNIFIED — i.e. while one
+    // texel still covers more than a pixel. Past that point the hardware bilinear tap is already
+    // averaging sub-pixel detail and the four-tap B-spline is indistinguishable from it, so it is
+    // three extra fetches for nothing.
+    //
+    // GodotOceanWaves does the same thing (it blends bicubic -> bilinear on a pixels-per-metre
+    // term); this switches outright at the crossover so the cost is actually saved rather than
+    // paid twice. The threshold is per cascade, since a 16 m cascade's texels shrink below a pixel
+    // far sooner than an 88 m one's.
+    let dims = f32(textureDimensions(fft_dynamics).x);
+    let texel_m = length_m / max(dims, 1.0);
+    // Approximate world size of one pixel at this distance, from the live viewport height and the
+    // projection's vertical FOV term — the same inputs compute_cascade_weights uses.
+    let pixel_m = dist * 2.0 / (max(wp.debug_params.w, 1.0) * max(frame.proj[1][1], 1e-3));
+    if (texel_m <= pixel_m) {
         return textureSampleLevel(fft_dynamics, fft_samp, uv, layer, 0.0);
     }
     return texture_bicubic_dynamics(uv, layer);
@@ -405,9 +429,20 @@ fn fft_geometry_disp(xz: vec2<f32>, dist: f32, shore_factor: f32) -> vec3<f32> {
         let long_wave = 1.0 - f32(layer) / 3.0;
         let shoal_weight = mix(1.0, mix(0.55, 1.45, 1.0 - long_wave), shoal);
         let combined = w.geometry_weight * shoal_weight;
-        disp = disp + fft_sample(xz, layer).xyz * combined;
-        weight_biased = weight_biased + combined;
-        weight_plain = weight_plain + w.geometry_weight;
+        // Skip cascades that contribute nothing. compute_cascade_weights already returns a zero
+        // weight for a DISABLED cascade (the reference preset leaves layer 3 off) and for one whose
+        // wavelength has fallen below the projected pixel footprint at this distance — yet the
+        // sample was taken anyway, and each one is a four-tap bicubic fetch per vertex. On a
+        // 192x192 node that is a lot of texture traffic multiplied by a contribution of zero.
+        //
+        // This cannot change the image: the threshold is 0.2% of a cascade's weight, and the term
+        // being skipped is multiplied by that same near-zero weight. It is skipped in the
+        // normalisation totals too, so the energy-preserving rescale stays consistent.
+        if (combined > 0.002) {
+            disp = disp + fft_sample(xz, layer, dist).xyz * combined;
+            weight_biased = weight_biased + combined;
+            weight_plain = weight_plain + w.geometry_weight;
+        }
     }
     if (weight_biased > 1e-4) {
         disp = disp * (weight_plain / weight_biased);
@@ -440,9 +475,16 @@ fn fft_normal_with_weights(xz: vec2<f32>, dist: f32, view_dir: vec3<f32>) -> vec
     for (var layer = 0; layer < 4; layer = layer + 1) {
         let length_m = max(wp.fft_cascade_lengths[layer], 1.0);
         let w = compute_cascade_weights(layer, dist, view_dir);
-        // A dilated lookup has proportionally shallower world-space derivatives.
-        let layer_slope = sample_fft_dynamics_filtered(xz, layer, length_m).xy / max(wp.wave_scale, 0.01);
-        slope = slope + layer_slope * w.normal_weight;
+        // As in fft_geometry_disp: a cascade with a zero normal weight (disabled, or filtered out
+        // because its wavelength is below the projected pixel footprint) was still paying for a
+        // four-tap bicubic fetch before being multiplied by zero. This is the FRAGMENT path, so it
+        // is the more expensive of the two. Explicit-LOD sampling is used throughout, so taking it
+        // inside non-uniform control flow is well-defined.
+        if (w.normal_weight > 0.002) {
+            // A dilated lookup has proportionally shallower world-space derivatives.
+            let layer_slope = sample_fft_dynamics_filtered(xz, layer, length_m, dist).xy / max(wp.wave_scale, 0.01);
+            slope = slope + layer_slope * w.normal_weight;
+        }
     }
     return normalize(vec3<f32>(-slope.x, 1.0, -slope.y));
 }
@@ -661,6 +703,26 @@ fn water_fresnel_f0() -> f32 {
 
 fn schlick_fresnel(f0: f32, cosine: f32) -> f32 {
     return f0 + (1.0 - f0) * pow(max(1.0 - cosine, 0.0), 5.0);
+}
+
+// Roughness-aware Fresnel. Plain Schlick drives F to 1.0 at grazing incidence, which is correct
+// for a MIRROR-FLAT surface and wrong for a rough one: on a wind-roughened sea the microfacets face
+// many directions, so a grazing view is not looking along a single specular lobe and the effective
+// reflectance stays well below unity.
+//
+// This matters enormously here for a reason that is easy to miss. A standing player's eye is ~1.7 m
+// up, so water 50 m away is viewed only ~2 degrees off the surface — flat Schlick returns ~84%
+// reflection there, and at 15 m still ~56%. Almost every water pixel on screen is therefore mostly
+// sky, and the sky is bright grey. That is why the sea washes out to grey no matter what the body
+// colour is set to, even black.
+//
+// Capping the reflection with an arbitrary constant is what made the water read as blue plastic
+// before. This instead lowers the grazing limit by the amount the surface is actually rough
+// (the standard F90 = 1 - roughness construction), so calm water still goes properly mirror-like
+// while a choppy sea keeps its own colour.
+fn schlick_fresnel_rough(f0: f32, roughness: f32, cosine: f32) -> f32 {
+    let f90 = max(1.0 - clamp(roughness, 0.0, 1.0), f0);
+    return f0 + (f90 - f0) * pow(max(1.0 - cosine, 0.0), 5.0);
 }
 
 // WTR-053 — Optical refraction direction via Snell's Law (eta = 1.0 / 1.333 = 0.7502)
@@ -1167,7 +1229,10 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
 
     // RGB Beer-Lambert transmission (red light absorbed fastest in water)
     let rgb_transmittance = beer_lambert_attenuation(path_length);
-    let physical_fresnel = schlick_fresnel(physical_f0, ndv);
+    // Roughness-aware: see schlick_fresnel_rough. `roughness` here is the variance-filtered value,
+    // so it already grows with distance as cascade filtering removes slope detail — which means the
+    // far sea (viewed at the most grazing angles) is exactly where the correction is strongest.
+    let physical_fresnel = schlick_fresnel_rough(physical_f0, roughness, ndv);
     let transmission = (1.0 - physical_fresnel) * 0.85;
     let legacy_transmitted = mix(ocean_body * (1.0 - rgb_transmittance * 0.4) + rgb * rgb_transmittance, refracted.color * rgb_transmittance, refracted.valid * transmission);
 
@@ -1176,7 +1241,15 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // lambertian term belongs here (it is body scattering, not a separate light add), so the
     // direct-light block below contributes only specular + subsurface scattering and nothing is
     // counted twice.
-    let body_radiance = ocean_body * (sun_ambient * amb_ao + sun_diffuse * ndl * sun_vis * (1.0 - physical_fresnel));
+    // The missing 1/PI. Outgoing radiance from a Lambertian surface is albedo * irradiance / PI —
+    // the normalisation that makes the BRDF integrate to the albedo over the hemisphere. This term
+    // was multiplying albedo by irradiance directly, so the water body came out PI (~3.14) times too
+    // bright. That is why the sea stayed light no matter how dark the deep colour was set: the hue
+    // was correct and only the magnitude was wrong.
+    //
+    // The foam path a hundred lines below already does this correctly (`foam_albedo / PI`), so the
+    // two materials in this same shader disagreed by a factor of PI.
+    let body_radiance = ocean_body * (sun_ambient * amb_ao + sun_diffuse * ndl * sun_vis * (1.0 - physical_fresnel)) / PI;
     // You were right that the water was simply too transparent. Beer-Lambert extinction alone is not
     // enough: clear water still passes most blue-green light over tens of metres, so the refracted
     // scene kept showing through and the sea never read as a body with a colour of its own. Real
@@ -1199,7 +1272,23 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let reflection_scale = mix(0.72, 0.43, open_ocean_activity);
     let reflection_cap = mix(0.72, 0.52, open_ocean_activity);
     let legacy_reflection_weight = clamp(physical_fresnel * reflection_scale + 0.012, 0.012, reflection_cap);
-    let physical_reflection_weight = clamp(physical_fresnel * max(wp.look_params.w, 0.0), 0.0, 1.0);
+    // Geometric self-occlusion of the reflected sky — the piece that was actually missing.
+    //
+    // We were weighting the environment reflection by Fresnel ALONE. A full specular BRDF has two
+    // parts: Fresnel and a geometry/masking term. For the sun lobe we compute masking (Smith) and
+    // use it; for the environment reflection we were silently treating it as 1.0. That is only valid
+    // on a flat surface. On a rough sea at a grazing angle most reflected rays do not reach the sky
+    // at all — they hit the back of the next wave. Ignoring that made every distant water pixel
+    // ~70-85% bright sky, which is why the ocean stayed light blue-grey however dark the body colour
+    // was set, and why neither the colour ramp nor the roughness-aware Fresnel moved it.
+    //
+    // Smith G1 on its own over-darkens (the split-sum environment BRDF is not simply F*G1), so this
+    // blends 70% of the way toward it. That 0.7 is an artistic constant, not physics — it is the one
+    // fudge in this term, and "Reflection gain" still scales the result if you want it further either
+    // way.
+    let env_visibility = mix(1.0, smith_schlick_g1(ndv, roughness), 0.7);
+    let physical_reflection_weight =
+        clamp(physical_fresnel * env_visibility * max(wp.look_params.w, 0.0), 0.0, 1.0);
     let reflection_weight = select(legacy_reflection_weight, physical_reflection_weight, physical_look);
     rgb = mix(transmitted, refl, reflection_weight);
 
@@ -1435,8 +1524,15 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let spray_flecks = (foam_band * shore_break + breaker_foam) *
         smoothstep(0.78, 0.93, foam_noise(in.base_xz * 4.6 + spray_wind * wp.time * 1.8, wp.time)) * 0.26;
     let foam_structure = foam_noise(in.base_xz * 2.7 + spray_wind * wp.time * 0.45, wp.time);
-    let combined_foam = clamp((max(foam, max(persistent_foam, breaker_foam)) + spray_flecks) *
-        mix(0.46, 1.0, foam_structure), 0.0, 1.0);
+    // "Foam intensity" used to scale ONLY the shoreline band, while persistent foam and breaker
+    // whitecaps ignored it — so there was no control anywhere that reduced total foam coverage. That
+    // matters more than it sounds: foam is composited OVER the body colour, so once coverage is high
+    // the water's colour becomes irrelevant and the sea reads as a washed-out grey no matter what
+    // the shallow/deep colours are set to (even black). Making the slider authoritative over every
+    // foam source gives an actual coverage control.
+    let foam_scale = max(wp.foam_intensity, 0.0);
+    let combined_foam = clamp((max(foam, max(persistent_foam, breaker_foam) * foam_scale) +
+        spray_flecks * foam_scale) * mix(0.46, 1.0, foam_structure), 0.0, 1.0);
     // Bubbles form a broad, rough dielectric layer: mostly sky/sun-lit diffuse scattering with
     // only a subdued dielectric highlight. This is material response, never an emissive overlay.
     var foam_color = vec3<f32>(0.0);

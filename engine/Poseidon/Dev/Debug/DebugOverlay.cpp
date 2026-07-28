@@ -1540,8 +1540,8 @@ void DrawGrassTab()
         grass.density = 1.0f;
         grass.densityBoost = 4.0f;
         grass.spacing = 0.20f;
-        grass.radius = 60.0f;
-        grass.farRadius = 0.0f;
+        grass.radius = 30.0f;
+        grass.farRadius = 1.0f;
         grass.densityNoiseScale = 0.075f;
         grass.densityNoiseStrength = 0.55f;
         grass.height = 1.25f;

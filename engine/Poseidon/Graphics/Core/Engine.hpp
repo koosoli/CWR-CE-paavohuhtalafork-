@@ -932,14 +932,14 @@ class Engine : public IGraphicsEngine
         // Detail radius: drives the dense near cards and the mid blade ring.
         // Both are bounded by their placement grids, so raising this past
         // roughly 64 m has no effect -- the outer field is `farRadius`.
-        float radius = 60.0f;
+        float radius = 30.0f;
         // Outer terrain-cover ring. 0 = off (the historical behaviour: grass
         // simply ends at the mid ring). When on it MUST stay above the mid
         // ring's reach or the far LOD's accept band is empty, so the mapping
         // in EngineWgpu floors it -- there is no silently-dead middle ground.
         // Off by default: the flat coverage quads read as a second green
         // surface over the terrain and look worse than no distant grass.
-        float farRadius = 0.0f;
+        float farRadius = 1.0f;
         // Density noise: breaks the field into thicker and thinner patches so
         // coverage is not uniform. Scale is the noise frequency (1/metres);
         // strength 0 = flat density. 0.55 reproduces the previous hardcoded

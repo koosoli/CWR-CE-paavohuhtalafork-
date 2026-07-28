@@ -128,6 +128,19 @@ fn clump_noise(world_xz: vec2<f32>, frequency: f32, salt: u32) -> f32 {
     return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
 }
 
+// Outer edge of the mid blade ring, shared by cs_place_mid (which grows up to it)
+// and cs_place_far (which starts past it).
+//
+// `far_radius` may only CLAMP this when the far ring is actually on. Clamping it
+// unconditionally meant far_radius = 0 ("no outer ring") collapsed mid_end to 0,
+// and cs_place_mid's `mid_end <= near_radius` guard then rejected every mid
+// candidate -- turning the far ring off silently deleted the mid ring with it and
+// ended all grass at the near radius.
+fn mid_ring_end() -> f32 {
+    let natural = max(grass.near_radius + 10.0, min(160.0, grass.near_radius * 2.5));
+    return select(natural, min(grass.far_radius, natural), grass.far_radius > 1.0);
+}
+
 // Coverage multiplier from a world-space noise map, so density is patchy rather
 // than uniform. Strength 0 = flat; 0.55 reproduces the previous hardcoded
 // 0.45..1.35 range. `clumping` stays the master blend so it can still be
@@ -291,7 +304,7 @@ fn cs_place(@builtin(global_invocation_id) gid: vec3<u32>) {
 @compute @workgroup_size(8, 8, 1)
 fn cs_place_mid(@builtin(global_invocation_id) gid: vec3<u32>) {
     if (gid.x >= MID_GRID_DIM || gid.y >= MID_GRID_DIM || grass.enabled < 0.5) { return; }
-    let mid_end = min(grass.far_radius, max(grass.near_radius + 10.0, min(160.0, grass.near_radius * 2.5)));
+    let mid_end = mid_ring_end();
     if (mid_end <= grass.near_radius) { return; }
     let mid_spacing = max(grass.spacing * 2.0, mid_end / (f32(MID_GRID_DIM) * 0.5 - 1.0));
     let half = f32(MID_GRID_DIM) * 0.5;
@@ -348,7 +361,7 @@ fn cs_place_far(@builtin(global_invocation_id) gid: vec3<u32>) {
     let distance2 = dot(delta, delta);
     // Start one coarse cell after the near ring; this avoids double-drawing
     // while keeping the LOD join visually continuous.
-    let mid_end = min(grass.far_radius, max(grass.near_radius + 10.0, min(160.0, grass.near_radius * 2.5)));
+    let mid_end = mid_ring_end();
     let near_start = mid_end + far_spacing * 0.5;
     // Keep the outer ring visually continuous. It is still economical (one
     // triangle per tuft), but no longer becomes invisible just past 60 m.

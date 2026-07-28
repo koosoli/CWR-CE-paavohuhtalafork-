@@ -931,7 +931,18 @@ impl Water {
         // The reference demo keeps one sea-spray emitter under its ocean object.
         // WaterWgpu normally submits one batch, but guard this draw so split CDLOD
         // batches do not duplicate the same camera-centred emitter.
-        if first_node == 0 {
+        //
+        // Only submit it when spray is actually enabled. The shader collapses disabled particles to
+        // alpha 0, but that only saves the FRAGMENT cost — the vertex stage still runs for every
+        // candidate, hashing, sampling four FFT cascades and the interaction field per instance.
+        // At 16,384 candidates that is ~98k vertices of real work every frame with the feature
+        // switched off. (An earlier comment here claimed the cost scales with visible whitewater;
+        // that was only ever true of the fragment stage.)
+        let spray_enabled = self
+            .last_params
+            .map(|p| p.debug_params[1] > 0.5 && p.sea_params[2] < 0.5)
+            .unwrap_or(false);
+        if first_node == 0 && spray_enabled {
             pass.set_pipeline(&self.whitewater_pipeline);
             pass.set_bind_group(0, camera_bind, &[camera_offset]);
             pass.set_bind_group(1, &self.group1_bind, &[]);
