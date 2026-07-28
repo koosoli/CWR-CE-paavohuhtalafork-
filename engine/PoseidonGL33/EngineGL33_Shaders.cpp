@@ -311,6 +311,7 @@ void main() {
 
     r0.rgb = mix(fogColor.rgb, r0.rgb, vFogTC);
     fragColor = alphaRef.w > 0.5 ? vec4(1.0, 0.0, 0.0, 1.0) : r0;
+    //fragColor = r0.rgb * vec4(1.0, 0.0, 0.0, 1.0); // inavlid ik but for testing
 }
 )";
 
@@ -346,6 +347,7 @@ in vec3 vWorldRel;
 out vec4 fragColor;
 
 void main() {
+    
     // No gl_FragDepth — see PSNormal.
     vec4 t0 = texture(tex0, vUV0);
     vec4 t1 = texture(tex1, vUV1);
@@ -394,14 +396,42 @@ void main() {
                 vec3 sc = cp.xyz / cp.w;
                 vec2 suv = sc.xy * 0.5 + 0.5;
                 if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 && sc.z > 0.0 && sc.z < 1.0) {
-                    float bias = cascadeCtl.z * float(c + 1) * float(c + 1);
-                    float lit = 0.0;
-                    for (int dy = -1; dy <= 1; ++dy)
-                        for (int dx = -1; dx <= 1; ++dx)
-                            lit += (sc.z - bias > texture(shadowMap, vec3(suv + vec2(float(dx), float(dy)) * ts, float(c))).r) ? 0.0 : 1.0;
-                    litSum += w * (lit / 9.0);
-                    wSum += w;
-                }
+                    
+                    // for christ's sake use slope-scaled bias 
+					vec3 normal = normalize(cross(dFdx(vWorldRel), dFdy(vWorldRel)));
+					vec3 lightDir = normalize(cascadeVP[0][2].xyz);
+					float cosTheta = clamp(dot(normal, lightDir), 0.0, 1.0);
+					float minBias = cascadeCtl.z; 
+					float maxBias = minBias * 4.0;
+					float slopeBias = mix(maxBias, minBias, cosTheta);
+					float bias = slopeBias * float(c + 1);
+
+					// Interleaved Gradient Noise Rotation (IGN rotation) 
+                    // at ln 292 https://github.com/AMX4LIF3/Mikset/blob/main/Renderer/Graphics/shaders/main.hlsl <-- please give
+                    // it a star its from my repo :) 
+					vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+					float noise = fract(magic.z * fract(dot(gl_FragCoord.xy, magic.xy)));
+
+					float sinN = sin(noise * 6.283185);
+					float cosN = cos(noise * 6.283185);
+					mat2 rotationMatrix = mat2(cosN, sinN, -sinN, cosN);
+
+					float blurRadius = 0.5;
+					float lit = 0.0;
+
+					for (int dy = -1; dy <= 1; ++dy) {
+						for (int dx = -1; dx <= 1; ++dx) {
+							vec2 offset = rotationMatrix * (vec2(float(dx), float(dy)) * ts * blurRadius);
+							vec2 offsetUV = suv + offset;
+
+							float shadowDepth = texture(shadowMap, vec3(offsetUV, float(c))).r;
+							lit += (sc.z - bias <= shadowDepth) ? 1.0 : 0.0;
+						}
+					}
+
+					litSum += w * (lit / 9.0);
+					wSum += w;
+				}
             }
             if (wSum > 0.0) {
                 float lit = litSum / wSum;
@@ -463,6 +493,8 @@ in vec3 vWorldRel;
 out vec4 fragColor;
 
 void main() {
+fragColor = vec4(1.0, 0.0 , 0.0, 1.0); // yeah this shader is not used rn for some reason
+return;
     // No gl_FragDepth — see PSNormal.
     vec4 t0 = texture(tex0, vUV0);
     vec4 t1 = texture(tex1, vUV1);
@@ -543,7 +575,8 @@ void main() {
     } else if (r0.a - alphaRef.x * alphaRef.y < 0.0) discard;
 
     r0.rgb = mix(fogColor.rgb, r0.rgb, vFogTC);
-    fragColor = alphaRef.w > 0.5 ? vec4(1.0, 0.0, 0.0, 1.0) : r0;
+    //fragColor = alphaRef.w > 0.5 ? vec4(1.0, 0.0, 0.0, 1.0) : r0;
+    fragColor = vec4(1.0, 0.0, 0.0, 1.0);
 }
 )";
 
@@ -583,6 +616,7 @@ void main() {
     r0.rgb += spec;
     r0.rgb = mix(fogColor.rgb, r0.rgb, vFogTC);
     fragColor = alphaRef.w > 0.5 ? vec4(1.0, 0.0, 0.0, 1.0) : r0;
+    //fragColor = vec4(1.0, 0.0, 0.0, 1.0);
 }
 )";
 
