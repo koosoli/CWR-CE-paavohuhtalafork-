@@ -2610,11 +2610,10 @@ void DrawWaterTab()
     ImGui::SetItemTooltip("Strength of the shoaling swell that runs in toward the beach. The train "
                           "grows (Green's law) and its crests sharpen as the water shallows.");
     changed |= ImGui::Checkbox("Underwater effect", &s.underwaterEffect);
-    ImGui::SetItemTooltip("Fullscreen underwater compositor. Still the original crude approximation "
-                          "(a 0.12/depth stand-in for path length, fixed RGB transmittance, a sine "
-                          "caustic) — it needs rebuilding, not retuning. It is also all-or-nothing: "
-                          "it cannot render a wave cutting across the screen with the eye half "
-                          "submerged. Switch it off if that bothers you more than losing the effect.");
+    ImGui::SetItemTooltip("Metric underwater extinction and in-scattering using the Water tab's "
+                          "shallow/deep colours. Near the surface it classifies each view ray "
+                          "separately, preserving the above-water part of a half-submerged view. "
+                          "World-anchored caustics remain visible on nearby seabed geometry.");
     changed |= ImGui::Checkbox("Low water quality (performance)", &s.lowQuality);
     ImGui::SetItemTooltip("Drops SSR/planar SAMPLING and bicubic filtering from the water shader. Note "
                           "it does NOT skip rendering the planar reflection itself — the reflected "

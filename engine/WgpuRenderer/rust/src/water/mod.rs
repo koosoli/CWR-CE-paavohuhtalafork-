@@ -6,6 +6,7 @@ mod interaction;
 use interaction::Interaction;
 mod fft;
 use fft::Fft;
+pub use fft::FFT_RESOLUTION;
 mod foam;
 use crate::ffi::{WgrWaterInteractionEvent, WgrWaterInteractionParams};
 use foam::Foam;
@@ -860,10 +861,15 @@ impl Water {
     /// The water's own body colour and extinction, so the underwater compositor can fog the scene
     /// in the SAME colour the surface is tinted with. It previously used a hardcoded cyan haze,
     /// which is why submerging looked like a different substance from the water you swam into.
-    /// Returns (deep rgb in gamma space, color_ext).
-    pub fn underwater_body(&self) -> Option<([f32; 3], f32)> {
+    /// Returns (shallow rgb, deep rgb, color_ext), with both colours in gamma space.
+    pub fn underwater_body(&self) -> Option<([f32; 3], [f32; 3], f32)> {
         self.last_params.map(|p| {
             (
+                [
+                    p.shallow_color[0],
+                    p.shallow_color[1],
+                    p.shallow_color[2],
+                ],
                 [p.deep_color[0], p.deep_color[1], p.deep_color[2]],
                 p.color_ext,
             )

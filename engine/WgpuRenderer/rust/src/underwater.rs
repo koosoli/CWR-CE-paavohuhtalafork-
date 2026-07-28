@@ -8,19 +8,19 @@ use wgpu::util::DeviceExt;
 struct Params {
     time: f32,
     // Camera height above the local water surface in metres; negative means the eye is submerged.
-    // The fragment shader uses it with the reconstructed view ray to find the per-pixel waterline.
+    // The fragment shader intersects the view ray with that surface for a per-pixel water path.
     cam_above: f32,
-    _pad: [f32; 2],
+    // Absolute camera X/Z makes the seabed caustic pattern stable under translation.
+    camera_xz: [f32; 2],
     // inv(view) * inv(proj), matching Frame.inv_view_proj: unprojects forward-NDC to a
     // camera-relative world position.
     inv_view_proj: [f32; 16],
-    // The water's own deep body colour (gamma space) in xyz and its extinction (1/m) in w. The
-    // compositor fogs with this instead of a hardcoded cyan, so going under the surface looks like
-    // entering the water you were just looking at rather than a different liquid.
-    body_color_ext: [f32; 4],
+    // Authored colours are gamma-space. Extinction is packed in shallow_color_ext.w.
+    shallow_color_ext: [f32; 4],
+    deep_color: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<Params>() == 96);
+const _: () = assert!(std::mem::size_of::<Params>() == 112);
 
 #[test]
 fn underwater_wgsl_validates() {
@@ -39,6 +39,20 @@ fn underwater_refraction_rejects_foreground_depth_leaks() {
     let shader = include_str!("underwater.wgsl");
     assert!(shader.contains("let warp_limit = 3.0 / dims_f"));
     assert!(shader.contains("let use_warp = warped_depth <= base_depth + 0.001"));
+    assert!(shader.contains("fn water_path_length"));
+    assert!(shader.contains("let extinction_rgb = vec3<f32>(0.280, 0.065, 0.020)"));
+    assert!(!shader.contains("pow(deep_linear"));
+}
+
+#[test]
+fn default_absorption_keeps_useful_midrange_visibility() {
+    let extinction_scale = (0.16_f32 * 2.5).max(0.12);
+    let transmission =
+        |sigma: f32, distance: f32| (-sigma * extinction_scale * distance).exp();
+
+    assert!(transmission(0.280, 10.0) > 0.30);
+    assert!(transmission(0.065, 10.0) > 0.75);
+    assert!(transmission(0.020, 30.0) > 0.75);
 }
 
 pub struct Underwater {
@@ -138,9 +152,10 @@ impl Underwater {
             contents: bytemuck::bytes_of(&Params {
                 time: 0.0,
                 cam_above: -1.0,
-                _pad: [0.0; 2],
+                camera_xz: [0.0; 2],
                 inv_view_proj: [0.0; 16],
-                body_color_ext: [0.004, 0.020, 0.055, 0.16],
+                shallow_color_ext: [0.070, 0.290, 0.320, 0.16],
+                deep_color: [0.014, 0.105, 0.240, 0.0],
             }),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
@@ -162,8 +177,10 @@ impl Underwater {
         destination: &wgpu::TextureView,
         time: f32,
         cam_above: f32,
+        camera_xz: [f32; 2],
         inv_view_proj: [f32; 16],
-        body_color_ext: [f32; 4],
+        shallow_color_ext: [f32; 4],
+        deep_color: [f32; 4],
     ) {
         queue.write_buffer(
             &self.params,
@@ -171,9 +188,10 @@ impl Underwater {
             bytemuck::bytes_of(&Params {
                 time,
                 cam_above,
-                _pad: [0.0; 2],
+                camera_xz,
                 inv_view_proj,
-                body_color_ext,
+                shallow_color_ext,
+                deep_color,
             }),
         );
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {

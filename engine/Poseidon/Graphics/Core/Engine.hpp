@@ -1350,12 +1350,11 @@ class Engine : public IGraphicsEngine
         float wetHeight = 0.26f;   // m above sea level the damp band reaches
         float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
         // Master switch for water splash particles: the CPU rifle-impact spray and the GPU
-        // whitewater/spray billboard emitter. On by default now that the emitter covers a real
-        // area (120 m, world-anchored), breaks off the FFT compression signal rather than a
-        // saturated foam history, and flies on drag ballistics instead of a scripted parabola.
-        bool rifleImpactSpray = true;
+        // whitewater/spray billboard emitter. Keep this opt-in: ordinary rifle impacts should
+        // not fill the view with spray, while the Water tab can still enable the full emitter.
+        bool rifleImpactSpray = false;
         // Multiplier for the GPU whitewater/splash billboard emitter.
-        float waterSplashParticleActivity = 0.60f;
+        float waterSplashParticleActivity = 0.25f;
 
         // WTR-LOOK — surface energy model. The legacy composite capped the Fresnel reflection
         // weight, scaled the sun specular to 0.12x and multiplied the subsurface-scattering term
@@ -1384,10 +1383,9 @@ class Engine : public IGraphicsEngine
         // the water fragment shader. Off by default.
         bool lowQuality = false;
 
-        // Fullscreen underwater compositor. On by default, but still the original crude
-        // approximation (a `0.12/depth` stand-in for path length, fixed RGB transmittance and a sine
-        // caustic) — it needs rebuilding (WTR-110..140), not retuning. Switchable from the Water tab
-        // so it can be turned off while that work is outstanding, and so a rebuild can be A/B'd.
+        // Scene-referred underwater compositor. It reconstructs metric view-ray distance, limits
+        // extinction to the portion of each ray below the surface, and uses the authored
+        // shallow/deep colours. Switchable so its performance and look can be A/B tested.
         bool underwaterEffect = true;
 
         // WTR-036C / WTR-037 — FFT Cascade Preset (0 = Production Non-Harmonic 4-Cascade, 1 = GodotOceanWaves Reference Style, 2 = Legacy Harmonic 4-Cascade).
