@@ -18,6 +18,11 @@ pub const FFT_RESOLUTION: u32 = 512;
 const FFT_LAYERS: u32 = 4;
 // log2(FFT_RESOLUTION) — must be kept in lockstep with the resolution above.
 const FFT_STAGES: u32 = 9;
+// fft_row.wgsl hardcodes FFT_N / FFT_BITS / FFT_THREADS and sizes its workgroup array from
+// them (WGSL has no way to take those from a uniform). Catch a resolution change here rather
+// than as a silently wrong ocean.
+const _: () = assert!(1u32 << FFT_STAGES == FFT_RESOLUTION);
+const _: () = assert!(FFT_RESOLUTION == 512, "fft_row.wgsl FFT_N/FFT_BITS must be updated too");
 // Spectra packed into RGBA32F texture pairs: pack0 = (hx,hy),(hz,dhy_dx); pack1 = (dhy_dz,dhx_dx),
 // (dhz_dz,dhz_dx). A third pack exists in the bindings but carries no data — see dispatch().
 const FFT_ACTIVE_PACKS: u32 = 2;
@@ -342,64 +347,65 @@ impl Fft {
                 ),
             ],
         });
-        // Each pass has one source/destination pair per complex pack. Dynamic offsets select its stage.
+        // One source/destination pair per axis per complex pack. The whole transform for an
+        // axis is now a single dispatch (see fft_row.wgsl), so this is 2 x 3 bind groups
+        // rather than the former 2 x FFT_STAGES x 3 — the per-stage ping-pong is gone.
+        //
+        // Parity: axis 0 reads pack[..][0] and writes pack[..][1]; axis 1 reads back from [1]
+        // and writes [0], leaving the result in parity 0 for `compose_bind` below. The old
+        // per-stage code arrived at the same place by flipping 9 times per axis (odd, so it
+        // also ended in [1] then [0]) — the final resting texture is unchanged.
         let mut stage_binds = Vec::new();
         let aligned = device.limits().min_uniform_buffer_offset_alignment as u64;
         let stage_buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_fft_stage_params"),
-            size: aligned * (FFT_STAGES as u64 * 2),
+            size: aligned * 2,
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             mapped_at_creation: false,
         });
-        for axis in 0..2 {
-            for stage in 0..FFT_STAGES {
-                for pack in 0..3 {
-                    let parity = ((axis * FFT_STAGES + stage) & 1) as usize;
-                    stage_binds.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
-                        label: Some("wgr_fft_stage_bind"),
-                        layout: &stage_layout,
-                        entries: &[
-                            wgpu::BindGroupEntry {
-                                binding: 0,
-                                resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
-                                    buffer: &stage_buffer,
-                                    offset: 0,
-                                    size: std::num::NonZeroU64::new(16),
-                                }),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 1,
-                                resource: wgpu::BindingResource::TextureView(&packs[pack][parity]),
-                            },
-                            wgpu::BindGroupEntry {
-                                binding: 2,
-                                resource: wgpu::BindingResource::TextureView(
-                                    &packs[pack][1 - parity],
-                                ),
-                            },
-                        ],
-                    }));
-                }
-            }
-        }
-        // Parameters are immutable structural values, uploaded once to the dynamically addressed UBO.
-        let mut bytes = vec![0u8; (aligned * (FFT_STAGES as u64 * 2)) as usize];
-        for axis in 0..2 {
-            for stage in 0..FFT_STAGES {
-                let offset = ((axis * FFT_STAGES + stage) as u64 * aligned) as usize;
-                bytes[offset..offset + 16].copy_from_slice(bytemuck::bytes_of(&StageParams {
-                    data: [
-                        FFT_RESOLUTION,
-                        stage,
-                        axis,
-                        // GodotOceanWaves synthesizes physical Fourier-series
-                        // coefficients and intentionally leaves its inverse FFT
-                        // unnormalised. Dividing the final stage by N^2 reduced a
-                        // 256x256 ocean by 65,536 and made it visually flat.
-                        0,
+        for axis in 0..2usize {
+            for pack in 0..3 {
+                stage_binds.push(device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("wgr_fft_row_bind"),
+                    layout: &stage_layout,
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                                buffer: &stage_buffer,
+                                offset: 0,
+                                size: std::num::NonZeroU64::new(16),
+                            }),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::TextureView(&packs[pack][axis]),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 2,
+                            resource: wgpu::BindingResource::TextureView(&packs[pack][1 - axis]),
+                        },
                     ],
                 }));
             }
+        }
+        // Parameters are immutable structural values, uploaded once to the dynamically addressed UBO.
+        let mut bytes = vec![0u8; (aligned * 2) as usize];
+        for axis in 0..2u32 {
+            let offset = (axis as u64 * aligned) as usize;
+            bytes[offset..offset + 16].copy_from_slice(bytemuck::bytes_of(&StageParams {
+                data: [
+                    FFT_RESOLUTION,
+                    // 0 = transform along x (rows), 1 = along y (columns).
+                    axis,
+                    // GodotOceanWaves synthesizes physical Fourier-series
+                    // coefficients and intentionally leaves its inverse FFT
+                    // unnormalised. Dividing the final stage by N^2 reduced a
+                    // 256x256 ocean by 65,536 and made it visually flat.
+                    0,
+                    0,
+                ],
+            }));
         }
         queue.write_buffer(&stage_buffer, 0, &bytes);
         let compose_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -551,9 +557,9 @@ impl Fft {
                 &spectrum_layout,
             ),
             stage_pipeline: pipeline(
-                "water/fft_stage.wgsl",
-                include_str!("fft_stage.wgsl"),
-                "fft_stage",
+                "water/fft_row.wgsl",
+                include_str!("fft_row.wgsl"),
+                "fft_row",
                 &stage_layout,
             ),
             compose_pipeline: pipeline(
@@ -661,12 +667,12 @@ impl Fft {
                 (Region::FftVertical, "wgr_water_fft_vertical")
             };
             timers.begin(encoder, region);
-            for stage in 0..FFT_STAGES {
-                // Every radix stage consumes storage writes from the preceding one.
-                // Keep one pass per stage so wgpu emits the required UAV visibility
-                // transition before that data is read again.  Keeping all eight stages
-                // in one pass let Vulkan legally retain stale/zero reads, which made a
-                // perfectly configured spectrum render as calm water on some drivers.
+            {
+                // The whole axis is one dispatch now: fft_row.wgsl keeps all FFT_STAGES
+                // butterflies in workgroup storage behind barriers, so the cross-stage
+                // visibility that previously forced one compute pass per stage is handled
+                // inside the workgroup instead of by the encoder. Only the axis boundary
+                // still needs a real barrier, and the two passes below provide it.
                 let mut pass = compute(encoder, label);
                 pass.set_pipeline(&self.stage_pipeline);
                 // Only the packs that actually carry a spectrum. pack2 is written as all zeros by
@@ -676,15 +682,12 @@ impl Fft {
                 // The bind groups are still built for all three (keeping the stride below valid
                 // and the layouts untouched); this simply stops dispatching the dead one.
                 for pack in 0..FFT_ACTIVE_PACKS {
-                    let index = ((axis * FFT_STAGES + stage) * 3 + pack) as usize;
-                    pass.set_bind_group(
-                        0,
-                        &self.stage_binds[index],
-                        &[(axis * FFT_STAGES + stage) * self.stage_alignment],
-                    );
-                    pass.dispatch_workgroups(FFT_RESOLUTION / 8, FFT_RESOLUTION / 8, layers);
+                    let index = (axis * 3 + pack) as usize;
+                    pass.set_bind_group(0, &self.stage_binds[index], &[axis * self.stage_alignment]);
+                    // One workgroup per line of the transform, per cascade layer. Each
+                    // workgroup is 256 threads covering FFT_RESOLUTION points, two per thread.
+                    pass.dispatch_workgroups(FFT_RESOLUTION, layers, 1);
                 }
-                drop(pass);
             }
             timers.end(encoder, region);
         }
@@ -921,7 +924,7 @@ mod tests {
         for source in [
             include_str!("fft_spectrum_init.wgsl"),
             include_str!("fft_spectrum.wgsl"),
-            include_str!("fft_stage.wgsl"),
+            include_str!("fft_row.wgsl"),
             include_str!("fft_compose.wgsl"),
         ] {
             let module = naga::front::wgsl::parse_str(source).expect("FFT spectrum WGSL parse");
@@ -935,14 +938,76 @@ mod tests {
     }
 
     #[test]
-    fn fft_stage_uses_the_runtime_transform_bit_count() {
-        let stage = include_str!("fft_stage.wgsl");
-        assert!(stage.contains("countLeadingZeros(n)"));
-        assert!(!stage.contains("bit_reverse(a_index, 7u)"));
-        assert!(!stage.contains("bit_reverse(b_index, 7u)"));
+    fn fft_row_transform_constants_match_the_rust_resolution() {
+        let row = include_str!("fft_row.wgsl");
+        // The kernel sizes its workgroup array from these, so a resolution change that
+        // updated only fft.rs would transform the wrong number of points.
+        assert!(row.contains(&format!("FFT_N: u32 = {}u", super::FFT_RESOLUTION)));
+        assert!(row.contains(&format!("FFT_BITS: u32 = {}u", super::FFT_STAGES)));
+        // One thread per butterfly: N/2 threads, and the workgroup must declare that many.
+        assert!(row.contains(&format!(
+            "FFT_THREADS: u32 = {}u",
+            super::FFT_RESOLUTION / 2
+        )));
+        assert!(row.contains(&format!("workgroup_size({}, 1, 1)", super::FFT_RESOLUTION / 2)));
+        assert!(row.contains(&format!(
+            "array<vec4<f32>, {}>",
+            super::FFT_RESOLUTION
+        )));
         // Spectrum coefficients already include dkx*dky and are summed as a
         // physical Fourier series, matching GodotOceanWaves. A conventional
         // DFT 1/N^2 normalisation here makes every visible wave disappear.
-        assert!(!stage.contains("result / f32(n * n)"));
+        assert!(!row.contains("/ f32(n * n)"));
+    }
+
+    // The butterfly schedule must cover every element exactly once per stage — that
+    // disjointness is what lets the kernel read and write in place with a single barrier
+    // per stage. An overlap would be a data race that only shows up as intermittent
+    // corruption on some drivers, so pin it here rather than trusting the reasoning.
+    #[test]
+    fn in_place_butterfly_pairs_partition_every_stage() {
+        const N: usize = super::FFT_RESOLUTION as usize;
+        for stage in 0..super::FFT_STAGES {
+            let span = 1usize << stage;
+            let width = span << 1;
+            let mut touched = vec![0u8; N];
+            for thread in 0..N / 2 {
+                let group = thread / span;
+                let j = thread % span;
+                let i0 = group * width + j;
+                let i1 = i0 + span;
+                assert!(i1 < N, "stage {stage} thread {thread} index out of range");
+                touched[i0] += 1;
+                touched[i1] += 1;
+            }
+            assert!(
+                touched.iter().all(|&c| c == 1),
+                "stage {stage} does not partition the line"
+            );
+        }
+    }
+
+    // Decimation-in-time reads its input bit-reversed; the permutation must be a bijection
+    // or the load would drop and duplicate spectrum bins.
+    #[test]
+    fn bit_reversal_is_a_permutation_at_the_transform_width() {
+        const N: u32 = super::FFT_RESOLUTION;
+        let bit_reverse = |v: u32, bits: u32| {
+            let mut x = v;
+            let mut out = 0u32;
+            for _ in 0..bits {
+                out = (out << 1) | (x & 1);
+                x >>= 1;
+            }
+            out
+        };
+        let mut seen = vec![false; N as usize];
+        for i in 0..N {
+            let r = bit_reverse(i, super::FFT_STAGES);
+            assert!(r < N);
+            assert!(!seen[r as usize], "bit reversal collided at {i}");
+            seen[r as usize] = true;
+            assert_eq!(bit_reverse(r, super::FFT_STAGES), i);
+        }
     }
 }
