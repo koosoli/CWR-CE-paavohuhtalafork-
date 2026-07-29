@@ -1,121 +1,113 @@
-# Arma: Cold War Assault - Remastered - Community Edition
+# PoseidonWGPU
 
-_based on https://github.com/bohemiainteractive/CWR_
+**PoseidonWGPU** is a modernization-focused fork of the classic Poseidon engine
+behind *Arma: Cold War Assault* / *Operation Flashpoint: Cold War Crisis*.
+Its goal is simple: make this landmark 2001 game feel as modern as possible
+while preserving compatibility with the original assets, data formats, missions,
+and gameplay.
 
-This community repository continues the official engine and game source code (codename *Poseidon*) behind *Arma: Cold War Assault* — the game first released in 2001 as *Operation Flashpoint: Cold War Crisis*. That release launched Bohemia Interactive and began the technology lineage that later grew into Real Virtuality, Arma, and Enfusion. The code has been modernized to C++20, built with CMake and Clang, with cross-platform support for Windows x64 and Linux x64.
-Bohemia Interactive released it to the community that has kept this game alive for more than two decades — to study it, build on it, fix it, and create from it. Three things are worth keeping separate:
+![PoseidonWGPU in-game screenshot](screenshots/1.png)
 
-**Source code (this repository)**
+> This is an independent community project and is not an official Bohemia
+> Interactive product.
 
-The engine and game executables, licensed under GPL-3.0-or-later with additional terms under Section 7. You may use, study, modify, and redistribute it, provided it stays GPL and you follow those terms.
+## What PoseidonWGPU adds
 
-**The name and brand**
+PoseidonWGPU develops a modern [wgpu](https://wgpu.rs/)-based renderer alongside
+the legacy OpenGL renderer. The current work focuses on practical visual upgrades
+that still let the original game content remain at the centre of the experience:
 
-"ARMA", "Operation Flashpoint", and the logos are *not* granted. The trademarks stay with their owners ("ARMA" is Bohemia Interactive's). A fork must be renamed and must not present itself as "Arma" or as an official Bohemia Interactive product.
+- Procedural terrain grass with live wind, player and vehicle impressions,
+  helicopter rotor wash, and explosive-impact bending.
+- A GPU-driven water system with FFT ocean simulation, shoreline behaviour,
+  reflections, foam, and projectile/explosion interactions.
+- Consolidated work from another [paavohuhtala/CWR-CE](https://github.com/paavohuhtala/CWR-CE)
+  branch, including its volumetric cloud system.
+- A modern, observable rendering path with GPU timing and developer diagnostics
+  for testing and iteration.
 
-**Game data (separate)**
+The project is deliberately evolutionary rather than a replacement engine:
+existing game data and the established CWR-CE codebase remain the foundation.
 
-Models, textures, sounds, missions, and voices. These are not in this repository and are not GPL; they ship separately under the APL-SA license. A free Demo is available on Steam.
+## Project lineage
 
-In short: the code is free software, the name is not, and the game data comes separately. This license covers the source code only and grants no rights to the trademarks.
+PoseidonWGPU is a fork of [paavohuhtala/CWR-CE](https://github.com/paavohuhtala/CWR-CE),
+which is itself a fork of [ofpisnotdead-com/CWR-CE](https://github.com/ofpisnotdead-com/CWR-CE).
+That community project continues Bohemia Interactive's official source release of
+the original Poseidon engine. This fork builds on the work of all of those
+projects and the Operation Flashpoint / Arma community that has kept the game
+alive for more than two decades.
 
+## Support the project
 
-## Quick Start
+Much of this work involves long-running renderer development, testing on legacy
+assets, and AI-assisted code exploration. If you would like to support the work,
+funds go toward API usage and direct development costs for PoseidonWGPU.
 
-### Development Builds
+- [GitHub Sponsors](https://github.com/sponsors/koosoli)
+- [Buy Me a Coffee](https://buymeacoffee.com/koosoli)
 
-The quickest way to get the game or server executables is to download the CI builds: <https://ofpisnotdead-com.github.io/CWR-CE-builds/>
+## Quick start
 
-### Build Requirements
+### Requirements
 
 - [Clang](https://clang.llvm.org/)
 - [CMake](https://cmake.org/)
 - [Ninja](https://ninja-build.org/)
 - [vcpkg](https://vcpkg.io/)
 
-On Windows, run `winget install Kitware.CMake LLVM.LLVM Ninja-build.Ninja`
-and follow the instructions for [setting up
-vcpkg](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started?pivots=shell-powershell)
-to get the required software.
+On Windows:
 
-### Compiling
-
-```sh
-cmake --preset win-x64-clang-rwdi
-cmake --build build/win-x64-clang-rwdi
+```powershell
+winget install Kitware.CMake LLVM.LLVM Ninja-build.Ninja
 ```
 
-On GNU/Linux, use the matching `linux-x64-clang-rwdi` preset.
+Then install and configure vcpkg following the
+[official guide](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started?pivots=shell-powershell).
 
-### Testing
+### Build
 
-Copy game binaries from `dist/` into [Steam Demo folder](https://store.steampowered.com/app/4819000/Arma_Cold_War_Assault_Remastered_Demo/) and start.
+```powershell
+cmake --preset win-x64-clang-rwdi
+cmake --build build/win-x64-clang-rwdi --target PoseidonGame
+```
 
-> [!WARNING]
-> Compiled binaries are not drop-in compatible with original game folder. See https://github.com/ofpisnotdead-com/CWR-CE/issues/8#issuecomment-4772323490 and https://github.com/ofpisnotdead-com/CWR-CE/issues/29#issuecomment-4803747960 for more info.
+For Linux, use the matching `linux-x64-clang-rwdi` preset.
 
-## Layout
+### Run with the WGPU renderer
 
-- [Apps](apps/README.md) - executable targets
-- [Engine](engine/README.md) - engine libraries and Rust Trident tooling
-- [Master server tools](mserver/README.md) - Rust service and CLI crates
-- [Tests](tests/README.md) - test source trees; CI currently compiles them only
-- `cmake/` - presets, toolchains, vcpkg triplets, and overlay ports
-- `docker/` - container support for service and runtime environments
-- `packages/` - ignored local game data staging area
-- `resources/` - application icon resources
-- `thirdparty/` - vendored third-party headers and sources
+Copy both the executable and `wgpu_renderer.dll` from the build output to a local
+game installation, then launch from that installation directory:
 
-## Project Notes
+```powershell
+.\ColdWarAssault.exe --render wgpu --window --dev
+```
 
-- [Contributing](CONTRIBUTING.md)
-- [Credits](CREDITS.md)
-- [Third-party notices](THIRD_PARTY_NOTICES.md)
-- [Vendored dependencies](thirdparty/README.md)
+Both binaries must come from the same build. Game data is separate from this
+repository; the free
+[*Arma: Cold War Assault Remastered* Demo](https://store.steampowered.com/app/4819000/Arma_Cold_War_Assault_Remastered_Demo/)
+is suitable for local testing.
 
-## License
+## Repository layout
 
-The source in this repository is licensed under the **GNU General Public License
-v3.0 *or later***, with additional terms under **Section 7** of the GPL. See [`LICENSE`](LICENSE) for the
-full text.
-This license does not grant you any right to use "ARMA" or any other Bohemia Interactive trademark.
+- [apps](apps/README.md) — executable targets
+- [engine](engine/README.md) — engine libraries and rendering backends
+- [mserver](mserver/README.md) — master-server tools
+- [tests](tests/README.md) — test source trees
+- `cmake/` — presets, toolchains, and vcpkg configuration
+- `resources/` — application resources
+- `thirdparty/` — vendored third-party sources and headers
 
-The [`thirdparty/`](thirdparty) directory is **excluded** from the project's GPL
-license: it contains vendored third-party code (glad, the RenderDoc API header)
-under their own respective licenses — see [`thirdparty/README.md`](thirdparty/README.md).
-Dependencies pulled in via vcpkg ([`vcpkg.json`](vcpkg.json)) likewise remain under
-their own licenses.
+## Source, brand, and game data
 
-*"ARMA" is a registered trademark of BOHEMIA INTERACTIVE a.s. "OPERATION FLASHPOINT" is a registered trademark of Electronic Arts Inc.
-See [`LICENSE`](LICENSE) for information concerning trademarks. This credits file is
-informational and does not constitute any grant and/or waiver of rights.*
+The source code in this repository is licensed under the
+[GNU GPL v3.0 or later](LICENSE), with additional terms under Section 7.
 
-### Game data / assets — Arma Public License Share Alike (APL-SA)
+`ARMA`, `Operation Flashpoint`, their logos, and related marks are not granted by
+this repository and remain the property of their respective owners. Models,
+textures, sounds, missions, voices, and other game data are separate from this
+repository and are distributed under the
+[Arma Public License Share Alike](https://www.bohemia.net/community/licenses/arma-public-license-share-alike).
 
-Game data and assets (models, textures, sounds, missions, etc.) are **not part of
-this repository** and are **not** covered by the GPL. They are released separately
-by Bohemia Interactive under the **Arma Public License Share Alike (APL-SA)**:
-
-- APL-SA license text: <https://www.bohemia.net/community/licenses/arma-public-license-share-alike>
-
-### Getting game data to run what you build
-
-The compiled binaries need game data to run. You can obtain the **free Demo game
-data** on Steam:
-
-- *Arma: Cold War Assault Remastered* Demo on Steam: <https://store.steampowered.com/app/4819000>
-
-The full game data ships with the retail game. Whatever you do with assets is
-governed by the APL-SA linked above; whatever you do with this source is governed by
-the GPL with additional terms per Section 7 in [`LICENSE`](LICENSE).
-
-
-## Contributing
-
-This is the community continuation of the official source release. Pull requests,
-bug reports, ports, tooling improvements, documentation updates, and development
-ideas are welcome here.
-
-Please use issues for bugs and proposals, and open pull requests for source,
-build, test, or documentation changes. See [`CONTRIBUTING.md`](CONTRIBUTING.md)
-for contribution guidelines.
+See [CREDITS.md](CREDITS.md), [CONTRIBUTING.md](CONTRIBUTING.md), and
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for more information.

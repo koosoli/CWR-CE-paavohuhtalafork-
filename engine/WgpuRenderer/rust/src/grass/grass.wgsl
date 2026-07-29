@@ -25,6 +25,7 @@ struct GrassTrack {
     radius: f32,
     age: f32,
 };
+struct GrassDownwash { x: f32, z: f32, radius: f32, strength: f32, };
 
 struct GrassParams {
     density: f32,
@@ -40,6 +41,7 @@ struct GrassParams {
     interactor_radius: f32,
     interactor_strength: f32,
     tracks: array<GrassTrack, 96>,
+    downwash: array<GrassDownwash, 4>,
     debug_flags: vec4<f32>,
     // MUST match the tail of GrassParams in grass/mod.rs, four scalars per vec4:
     //   .x = cast_shadows, .y = apply_fog,
@@ -317,6 +319,19 @@ fn eval_flatten(world_xz: vec2<f32>) -> vec3<f32> {
             direction = select(vec2<f32>(0.0), delta / distance, distance > 0.001);
         }
     }
+    // Rotor wash spreads out from the rotor disc. It is deliberately steady:
+    // downwash presses the field flat, it does not make the blades bounce.
+    for (var i = 0u; i < 4u; i = i + 1u) {
+        let wash = grass.downwash[i];
+        if (wash.radius <= 0.01 || wash.strength <= 0.01) { continue; }
+        let delta = world_xz - vec2<f32>(wash.x, wash.z);
+        let distance = length(delta);
+        let bend = (1.0 - smoothstep(wash.radius * 0.12, wash.radius, distance)) * wash.strength;
+        if (bend > strength) {
+            strength = bend;
+            direction = select(vec2<f32>(0.0), delta / distance, distance > 0.001);
+        }
+    }
     return vec3<f32>(direction, strength);
 }
 
@@ -532,8 +547,8 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush = unpack2x16unorm(inst_packed.y).x;
-    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
-    let crushed_height = height * (1.0 - 0.78 * crush);
+    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
+    let crushed_height = height * (1.0 - 0.55 * crush);
     // Two crossed ribbons, each built from five quads. Every vertex samples
     // its own height along a quadratic curve rather than simply moving a tip.
     let card = vertex_index / VERTS_PER_CARD;
@@ -547,12 +562,17 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let wind = sample_wind_field(inst.xz, t, seed);
     let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
         (0.035 + 0.21 * wind.gust + wind.turbulence);
+    // Rotor wash has its own fast, per-blade turbulence. It is driven by the
+    // cached crush amount so normal grass remains governed solely by weather.
+    let crush_flutter = vec3<f32>(sin(terrain.time * 28.0 + seed * 37.0), 0.0,
+                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.28 * crush);
     // Flowers use a near-flat taper exponent so the stem keeps its width up to
     // the tip -- a petal head painted on a point would vanish.
     let taper = pow(max(1.0 - t, 0.0), shape.z);
     let half_width = width * taper;
-    let curve = (static_bend + wind_bend + crush_bend) * (t * t);
-    let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (static_bend + wind_bend + crush_bend) * (2.0 * t);
+    let standing_bend = (static_bend + wind_bend) * (1.0 - 0.55 * crush) + crush_flutter;
+    let curve = (standing_bend + crush_bend) * (t * t);
+    let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (standing_bend + crush_bend) * (2.0 * t);
     // Preserve a minimum apparent silhouette when a card is nearly edge-on
     // to the camera. This mirrors the reference's view-space widening without
     // reconstructing a second model matrix or making distant ribbons explode.
@@ -593,8 +613,8 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let static_bend = forward * mix(0.04, 0.14, hash11(inst.xz + 71.0));
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush = unpack2x16unorm(inst_packed.y).x;
-    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
-    let crushed_height = height * (1.0 - 0.78 * crush);
+    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
+    let crushed_height = height * (1.0 - 0.55 * crush);
     let card = vertex_index / 12u;
     let packed = vertex_index % 12u;
     let segment = packed / 6u;
@@ -606,7 +626,9 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let wind = sample_wind_field(inst.xz, t, seed);
     let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
         (0.030 + 0.18 * wind.gust + wind.turbulence);
-    let bend = static_bend + wind_bend;
+    let crush_flutter = vec3<f32>(sin(terrain.time * 28.0 + seed * 37.0), 0.0,
+                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.28 * crush);
+    let bend = (static_bend + wind_bend) * (1.0 - 0.55 * crush) + crush_flutter;
     let curve = (bend + crush_bend) * (t * t);
     let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (bend + crush_bend) * (2.0 * t);
     let blade_normal = normalize(cross(blade_axis, tangent));
@@ -662,15 +684,17 @@ fn vs_grass_mid_tuft(@builtin(vertex_index) vertex_index: u32, @builtin(instance
 
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush = unpack2x16unorm(inst_packed.y).x;
-    let crushed_height = height * (1.0 - 0.78 * crush);
-    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
+    let crushed_height = height * (1.0 - 0.55 * crush);
+    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
 
     let wind = sample_wind_field(inst.xz, vh, seed);
     let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
         (0.030 + 0.18 * wind.gust + wind.turbulence);
+    let crush_flutter = vec3<f32>(sin(terrain.time * 28.0 + seed * 37.0), 0.0,
+                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.28 * crush);
     // The whole card leans; roots stay pinned. Quadratic in height, as the
     // procedural blades bend, so a clump does not shear against its neighbours.
-    let lean = (wind_bend + crush_bend) * (vh * vh);
+    let lean = (wind_bend * (1.0 - 0.55 * crush) + crush_bend + crush_flutter) * (vh * vh);
     let lateral = axis * (u - 0.5) * 2.0 * half_width;
     let rel = inst.xyz + lateral + vec3<f32>(0.0, crushed_height * vh, 0.0) + lean - frame.cam_pos.xyz;
 

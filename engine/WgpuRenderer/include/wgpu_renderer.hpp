@@ -665,6 +665,7 @@ struct WgrGrassBatch
 };
 
 enum { WGR_GRASS_TRACK_COUNT = 96 };
+enum { WGR_GRASS_DOWNWASH_COUNT = 4 };
 
 /* One persistent player/vehicle impression. Age is measured in seconds and
  * faded on the GPU, so a trail remains after its source has moved away. */
@@ -674,6 +675,16 @@ struct WgrGrassTrack
     float z;
     float radius;
     float age;
+};
+
+/* A transient rotor-wash field. Unlike tracks this is rebuilt from the live
+ * helicopter list each frame, so grass springs upright as the aircraft leaves. */
+struct WgrGrassDownwash
+{
+    float x;
+    float z;
+    float radius;
+    float strength;
 };
 
 /* Live procedural-grass controls, edited through the developer Grass tab. */
@@ -692,6 +703,7 @@ struct WgrGrassParams
     float interactor_radius;
     float interactor_strength;
     WgrGrassTrack tracks[WGR_GRASS_TRACK_COUNT];
+    WgrGrassDownwash downwash[WGR_GRASS_DOWNWASH_COUNT];
     float debug_ignore_geography_exclusions;
     float clumping;        /* deterministic field-scale orientation/height/density variation */
     float color_variation; /* per-blade and field colour variation */
@@ -1106,7 +1118,8 @@ static_assert(sizeof(WgrTerrainNode) == 24, "WgrTerrainNode layout must match th
 static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrGrassParams) == 1648, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassDownwash) == 16, "WgrGrassDownwash layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassParams) == 1712, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterParams) == 240, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 40, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");

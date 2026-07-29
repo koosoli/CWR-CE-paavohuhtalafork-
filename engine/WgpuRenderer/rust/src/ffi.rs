@@ -763,6 +763,16 @@ pub struct WgrGrassTrack {
 }
 
 pub const WGR_GRASS_TRACK_COUNT: usize = 96;
+pub const WGR_GRASS_DOWNWASH_COUNT: usize = 4;
+
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub struct WgrGrassDownwash {
+    pub x: f32,
+    pub z: f32,
+    pub radius: f32,
+    pub strength: f32,
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -780,6 +790,7 @@ pub struct WgrGrassParams {
     pub interactor_radius: f32,
     pub interactor_strength: f32,
     pub tracks: [WgrGrassTrack; WGR_GRASS_TRACK_COUNT],
+    pub downwash: [WgrGrassDownwash; WGR_GRASS_DOWNWASH_COUNT],
     pub debug_ignore_geography_exclusions: f32,
     pub clumping: f32,
     pub color_variation: f32,
@@ -1009,8 +1020,9 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainNode>() == 24);
 const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
-// 1648 = 103 * 16: the look vec4 keeps the UBO 16-byte aligned.
-const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1648);
+const _: () = assert!(std::mem::size_of::<WgrGrassDownwash>() == 16);
+// 1712 = 107 * 16: the look vec4 keeps the UBO 16-byte aligned.
+const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1712);
 const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 240);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);

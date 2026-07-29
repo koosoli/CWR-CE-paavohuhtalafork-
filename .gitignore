@@ -73,6 +73,8 @@ target/
 # Render/test output
 *.bmp
 *.png
+!/screenshots/
+!/screenshots/**/*.png
 !resources/**/*.png
 !docs/**/*.png
 !tests/missions/screenshot/**/*.bmp

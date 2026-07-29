@@ -6,11 +6,12 @@ struct TerrainParams {
     wet_height: f32, wet_darken: f32, pad_a: f32, pad_b: f32,
 };
 struct GrassTrack { x: f32, z: f32, radius: f32, age: f32 };
+struct GrassDownwash { x: f32, z: f32, radius: f32, strength: f32 };
 struct GrassParams {
     density: f32, spacing: f32, near_radius: f32, enabled: f32,
     blade_height: f32, wind_strength: f32, wind_direction: f32, far_radius: f32,
     interactor_x: f32, interactor_z: f32, interactor_radius: f32, interactor_strength: f32,
-    tracks: array<GrassTrack, 96>, debug_flags: vec4<f32>, render_flags: vec4<f32>,
+    tracks: array<GrassTrack, 96>, downwash: array<GrassDownwash, 4>, debug_flags: vec4<f32>, render_flags: vec4<f32>,
     species_mix: vec4<f32>,
     // Layout must mirror grass.wgsl exactly -- same uniform buffer.
     look: vec4<f32>,
@@ -99,8 +100,8 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let inst_packed = instances[instance_index].packed;
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush = unpack2x16unorm(inst_packed.y).x;
-    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.42 * crush);
-    let crushed_height = height * (1.0 - 0.78 * crush);
+    let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
+    let crushed_height = height * (1.0 - 0.55 * crush);
     let card = vertex_index / 30u;
     let packed = vertex_index % 30u;
     let segment = packed / 6u;
@@ -112,7 +113,9 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let wind = sample_wind_field(inst.xz, t, seed);
     let wind_bend = vec3<f32>(wind.x, 0.0, wind.y) * grass.wind_strength *
         (0.035 + 0.21 * wind.z + wind.w);
-    let bend = static_bend + wind_bend + crush_bend;
+    let crush_flutter = vec3<f32>(sin(terrain.time * 28.0 + seed * 37.0), 0.0,
+                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.28 * crush);
+    let bend = (static_bend + wind_bend) * (1.0 - 0.55 * crush) + crush_bend + crush_flutter;
     // species_mix.z mirrors the Grass-tab blade width multiplier, or a widened
     // blade would cast the shadow of a thin one.
     let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x *

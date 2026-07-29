@@ -1,5 +1,6 @@
 #include <Poseidon/Core/Application.hpp>
 #include <Poseidon/Core/Config/EngineConfig.hpp>
+#include <Poseidon/Graphics/Core/Engine.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
 #include <stdlib.h>
 #include <cmath>
@@ -881,6 +882,16 @@ void Landscape::ExplosionDammageEffects(EntityAI* owner, Shot* shot, Object* dir
     if (!type)
     {
         return;
+    }
+
+    // Grass reactions are visual-only and are deliberately driven from this
+    // shared impact path, so local and replicated explosions bend identically.
+    // Restrict it to explosive ammo: ordinary bullet strikes should not mash a
+    // visible circular patch into the meadow.
+    if (type->explosive && GEngine)
+    {
+        const float radius = std::clamp(2.0f + std::sqrt(std::max(type->hit, 0.0f)) * 0.55f, 2.0f, 14.0f);
+        GEngine->AddGrassImpact(pos, radius);
     }
 
     // Collision paths for distant terrain tiles can bypass ShotShell's explicit

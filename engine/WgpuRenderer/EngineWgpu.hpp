@@ -154,6 +154,7 @@ class EngineWgpu : public EngineDummy
     // overlays.  The procedural system uses that exact hook as its eligibility
     // signal instead of drawing over every opaque terrain cell.
     void SetGrassParams(float a1, float a2, float a3 = 0, float a4 = 0) override;
+    void AddGrassImpact(Vector3Par position, float radius) override;
       bool CanGrass() const override { return _renderer != nullptr; }
       GrassSettings GetGrassSettings() const override { return _grass; }
       void SetGrassSettings(const GrassSettings& settings) override;

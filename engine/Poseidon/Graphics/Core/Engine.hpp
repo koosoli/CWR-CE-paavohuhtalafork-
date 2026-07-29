@@ -648,6 +648,8 @@ class Engine : public IGraphicsEngine
     void SetBias(int value) override = 0;
 
     virtual void SetGrassParams(float a1, float a2, float a3 = 0, float a4 = 0) {}
+    /// Stamp a local, recovering bend into procedural grass (for explosions and impacts).
+    virtual void AddGrassImpact(Vector3Par /*position*/, float /*radius*/) {}
     virtual bool CanGrass() const { return false; }
 
     bool CanZBias() const override = 0;

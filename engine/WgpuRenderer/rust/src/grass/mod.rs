@@ -1,6 +1,6 @@
 mod blade_atlas;
 
-use crate::ffi::{WgrGrassParams, WgrGrassTrack, WgrTerrainParams, WGR_GRASS_TRACK_COUNT};
+use crate::ffi::{WgrGrassDownwash, WgrGrassParams, WgrGrassTrack, WgrTerrainParams, WGR_GRASS_DOWNWASH_COUNT, WGR_GRASS_TRACK_COUNT};
 use crate::gfx3d::{DEPTH_FORMAT, NORMAL_FORMAT};
 use crate::terrain::Terrain;
 
@@ -32,6 +32,7 @@ struct GrassParams {
     interactor_radius: f32,
     interactor_strength: f32,
     tracks: [WgrGrassTrack; WGR_GRASS_TRACK_COUNT],
+    downwash: [WgrGrassDownwash; WGR_GRASS_DOWNWASH_COUNT],
     debug_ignore_geography_exclusions: f32,
     clumping: f32,
     color_variation: f32,
@@ -226,6 +227,7 @@ impl Grass {
             interactor_radius: 0.0,
             interactor_strength: 0.0,
             tracks: [WgrGrassTrack { x: 0.0, z: 0.0, radius: 0.0, age: 0.0 }; WGR_GRASS_TRACK_COUNT],
+            downwash: [WgrGrassDownwash { x: 0.0, z: 0.0, radius: 0.0, strength: 0.0 }; WGR_GRASS_DOWNWASH_COUNT],
             debug_ignore_geography_exclusions: 0.0,
             clumping: 0.55,
             color_variation: 0.35,
@@ -879,6 +881,7 @@ impl Grass {
             interactor_radius: params.interactor_radius.clamp(0.0, 16.0),
             interactor_strength: params.interactor_strength.clamp(0.0, 1.0),
             tracks: params.tracks,
+            downwash: params.downwash,
             debug_ignore_geography_exclusions: params.debug_ignore_geography_exclusions,
             clumping: params.clumping.clamp(0.0, 1.0),
             color_variation: params.color_variation.clamp(0.0, 1.0),

@@ -24,6 +24,7 @@
 #include <Poseidon/World/MapTypes.hpp> // MapBush (spherical/canopy-normal flagging)
 #include <Poseidon/World/Scene/Object.hpp> // Object accessors (GPU-driven retained scene)
 #include <Poseidon/World/World.hpp> // live player/vehicle interaction for grass
+#include <Poseidon/World/Entities/Vehicles/Air/Helicopter.hpp> // rotor wash for grass
 #include <Poseidon/World/Scene/ObjectClasses.hpp> // ForestPlain (mode-1 conform exclusion)
 #include <Poseidon/World/Terrain/Landscape.hpp> // GLandscape->SurfaceY (GPU-driven conform bcSurfaceY)
 #include <Poseidon/Graphics/Shared/PNGWriter.hpp>
@@ -43,6 +44,7 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <limits>
 #include <span>
 
 namespace Poseidon
@@ -2877,6 +2879,18 @@ void EngineWgpu::SetGrassParams(float, float, float, float)
     SubmitGrass();
 }
 
+void EngineWgpu::AddGrassImpact(Vector3Par position, float radius)
+{
+    if (!_renderer || radius <= 0.01f)
+    {
+        return;
+    }
+    // Reuse the established recovering track ring. Its radial direction makes
+    // an explosion flatten blades outward from the point of impact.
+    _grassTracks[_nextGrassTrack] = WgrGrassTrack{position.X(), position.Z(), std::clamp(radius, 0.5f, 16.0f), 0.0f};
+    _nextGrassTrack = (_nextGrassTrack + 1) % _grassTracks.size();
+}
+
 void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
 {
     _grass = settings;
@@ -2961,6 +2975,17 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
           params.interactor_z = pos.Z();
           params.interactor_radius = std::clamp(interactor->VisibleSize() * 0.55f, 1.1f, 8.0f);
           params.interactor_strength = 1.0f;
+          // CameraOn is the occupied vehicle in normal play. Give a powered
+          // player helicopter an explicit, large crush field here rather than
+          // depending solely on the broader world-vehicle query below. This
+          // also covers the first few frames of takeoff before the helicopter
+          // has settled into the distributed vehicle list.
+          if (const HelicopterAuto* helicopter = dyn_cast<const HelicopterAuto>(interactor);
+              helicopter && helicopter->EngineIsOn())
+          {
+              params.interactor_radius = 25.0f;
+              params.interactor_strength = 1.0f;
+          }
           _grassTrackSampleTime += dt;
           // Wider stamp spacing uses the existing soft-radius falloff to keep
           // a continuous trail while preserving substantially more history in
@@ -2975,6 +3000,36 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
               _grassTrackSampleTime = 0.0f;
               _haveGrassTrackPos = true;
           }
+      }
+      // Rotor wash is intentionally transient. Keep the four closest powered
+      // helicopters whose downwash can reach the camera's grass region. Checking
+      // the rotor state rather than Airborne() makes the effect begin while the
+      // skids are still touching the ground, where takeoff is most noticeable.
+      if (GWorld && GLandscape)
+      {
+          struct Candidate { float distance2; WgrGrassDownwash wash; };
+          std::array<Candidate, WGR_GRASS_DOWNWASH_COUNT> nearest{};
+          for (Candidate& entry : nearest) entry.distance2 = std::numeric_limits<float>::infinity();
+          const Vector3 cameraPos = GWorld->CameraOn() ? GWorld->CameraOn()->Position() : VZero;
+          for (int i = 0; i < GWorld->NVehicles(); ++i)
+          {
+              const HelicopterAuto* helicopter = dyn_cast<const HelicopterAuto>(GWorld->GetVehicle(i));
+              if (!helicopter || !helicopter->EngineIsOn()) continue;
+              const Vector3 pos = helicopter->Position();
+              const float height = std::max(0.0f, pos.Y() - GLandscape->SurfaceY(pos.X(), pos.Z()));
+              if (height > 65.0f) continue;
+              const float radius = 10.0f + height * 0.40f;
+              // Keep enough force at the upper edge of the range to visibly
+              // press the blades flat rather than merely sway their tips.
+              const float strength = std::clamp(1.10f - height / 260.0f, 0.85f, 1.0f);
+              const float distance2 = (pos - cameraPos).SquareSizeXZ();
+              int slot = 0;
+              for (int j = 1; j < WGR_GRASS_DOWNWASH_COUNT; ++j)
+                  if (nearest[j].distance2 > nearest[slot].distance2) slot = j;
+              if (distance2 < nearest[slot].distance2)
+                  nearest[slot] = Candidate{distance2, {pos.X(), pos.Z(), radius, strength}};
+          }
+          for (int i = 0; i < WGR_GRASS_DOWNWASH_COUNT; ++i) params.downwash[i] = nearest[i].wash;
       }
       std::copy(_grassTracks.begin(), _grassTracks.end(), params.tracks);
       wgr_grass_set_params(_renderer, &params);
