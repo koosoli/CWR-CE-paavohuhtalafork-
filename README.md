@@ -1,17 +1,22 @@
 # PoseidonWGPU
 
+[![Sponsor on GitHub](https://img.shields.io/badge/Sponsor-GitHub%20Sponsors-ea4aaa?logo=githubsponsors&logoColor=white)](https://github.com/sponsors/koosoli)
+[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20me%20a%20coffee-support-ffdd00?logo=buymeacoffee&logoColor=black)](https://buymeacoffee.com/koosoli)
+
 **PoseidonWGPU** is a modernization-focused fork of the classic Poseidon engine
 behind *Arma: Cold War Assault* / *Operation Flashpoint: Cold War Crisis*.
 Its goal is simple: make this landmark 2001 game feel as modern as possible
 while preserving compatibility with the original assets, data formats, missions,
 and gameplay.
 
+> This is an independent community project and is not an official Bohemia
+> Interactive product.
+
+## Current preview
+
 ![PoseidonWGPU in-game screenshot](screenshots/1.png)
 
 ![PoseidonWGPU in-game screenshot](screenshots/2.png)
-
-> This is an independent community project and is not an official Bohemia
-> Interactive product.
 
 ## What PoseidonWGPU adds
 
@@ -46,7 +51,7 @@ Much of this work involves long-running renderer development, testing on legacy
 assets, and AI-assisted code exploration. If you would like to support the work,
 funds go toward API usage and direct development costs for PoseidonWGPU.
 
-> **❤️ [Sponsor on GitHub](https://github.com/sponsors/koosoli)** &nbsp;&nbsp; **☕ [Buy me a coffee](https://buymeacoffee.com/koosoli)**
+Use the GitHub Sponsors or Buy Me a Coffee buttons above to support the project.
 
 ## Quick start
 
