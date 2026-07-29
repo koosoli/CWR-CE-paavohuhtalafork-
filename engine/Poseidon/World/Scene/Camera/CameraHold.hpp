@@ -107,6 +107,7 @@ class CameraVehicle: public CameraHolder
 
 	bool _inertia; // manual camera simulation 
 	bool _crossHairs;
+	bool _altitudeSpeedScaling;
 
 	public:
 	Vector3 GetTarget() const;
@@ -115,6 +116,8 @@ class CameraVehicle: public CameraHolder
 	~CameraVehicle() override;
 
 	void ResetTargets();
+	// Debug free-fly can opt into Game Master-style speed scaling.
+	void SetAltitudeSpeedScaling(bool enabled) { _altitudeSpeedScaling = enabled; }
 
 	void Simulate( float deltaT, SimulationImportance prec ) override;
 

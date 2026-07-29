@@ -52,9 +52,17 @@
 #include <Poseidon/Foundation/Memory/MemFreeReq.hpp>
 #include <Poseidon/World/World.hpp>
 #include <Poseidon/World/WorldInputContext.hpp>
+#include <Poseidon/World/Scene/Camera/CamEffects.hpp>
+#include <Poseidon/World/Scene/Camera/CameraHold.hpp>
 #include <Poseidon/World/Entities/Infantry/Person.hpp>
 #include <Poseidon/World/Entities/Vehicles/Transport.hpp>
 #include <Poseidon/World/Scene/Object.hpp>
+#include <Poseidon/World/Terrain/Landscape.hpp>
+#include <Poseidon/AI/AICenter.hpp>
+#include <Poseidon/AI/AIGroup.hpp>
+#include <Poseidon/AI/AIUnit.hpp>
+#include <Poseidon/AI/EntityAI.hpp>
+#include <Poseidon/Network/Network.hpp>
 #include <Poseidon/Foundation/Common/GamePaths.hpp>
 #include <Evaluator/express.hpp>
 #include <filesystem>
@@ -70,6 +78,7 @@ extern void SetVisibility(float distance);
 #include <cstring>
 #include <cstdio>
 #include <functional>
+#include <array>
 #include <vector>
 
 namespace Poseidon::Dev
@@ -122,6 +131,322 @@ std::vector<std::function<void()>> s_pendingActions;
 void Defer(std::function<void()> action)
 {
     s_pendingActions.push_back(std::move(action));
+}
+
+// Zeus is deliberately a dev-panel feature, rather than a mission-script
+// command.  The camera is the engine's native manual CameraVehicle, which
+// already implements collision-safe free flight and the normal movement
+// bindings.  Keeping it here also means it cannot leak into release builds.
+OLink<CameraVehicle> s_zeusCamera;
+std::string s_zeusStatus;
+int s_zeusSide = 0;
+int s_zeusSpawnKind = 0;
+int s_zeusPreset = 0;
+int s_zeusCount = 1;
+float s_zeusDistance = 25.0f;
+char s_zeusClassName[96] = "SoldierWB";
+bool s_zeusClickPlacement = false;
+bool s_zeusConsumeMouseEvent = false;
+bool s_zeusSuppressNextMouseUp = false;
+
+constexpr std::array<const char*, 4> kZeusSideNames = {"West", "East", "Resistance", "Civilian"};
+constexpr std::array<TargetSide, 4> kZeusSides = {TWest, TEast, TGuerrila, TCivilian};
+constexpr std::array<const char*, 6> kZeusUnitPresets = {"SoldierWB", "SoldierEB", "SoldierGB", "OfficerW",
+                                                          "OfficerE", "Civilian"};
+constexpr std::array<const char*, 7> kZeusVehiclePresets = {"Jeep", "UAZ", "M1A1", "T72", "BMP", "UH60",
+                                                             "Mi17"};
+
+bool ZeusWorldAvailable()
+{
+    return GWorld && GLandscape && GWorld->CameraOn();
+}
+
+void SetZeusClassFromPreset()
+{
+    if (s_zeusSpawnKind == 0)
+    {
+        const int preset = std::clamp(s_zeusPreset, 0, static_cast<int>(kZeusUnitPresets.size()) - 1);
+        snprintf(s_zeusClassName, sizeof(s_zeusClassName), "%s", kZeusUnitPresets[preset]);
+    }
+    else
+    {
+        const int preset = std::clamp(s_zeusPreset, 0, static_cast<int>(kZeusVehiclePresets.size()) - 1);
+        snprintf(s_zeusClassName, sizeof(s_zeusClassName), "%s", kZeusVehiclePresets[preset]);
+    }
+}
+
+void EnableZeusCamera()
+{
+    if (!ZeusWorldAvailable())
+    {
+        s_zeusStatus = "Zeus requires a loaded world.";
+        return;
+    }
+    if (s_zeusCamera)
+    {
+        s_zeusStatus = "Free-fly camera is already active.";
+        return;
+    }
+
+    Object* source = GWorld->CameraOn();
+    auto* camera = new CameraVehicle();
+    camera->SetPosition(source->CameraPosition());
+    camera->SetDirectionAndUp(source->Direction(), VUp);
+    camera->SetManual(true);
+    camera->SetAltitudeSpeedScaling(true);
+    camera->ResetTargets();
+    GWorld->AddAnimal(camera);
+    GWorld->SetCameraEffect(CreateCameraEffect(camera, "Internal", CamEffectTop, true));
+    s_zeusCamera = camera;
+    s_zeusStatus = "Free-fly active: WASD move, Q/Z up/down, Shift doubles speed, mouse look; keypad +/- zoom. Press Ctrl+` to reopen Zeus.";
+    // The panel captures mouse input while it is visible. Hide it immediately
+    // so the camera becomes controllable as soon as Zeus is enabled.
+    SetVisible(false);
+}
+
+void DisableZeusCamera()
+{
+    if (!s_zeusCamera)
+    {
+        s_zeusStatus = "Free-fly camera is not active.";
+        return;
+    }
+    GWorld->SetCameraEffect(nullptr);
+    s_zeusCamera->SetDelete();
+    s_zeusCamera = nullptr;
+    s_zeusClickPlacement = false;
+    s_zeusStatus = "Free-fly ended; returned to the normal camera.";
+}
+
+Vector3 ZeusSpawnPosition(int index, int count)
+{
+    Object* source = s_zeusCamera ? static_cast<Object*>(s_zeusCamera) : GWorld->CameraOn();
+    Vector3 pos = source->Position() + source->Direction() * s_zeusDistance;
+    const float offset = (static_cast<float>(index) - (static_cast<float>(count) - 1.0f) * 0.5f) * 4.0f;
+    pos += source->DirectionAside() * offset;
+    pos[1] = GLandscape->RoadSurfaceYAboveWater(pos[0], pos[2]);
+    return pos;
+}
+
+bool ZeusClickPosition(Vector3& position)
+{
+    if (!s_zeusCamera || !GLandscape)
+        return false;
+    return GLandscape->IntersectWithGroundOrSea(&position, s_zeusCamera->Position(), s_zeusCamera->Direction(), 0.0f,
+                                                 10000.0f) >= 0.0f;
+}
+
+bool SpawnZeusVehicle(const char* className, Vector3Par position)
+{
+    Ref<Entity> vehicle = NewNonAIVehicle(className);
+    if (!vehicle)
+        return false;
+
+    EntityAI* aiVehicle = dyn_cast<EntityAI>(vehicle.GetRef());
+    Matrix4 transform;
+    transform.SetPosition(position);
+    transform.SetUpAndDirection(VUp, VForward);
+    if (aiVehicle)
+        aiVehicle->PlaceOnSurface(transform);
+    vehicle->SetTransform(transform);
+    vehicle->Init(transform);
+
+    if (aiVehicle)
+    {
+        if (aiVehicle->GetNonAIType()->IsKindOf(GWorld->Preloaded(VTypeStatic)))
+        {
+            GWorld->AddBuilding(vehicle);
+            if (GWorld->GetMode() == GModeNetware)
+                GetNetworkManager().CreateVehicle(vehicle, VLTBuilding, "", -1);
+        }
+        else
+        {
+            GWorld->AddVehicle(vehicle);
+            if (GWorld->GetMode() == GModeNetware)
+                GetNetworkManager().CreateVehicle(vehicle, VLTVehicle, "", -1);
+        }
+    }
+    else
+    {
+        GWorld->AddAnimal(vehicle);
+        if (GWorld->GetMode() == GModeNetware)
+            GetNetworkManager().CreateVehicle(vehicle, VLTAnimal, "", -1);
+    }
+
+    return true;
+}
+
+bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position)
+{
+    AICenter* center = GWorld->GetCenter(side);
+    if (!center)
+        center = GWorld->CreateCenter(side);
+    if (!center || center->NGroups() >= MaxGroups)
+        return false;
+
+    Ref<EntityAI> vehicle = NewVehicle(className);
+    Person* soldier = dyn_cast<Person>(vehicle.GetRef());
+    if (!soldier)
+        return false;
+
+    Ref<AIGroup> group = new AIGroup();
+    center->AddGroup(group);
+    group->AddFirstWaypoint(position);
+
+    Matrix4 transform;
+    transform.SetPosition(position);
+    transform.SetUpAndDirection(VUp, VForward);
+    vehicle->PlaceOnSurface(transform);
+    vehicle->SetTransform(transform);
+    vehicle->Init(transform);
+    vehicle->SetTargetSide(side);
+    GWorld->AddVehicle(vehicle);
+    if (GWorld->GetMode() == GModeNetware)
+        GetNetworkManager().CreateVehicle(vehicle, VLTVehicle, "", -1);
+    GWorld->AddSensor(soldier);
+
+    AIUnit* unit = soldier->Brain();
+    if (!unit)
+        return false;
+    unit->Load(center->NextSoldierIdentity(soldier->IsWoman()));
+    unit->SetAbility(0.5f);
+    AISubgroup* subgroup = group->MainSubgroup();
+    group->AddUnit(unit);
+    if (GWorld->GetMode() == GModeNetware)
+    {
+        if (!subgroup)
+            GetNetworkManager().CreateObject(group->MainSubgroup());
+        GetNetworkManager().CreateObject(unit);
+    }
+    center->SelectLeader(group);
+    return true;
+}
+
+void SpawnZeusSelection()
+{
+    if (!ZeusWorldAvailable())
+    {
+        s_zeusStatus = "Spawning requires a loaded world.";
+        return;
+    }
+    if (s_zeusClassName[0] == '\0')
+    {
+        s_zeusStatus = "Enter a config class name first.";
+        return;
+    }
+
+    const int count = std::clamp(s_zeusCount, 1, 32);
+    int spawned = 0;
+    for (int i = 0; i < count; ++i)
+    {
+        const Vector3 position = ZeusSpawnPosition(i, count);
+        const bool didSpawn = s_zeusSpawnKind == 0 ? SpawnZeusUnit(s_zeusClassName, kZeusSides[s_zeusSide], position)
+                                                   : SpawnZeusVehicle(s_zeusClassName, position);
+        spawned += didSpawn ? 1 : 0;
+    }
+    s_zeusStatus = "Spawned " + std::to_string(spawned) + " / " + std::to_string(count) + " " + s_zeusClassName + ".";
+}
+
+void SpawnZeusAtClick()
+{
+    Vector3 position;
+    if (!ZeusClickPosition(position))
+    {
+        s_zeusStatus = "No terrain was under the Zeus crosshair.";
+        return;
+    }
+    const bool spawned = s_zeusSpawnKind == 0 ? SpawnZeusUnit(s_zeusClassName, kZeusSides[s_zeusSide], position)
+                                               : SpawnZeusVehicle(s_zeusClassName, position);
+    s_zeusStatus = spawned ? "Placed " + std::string(s_zeusClassName) + "."
+                            : "Could not place " + std::string(s_zeusClassName) + ".";
+}
+
+void DrawZeusTab()
+{
+    const bool worldAvailable = ZeusWorldAvailable();
+    ImGui::TextUnformatted("Zeus Mode");
+    ImGui::SameLine();
+    ImGui::TextDisabled("native free-fly camera and live spawning");
+    ImGui::Separator();
+
+    ImGui::BeginDisabled(!worldAvailable);
+    if (!s_zeusCamera)
+    {
+        if (ImGui::Button("Enable free-fly"))
+            EnableZeusCamera();
+    }
+    else if (ImGui::Button("Exit free-fly"))
+        DisableZeusCamera();
+    ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+        ImGui::SetTooltip("WASD moves, Q/Z changes altitude, and the mouse looks around.\nKeypad +/- changes zoom.");
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Spawn at camera aim");
+    ImGui::Separator();
+    ImGui::BeginDisabled(!worldAvailable);
+    if (ImGui::RadioButton("Unit", s_zeusSpawnKind == 0))
+    {
+        s_zeusSpawnKind = 0;
+        s_zeusPreset = 0;
+        SetZeusClassFromPreset();
+    }
+    ImGui::SameLine();
+    if (ImGui::RadioButton("Vehicle", s_zeusSpawnKind == 1))
+    {
+        s_zeusSpawnKind = 1;
+        s_zeusPreset = 0;
+        SetZeusClassFromPreset();
+    }
+
+    const auto presetName = [&]() -> const char* {
+        return s_zeusSpawnKind == 0 ? kZeusUnitPresets[std::clamp(s_zeusPreset, 0, static_cast<int>(kZeusUnitPresets.size()) - 1)]
+                                   : kZeusVehiclePresets[std::clamp(s_zeusPreset, 0, static_cast<int>(kZeusVehiclePresets.size()) - 1)];
+    };
+    if (ImGui::BeginCombo("Preset", presetName()))
+    {
+        const int count = s_zeusSpawnKind == 0 ? static_cast<int>(kZeusUnitPresets.size())
+                                                : static_cast<int>(kZeusVehiclePresets.size());
+        for (int i = 0; i < count; ++i)
+        {
+            const char* name = s_zeusSpawnKind == 0 ? kZeusUnitPresets[i] : kZeusVehiclePresets[i];
+            if (ImGui::Selectable(name, s_zeusPreset == i))
+            {
+                s_zeusPreset = i;
+                SetZeusClassFromPreset();
+            }
+        }
+        ImGui::EndCombo();
+    }
+    if (s_zeusSpawnKind == 0)
+        ImGui::Combo("Side", &s_zeusSide, kZeusSideNames.data(), static_cast<int>(kZeusSideNames.size()));
+    ImGui::InputText("Config class", s_zeusClassName, sizeof(s_zeusClassName));
+    ImGui::SetItemTooltip("Any loaded CfgVehicles class can be entered here. Presets use original CWA class names.");
+    ImGui::SliderFloat("Distance (m)", &s_zeusDistance, 2.0f, 250.0f, "%.0f");
+    ImGui::SliderInt("Count", &s_zeusCount, 1, 32);
+    if (ImGui::Button("Spawn"))
+        Defer([] { SpawnZeusSelection(); });
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!s_zeusCamera);
+    if (ImGui::Button(s_zeusClickPlacement ? "Stop click placement" : "Place with clicks"))
+    {
+        s_zeusClickPlacement = !s_zeusClickPlacement;
+        s_zeusStatus = s_zeusClickPlacement
+                           ? "Click placement armed. Close the panel and left-click the crosshair target to place more."
+                           : "Click placement stopped.";
+        if (s_zeusClickPlacement && s_zeusCamera)
+            SetVisible(false);
+    }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+
+    if (!worldAvailable)
+        ImGui::TextDisabled("Load a mission or world to use Zeus.");
+    if (!s_zeusStatus.empty())
+    {
+        ImGui::Separator();
+        ImGui::TextWrapped("%s", s_zeusStatus.c_str());
+    }
 }
 
 // One mutable copy per (slot, role) shown by the tuner.  Pulled from the
@@ -3046,6 +3371,11 @@ void DrawMainWindow()
 
     if (ImGui::BeginTabBar("DevPanelTabs"))
     {
+        if (ImGui::BeginTabItem("Zeus"))
+        {
+            DrawZeusTab();
+            ImGui::EndTabItem();
+        }
         if (ImGui::BeginTabItem("Cheats"))
         {
             DrawCheatsTab();
@@ -3340,6 +3670,25 @@ void ProcessEvent(const SDL_Event& event)
 {
     if (!s_initialized)
         return;
+    // Zeus consumes only the placement click itself (and its matching release),
+    // not mouse motion. This leaves the mouse free to look around while a
+    // placement selection remains armed for repeated clicks.
+    s_zeusConsumeMouseEvent = false;
+    if (!s_visible && s_zeusClickPlacement && s_zeusCamera)
+    {
+        if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT)
+        {
+            s_zeusConsumeMouseEvent = true;
+            s_zeusSuppressNextMouseUp = true;
+            Defer([] { SpawnZeusAtClick(); });
+        }
+        else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT &&
+                 s_zeusSuppressNextMouseUp)
+        {
+            s_zeusConsumeMouseEvent = true;
+            s_zeusSuppressNextMouseUp = false;
+        }
+    }
     ImGui_ImplSDL3_ProcessEvent(&event);
 
     if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
@@ -3466,8 +3815,9 @@ bool WantsKeyboard()
 
 bool WantsMouse()
 {
-    // Claim every mouse event while the panel is open to prevent the camera from moving
-    return s_initialized && s_visible;
+    // Claim every mouse event while the panel is open to prevent the camera from moving.
+    // Zeus claims only a placement click; motion still reaches the free-fly camera.
+    return s_initialized && (s_visible || s_zeusConsumeMouseEvent);
 }
 
 } // namespace DebugOverlay

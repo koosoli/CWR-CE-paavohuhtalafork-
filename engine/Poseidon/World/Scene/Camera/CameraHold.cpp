@@ -115,7 +115,7 @@ LSError CameraHolder::Serialize(ParamArchive& ar)
 
 CameraVehicle::CameraVehicle()
     : base(nullptr, VehicleTypes.New("Camera"), -1), _inertia(false), // manual camera simulation
-      _crossHairs(true)
+      _crossHairs(true), _altitudeSpeedScaling(false)
 {
     // set all target properties to invalid values
     _movePos = VZero;
@@ -354,7 +354,24 @@ void CameraVehicle::Simulate(float deltaT, SimulationImportance prec)
         Matrix3 speedOrient;
         speedOrient.SetUpAndDirection(VUp, Direction());
 
-        Vector3 speedWanted = speedOrient * Vector3(aside, up, forward);
+        float speedScale = 1.0f;
+        if (_altitudeSpeedScaling)
+        {
+            // The curve steepens with altitude: precise placement close to the
+            // ground, then rapidly increasing travel speed high above the map.
+            float groundY = GLandscape->SurfaceYAboveWater(Position()[0], Position()[2]);
+            float altitude = fmax(Position()[1] - groundY, 0.0f);
+            speedScale = fmin(1.0f + altitude * 0.03f + altitude * altitude * 0.00002f, 64.0f);
+
+            // Shift is an absolute two-times multiplier for Zeus flight: it
+            // accelerates sideways, vertical, and forward movement equally.
+            if (input.IsKeyDown(SDL_SCANCODE_LSHIFT) || input.IsKeyDown(SDL_SCANCODE_RSHIFT))
+            {
+                speedScale *= 2.0f;
+            }
+        }
+
+        Vector3 speedWanted = speedOrient * Vector3(aside, up, forward) * speedScale;
         if (_inertia)
         {
             // smooth changes
@@ -381,8 +398,15 @@ void CameraVehicle::Simulate(float deltaT, SimulationImportance prec)
 
         float headSpeed = input.GetKeyValue(SDL_SCANCODE_KP_4) - input.GetKeyValue(SDL_SCANCODE_KP_6);
         float diveSpeed = input.GetKeyValue(SDL_SCANCODE_KP_2) - input.GetKeyValue(SDL_SCANCODE_KP_8);
-        float headChange = headSpeed * 2 * deltaT * _lastFov;
-        float diveChange = diveSpeed * 2 * deltaT * _lastFov;
+        // Manual cameras are used by the debug Zeus mode as well as scripted
+        // cut-scenes.  Match the viewer's mouse-look scale so a free camera
+        // can be flown naturally without relying on the numeric keypad.
+        constexpr float mouseLookScale = 0.005f;
+        // Zeus/free-fly uses inverted mouse axes: move left to look right,
+        // and move down to look up. Keyboard controls retain their normal
+        // directions.
+        float headChange = headSpeed * 2 * deltaT * _lastFov - input.GetMouseDeltaX() * mouseLookScale;
+        float diveChange = diveSpeed * 2 * deltaT * _lastFov + input.GetMouseDeltaY() * mouseLookScale;
         Matrix3 orient = Orientation();
         if (headChange)
         {
