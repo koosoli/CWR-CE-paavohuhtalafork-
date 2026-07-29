@@ -144,6 +144,7 @@ int s_zeusSpawnKind = 0;
 int s_zeusPreset = 0;
 int s_zeusCount = 1;
 float s_zeusDistance = 25.0f;
+float s_zeusHeading = 0.0f;
 char s_zeusClassName[96] = "SoldierWB";
 bool s_zeusClickPlacement = false;
 bool s_zeusConsumeMouseEvent = false;
@@ -236,7 +237,7 @@ bool ZeusClickPosition(Vector3& position)
                                                  10000.0f) >= 0.0f;
 }
 
-bool SpawnZeusVehicle(const char* className, Vector3Par position)
+bool SpawnZeusVehicle(const char* className, Vector3Par position, float heading)
 {
     Ref<Entity> vehicle = NewNonAIVehicle(className);
     if (!vehicle)
@@ -245,7 +246,7 @@ bool SpawnZeusVehicle(const char* className, Vector3Par position)
     EntityAI* aiVehicle = dyn_cast<EntityAI>(vehicle.GetRef());
     Matrix4 transform;
     transform.SetPosition(position);
-    transform.SetUpAndDirection(VUp, VForward);
+    transform.SetOrientation(Matrix3(MRotationY, heading * (H_PI / 180.0f)));
     if (aiVehicle)
         aiVehicle->PlaceOnSurface(transform);
     vehicle->SetTransform(transform);
@@ -276,7 +277,7 @@ bool SpawnZeusVehicle(const char* className, Vector3Par position)
     return true;
 }
 
-bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position)
+bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position, float heading)
 {
     AICenter* center = GWorld->GetCenter(side);
     if (!center)
@@ -292,10 +293,25 @@ bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position)
     Ref<AIGroup> group = new AIGroup();
     center->AddGroup(group);
     group->AddFirstWaypoint(position);
+    Mission mission;
+    mission._action = Mission::Arcade;
+    center->SendMission(group, mission);
+    if (GWorld->GetMode() == GModeNetware)
+        GetNetworkManager().CreateObject(group);
+
+    // Follow the regular createUnit path: find a collision-free spot before
+    // initializing the soldier, which prevents invalid move/action state.
+    Vector3 normal;
+    Vector3 safePosition = position;
+    if (AIUnit::FindFreePosition(safePosition, normal, true, vehicle))
+    {
+        float dx, dz;
+        safePosition[1] = GLandscape->RoadSurfaceYAboveWater(safePosition[0], safePosition[2], &dx, &dz);
+    }
 
     Matrix4 transform;
-    transform.SetPosition(position);
-    transform.SetUpAndDirection(VUp, VForward);
+    transform.SetPosition(safePosition);
+    transform.SetOrientation(Matrix3(MRotationY, heading * (H_PI / 180.0f)));
     vehicle->PlaceOnSurface(transform);
     vehicle->SetTransform(transform);
     vehicle->Init(transform);
@@ -309,6 +325,9 @@ bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position)
     if (!unit)
         return false;
     unit->Load(center->NextSoldierIdentity(soldier->IsWoman()));
+    AIUnitInfo& aiInfo = soldier->GetInfo();
+    aiInfo._rank = RankPrivate;
+    aiInfo._initExperience = aiInfo._experience = AI::ExpForRank(RankPrivate);
     unit->SetAbility(0.5f);
     AISubgroup* subgroup = group->MainSubgroup();
     group->AddUnit(unit);
@@ -318,7 +337,8 @@ bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position)
             GetNetworkManager().CreateObject(group->MainSubgroup());
         GetNetworkManager().CreateObject(unit);
     }
-    center->SelectLeader(group);
+    if (!group->Leader())
+        center->SelectLeader(group);
     return true;
 }
 
@@ -340,8 +360,9 @@ void SpawnZeusSelection()
     for (int i = 0; i < count; ++i)
     {
         const Vector3 position = ZeusSpawnPosition(i, count);
-        const bool didSpawn = s_zeusSpawnKind == 0 ? SpawnZeusUnit(s_zeusClassName, kZeusSides[s_zeusSide], position)
-                                                   : SpawnZeusVehicle(s_zeusClassName, position);
+        const bool didSpawn = s_zeusSpawnKind == 0
+                                  ? SpawnZeusUnit(s_zeusClassName, kZeusSides[s_zeusSide], position, s_zeusHeading)
+                                  : SpawnZeusVehicle(s_zeusClassName, position, s_zeusHeading);
         spawned += didSpawn ? 1 : 0;
     }
     s_zeusStatus = "Spawned " + std::to_string(spawned) + " / " + std::to_string(count) + " " + s_zeusClassName + ".";
@@ -355,8 +376,9 @@ void SpawnZeusAtClick()
         s_zeusStatus = "No terrain was under the Zeus crosshair.";
         return;
     }
-    const bool spawned = s_zeusSpawnKind == 0 ? SpawnZeusUnit(s_zeusClassName, kZeusSides[s_zeusSide], position)
-                                               : SpawnZeusVehicle(s_zeusClassName, position);
+    const bool spawned = s_zeusSpawnKind == 0
+                             ? SpawnZeusUnit(s_zeusClassName, kZeusSides[s_zeusSide], position, s_zeusHeading)
+                             : SpawnZeusVehicle(s_zeusClassName, position, s_zeusHeading);
     s_zeusStatus = spawned ? "Placed " + std::string(s_zeusClassName) + "."
                             : "Could not place " + std::string(s_zeusClassName) + ".";
 }
@@ -423,6 +445,8 @@ void DrawZeusTab()
     ImGui::InputText("Config class", s_zeusClassName, sizeof(s_zeusClassName));
     ImGui::SetItemTooltip("Any loaded CfgVehicles class can be entered here. Presets use original CWA class names.");
     ImGui::SliderFloat("Distance (m)", &s_zeusDistance, 2.0f, 250.0f, "%.0f");
+    ImGui::SliderFloat("Heading (deg)", &s_zeusHeading, 0.0f, 359.0f, "%.0f");
+    ImGui::SetItemTooltip("Sets the facing direction before spawning. This is safer than changing a live AI unit.");
     ImGui::SliderInt("Count", &s_zeusCount, 1, 32);
     if (ImGui::Button("Spawn"))
         Defer([] { SpawnZeusSelection(); });
