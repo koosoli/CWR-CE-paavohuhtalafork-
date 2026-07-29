@@ -8,6 +8,8 @@ and gameplay.
 
 ![PoseidonWGPU in-game screenshot](screenshots/1.png)
 
+![PoseidonWGPU in-game screenshot](screenshots/2.png)
+
 > This is an independent community project and is not an official Bohemia
 > Interactive product.
 
