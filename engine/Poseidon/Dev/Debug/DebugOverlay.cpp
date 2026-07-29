@@ -44,6 +44,7 @@
 #include <Poseidon/Dev/Diag/FrameProfiler.hpp>
 #include <Poseidon/UI/Settings/GameSettingsConfig.hpp>
 #include <Poseidon/UI/Settings/AspectRatio.hpp>
+#include <Poseidon/UI/Controls/UIControls.hpp>
 #include <Poseidon/Graphics/Core/Engine.hpp>
 #include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
 #include <Poseidon/Core/Global.hpp>
@@ -54,6 +55,7 @@
 #include <Poseidon/World/WorldInputContext.hpp>
 #include <Poseidon/World/Scene/Camera/CamEffects.hpp>
 #include <Poseidon/World/Scene/Camera/CameraHold.hpp>
+#include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/World/Entities/Infantry/Person.hpp>
 #include <Poseidon/World/Entities/Vehicles/Transport.hpp>
 #include <Poseidon/World/Scene/Object.hpp>
@@ -133,6 +135,8 @@ void Defer(std::function<void()> action)
     s_pendingActions.push_back(std::move(action));
 }
 
+void ApplyDevPanelMouseState();
+
 // Zeus is deliberately a dev-panel feature, rather than a mission-script
 // command.  The camera is the engine's native manual CameraVehicle, which
 // already implements collision-safe free flight and the normal movement
@@ -149,6 +153,30 @@ char s_zeusClassName[96] = "SoldierWB";
 bool s_zeusClickPlacement = false;
 bool s_zeusConsumeMouseEvent = false;
 bool s_zeusSuppressNextMouseUp = false;
+bool s_zeusRotateDrag = false;
+bool s_zeusMoveDrag = false;
+bool s_zeusLassoDrag = false;
+bool s_zeusConsumeKeyboardEvent = false;
+bool s_zeusConsumeShortcutKeyUp = false;
+float s_zeusLassoStartX = 0.0f;
+float s_zeusLassoStartY = 0.0f;
+float s_zeusLassoEndX = 0.0f;
+float s_zeusLassoEndY = 0.0f;
+float s_zeusMoveEndX = 0.0f;
+float s_zeusMoveEndY = 0.0f;
+Ref<ControlsContainer> s_zeusCursor;
+
+struct ZeusSpawnRecord
+{
+    OLink<Entity> object;
+    std::string className;
+    int kind;
+    TargetSide side;
+};
+std::vector<ZeusSpawnRecord> s_zeusSpawned;
+std::vector<ZeusSpawnRecord> s_zeusSelection;
+std::vector<ZeusSpawnRecord> s_zeusClipboard;
+std::vector<Vector3> s_zeusMoveOffsets;
 
 constexpr std::array<const char*, 4> kZeusSideNames = {"West", "East", "Resistance", "Civilian"};
 constexpr std::array<TargetSide, 4> kZeusSides = {TWest, TEast, TGuerrila, TCivilian};
@@ -195,11 +223,14 @@ void EnableZeusCamera()
     camera->SetDirectionAndUp(source->Direction(), VUp);
     camera->SetManual(true);
     camera->SetAltitudeSpeedScaling(true);
+    camera->SetMouseLookRequiresRightButton(true);
+    camera->SetCrossHairs(false);
     camera->ResetTargets();
     GWorld->AddAnimal(camera);
     GWorld->SetCameraEffect(CreateCameraEffect(camera, "Internal", CamEffectTop, true));
     s_zeusCamera = camera;
-    s_zeusStatus = "Free-fly active: WASD move, Q/Z up/down, Shift doubles speed, mouse look; keypad +/- zoom. Press Ctrl+` to reopen Zeus.";
+    s_zeusCursor = new ControlsContainer(nullptr);
+    s_zeusStatus = "Free-fly active: WASD move, Q/Z up/down, Shift doubles speed; hold RMB to look. Click Zeus objects to select. Press Ctrl+` to reopen Zeus.";
     // The panel captures mouse input while it is visible. Hide it immediately
     // so the camera becomes controllable as soon as Zeus is enabled.
     SetVisible(false);
@@ -216,6 +247,11 @@ void DisableZeusCamera()
     s_zeusCamera->SetDelete();
     s_zeusCamera = nullptr;
     s_zeusClickPlacement = false;
+    s_zeusRotateDrag = false;
+    s_zeusMoveDrag = false;
+    s_zeusLassoDrag = false;
+    s_zeusCursor = nullptr;
+    ApplyDevPanelMouseState();
     s_zeusStatus = "Free-fly ended; returned to the normal camera.";
 }
 
@@ -229,12 +265,198 @@ Vector3 ZeusSpawnPosition(int index, int count)
     return pos;
 }
 
-bool ZeusClickPosition(Vector3& position)
+bool ZeusClickPositionAtScreen(Vector3& position, float screenX, float screenY)
 {
     if (!s_zeusCamera || !GLandscape)
         return false;
-    return GLandscape->IntersectWithGroundOrSea(&position, s_zeusCamera->Position(), s_zeusCamera->Direction(), 0.0f,
+    const Camera* camera = GScene ? GScene->GetCamera() : nullptr;
+    if (!camera)
+        return false;
+    const float cursorX = screenX * (2.0f / GEngine->Width()) - 1.0f;
+    const float cursorY = screenY * (2.0f / GEngine->Height()) - 1.0f;
+    const Vector3 direction = (s_zeusCamera->Direction() + s_zeusCamera->DirectionAside() * cursorX * camera->Left() -
+                               s_zeusCamera->DirectionUp() * cursorY * camera->Top()).Normalized();
+    return GLandscape->IntersectWithGroundOrSea(&position, s_zeusCamera->Position(), direction, 0.0f,
                                                  10000.0f) >= 0.0f;
+}
+
+bool ZeusClickPosition(Vector3& position)
+{
+    const auto& input = InputSubsystem::Instance();
+    return ZeusClickPositionAtScreen(position, GEngine->Width() * (input.GetCursorX() * 0.5f + 0.5f),
+                                     GEngine->Height() * (input.GetCursorY() * 0.5f + 0.5f));
+}
+
+void RememberZeusSpawn(Entity* object, const char* className, int kind, TargetSide side)
+{
+    if (object)
+        s_zeusSpawned.push_back({object, className, kind, side});
+}
+
+void PruneZeusRecords(std::vector<ZeusSpawnRecord>& records)
+{
+    records.erase(std::remove_if(records.begin(), records.end(), [](const ZeusSpawnRecord& record) { return !record.object; }),
+                  records.end());
+}
+
+void SelectZeusAtCursor(float cursorX, float cursorY)
+{
+    PruneZeusRecords(s_zeusSpawned);
+    const Camera* camera = GScene ? GScene->GetCamera() : nullptr;
+    if (!camera)
+        return;
+    ZeusSpawnRecord* closest = nullptr;
+    float closestDistance2 = Square(30.0f);
+    for (auto& record : s_zeusSpawned)
+    {
+        Vector3 projected = GScene->ScaledInvTransform() * record.object->Position();
+        if (projected.Z() < camera->Near())
+            continue;
+        const Matrix4& projection = camera->Projection();
+        const float invZ = 1.0f / projected.Z();
+        projected[0] = projection(0, 2) + projection(0, 0) * projected[0] * invZ;
+        projected[1] = projection(1, 2) + projection(1, 1) * projected[1] * invZ;
+        const float distance2 = Square(projected[0] - cursorX) + Square(projected[1] - cursorY);
+        if (distance2 < closestDistance2)
+        {
+            closest = &record;
+            closestDistance2 = distance2;
+        }
+    }
+    s_zeusSelection.clear();
+    if (closest)
+    {
+        s_zeusSelection.push_back(*closest);
+        s_zeusStatus = "Selected " + closest->className + ".";
+    }
+    else
+        s_zeusStatus = "No Zeus-spawned object under the cursor.";
+}
+
+void SelectZeusInRect(float startX, float startY, float endX, float endY)
+{
+    PruneZeusRecords(s_zeusSpawned);
+    const Camera* camera = GScene ? GScene->GetCamera() : nullptr;
+    if (!camera)
+        return;
+    const float left = std::min(startX, endX);
+    const float right = std::max(startX, endX);
+    const float top = std::min(startY, endY);
+    const float bottom = std::max(startY, endY);
+    s_zeusSelection.clear();
+    const Matrix4& projection = camera->Projection();
+    for (const auto& record : s_zeusSpawned)
+    {
+        Vector3 projected = GScene->ScaledInvTransform() * record.object->Position();
+        if (projected.Z() < camera->Near())
+            continue;
+        const float invZ = 1.0f / projected.Z();
+        const float x = projection(0, 2) + projection(0, 0) * projected[0] * invZ;
+        const float y = projection(1, 2) + projection(1, 1) * projected[1] * invZ;
+        if (x >= left && x <= right && y >= top && y <= bottom)
+            s_zeusSelection.push_back(record);
+    }
+    s_zeusStatus = "Selected " + std::to_string(s_zeusSelection.size()) + " Zeus object(s).";
+}
+
+void StabilizeZeusInfantry(Person* person, Vector3Val direction)
+{
+    if (!person)
+        return;
+    if (AIUnit* unit = person->Brain())
+    {
+        // Zeus infantry are edited as static placements.  Leaving their
+        // Arcade mission path active while teleporting their animated body
+        // can corrupt Man's move-function queue.
+        unit->ForceReplan(true);
+        unit->SetAIDisabled(AIUnit::DAMove | AIUnit::DATarget | AIUnit::DAAutoTarget);
+        unit->SetWatchDirection(direction);
+    }
+}
+
+void RotateZeusSelectionBy(float degrees)
+{
+    PruneZeusRecords(s_zeusSelection);
+    for (const auto& record : s_zeusSelection)
+    {
+        Matrix4 transform = record.object->Transform();
+        transform.SetOrientation(Matrix3(MRotationY, degrees * (H_PI / 180.0f)) * transform.Orientation());
+        record.object->MoveNetAware(transform);
+        StabilizeZeusInfantry(dyn_cast<Person>(record.object.GetLink()), transform.Direction());
+    }
+}
+
+void BeginZeusMoveDrag()
+{
+    PruneZeusRecords(s_zeusSelection);
+    s_zeusMoveOffsets.clear();
+    if (s_zeusSelection.empty())
+        return;
+    const Vector3 anchor = s_zeusSelection.front().object->Position();
+    for (const auto& record : s_zeusSelection)
+        s_zeusMoveOffsets.push_back(record.object->Position() - anchor);
+    s_zeusMoveDrag = true;
+    s_zeusStatus = "Drag to move the selected Zeus object(s).";
+}
+
+void MoveZeusSelectionAtScreen(float screenX, float screenY)
+{
+    Vector3 target;
+    if (!ZeusClickPositionAtScreen(target, screenX, screenY))
+        return;
+    PruneZeusRecords(s_zeusSelection);
+    for (int i = 0; i < static_cast<int>(s_zeusSelection.size()) && i < static_cast<int>(s_zeusMoveOffsets.size()); ++i)
+    {
+        const auto& record = s_zeusSelection[i];
+        Matrix4 transform = record.object->Transform();
+        Vector3 position = target + s_zeusMoveOffsets[i];
+        position[1] = GLandscape->RoadSurfaceYAboveWater(position[0], position[2]);
+        transform.SetPosition(position);
+        if (Person* person = dyn_cast<Person>(record.object.GetLink()))
+        {
+            StabilizeZeusInfantry(person, transform.Direction());
+            Vector3 normal;
+            EntityAI* entity = dyn_cast<EntityAI>(record.object.GetLink());
+            if (entity && AIUnit::FindFreePosition(position, normal, true, entity))
+                transform.SetPosition(position);
+            person->PlaceOnSurface(transform);
+            person->SetTransform(transform);
+        }
+        else
+            record.object->MoveNetAware(transform);
+    }
+}
+
+void RotateZeusSelection()
+{
+    PruneZeusRecords(s_zeusSelection);
+    for (const auto& record : s_zeusSelection)
+    {
+        Matrix4 transform = record.object->Transform();
+        transform.SetOrientation(Matrix3(MRotationY, s_zeusHeading * (H_PI / 180.0f)));
+        record.object->MoveNetAware(transform);
+    }
+    s_zeusStatus = "Rotated " + std::to_string(s_zeusSelection.size()) + " selected Zeus object(s).";
+}
+
+void DeleteZeusSelection()
+{
+    PruneZeusRecords(s_zeusSelection);
+    for (const auto& record : s_zeusSelection)
+    {
+        // AIUnit owns links from its group and sensor to the Person.  Removing
+        // only the vehicle leaves a live AIUnit with no Person, which crashes
+        // on the next AI think.
+        if (Person* person = dyn_cast<Person>(record.object.GetLink()))
+        {
+            if (AIUnit* unit = person->Brain())
+                unit->DestroyObject();
+        }
+        record.object->SetDelete();
+    }
+    const int count = static_cast<int>(s_zeusSelection.size());
+    s_zeusSelection.clear();
+    s_zeusStatus = "Deleted " + std::to_string(count) + " selected Zeus object(s).";
 }
 
 bool SpawnZeusVehicle(const char* className, Vector3Par position, float heading)
@@ -273,6 +495,8 @@ bool SpawnZeusVehicle(const char* className, Vector3Par position, float heading)
         if (GWorld->GetMode() == GModeNetware)
             GetNetworkManager().CreateVehicle(vehicle, VLTAnimal, "", -1);
     }
+
+    RememberZeusSpawn(vehicle, className, 1, TLogic);
 
     return true;
 }
@@ -339,6 +563,8 @@ bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position, 
     }
     if (!group->Leader())
         center->SelectLeader(group);
+    StabilizeZeusInfantry(soldier, transform.Direction());
+    RememberZeusSpawn(vehicle, className, 0, side);
     return true;
 }
 
@@ -381,6 +607,61 @@ void SpawnZeusAtClick()
                              : SpawnZeusVehicle(s_zeusClassName, position, s_zeusHeading);
     s_zeusStatus = spawned ? "Placed " + std::string(s_zeusClassName) + "."
                             : "Could not place " + std::string(s_zeusClassName) + ".";
+}
+
+void PasteZeusAtCursor()
+{
+    Vector3 position;
+    if (!ZeusClickPosition(position))
+    {
+        s_zeusStatus = "No terrain was under the Zeus cursor.";
+        return;
+    }
+    int pasted = 0;
+    for (int i = 0; i < static_cast<int>(s_zeusClipboard.size()); ++i)
+    {
+        const auto& record = s_zeusClipboard[i];
+        Vector3 pastePosition = position + s_zeusCamera->DirectionAside() * (static_cast<float>(i) * 4.0f);
+        pastePosition[1] = GLandscape->RoadSurfaceYAboveWater(pastePosition[0], pastePosition[2]);
+        const bool placed = record.kind == 0 ? SpawnZeusUnit(record.className.c_str(), record.side, pastePosition, s_zeusHeading)
+                                              : SpawnZeusVehicle(record.className.c_str(), pastePosition, s_zeusHeading);
+        pasted += placed ? 1 : 0;
+    }
+    s_zeusStatus = "Pasted " + std::to_string(pasted) + " Zeus object(s).";
+}
+
+void DrawZeusInteractionOverlay()
+{
+    if (!s_zeusCamera || !GEngine || !GScene)
+        return;
+
+    const Camera* camera = GScene->GetCamera();
+    if (!camera)
+        return;
+    ImDrawList* draw = ImGui::GetForegroundDrawList();
+    if (s_zeusLassoDrag)
+    {
+        const ImVec2 min(std::min(s_zeusLassoStartX, s_zeusLassoEndX), std::min(s_zeusLassoStartY, s_zeusLassoEndY));
+        const ImVec2 max(std::max(s_zeusLassoStartX, s_zeusLassoEndX), std::max(s_zeusLassoStartY, s_zeusLassoEndY));
+        draw->AddRectFilled(min, max, IM_COL32(80, 220, 255, 40));
+        draw->AddRect(min, max, IM_COL32(80, 220, 255, 255), 0.0f, 0, 1.5f);
+    }
+    PruneZeusRecords(s_zeusSelection);
+    for (const auto& record : s_zeusSelection)
+    {
+        Vector3 projected = GScene->ScaledInvTransform() * record.object->Position();
+        if (projected.Z() < camera->Near())
+            continue;
+        const Matrix4& projection = camera->Projection();
+        const float invZ = 1.0f / projected.Z();
+        const ImVec2 center(projection(0, 2) + projection(0, 0) * projected[0] * invZ,
+                            projection(1, 2) + projection(1, 1) * projected[1] * invZ);
+        const ImU32 selectionColor = IM_COL32(80, 220, 255, 255);
+        draw->AddCircle(center, 20.0f, selectionColor, 20, 2.0f);
+        draw->AddLine(center, ImVec2(center.x + 30.0f, center.y), selectionColor, 2.0f);
+        draw->AddTriangleFilled(ImVec2(center.x + 35.0f, center.y), ImVec2(center.x + 27.0f, center.y - 5.0f),
+                                ImVec2(center.x + 27.0f, center.y + 5.0f), selectionColor);
+    }
 }
 
 void DrawZeusTab()
@@ -461,6 +742,58 @@ void DrawZeusTab()
         if (s_zeusClickPlacement && s_zeusCamera)
             SetVisible(false);
     }
+    ImGui::EndDisabled();
+    ImGui::EndDisabled();
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Zeus-spawned object editing");
+    ImGui::Separator();
+    ImGui::BeginDisabled(!s_zeusCamera);
+    if (ImGui::Button("Select under cursor"))
+        Defer([] { SelectZeusAtCursor(GEngine->Width() * (InputSubsystem::Instance().GetCursorX() * 0.5f + 0.5f),
+                                      GEngine->Height() * (InputSubsystem::Instance().GetCursorY() * 0.5f + 0.5f)); });
+    ImGui::SameLine();
+    if (ImGui::Button("Select all Zeus objects"))
+        Defer([] {
+            PruneZeusRecords(s_zeusSpawned);
+            s_zeusSelection = s_zeusSpawned;
+            s_zeusStatus = "Selected " + std::to_string(s_zeusSelection.size()) + " Zeus object(s).";
+        });
+    ImGui::TextDisabled("Selected: %d", static_cast<int>(s_zeusSelection.size()));
+    ImGui::BeginDisabled(s_zeusSelection.empty());
+    if (ImGui::Button("Rotate selected to heading"))
+        Defer([] { RotateZeusSelection(); });
+    ImGui::SameLine();
+    if (ImGui::Button("Delete selected"))
+        Defer([] { DeleteZeusSelection(); });
+    if (ImGui::Button("Copy selected"))
+    {
+        s_zeusClipboard = s_zeusSelection;
+        s_zeusStatus = "Copied " + std::to_string(s_zeusClipboard.size()) + " Zeus object(s).";
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(s_zeusClipboard.empty());
+    if (ImGui::Button("Paste at crosshair"))
+        Defer([] {
+            Vector3 position;
+            if (!ZeusClickPosition(position))
+            {
+                s_zeusStatus = "No terrain was under the Zeus crosshair.";
+                return;
+            }
+            int pasted = 0;
+            for (int i = 0; i < static_cast<int>(s_zeusClipboard.size()); ++i)
+            {
+                const auto& record = s_zeusClipboard[i];
+                Vector3 pastePosition = position + s_zeusCamera->DirectionAside() * (static_cast<float>(i) * 4.0f);
+                pastePosition[1] = GLandscape->RoadSurfaceYAboveWater(pastePosition[0], pastePosition[2]);
+                const bool placed = record.kind == 0 ? SpawnZeusUnit(record.className.c_str(), record.side, pastePosition, s_zeusHeading)
+                                                      : SpawnZeusVehicle(record.className.c_str(), pastePosition, s_zeusHeading);
+                pasted += placed ? 1 : 0;
+            }
+            s_zeusStatus = "Pasted " + std::to_string(pasted) + " Zeus object(s).";
+        });
+    ImGui::EndDisabled();
     ImGui::EndDisabled();
     ImGui::EndDisabled();
 
@@ -1535,13 +1868,14 @@ void ApplyDevPanelMouseState()
 {
     if (!GEngine)
         return;
-    if (s_visible && !s_mouseReleasedByPanel)
+    const bool releaseMouseForOverlay = s_visible || s_zeusCamera;
+    if (releaseMouseForOverlay && !s_mouseReleasedByPanel)
     {
         s_savedMouseGrab = GEngine->IsMouseGrabbed();
         GEngine->SetMouseGrab(false);
         s_mouseReleasedByPanel = true;
     }
-    else if (!s_visible && s_mouseReleasedByPanel)
+    else if (!releaseMouseForOverlay && s_mouseReleasedByPanel)
     {
         GEngine->SetMouseGrab(s_savedMouseGrab);
         s_mouseReleasedByPanel = false;
@@ -3694,23 +4028,98 @@ void ProcessEvent(const SDL_Event& event)
 {
     if (!s_initialized)
         return;
-    // Zeus consumes only the placement click itself (and its matching release),
-    // not mouse motion. This leaves the mouse free to look around while a
-    // placement selection remains armed for repeated clicks.
     s_zeusConsumeMouseEvent = false;
-    if (!s_visible && s_zeusClickPlacement && s_zeusCamera)
+    s_zeusConsumeKeyboardEvent = false;
+    if (!s_visible && s_zeusCamera)
     {
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT)
         {
             s_zeusConsumeMouseEvent = true;
-            s_zeusSuppressNextMouseUp = true;
-            Defer([] { SpawnZeusAtClick(); });
+            const SDL_Keymod modifiers = SDL_GetModState();
+            if (!s_zeusClickPlacement && (modifiers & SDL_KMOD_CTRL) != 0)
+            {
+                s_zeusLassoDrag = true;
+                s_zeusLassoStartX = s_zeusLassoEndX = event.button.x;
+                s_zeusLassoStartY = s_zeusLassoEndY = event.button.y;
+                s_zeusStatus = "Ctrl+drag to lasso Zeus-spawned objects.";
+            }
+            else if ((modifiers & SDL_KMOD_SHIFT) != 0 && !s_zeusSelection.empty())
+            {
+                s_zeusRotateDrag = true;
+                s_zeusStatus = "Drag left/right to rotate the selected Zeus object(s).";
+            }
+            else if (s_zeusClickPlacement)
+            {
+                s_zeusSuppressNextMouseUp = true;
+                Defer([] { SpawnZeusAtClick(); });
+            }
+            else
+            {
+                SelectZeusAtCursor(event.button.x, event.button.y);
+                BeginZeusMoveDrag();
+            }
         }
         else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT &&
-                 s_zeusSuppressNextMouseUp)
+                 (s_zeusSuppressNextMouseUp || s_zeusRotateDrag || s_zeusMoveDrag || s_zeusLassoDrag))
         {
             s_zeusConsumeMouseEvent = true;
+            if (s_zeusLassoDrag)
+                SelectZeusInRect(s_zeusLassoStartX, s_zeusLassoStartY, event.button.x, event.button.y);
+            else if (s_zeusMoveDrag)
+                MoveZeusSelectionAtScreen(event.button.x, event.button.y);
             s_zeusSuppressNextMouseUp = false;
+            s_zeusRotateDrag = false;
+            s_zeusMoveDrag = false;
+            s_zeusLassoDrag = false;
+            s_zeusMoveOffsets.clear();
+        }
+        else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusLassoDrag)
+        {
+            s_zeusConsumeMouseEvent = true;
+            s_zeusLassoEndX = event.motion.x;
+            s_zeusLassoEndY = event.motion.y;
+        }
+        else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusRotateDrag)
+        {
+            s_zeusConsumeMouseEvent = true;
+            if (event.motion.xrel != 0.0f)
+                RotateZeusSelectionBy(event.motion.xrel * 0.5f);
+        }
+        else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusMoveDrag)
+        {
+            s_zeusConsumeMouseEvent = true;
+            // Man animation code is not safe to teleport every mouse event.
+            // Keep the final terrain target and perform one placement on release.
+            s_zeusMoveEndX = event.motion.x;
+            s_zeusMoveEndY = event.motion.y;
+        }
+        else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
+        {
+            const bool ctrlDown = (SDL_GetModState() & SDL_KMOD_CTRL) != 0;
+            if (event.key.scancode == SDL_SCANCODE_DELETE)
+            {
+                s_zeusConsumeKeyboardEvent = true;
+                Defer([] { DeleteZeusSelection(); });
+            }
+            else if (ctrlDown && event.key.scancode == SDL_SCANCODE_C)
+            {
+                s_zeusConsumeKeyboardEvent = true;
+                s_zeusConsumeShortcutKeyUp = true;
+                s_zeusClipboard = s_zeusSelection;
+                s_zeusStatus = "Copied " + std::to_string(s_zeusClipboard.size()) + " Zeus object(s).";
+            }
+            else if (ctrlDown && event.key.scancode == SDL_SCANCODE_V)
+            {
+                s_zeusConsumeKeyboardEvent = true;
+                s_zeusConsumeShortcutKeyUp = true;
+                Defer([] { PasteZeusAtCursor(); });
+            }
+        }
+        else if (event.type == SDL_EVENT_KEY_UP && s_zeusConsumeShortcutKeyUp &&
+                 (event.key.scancode == SDL_SCANCODE_C || event.key.scancode == SDL_SCANCODE_V))
+        {
+            s_zeusConsumeKeyboardEvent = true;
+            s_zeusConsumeShortcutKeyUp = false;
         }
     }
     ImGui_ImplSDL3_ProcessEvent(&event);
@@ -3726,7 +4135,8 @@ void ProcessEvent(const SDL_Event& event)
         // of keyboard layout.  Ctrl is required so the unmodified key stays
         // available to the game (it's used in radio/chat commands).
         const bool ctrlDown = (event.key.mod & SDL_KMOD_CTRL) != 0;
-        if (event.key.scancode == SDL_SCANCODE_GRAVE && ctrlDown)
+        if (ctrlDown && (event.key.scancode == SDL_SCANCODE_GRAVE || event.key.scancode == SDL_SCANCODE_SEMICOLON ||
+                         event.key.scancode == SDL_SCANCODE_F8))
         {
             ToggleVisible();
             return;
@@ -3762,6 +4172,12 @@ void NewFrame()
     }
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
+    if (!s_visible)
+    {
+        DrawZeusInteractionOverlay();
+        if (s_zeusCursor)
+            s_zeusCursor->DrawCursor();
+    }
     if (s_visible)
         DrawMainWindow();
 }
@@ -3832,9 +4248,9 @@ void RequestDeferredReload(const char* modPath)
 
 bool WantsKeyboard()
 {
-    if (!s_initialized || !s_visible)
+    if (!s_initialized || (!s_visible && !s_zeusConsumeKeyboardEvent))
         return false;
-    return ImGui::GetIO().WantCaptureKeyboard;
+    return s_zeusConsumeKeyboardEvent || ImGui::GetIO().WantCaptureKeyboard;
 }
 
 bool WantsMouse()

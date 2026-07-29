@@ -115,7 +115,7 @@ LSError CameraHolder::Serialize(ParamArchive& ar)
 
 CameraVehicle::CameraVehicle()
     : base(nullptr, VehicleTypes.New("Camera"), -1), _inertia(false), // manual camera simulation
-      _crossHairs(true), _altitudeSpeedScaling(false)
+      _crossHairs(true), _altitudeSpeedScaling(false), _mouseLookRequiresRightButton(false)
 {
     // set all target properties to invalid values
     _movePos = VZero;
@@ -405,8 +405,11 @@ void CameraVehicle::Simulate(float deltaT, SimulationImportance prec)
         // Zeus/free-fly uses inverted mouse axes: move left to look right,
         // and move down to look up. Keyboard controls retain their normal
         // directions.
-        float headChange = headSpeed * 2 * deltaT * _lastFov - input.GetMouseDeltaX() * mouseLookScale;
-        float diveChange = diveSpeed * 2 * deltaT * _lastFov + input.GetMouseDeltaY() * mouseLookScale;
+        const bool mouseLookActive = !_mouseLookRequiresRightButton || input.IsMouseRightDown();
+        const float mouseX = mouseLookActive ? input.GetMouseDeltaX() : 0.0f;
+        const float mouseY = mouseLookActive ? input.GetMouseDeltaY() : 0.0f;
+        float headChange = headSpeed * 2 * deltaT * _lastFov - mouseX * mouseLookScale;
+        float diveChange = diveSpeed * 2 * deltaT * _lastFov + mouseY * mouseLookScale;
         Matrix3 orient = Orientation();
         if (headChange)
         {
@@ -479,12 +482,12 @@ void CameraVehicle::Simulate(float deltaT, SimulationImportance prec)
         {
             _crossHairs = !_crossHairs;
         }
-        if (input.IsKeyPressed(SDL_SCANCODE_V))
+        if (!_mouseLookRequiresRightButton && input.IsKeyPressed(SDL_SCANCODE_V))
         {
             SetDelete(); // vehicle should be removed
             input.ConsumeKeyPress(SDL_SCANCODE_V);
         }
-        if (input.GetActionToDo(UAFire))
+        if (!_mouseLookRequiresRightButton && input.GetActionToDo(UAFire))
         {
             LOG_INFO(Input, "Camera: clipboard save triggered");
             // save text (preferably to clipboard)
