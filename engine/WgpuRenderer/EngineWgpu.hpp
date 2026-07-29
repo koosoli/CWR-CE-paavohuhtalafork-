@@ -56,6 +56,9 @@ class EngineWgpu : public EngineDummy
     // False if the window / wgpu device failed to come up; the factory then drops
     // this engine and falls back.
     bool IsValid() const { return _renderer != nullptr; }
+    // The most recently controlled helicopter, held as a weak link so effects
+    // can survive the player leaving the cockpit without risking a stale pointer.
+    const Helicopter* LastGrassRotor() const;
 
     RString GetDebugName() const override;
     RString GetRendererName() const override;

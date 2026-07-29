@@ -3054,6 +3054,11 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
       wgr_grass_set_params(_renderer, &params);
 }
 
+const Helicopter* EngineWgpu::LastGrassRotor() const
+{
+    return _lastGrassRotor;
+}
+
 int EngineWgpu::GetGrassSurfaceCount() const
 {
     return _terrain ? _terrain->GrassSurfaceCount() : 0;

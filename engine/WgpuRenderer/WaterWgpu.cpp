@@ -6,10 +6,12 @@
 #include <Poseidon/Core/Global.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
 #include <Poseidon/Graphics/Rendering/WaterInteractionBridge.hpp>
+#include <Poseidon/World/Entities/Vehicles/Air/Helicopter.hpp>
 #include <Poseidon/World/Scene/Camera/Camera.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
 #include <Poseidon/World/Terrain/Landscape.hpp>
 #include <Poseidon/World/Terrain/LandscapeShared.hpp>
+#include <Poseidon/World/World.hpp>
 
 #include <algorithm>
 #include <array>
@@ -724,6 +726,48 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         event.direction_depth_flags = {source.directionDepthFlags[0], source.directionDepthFlags[1],
                                        source.directionDepthFlags[2], source.directionDepthFlags[3]};
     }
+
+    // Rotor wash repeatedly injects the fast capillary ripple profile used by
+    // bullet impacts, but over a wide rotor-disc-sized area.  This makes the
+    // water visibly chatter beneath a helicopter instead of reading as a slow
+    // boat wake, while RPM still controls the strength.
+    const Helicopter* lastRotor = _engine.LastGrassRotor();
+    auto addRotorWash = [&](const Helicopter* helicopter)
+    {
+        if (!helicopter || eventCount >= WGR_MAX_WATER_INTERACTIONS) return;
+        const float rotorSpeed = std::clamp(helicopter->RotorSpeed(), 0.0f, 1.0f);
+        if (rotorSpeed <= 0.02f) return;
+        const Vector3 pos = helicopter->Position();
+        const float altitude = pos.Y() - _params.sea_level;
+        // A hovering aircraft can still stir the surface from several metres
+        // up, but do not inject ripples from a helicopter high in the sky or
+        // parked over dry land.
+        if (altitude < -2.0f || altitude > 30.0f || GLandscape->SurfaceY(pos.X(), pos.Z()) > _params.sea_level + 0.25f) return;
+        WgrWaterInteractionEvent& event = events[eventCount++];
+        event.position_radius = {pos.X(), pos.Z(), 3.0f + 12.0f * rotorSpeed,
+                                 1.10f * rotorSpeed * rotorSpeed};
+        event.velocity_kind = {0.0f, 0.0f, -20.0f,
+                               static_cast<float>(WGR_WATER_INTERACTION_BULLET)};
+        // Bullet events are one-frame impulses. Re-emitting them every frame
+        // while the rotor turns creates a fast, dense ripple field that stops
+        // immediately when the RPM reaches zero.
+        event.time_life_foam_mass = {now, 0.0f, 0.0f, 0.0f};
+        event.direction_depth_flags = {0.0f, 0.0f, 0.0f,
+                                       static_cast<float>(WGR_WATER_INTERACTION_PENDING_IMPULSE)};
+    };
+    bool lastRotorWasListed = false;
+    if (GWorld)
+    {
+        for (int i = 0; i < GWorld->NVehicles(); ++i)
+        {
+            const Helicopter* helicopter = dyn_cast<const Helicopter>(GWorld->GetVehicle(i));
+            if (helicopter == lastRotor) lastRotorWasListed = true;
+            addRotorWash(helicopter);
+        }
+    }
+    // Mirrors grass: the dismounted player helicopter may be absent from the
+    // distributed list for a short handoff, but its weak link still exposes RPM.
+    if (!lastRotorWasListed) addRotorWash(lastRotor);
 
     const bool reset = !_haveInteractionDomain || std::abs(originX - _interaction.domain.x) > interactionSize * 0.5f || std::abs(originZ - _interaction.domain.y) > interactionSize * 0.5f;
     _interaction.previous_domain = _haveInteractionDomain ? _interaction.domain : WgrVec4{originX, originZ, interactionSize, 1.0f / interactionSize};
