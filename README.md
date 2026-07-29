@@ -46,8 +46,7 @@ Much of this work involves long-running renderer development, testing on legacy
 assets, and AI-assisted code exploration. If you would like to support the work,
 funds go toward API usage and direct development costs for PoseidonWGPU.
 
-- [GitHub Sponsors](https://github.com/sponsors/koosoli)
-- [Buy Me a Coffee](https://buymeacoffee.com/koosoli)
+> **❤️ [Sponsor on GitHub](https://github.com/sponsors/koosoli)** &nbsp;&nbsp; **☕ [Buy me a coffee](https://buymeacoffee.com/koosoli)**
 
 ## Quick start
 
