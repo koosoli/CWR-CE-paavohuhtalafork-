@@ -878,8 +878,10 @@ impl Grass {
             far_radius: params.far_radius.clamp(8.0, 5000.0),
             interactor_x: params.interactor_x,
             interactor_z: params.interactor_z,
-            interactor_radius: params.interactor_radius.clamp(0.0, 16.0),
-            interactor_strength: params.interactor_strength.clamp(0.0, 1.0),
+            interactor_radius: params.interactor_radius.clamp(0.0, 32.0),
+            // 1.5 is a renderer-side marker for the controlled helicopter's
+            // rotor wash; grass.wgsl clamps its physical crush to one.
+            interactor_strength: params.interactor_strength.clamp(0.0, 1.5),
             tracks: params.tracks,
             downwash: params.downwash,
             debug_ignore_geography_exclusions: params.debug_ignore_geography_exclusions,

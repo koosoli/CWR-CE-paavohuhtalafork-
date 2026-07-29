@@ -60,7 +60,7 @@ struct GrassParams {
 // vertex shaders re-derived it for all 60 (near) / 24 (mid) vertices of an
 // instance from inputs that only ever depended on the instance position.
 //   packed.x = pack2x16snorm(flatten direction)
-//   packed.y = pack2x16unorm(flatten strength, unused)
+//   packed.y = pack2x16unorm(flatten strength, rotor-wash turbulence)
 //   packed.z, packed.w = reserved (cached wind, archetype/palette)
 struct GrassInstance {
     pos_seed: vec4<f32>,
@@ -290,19 +290,31 @@ fn sample_normal(world_xz: vec2<f32>) -> vec3<f32> {
 }
 
 // Player/vehicle contact and the persistent track ring, resolved once per
-// accepted blade. Returns xy = flatten direction, z = strength.
+// accepted blade. Returns xy = flatten direction, z = strength and w = the
+// rotor-wash turbulence amount. Persistent tracks intentionally keep w at 0.
 //
 // This used to run per VERTEX in vs_grass/vs_grass_mid: a 96-iteration loop
 // with a length() and two smoothsteps, repeated 60 times per near blade even
 // though every input is the instance position. The shadow shader skipped it
 // entirely, so flattened grass still cast upright shadows.
-fn eval_flatten(world_xz: vec2<f32>) -> vec3<f32> {
+fn eval_flatten(world_xz: vec2<f32>) -> vec4<f32> {
     let interactor_delta = world_xz - vec2<f32>(grass.interactor_x, grass.interactor_z);
     let interactor_distance = length(interactor_delta);
     var strength = 0.0;
+    var rotor_wash = 0.0;
     if (grass.interactor_radius > 0.01) {
+        // A controlled helicopter encodes RPM as (1, 1.5]. Decode it before
+        // applying the pressure, while ordinary player/vehicle contact keeps
+        // its direct [0, 1] strength.
+        let controlled_rotor = grass.interactor_strength > 1.001;
+        let interactor_strength = select(grass.interactor_strength,
+                                        (grass.interactor_strength - 1.0) * 2.0,
+                                        controlled_rotor);
         strength = (1.0 - smoothstep(grass.interactor_radius * 0.25, grass.interactor_radius, interactor_distance)) *
-            grass.interactor_strength;
+            min(interactor_strength, 1.0);
+        if (controlled_rotor) {
+            rotor_wash = strength;
+        }
     }
     var direction = select(vec2<f32>(0.0), interactor_delta / interactor_distance, interactor_distance > 0.001);
     // Recent contact stamps fade from strongly flattened to fully recovered
@@ -316,6 +328,7 @@ fn eval_flatten(world_xz: vec2<f32>) -> vec3<f32> {
             (1.0 - smoothstep(25.0, 60.0, track.age));
         if (imprint > strength) {
             strength = imprint;
+            rotor_wash = 0.0;
             direction = select(vec2<f32>(0.0), delta / distance, distance > 0.001);
         }
     }
@@ -327,12 +340,15 @@ fn eval_flatten(world_xz: vec2<f32>) -> vec3<f32> {
         let delta = world_xz - vec2<f32>(wash.x, wash.z);
         let distance = length(delta);
         let bend = (1.0 - smoothstep(wash.radius * 0.12, wash.radius, distance)) * wash.strength;
-        if (bend > strength) {
+        // Prefer active rotor wash on equal pressure so a player helicopter's
+        // normal controlled-vehicle footprint still receives turbulence.
+        if (bend >= strength) {
             strength = bend;
+            rotor_wash = bend;
             direction = select(vec2<f32>(0.0), delta / distance, distance > 0.001);
         }
     }
-    return vec3<f32>(direction, strength);
+    return vec4<f32>(direction, strength, rotor_wash);
 }
 
 // Species layers in blade_atlas.rs: 0..4 grass, 4..6 weed, 6..8 flower.
@@ -377,10 +393,24 @@ fn species_shape(species: u32) -> vec3<f32> {
     return vec3<f32>(1.0, 1.0, 0.65);
 }
 
-fn pack_flatten(flatten: vec3<f32>, species: u32) -> vec4<u32> {
+fn pack_flatten(flatten: vec4<f32>, species: u32) -> vec4<u32> {
     return vec4<u32>(pack2x16snorm(clamp(flatten.xy, vec2<f32>(-1.0), vec2<f32>(1.0))),
-                     pack2x16unorm(vec2<f32>(clamp(flatten.z, 0.0, 1.0), 0.0)),
+                     pack2x16unorm(vec2<f32>(clamp(flatten.z, 0.0, 1.0), clamp(flatten.w, 0.0, 1.0))),
                      0u, species & 7u);
+}
+
+// The player helicopter uses an elevated interactor strength as a rotor marker.
+// Re-evaluate that marker at draw time as well as caching it in the instance:
+// this guarantees active downwash keeps moving even when a persistent track
+// later becomes the strongest flattening source for the same blade.
+fn active_rotor_wash(world_xz: vec2<f32>, crush: f32, cached_wash: f32) -> f32 {
+    if (grass.interactor_strength <= 1.001 || grass.interactor_radius <= 0.01) {
+        return cached_wash;
+    }
+    let delta = world_xz - vec2<f32>(grass.interactor_x, grass.interactor_z);
+    let distance = length(delta);
+    let live_wash = (1.0 - smoothstep(grass.interactor_radius * 0.18, grass.interactor_radius, distance)) * crush;
+    return max(cached_wash, live_wash);
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -546,7 +576,9 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x * max(grass.species_mix.z, 0.05);
     let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
     let crush_dir = unpack2x16snorm(inst_packed.x);
-    let crush = unpack2x16unorm(inst_packed.y).x;
+    let crush_data = unpack2x16unorm(inst_packed.y);
+    let crush = crush_data.x;
+    let rotor_wash = active_rotor_wash(inst.xz, crush, crush_data.y);
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
     let crushed_height = height * (1.0 - 0.55 * crush);
     // Two crossed ribbons, each built from five quads. Every vertex samples
@@ -565,7 +597,7 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     // Rotor wash has its own fast, per-blade turbulence. It is driven by the
     // cached crush amount so normal grass remains governed solely by weather.
     let crush_flutter = vec3<f32>(sin(terrain.time * 28.0 + seed * 37.0), 0.0,
-                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.28 * crush);
+                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.95 * rotor_wash);
     // Flowers use a near-flat taper exponent so the stem keeps its width up to
     // the tip -- a petal head painted on a point would vanish.
     let taper = pow(max(1.0 - t, 0.0), shape.z);
@@ -612,7 +644,9 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let width = mix(0.024, 0.055, hash11(inst.xz + 23.0)) * shape.x * max(grass.species_mix.z, 0.05);
     let static_bend = forward * mix(0.04, 0.14, hash11(inst.xz + 71.0));
     let crush_dir = unpack2x16snorm(inst_packed.x);
-    let crush = unpack2x16unorm(inst_packed.y).x;
+    let crush_data = unpack2x16unorm(inst_packed.y);
+    let crush = crush_data.x;
+    let rotor_wash = active_rotor_wash(inst.xz, crush, crush_data.y);
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
     let crushed_height = height * (1.0 - 0.55 * crush);
     let card = vertex_index / 12u;
@@ -627,7 +661,7 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
         (0.030 + 0.18 * wind.gust + wind.turbulence);
     let crush_flutter = vec3<f32>(sin(terrain.time * 28.0 + seed * 37.0), 0.0,
-                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.28 * crush);
+                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.95 * rotor_wash);
     let bend = (static_bend + wind_bend) * (1.0 - 0.55 * crush) + crush_flutter;
     let curve = (bend + crush_bend) * (t * t);
     let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (bend + crush_bend) * (2.0 * t);
@@ -683,7 +717,9 @@ fn vs_grass_mid_tuft(@builtin(vertex_index) vertex_index: u32, @builtin(instance
     let half_width = height * mix(0.55, 0.85, hash11(inst.xz + 23.0));
 
     let crush_dir = unpack2x16snorm(inst_packed.x);
-    let crush = unpack2x16unorm(inst_packed.y).x;
+    let crush_data = unpack2x16unorm(inst_packed.y);
+    let crush = crush_data.x;
+    let rotor_wash = active_rotor_wash(inst.xz, crush, crush_data.y);
     let crushed_height = height * (1.0 - 0.55 * crush);
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
 
@@ -691,7 +727,7 @@ fn vs_grass_mid_tuft(@builtin(vertex_index) vertex_index: u32, @builtin(instance
     let wind_bend = vec3<f32>(wind.direction.x, 0.0, wind.direction.y) * grass.wind_strength *
         (0.030 + 0.18 * wind.gust + wind.turbulence);
     let crush_flutter = vec3<f32>(sin(terrain.time * 28.0 + seed * 37.0), 0.0,
-                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.28 * crush);
+                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.95 * rotor_wash);
     // The whole card leans; roots stay pinned. Quadratic in height, as the
     // procedural blades bend, so a clump does not shear against its neighbours.
     let lean = (wind_bend * (1.0 - 0.55 * crush) + crush_bend + crush_flutter) * (vh * vh);

@@ -178,6 +178,9 @@ class Helicopter: public Transport
 	SimulationImportance BestImportance() const override {return SimulateCamera;}
 
 	bool Airborne() const override;
+	// Normalized physical rotor RPM. This remains non-zero while the blades
+	// coast down after engine shutdown, unlike EngineIsOn().
+	float RotorSpeed() const { return _rotorSpeed; }
 
 	bool HasHUD() const override {return true;}
 

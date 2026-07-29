@@ -99,7 +99,15 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     // standing shadow.
     let inst_packed = instances[instance_index].packed;
     let crush_dir = unpack2x16snorm(inst_packed.x);
-    let crush = unpack2x16unorm(inst_packed.y).x;
+    let crush_data = unpack2x16unorm(inst_packed.y);
+    let crush = crush_data.x;
+    let cached_wash = crush_data.y;
+    var rotor_wash = cached_wash;
+    if (grass.interactor_strength > 1.001 && grass.interactor_radius > 0.01) {
+        let delta = inst.xz - vec2<f32>(grass.interactor_x, grass.interactor_z);
+        let live_wash = (1.0 - smoothstep(grass.interactor_radius * 0.18, grass.interactor_radius, length(delta))) * crush;
+        rotor_wash = max(cached_wash, live_wash);
+    }
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
     let crushed_height = height * (1.0 - 0.55 * crush);
     let card = vertex_index / 30u;
@@ -114,7 +122,7 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let wind_bend = vec3<f32>(wind.x, 0.0, wind.y) * grass.wind_strength *
         (0.035 + 0.21 * wind.z + wind.w);
     let crush_flutter = vec3<f32>(sin(terrain.time * 28.0 + seed * 37.0), 0.0,
-                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.28 * crush);
+                                  cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.95 * rotor_wash);
     let bend = (static_bend + wind_bend) * (1.0 - 0.55 * crush) + crush_bend + crush_flutter;
     // species_mix.z mirrors the Grass-tab blade width multiplier, or a widened
     // blade would cast the shadow of a thin one.

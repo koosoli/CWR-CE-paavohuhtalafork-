@@ -2980,11 +2980,16 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
           // depending solely on the broader world-vehicle query below. This
           // also covers the first few frames of takeoff before the helicopter
           // has settled into the distributed vehicle list.
-          if (const HelicopterAuto* helicopter = dyn_cast<const HelicopterAuto>(interactor);
-              helicopter && helicopter->EngineIsOn())
+          if (const Helicopter* helicopter = dyn_cast<const Helicopter>(interactor);
+              helicopter && helicopter->RotorSpeed() > 0.02f)
           {
-              params.interactor_radius = 25.0f;
-              params.interactor_strength = 1.0f;
+              _lastGrassRotor = const_cast<Helicopter*>(helicopter);
+              const float rotorSpeed = std::clamp(helicopter->RotorSpeed(), 0.0f, 1.0f);
+              // Values in (1, 1.5] are a renderer-local rotor-wash marker.
+              // The shader decodes the fractional part as actual RPM, making
+              // both bending and flutter rise smoothly as the rotor spools up.
+              params.interactor_radius = 8.0f + 17.0f * rotorSpeed;
+              params.interactor_strength = 1.0f + 0.5f * rotorSpeed;
           }
           _grassTrackSampleTime += dt;
           // Wider stamp spacing uses the existing soft-radius falloff to keep
@@ -3011,24 +3016,38 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
           std::array<Candidate, WGR_GRASS_DOWNWASH_COUNT> nearest{};
           for (Candidate& entry : nearest) entry.distance2 = std::numeric_limits<float>::infinity();
           const Vector3 cameraPos = GWorld->CameraOn() ? GWorld->CameraOn()->Position() : VZero;
-          for (int i = 0; i < GWorld->NVehicles(); ++i)
+          auto addDownwash = [&](const Helicopter* helicopter)
           {
-              const HelicopterAuto* helicopter = dyn_cast<const HelicopterAuto>(GWorld->GetVehicle(i));
-              if (!helicopter || !helicopter->EngineIsOn()) continue;
+              if (!helicopter) return;
+              const float rotorSpeed = std::clamp(helicopter->RotorSpeed(), 0.0f, 1.0f);
+              // Rotor inertia survives leaving the aircraft and engine shutoff,
+              // so retain the transient wash until the blades actually stop.
+              if (rotorSpeed <= 0.02f) return;
               const Vector3 pos = helicopter->Position();
               const float height = std::max(0.0f, pos.Y() - GLandscape->SurfaceY(pos.X(), pos.Z()));
-              if (height > 65.0f) continue;
-              const float radius = 10.0f + height * 0.40f;
+              if (height > 65.0f) return;
+              const float radius = (10.0f + height * 0.40f) * (0.45f + 0.55f * rotorSpeed);
               // Keep enough force at the upper edge of the range to visibly
               // press the blades flat rather than merely sway their tips.
-              const float strength = std::clamp(1.10f - height / 260.0f, 0.85f, 1.0f);
+              const float strength = std::clamp(1.10f - height / 260.0f, 0.85f, 1.0f) * rotorSpeed * rotorSpeed;
               const float distance2 = (pos - cameraPos).SquareSizeXZ();
               int slot = 0;
               for (int j = 1; j < WGR_GRASS_DOWNWASH_COUNT; ++j)
                   if (nearest[j].distance2 > nearest[slot].distance2) slot = j;
               if (distance2 < nearest[slot].distance2)
                   nearest[slot] = Candidate{distance2, {pos.X(), pos.Z(), radius, strength}};
+          };
+          bool lastRotorWasListed = false;
+          for (int i = 0; i < GWorld->NVehicles(); ++i)
+          {
+              const Helicopter* helicopter = dyn_cast<const Helicopter>(GWorld->GetVehicle(i));
+              if (helicopter == _lastGrassRotor) lastRotorWasListed = true;
+              addDownwash(helicopter);
           }
+          // A helicopter that the player has just left can momentarily be
+          // absent from the distributed list. Keep using its live rotor RPM
+          // through the weak link during that handoff.
+          if (!lastRotorWasListed) addDownwash(_lastGrassRotor);
           for (int i = 0; i < WGR_GRASS_DOWNWASH_COUNT; ++i) params.downwash[i] = nearest[i].wash;
       }
       std::copy(_grassTracks.begin(), _grassTracks.end(), params.tracks);

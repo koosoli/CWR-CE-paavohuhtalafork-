@@ -6,6 +6,7 @@
 #include <Poseidon/Graphics/GraphicsEngineFactory.hpp> // GraphicsEngineParams
 #include <Poseidon/Graphics/Shadow/ShadowMath.hpp>
 #include <Poseidon/Graphics/Shared/SDLEventWindow.hpp>
+#include <Poseidon/Foundation/Types/LLinks.hpp>
 
 #include <wgpu_renderer.hpp>
 
@@ -25,6 +26,7 @@ class TerrainWgpu;
 class WaterWgpu;
 class ITerrainRenderer;
 class Object;
+class Helicopter;
 class LODShapeWithShadow;
 
 enum class Sampler2DFlags : uint32_t
@@ -427,6 +429,9 @@ class EngineWgpu : public EngineDummy
     Vector3 _lastGrassTrackPos = VZero;
     float _grassTrackSampleTime = 0.0f;
     bool _haveGrassTrackPos = false;
+    // A weak link remains valid while a recently exited helicopter still
+    // exists, and becomes null automatically if the vehicle is deleted.
+    LLink<Helicopter> _lastGrassRotor;
     float _smSunFactor = 1.0f;
     bool _smEnabledFrame = false;
     shadow::CascadeSet _smCascades;
