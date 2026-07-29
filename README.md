@@ -32,6 +32,9 @@ that still let the original game content remain at the centre of the experience:
   branch, including its volumetric cloud system.
 - A modern, observable rendering path with GPU timing and developer diagnostics
   for testing and iteration.
+- Zeus mode in the developer tools: a Game Master-style free-fly camera with
+  altitude-scaled movement, Shift speed boost, inverted mouse look, and
+  click-to-place unit and vehicle spawning.
 
 The project is deliberately evolutionary rather than a replacement engine:
 existing game data and the established CWR-CE codebase remain the foundation.
