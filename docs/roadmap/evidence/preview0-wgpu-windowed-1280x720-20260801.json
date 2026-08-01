@@ -1,0 +1,82 @@
+{
+	"schema_version":	1,
+	"renderer":	"WGPU (Rust / wgpu)",
+	"runtime":	"Wgpu",
+	"gpu_timestamps_available":	true,
+	"gpu_timings_ms":	[{
+			"name":	"Spectrum init",
+			"milliseconds":	6.1429758071899414
+		}, {
+			"name":	"Spectrum evolve",
+			"milliseconds":	0.11366400122642517
+		}, {
+			"name":	"FFT horizontal",
+			"milliseconds":	0.22015999257564545
+		}, {
+			"name":	"FFT vertical",
+			"milliseconds":	0.20889599621295929
+		}, {
+			"name":	"FFT compose",
+			"milliseconds":	0.1157120019197464
+		}, {
+			"name":	"Interaction (inject+propagate)",
+			"milliseconds":	0.010239999741315842
+		}, {
+			"name":	"Foam update",
+			"milliseconds":	0.18943999707698822
+		}, {
+			"name":	"Whitewater",
+			"milliseconds":	-1
+		}, {
+			"name":	"Planar: sky",
+			"milliseconds":	0.06143999844789505
+		}, {
+			"name":	"Planar: terrain",
+			"milliseconds":	0.18943999707698822
+		}, {
+			"name":	"Planar: objects",
+			"milliseconds":	0.0727040022611618
+		}, {
+			"name":	"Planar: clouds",
+			"milliseconds":	0.040959998965263367
+		}, {
+			"name":	"Planar: mips",
+			"milliseconds":	0.020479999482631683
+		}, {
+			"name":	"Water SSR",
+			"milliseconds":	-1
+		}, {
+			"name":	"Water refraction",
+			"milliseconds":	-1
+		}, {
+			"name":	"Water draw",
+			"milliseconds":	3.9403519630432129
+		}, {
+			"name":	"Underwater froxel",
+			"milliseconds":	-1
+		}, {
+			"name":	"Underwater composite",
+			"milliseconds":	-1
+		}, {
+			"name":	"Caustics",
+			"milliseconds":	-1
+		}, {
+			"name":	"Place near (compute)",
+			"milliseconds":	0.063487999141216278
+		}, {
+			"name":	"Place mid (compute)",
+			"milliseconds":	0.0368640013039112
+		}, {
+			"name":	"Place far (compute)",
+			"milliseconds":	0.010239999741315842
+		}, {
+			"name":	"Grass prepass",
+			"milliseconds":	0.73523199558258057
+		}, {
+			"name":	"Grass colour",
+			"milliseconds":	1.2328959703445435
+		}, {
+			"name":	"Grass shadow",
+			"milliseconds":	0.27852800488471985
+		}]
+}

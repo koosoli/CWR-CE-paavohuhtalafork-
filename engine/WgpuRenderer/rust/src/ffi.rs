@@ -55,6 +55,21 @@ pub struct WgrLogCallbacks {
 }
 
 #[repr(C)]
+pub struct WgrAbiCheck {
+    pub abi_version: u32,
+    pub struct_size: u32,
+    pub surface_desc_size: u32,
+    pub log_callbacks_size: u32,
+    pub frame_size: u32,
+    pub required_features: u32,
+}
+
+const WGR_ABI_FEATURE_BUILD_ID: u32 = 0x0000_0001;
+const WGR_ABI_FEATURE_SAFE_DIAGNOSTICS: u32 = 0x0000_0002;
+const WGR_ABI_FEATURE_RUNTIME_CAPABILITIES: u32 = 0x0000_0004;
+const WGR_ABI_SUPPORTED_FEATURES: u32 = WGR_ABI_FEATURE_BUILD_ID | WGR_ABI_FEATURE_SAFE_DIAGNOSTICS | WGR_ABI_FEATURE_RUNTIME_CAPABILITIES;
+
+#[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct WgrVertex2D {
     // pos.x/y = window pixels, pos.z = depth.
@@ -1032,12 +1047,112 @@ const _: () = assert!(std::mem::size_of::<WgrWaterInteractionParams>() == 96);
 const _: () = assert!(std::mem::align_of::<WgrWaterInteractionParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSlice<WgrCamera>>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrFrame>() == 576);
+const _: () = assert!(std::mem::size_of::<WgrAbiCheck>() == 24);
 
 pub type WgrRenderer = Renderer;
 
 #[unsafe(no_mangle)]
 pub extern "C" fn wgr_version() -> *const c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const c_char
+}
+
+/// Version of the public C ABI declared in `wgpu_renderer.hpp`.
+///
+/// This intentionally has a separate integer from the crate's package version:
+/// a compatible implementation update must not force a C++ rebuild, while an
+/// ABI change must be made explicit at both sides of the boundary.
+#[unsafe(no_mangle)]
+pub extern "C" fn wgr_abi_version() -> u32 {
+    if cfg!(debug_assertions) {
+        option_env!("WGR_TEST_ABI_VERSION")
+            .and_then(|value| value.parse::<u32>().ok())
+            .unwrap_or(4)
+    } else {
+        4
+    }
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn wgr_build_id() -> *const c_char {
+    concat!(env!("WGR_BUILD_ID"), "\0").as_ptr() as *const c_char
+}
+
+/// Validate the C++ side's versioned ABI declaration before accepting any
+/// renderer state. Returns 1 only for an exact, known-compatible layout.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_abi_validate(check: *const WgrAbiCheck) -> i32 {
+    let Some(check) = (unsafe { check.as_ref() }) else {
+        return 0;
+    };
+    (check.abi_version == wgr_abi_version()
+        && check.struct_size == std::mem::size_of::<WgrAbiCheck>() as u32
+        && check.surface_desc_size == std::mem::size_of::<WgrSurfaceDesc>() as u32
+        && check.log_callbacks_size == std::mem::size_of::<WgrLogCallbacks>() as u32
+        && check.frame_size == std::mem::size_of::<WgrFrame>() as u32
+        && (check.required_features & !WGR_ABI_SUPPORTED_FEATURES) == 0) as i32
+}
+
+/// Queue one capture of the next fully composited swapchain frame.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_screenshot_request(renderer: *mut WgrRenderer) {
+    if renderer.is_null() {
+        return;
+    }
+    let _ = catch_unwind(AssertUnwindSafe(|| unsafe { &mut *renderer }.request_screenshot()));
+}
+
+/// Copy the latest requested capture as tightly packed RGBA8. Call once with
+/// null output to query dimensions, then again with `width * height * 4` bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_screenshot_take(
+    renderer: *mut WgrRenderer,
+    out: *mut u8,
+    out_len: u32,
+    width: *mut u32,
+    height: *mut u32,
+) -> u32 {
+    if renderer.is_null() || width.is_null() || height.is_null() || (out.is_null() && out_len != 0) {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| {
+        let out = if out.is_null() { &mut [] } else { unsafe { std::slice::from_raw_parts_mut(out, out_len as usize) } };
+        unsafe { &mut *renderer }.take_screenshot(out, unsafe { &mut *width }, unsafe { &mut *height })
+    }))
+    .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod abi_tests {
+    #[test]
+    fn exported_abi_version_matches_the_public_contract() {
+        assert_eq!(super::wgr_abi_version(), 4);
+    }
+
+    #[test]
+    fn mismatched_abi_layout_is_refused() {
+        let check = super::WgrAbiCheck {
+            abi_version: super::wgr_abi_version(),
+            struct_size: std::mem::size_of::<super::WgrAbiCheck>() as u32,
+            surface_desc_size: std::mem::size_of::<super::WgrSurfaceDesc>() as u32,
+            log_callbacks_size: std::mem::size_of::<super::WgrLogCallbacks>() as u32,
+            frame_size: 0,
+            required_features: super::WGR_ABI_FEATURE_BUILD_ID,
+        };
+        assert_eq!(unsafe { super::wgr_abi_validate(&check) }, 0);
+    }
+
+    #[test]
+    fn unsupported_abi_feature_is_refused() {
+        let check = super::WgrAbiCheck {
+            abi_version: super::wgr_abi_version(),
+            struct_size: std::mem::size_of::<super::WgrAbiCheck>() as u32,
+            surface_desc_size: std::mem::size_of::<super::WgrSurfaceDesc>() as u32,
+            log_callbacks_size: std::mem::size_of::<super::WgrLogCallbacks>() as u32,
+            frame_size: std::mem::size_of::<super::WgrFrame>() as u32,
+            required_features: 0x8000_0000,
+        };
+        assert_eq!(unsafe { super::wgr_abi_validate(&check) }, 0);
+    }
 }
 
 /// # Safety
@@ -1121,6 +1236,17 @@ pub unsafe extern "C" fn wgr_resize(renderer: *mut WgrRenderer, width: u32, heig
     let _ = catch_unwind(AssertUnwindSafe(|| {
         unsafe { &mut *renderer }.resize(width, height);
     }));
+}
+
+/// # Safety
+/// `renderer` must be a live pointer from `wgr_create`, or null.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_present_mode(renderer: *mut WgrRenderer, interval: i32) -> i32 {
+    if renderer.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| unsafe { &mut *renderer }.set_present_mode(interval)))
+        .unwrap_or(false) as i32
 }
 
 /// Flag for wgr_texture_create: generate the rest of the mip chain from level 0
@@ -1879,6 +2005,14 @@ pub unsafe extern "C" fn wgr_get_gpu_timings(
         count.min(out_len)
     }))
     .unwrap_or(0)
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_get_runtime_capabilities(renderer: *mut WgrRenderer) -> u32 {
+    if renderer.is_null() {
+        return 0;
+    }
+    catch_unwind(AssertUnwindSafe(|| unsafe { &*renderer }.runtime_capabilities())).unwrap_or(0)
 }
 
 /// GRS-A — grass instance accounting for the Grass tab, mirroring `WgrGrassStats`

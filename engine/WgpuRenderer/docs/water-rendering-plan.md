@@ -365,18 +365,14 @@ colour binding, and the Water-tab controls were all removed; the flat depth-tint
   toward it — no uniform pink wash. Sun disc excluded (per decision: analytic Blinn-Phong glint stays the
   glint source). Env map is disc-free linear radiance; equirect UV convention shared by `fs_sky_env` (bake)
   and `sky_env_sample` (water). **Not yet run in-game** (Rust+shader validated).
-- **4b:** mirrored-camera half-res planar re-render through the **existing multi-view cull path** (mirror =
-  another view, `frustum_planes(mirror_vp)`, its own `set_shadow_view_count`-style view + records). **Add a
-  waterline clip** — the one missing piece (§0.2.3): an oblique near-plane on the mirror projection or an
-  extra `CullParamsGpu` plane so below-water instances are rejected before draw, else FS-clip in the
-   reflected pass. Flip winding; needs a reflected color+depth target + resolve. Composite over 4a where
-   rays miss geometry.
-  **Current blocker (2026-07-21):** this is not safe to add without a camera/scene-pass extension. The C++/Rust
-  camera ABI has no clip-plane or oblique-projection field, `CullParamsGpu` accepts only frustum planes, and
-  the retained-object, prepass, terrain, froxel, and material paths are recorded for the main camera. Reusing
-  them for a mirror would render below-water geometry and risks incorrect culling/fog. The shipped fallback
-  therefore uses the snapshot as a rough mirrored-screen scene contribution, Fresnel-mixed with the stable
-  sky env map; it is not a true planar geometry reflection.
+- **4b: IMPLEMENTED (pending focused in-game validation).** A private reflected camera is appended only to
+  the Rust-side camera upload, so the C++ ABI remains unchanged. The renderer mirrors the camera around the
+  water level, allocates a half-resolution HDR colour/depth target, and renders reflected sky, terrain, and
+  the independently culled GPU-driven opaque scene. Reflected material shaders discard geometry below the
+  absolute-world water clip plane, mirrored pipelines reverse winding, and the generated mip chain supplies
+  roughness filtering for the water lookup. Clouds are composited after the reflected depth resolve; aerial
+  froxels and CPU-streamed transparent objects remain intentionally excluded. GPU timestamp regions expose
+  sky, terrain, objects, clouds, and mip costs separately.
 - **Exit:** grazing water mirrors the sky and coastline; top-down water transmits.
 
 ### Stage 5 — Per-map look settings + Water tab + sky coupling
@@ -426,5 +422,6 @@ stage, behind the water flag with per-effect sub-toggles. **Stages 2 + 2c are DO
 2026-07-11); **Stage 3 (screen-space refraction) was attempted and reverted** — it needs a dedicated
 underwater pass (see above), deferred. Two coast-look bug-fixes also landed 2026-07-11: **foam is now lit**
 (no night glow) and **water reconstructs seabed depth from a FARTHEST-sample MSAA resolve** so A2C foliage
-/ rotor edges no longer ring with foam. Stage 4a (sky reflection) is the next look work — it needs
-`sky.wgsl` refactored into an importable `sky_radiance(dir)` module (§0.3).
+ / rotor edges no longer ring with foam. Stages 4a (sky environment reflection) and 4b (half-resolution
+ planar scene reflection) are implemented; their remaining exit criterion is focused in-game validation of
+ reflection ownership, clipping, and cost using the existing Water debug views and GPU timestamps.

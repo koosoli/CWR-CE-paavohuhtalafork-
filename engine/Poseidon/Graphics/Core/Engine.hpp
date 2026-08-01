@@ -1387,8 +1387,10 @@ class Engine : public IGraphicsEngine
         // Coast-aware CDLOD geometry density. GodotOceanWaves uses a camera-following clipmap
         // with Low/High/High8K meshes; our terrain-integrated equivalent changes how far each
         // fine CDLOD level remains active while preserving shoreline pruning and horizon coverage.
-        // 0 = Performance, 1 = Balanced, 2 = Reference High (default), 3 = Ultra.
-        int geometryQuality = 2;
+        // 0 = Performance, 1 = Balanced (default), 2 = Reference High, 3 = Ultra.
+        // Balanced preserves the near-water mesh fidelity while avoiding the much
+        // larger visible patch set of the reference/screenshot tier.
+        int geometryQuality = 1;
         // Live FFT spectral-map resolution. 512 is the optimized gameplay default;
         // 1024 matches GodotOceanWaves' authored map size, while 256 is the low tier.
         // Resource reconstruction happens only when this value changes.
@@ -1500,6 +1502,9 @@ class Engine : public IGraphicsEngine
     // stays backend-agnostic. APPENDED at the class end (vtable-slot note above).
     virtual int GetWaterGpuTimings(float* /*outMs*/, int /*maxCount*/) const { return 0; }
     virtual const char* GetWaterGpuTimingName(int /*region*/) const { return ""; }
+    // Live WGPU adapter/runtime flags for the Profile diagnostic tab. Appended to
+    // preserve existing vtable slots; zero means unavailable/non-WGPU.
+    virtual uint32_t GetRuntimeCapabilityFlags() const { return 0; }
 
     // GetWaterGpuTimings returns ONE shared region array covering every timed
     // subsystem; each debug tab slices its own range. Mirrors WgrGpuTimerRegion
@@ -1510,6 +1515,8 @@ class Engine : public IGraphicsEngine
         kWaterGpuRegionEnd = 19,
         kGrassGpuRegionBegin = 19,
         kGrassGpuRegionEnd = 25,
+        kFrameGpuRegionTotal = 25,
+        kGpuRegionEnd = 26,
     };
 
   protected:

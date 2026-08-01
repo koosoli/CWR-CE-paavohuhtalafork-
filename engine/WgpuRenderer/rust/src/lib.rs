@@ -16,6 +16,8 @@ mod tonemap;
 mod underwater;
 mod water;
 
+use std::sync::{Arc, Mutex};
+
 use crate::bloom::Bloom;
 use crate::exposure::Exposure;
 use crate::ffi::{
@@ -92,13 +94,55 @@ fn srgb_to_linear_ch(c: f32) -> f32 {
     }
 }
 
+#[derive(Default)]
+struct RuntimeDiagnostics {
+    device_loss: Mutex<Option<String>>,
+    uncaptured_error: Mutex<Option<String>>,
+}
+
+struct ScreenshotPixels {
+    width: u32,
+    height: u32,
+    rgba: Vec<u8>,
+}
+
+impl RuntimeDiagnostics {
+    fn take_messages(&self) -> (Option<String>, Option<String>) {
+        (
+            self.device_loss.lock().expect("device diagnostics poisoned").take(),
+            self.uncaptured_error.lock().expect("device diagnostics poisoned").take(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod runtime_diagnostics_tests {
+    use super::RuntimeDiagnostics;
+
+    #[test]
+    fn reports_device_loss_and_uncaptured_error_once() {
+        let diagnostics = RuntimeDiagnostics::default();
+        *diagnostics.device_loss.lock().unwrap() = Some("device lost (Destroyed)".to_owned());
+        *diagnostics.uncaptured_error.lock().unwrap() = Some("validation error".to_owned());
+
+        assert_eq!(
+            diagnostics.take_messages(),
+            (Some("device lost (Destroyed)".to_owned()), Some("validation error".to_owned()))
+        );
+        // A frame must not keep reporting stale failures after it consumed them.
+        assert_eq!(diagnostics.take_messages(), (None, None));
+    }
+}
+
 pub struct Renderer {
     log: LogSink,
+    runtime_diagnostics: Arc<RuntimeDiagnostics>,
     // `'static` is sound because C++ keeps the window alive until after `wgr_destroy`.
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
+    present_modes: Vec<wgpu::PresentMode>,
     textures: SharedTextures,
     gfx2d: Gfx2d,
     gfx3d: Gfx3d,
@@ -108,6 +152,7 @@ pub struct Renderer {
     // WTR-002 — GPU timestamp brackets around the water-pipeline passes (inert when the
     // adapter lacks TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS).
     gpu_timers: GpuTimers,
+    runtime_capabilities: u32,
     // HDR pipeline (docs/hdr-pipeline-plan.md). When enabled, the 3D/terrain/2D
     // scene renders into `hdr` (linear once Stage 2 lands) and `tonemap` resolves it
     // to the swapchain; the dev overlay + (later) screen-space UI composite after.
@@ -178,6 +223,12 @@ pub struct Renderer {
     suppress_world_objects: bool,
     // Debug: draw the GPU-driven frustum-cull spheres (ImGui Culling tab). Off by default.
     cull_debug_draw: bool,
+    // A screenshot is requested by C++ before the next frame. The swapchain
+    // texture can only be copied while it is acquired by render_frame, so the
+    // synchronous readback completes there and C++ collects the RGBA bytes
+    // immediately after presentation.
+    screenshot_requested: bool,
+    screenshot_pixels: Option<ScreenshotPixels>,
 }
 
 impl Renderer {
@@ -298,6 +349,19 @@ impl Renderer {
             wgpu::Features::empty()
         };
 
+        log.log(
+            log_level::INFO,
+            &format!(
+                "wgpu capabilities: bc={} bindless=true partially_bound={} indirect_first_instance={} multi_draw_count={} vertex_writable_storage=true timestamps={} timestamps_in_passes={}",
+                bc_supported,
+                partially_bound_enabled,
+                indirect_first_instance,
+                multi_draw_count,
+                ts_enabled,
+                ts_inside_passes,
+            ),
+        );
+
         // Bindless object textures (docs/bindless-textures-plan.md): one binding_array
         // covering all live object textures. Cap chosen so a non-PARTIALLY_BOUND adapter
         // doesn't pad an enormous array (a level with more unique textures overflows to
@@ -334,6 +398,22 @@ impl Renderer {
         }))
         .map_err(|e| format!("request_device failed: {e}"))?;
 
+        // Keep GPU failures diagnosable at the FFI boundary. Preview-0 does not
+        // attempt in-process device recovery, but it must report why a restart
+        // or the engine's normal fallback policy is required.
+        let runtime_diagnostics = Arc::new(RuntimeDiagnostics::default());
+        let lost_diagnostics = Arc::clone(&runtime_diagnostics);
+        device.set_device_lost_callback(move |reason, message| {
+            *lost_diagnostics.device_loss.lock().expect("device diagnostics poisoned") =
+                Some(format!("wgpu device lost ({reason:?}): {message}"));
+        });
+        let error_diagnostics = Arc::clone(&runtime_diagnostics);
+        device.on_uncaptured_error(Arc::new(move |error| {
+            *error_diagnostics.uncaptured_error.lock().expect("device diagnostics poisoned") =
+                Some(format!("wgpu uncaptured error: {error}"));
+        }));
+
+        let present_modes = surface.get_capabilities(&adapter).present_modes;
         let mut config = surface
             .get_default_config(&adapter, desc.width.max(1), desc.height.max(1))
             .ok_or_else(|| "surface is not supported by the chosen adapter".to_string())?;
@@ -345,6 +425,11 @@ impl Renderer {
         if linear != config.format && surface.get_capabilities(&adapter).formats.contains(&linear) {
             config.format = linear;
         }
+        // Screenshot capture copies the fully composited swapchain image into a
+        // staging buffer. The default surface config is render-attachment-only;
+        // explicitly request COPY_SRC so that copy is a real operation rather
+        // than a backend-dependent black readback.
+        config.usage |= wgpu::TextureUsages::COPY_SRC;
 
         surface.configure(&device, &config);
 
@@ -579,12 +664,24 @@ impl Renderer {
             ..Default::default()
         };
 
+        let runtime_capabilities =
+            (if bc_supported { 1 } else { 0 }) |
+            (if partially_bound_enabled { 1 << 1 } else { 0 }) |
+            (if indirect_first_instance { 1 << 2 } else { 0 }) |
+            (if multi_draw_count { 1 << 3 } else { 0 }) |
+            (if ts_enabled { 1 << 4 } else { 0 }) |
+            (if ts_inside_passes { 1 << 5 } else { 0 }) |
+            (if hdr_enabled { 1 << 6 } else { 0 }) |
+            (if sample_count > 1 { 1 << 7 } else { 0 });
+
         Ok(Self {
             log,
+            runtime_diagnostics,
             surface,
             device,
             queue,
             config,
+            present_modes,
             textures,
             gfx2d,
             gfx3d,
@@ -592,6 +689,7 @@ impl Renderer {
             grass,
             water,
             gpu_timers,
+            runtime_capabilities,
             hdr_enabled,
             hdr: None,
             hdr_resolve: None,
@@ -634,7 +732,32 @@ impl Renderer {
             prepass_enabled,
             suppress_world_objects: false,
             cull_debug_draw: false,
+            screenshot_requested: false,
+            screenshot_pixels: None,
         })
+    }
+
+    fn request_screenshot(&mut self) {
+        self.screenshot_requested = true;
+        self.screenshot_pixels = None;
+    }
+
+    fn runtime_capabilities(&self) -> u32 {
+        self.runtime_capabilities
+    }
+
+    fn take_screenshot(&mut self, out: &mut [u8], width: &mut u32, height: &mut u32) -> u32 {
+        let Some(pixels) = self.screenshot_pixels.take() else {
+            return 0;
+        };
+        *width = pixels.width;
+        *height = pixels.height;
+        if out.len() < pixels.rgba.len() {
+            self.screenshot_pixels = Some(pixels);
+            return 0;
+        }
+        out[..pixels.rgba.len()].copy_from_slice(&pixels.rgba);
+        pixels.rgba.len() as u32
     }
 
     // Consolidated ImGui-tweakable render params (wgr_set_render_params). Fans out to the
@@ -885,6 +1008,32 @@ impl Renderer {
         self.surface.configure(&self.device, &self.config);
     }
 
+    // Mirrors the engine's SDL swap interval contract. Presentation is reconfigured
+    // immediately, so Options -> Graphics changes take effect without a restart.
+    fn set_present_mode(&mut self, interval: i32) -> bool {
+        let requested = match interval {
+            0 => wgpu::PresentMode::Immediate,
+            1 => wgpu::PresentMode::Fifo,
+            -1 => {
+                if self.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+                    wgpu::PresentMode::Mailbox
+                } else {
+                    wgpu::PresentMode::Immediate
+                }
+            }
+            _ => return false,
+        };
+        if !self.present_modes.contains(&requested) {
+            self.log.log(log_level::WARN, &format!("wgpu present mode {requested:?} is unsupported"));
+            return false;
+        }
+        if self.config.present_mode != requested {
+            self.config.present_mode = requested;
+            self.surface.configure(&self.device, &self.config);
+        }
+        true
+    }
+
     // (Re)allocate the offscreen HDR scene target to match the swapchain size, and
     // repoint the tonemap resolve at the new view. No-op when the HDR path is off or
     // the size is unchanged. Mirrors Gfx3d::ensure_depth.
@@ -1122,14 +1271,37 @@ impl Renderer {
 
     // `None` = skip this frame
     fn acquire(&mut self) -> Result<Option<wgpu::SurfaceTexture>, String> {
+        let (device_loss, uncaptured_error) = self.runtime_diagnostics.take_messages();
+        if let Some(message) = device_loss {
+            self.log.log(log_level::ERROR, &message);
+        }
+        if let Some(message) = uncaptured_error {
+            self.log.log(log_level::ERROR, &message);
+        }
         use wgpu::CurrentSurfaceTexture as Cst;
         match self.surface.get_current_texture() {
             Cst::Success(t) | Cst::Suboptimal(t) => Ok(Some(t)),
-            Cst::Outdated | Cst::Lost => {
+            Cst::Outdated => {
+                self.log.log(log_level::WARN, "wgpu surface outdated; reconfiguring and skipping frame");
                 self.surface.configure(&self.device, &self.config);
                 Ok(None)
             }
-            Cst::Timeout | Cst::Occluded => Ok(None),
+            Cst::Lost => {
+                self.log.log(
+                    log_level::ERROR,
+                    "wgpu surface lost; reconfiguring once (device recovery requires restart)",
+                );
+                self.surface.configure(&self.device, &self.config);
+                Ok(None)
+            }
+            Cst::Timeout => {
+                self.log.log(log_level::DEBUG, "wgpu surface timeout; skipping frame");
+                Ok(None)
+            }
+            Cst::Occluded => {
+                self.log.log(log_level::DEBUG, "wgpu surface occluded/minimized; skipping frame");
+                Ok(None)
+            }
             Cst::Validation => Err("get_current_texture: validation error".to_string()),
         }
     }
@@ -1382,6 +1554,41 @@ impl Renderer {
         let Some(frame) = self.acquire()? else {
             return Ok(());
         };
+        let screenshot_staging = if self.screenshot_requested {
+            let width = self.config.width;
+            let height = self.config.height;
+            let bytes_per_row = width.saturating_mul(4);
+            let padded_bytes_per_row = bytes_per_row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT)
+                * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+            let rgba_or_bgra = matches!(
+                self.config.format,
+                wgpu::TextureFormat::Rgba8Unorm
+                    | wgpu::TextureFormat::Rgba8UnormSrgb
+                    | wgpu::TextureFormat::Bgra8Unorm
+                    | wgpu::TextureFormat::Bgra8UnormSrgb
+            );
+            if !rgba_or_bgra || width == 0 || height == 0 {
+                self.log.log(log_level::WARN, "wgpu screenshot unavailable for the current surface format");
+                self.screenshot_requested = false;
+                None
+            } else {
+                Some((
+                    self.device.create_buffer(&wgpu::BufferDescriptor {
+                        label: Some("wgr_screenshot_readback"),
+                        size: padded_bytes_per_row as u64 * height as u64,
+                        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+                        mapped_at_creation: false,
+                    }),
+                    width,
+                    height,
+                    bytes_per_row,
+                    padded_bytes_per_row,
+                    matches!(self.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb),
+                ))
+            }
+        } else {
+            None
+        };
 
         let color = frame
             .texture
@@ -1428,6 +1635,10 @@ impl Renderer {
             });
         // WTR-002 — new frame, new set of timestamp brackets.
         self.gpu_timers.begin_frame();
+        // Envelope every submitted pass so the Performance tab can distinguish
+        // GPU completion from acquire/present pacing without summing overlapping
+        // individual pass timers.
+        self.gpu_timers.begin(&mut encoder, TimerRegion::FrameTotal);
 
         // Grass owns a compact camera-relative candidate grid.  Refresh its borrowed
         // terrain inputs before the placement compute so the pass sees the same terrain
@@ -2475,9 +2686,53 @@ impl Renderer {
         // WTR-002 — resolve this frame's timestamp brackets into a readback slot (recorded
         // last so every bracket above is covered), then after submit kick/drain the
         // non-blocking readbacks.
+        if let Some((buffer, width, height, _bytes_per_row, padded_bytes_per_row, _is_bgra)) = &screenshot_staging {
+            encoder.copy_texture_to_buffer(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &frame.texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                wgpu::TexelCopyBufferInfo {
+                    buffer,
+                    layout: wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(*padded_bytes_per_row),
+                        rows_per_image: Some(*height),
+                    },
+                },
+                wgpu::Extent3d { width: *width, height: *height, depth_or_array_layers: 1 },
+            );
+        }
+        self.gpu_timers.end(&mut encoder, TimerRegion::FrameTotal);
         self.gpu_timers.resolve(&mut encoder);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
+        if let Some((buffer, width, height, bytes_per_row, padded_bytes_per_row, is_bgra)) = screenshot_staging {
+            let slice = buffer.slice(..);
+            let (tx, rx) = std::sync::mpsc::channel();
+            slice.map_async(wgpu::MapMode::Read, move |result| { let _ = tx.send(result); });
+            if self.device.poll(wgpu::PollType::wait_indefinitely()).is_ok() && matches!(rx.recv(), Ok(Ok(()))) {
+                let mapped = slice.get_mapped_range();
+                let mut rgba = vec![0; bytes_per_row as usize * height as usize];
+                for row in 0..height as usize {
+                    let source = &mapped[row * padded_bytes_per_row as usize..][..bytes_per_row as usize];
+                    let dest = &mut rgba[row * bytes_per_row as usize..][..bytes_per_row as usize];
+                    dest.copy_from_slice(source);
+                    if is_bgra {
+                        for pixel in dest.chunks_exact_mut(4) { pixel.swap(0, 2); }
+                    }
+                }
+                drop(mapped);
+                buffer.unmap();
+                self.screenshot_pixels = Some(ScreenshotPixels { width, height, rgba });
+                self.log.log(log_level::INFO, "wgpu screenshot readback completed");
+            } else {
+                self.log.log(log_level::ERROR, "wgpu screenshot readback failed");
+            }
+            self.screenshot_requested = false;
+        }
         self.gpu_timers.harvest(&self.device);
         self.grass.harvest_stats(&self.device);
         Ok(())

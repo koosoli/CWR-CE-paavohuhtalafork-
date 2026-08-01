@@ -1932,17 +1932,26 @@ void Landscape::Draw(Scene& scene)
 
     const int maxCoord = 0x40000;
     const int minCoord = -0x40000;
-    if (begEnd.xBeg > maxCoord || begEnd.xBeg < minCoord || begEnd.zBeg > maxCoord || begEnd.zBeg < minCoord)
+    if (begEnd.xBeg > maxCoord || begEnd.xBeg < minCoord || begEnd.zBeg > maxCoord || begEnd.zBeg < minCoord ||
+        begEnd.xEnd > maxCoord || begEnd.xEnd < minCoord || begEnd.zEnd > maxCoord || begEnd.zEnd < minCoord)
     {
-        Fail("Ground drawing out of valid range");
-        RptF("  Rect %d,%d..%d,%d", begEnd.xBeg, begEnd.zBeg, begEnd.xEnd, begEnd.zEnd);
+        // Camera changes during mission/menu transitions can briefly yield an invalid
+        // frustum rectangle. This used to call Fail(), which is a debug breakpoint and
+        // therefore turned one rejected frame into a process crash. The rectangle is
+        // already unusable, so safely skip this terrain pass and retain enough context
+        // in the log to diagnose a persistent bad camera state.
+        Vector3 cameraPos = scene.GetCamera()->Position();
+        LOG_ERROR(World, "Landscape: skipped out-of-range terrain rect {}:{}..{}:{} (camera {}, {}, {}; fog {:.1f})",
+                  begEnd.xBeg, begEnd.zBeg, begEnd.xEnd, begEnd.zEnd, cameraPos.X(), cameraPos.Y(), cameraPos.Z(),
+                  scene.GetFogMaxRange());
         return;
     }
     if (begEnd.xEnd - begEnd.xBeg > 0x1000 || begEnd.zEnd - begEnd.zBeg > 0x1000)
     {
-        Fail("Ground drawing segment too big");
-        RptF("  Rect %d,%d..%d,%d", begEnd.xBeg, begEnd.zBeg, begEnd.xEnd, begEnd.zEnd);
-        RptF("  Fog max range %.1f", scene.GetFogMaxRange());
+        // As above, this is a recoverable rejected render frame, not an invariant
+        // which warrants terminating an interactive game session.
+        LOG_ERROR(World, "Landscape: skipped oversized terrain rect {}:{}..{}:{} (fog {:.1f})", begEnd.xBeg,
+                  begEnd.zBeg, begEnd.xEnd, begEnd.zEnd, scene.GetFogMaxRange());
         return;
     }
 

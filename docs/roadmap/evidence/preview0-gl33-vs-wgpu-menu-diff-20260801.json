@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "path": "docs\\roadmap\\evidence\\preview0-gl33-menu-metrics-capture-20260801.png",
+    "sha256": "6e4af937c71a5f10fc38d253434bd3eb128aa73363793396bc6e5c3c75d4d704"
+  },
+  "candidate": {
+    "path": "docs\\roadmap\\evidence\\preview0-wgpu-menu-metrics-capture-20260801.png",
+    "sha256": "74d054c76dc0be2675b94c5f86eb24435641110bf5f869595b1e45e0b32063e1"
+  },
+  "dimensions": {
+    "width": 3441,
+    "height": 1440
+  },
+  "threshold": 12,
+  "changed_pixels": 3634094,
+  "changed_pixel_ratio": 0.733413655591075,
+  "mean_absolute_rgb_delta": 52.51252246870857,
+  "max_absolute_rgb_delta": 157.0,
+  "mask": {
+    "path": "docs\\roadmap\\evidence\\preview0-gl33-vs-wgpu-menu-diff-20260801.png",
+    "sha256": "cc792e4d5038eb5bac02674806fae12ec54f737de7da6cff841745e7930c36be"
+  }
+}

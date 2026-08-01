@@ -924,10 +924,20 @@ void DisplayMission::OnSimulate(EntityAI* vehicle)
         std::string missionName =
             std::string((const char*)Glob.header.filename) + "." + (const char*)Glob.header.worldname;
         LOG_INFO(Core, "Mission smoke check: mission runtime entered ({})", missionName);
-        LOG_INFO(Core, "AUTO-TEST SUCCESS");
-        GApp->m_exitCode = 0;
-        GApp->m_closeRequest = true;
         _missionSmokeReported = true;
+        // --check normally proves only that the mission display became live.
+        // A requested screenshot needs to render gameplay frames afterwards;
+        // do not let the bounded smoke exit preempt that capture.
+        if (!AppConfig::Instance().IsScreenshotTest())
+        {
+            LOG_INFO(Core, "AUTO-TEST SUCCESS");
+            GApp->m_exitCode = 0;
+            GApp->m_closeRequest = true;
+        }
+        else
+        {
+            LOG_INFO(Core, "Mission smoke check: deferring exit for requested screenshot");
+        }
         return;
     }
 
@@ -1207,9 +1217,16 @@ void DisplayIntro::OnSimulate(EntityAI* vehicle)
         LOG_INFO(Core, "Mission smoke check: intro runtime entered ({})",
                  Glob.header.filenameReal.GetLength() > 0 ? (const char*)Glob.header.filenameReal
                                                           : Glob.header.filename);
-        LOG_INFO(Core, "AUTO-TEST SUCCESS");
-        GApp->m_exitCode = 0;
-        GApp->m_closeRequest = true;
+        if (!AppConfig::Instance().IsScreenshotTest())
+        {
+            LOG_INFO(Core, "AUTO-TEST SUCCESS");
+            GApp->m_exitCode = 0;
+            GApp->m_closeRequest = true;
+        }
+        else
+        {
+            LOG_INFO(Core, "Mission smoke check: deferring exit for requested screenshot");
+        }
     }
 }
 

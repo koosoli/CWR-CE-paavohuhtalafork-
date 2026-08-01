@@ -1570,9 +1570,7 @@ int CmpStringI(const RString* str1, const RString* str2)
 void InGameUI::WireMovementCommandMenu(Menu* menuMain)
 {
     Menu* menuDist = menuMain->FindMenu(CMD_MOVE_FIRST, true);
-    PoseidonAssert(menuDist);
     Menu* menuDir = menuDist ? menuDist->_parent : nullptr;
-    PoseidonAssert(menuDir);
     if (!menuDir)
     {
         LOG_WARN(UI, "InGameUI::InitMenu: RscMainMenu has no movement command menu — skipping move-menu wiring");

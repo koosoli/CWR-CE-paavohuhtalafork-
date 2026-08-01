@@ -760,7 +760,7 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     {
         for (int i = 0; i < GWorld->NVehicles(); ++i)
         {
-            const Helicopter* helicopter = dyn_cast<const Helicopter>(GWorld->GetVehicle(i));
+            const Helicopter* helicopter = dynamic_cast<const Helicopter*>(GWorld->GetVehicle(i));
             if (helicopter == lastRotor) lastRotorWasListed = true;
             addRotorWash(helicopter);
         }

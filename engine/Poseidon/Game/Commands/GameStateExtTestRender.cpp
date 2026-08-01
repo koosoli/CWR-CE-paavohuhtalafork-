@@ -399,10 +399,10 @@ GameValue TriPerfDumpShapes(const GameState* /*state*/, GameValuePar /*arg*/)
 GameValue TriSetVsync(const GameState* /*state*/, GameValuePar arg)
 {
     const int v = toInt(static_cast<float>(arg));
-    if (GEngine)
-        GEngine->SetSwapInterval(v);
-    LOG_INFO(Core, "[tri] triSetVsync {}", v);
-    return GameValue("OK");
+    const bool applied = GEngine && GEngine->SetSwapInterval(v);
+    const int active = GEngine ? GEngine->GetSwapInterval() : 1;
+    LOG_INFO(Core, "[tri] triSetVsync requested={} applied={} active={}", v, applied ? 1 : 0, active);
+    return GameValue(applied ? "OK" : "FAIL:unsupported");
 }
 /// triPerfStats — frame-phase profiler rolling stats as a machine-readable
 /// string: "fps=F frame=avg/p95/max setup=avg/p95 draw=... calls=N frames=N".

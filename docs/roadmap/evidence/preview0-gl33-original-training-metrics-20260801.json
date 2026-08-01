@@ -1,0 +1,7 @@
+{
+	"schema_version":	1,
+	"renderer":	"OpenGL 3.3",
+	"runtime":	"OpenGL 3.3 — NVIDIA GeForce RTX 3070/PCIe/SSE2",
+	"gpu_timestamps_available":	false,
+	"gpu_timings_ms":	[]
+}

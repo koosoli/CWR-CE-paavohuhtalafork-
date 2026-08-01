@@ -703,6 +703,9 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
         // Lives at app level, not in either subgroup.
         showOption(app.add_option("--screenshot,-s", _screenshotPath, "Capture a screenshot to this path then exit"),
                    CliHelpVisibility::Full, !serverRole);
+        showOption(app.add_option("--capture-metrics", _captureMetricsPath,
+                                  "Write renderer timing metrics as JSON alongside a capture"),
+                   CliHelpVisibility::Full, !serverRole);
 
         // Positional mission arg — unchecked so an unknown option value
         // (e.g. app-specific --start-display NAME) doesn't trip the
@@ -756,6 +759,8 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
                 _viewerAnimPath = std::filesystem::absolute(_viewerAnimPath).string();
             if (!_screenshotPath.empty())
                 _screenshotPath = std::filesystem::absolute(_screenshotPath).string();
+            if (!_captureMetricsPath.empty())
+                _captureMetricsPath = std::filesystem::absolute(_captureMetricsPath).string();
 
             // --viewer implies skipping splash + menu, and enables loose textures
             // so artists can drop .png/.tga next to the expected .paa.  We also

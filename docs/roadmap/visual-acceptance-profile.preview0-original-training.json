@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "id": "preview0-original-training",
+  "policy": "correctness-review",
+  "reason": "GL33 is a correctness oracle, not an art-direction target. WGPU HDR/tonemap, lighting, terrain, vegetation, and water differences are expected unless they demonstrate a correctness bug.",
+  "classification": {
+    "preview0_blocker": "CORRECTNESS_BUG",
+    "non_blocking": ["EXPECTED_DIFFERENCE", "DEFERRED_VISUAL_WORK"]
+  },
+  "reference_backend": "gl33",
+  "candidate_backend": "wgpu"
+}

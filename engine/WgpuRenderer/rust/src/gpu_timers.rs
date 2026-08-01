@@ -63,10 +63,11 @@ pub enum Region {
     GrassPrepass = 22, // depth/normal prepass (near + mid)
     GrassColor = 23,   // colour pass (far + mid + near)
     GrassShadow = 24,  // near blades into the cascade depth map
+    FrameTotal = 25,   // all submitted frame work; excludes acquire/present pacing
 }
 
 /// Region count — the FFI getter's element contract (WGR_GPU_TIMER_REGION_COUNT).
-pub const REGION_COUNT: usize = 25;
+pub const REGION_COUNT: usize = 26;
 /// Water occupies [0, WATER_REGION_COUNT); grass occupies the remainder. The two
 /// debug tabs slice the shared array with these so neither shows the other's rows.
 /// Consumed on the C++ side (Engine::kWaterGpuRegionEnd) and by the layout test.
@@ -318,7 +319,7 @@ mod tests {
     // count + a few pinned indices catches accidental reordering on either side.
     #[test]
     fn region_indices_stay_ffi_stable() {
-        assert_eq!(REGION_COUNT, 25);
+        assert_eq!(REGION_COUNT, 26);
         assert_eq!(Region::SpectrumInit as u32, 0);
         assert_eq!(Region::FftCompose as u32, 4);
         assert_eq!(Region::Interaction as u32, 5);
@@ -330,6 +331,7 @@ mod tests {
         assert_eq!(WATER_REGION_COUNT, 19);
         assert_eq!(Region::GrassPlaceNear as u32, WATER_REGION_COUNT as u32);
         assert_eq!(Region::GrassShadow as u32, 24);
+        assert_eq!(Region::FrameTotal as u32, 25);
         // Every region's begin/end pair fits the query set.
         assert!(QUERY_COUNT as usize == REGION_COUNT * 2);
         // A u32 written mask covers all regions.

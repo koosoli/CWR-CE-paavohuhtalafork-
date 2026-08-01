@@ -117,10 +117,23 @@ class SDLEventWindow
                 if (_sdlWindow)
                     SDL_GetWindowSizeInPixels(_sdlWindow, &_width, &_height);
                 _resized = true;
+                LOG_DEBUG(Graphics, "SDLEventWindow: window resized to {}x{}; reconfiguring renderer surface", _width,
+                          _height);
                 // Notify the engine so it can resize the swap chain with the
                 // correct final dimensions (critical for D3D11 FLIP_DISCARD).
                 if (::Poseidon::GEngine)
                     ::Poseidon::GEngine->OnWindowResized(_width, _height);
+            }
+            else if (event.type == SDL_EVENT_WINDOW_MINIMIZED)
+            {
+                // A minimized WGPU surface is expected to acquire as Occluded.  Keep
+                // the event observable in runtime logs so lifecycle smoke runs prove
+                // that the application consumed the real OS transition.
+                LOG_DEBUG(Graphics, "SDLEventWindow: window minimized; renderer will skip occluded frames");
+            }
+            else if (event.type == SDL_EVENT_WINDOW_RESTORED)
+            {
+                LOG_DEBUG(Graphics, "SDLEventWindow: window restored; renderer may resume presentation");
             }
             else if (event.type == SDL_EVENT_WINDOW_ENTER_FULLSCREEN)
             {

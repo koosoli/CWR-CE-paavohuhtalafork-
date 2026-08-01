@@ -8,6 +8,17 @@ on:
   workflow_dispatch:
 
 jobs:
+  preview0-ledger:
+    name: Preview-0 ledger
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate execution ledger and overlay
+        run: python3 scripts/validate_preview0_ledger.py
+
   clang-format:
     name: Lint
     runs-on: ubuntu-24.04

@@ -82,3 +82,7 @@ target/
 
 # Inspiration reference projects
 /inspiration/
+
+# Local agent instructions, plans, and reference material
+/.agents/
+/AGENTS.md

@@ -45,6 +45,8 @@ add_executable(PoseidonTools
     commands/VonCommand.hpp
     commands/ShadowCommand.cpp
     commands/ShadowCommand.hpp
+    commands/TextureProfileCommand.cpp
+    commands/TextureProfileCommand.hpp
 )
 
 find_package(SDL3 CONFIG REQUIRED)

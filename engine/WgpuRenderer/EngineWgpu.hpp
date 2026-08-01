@@ -71,6 +71,9 @@ class EngineWgpu : public EngineDummy
     int Width() const override;
     int Height() const override;
 
+    bool SetSwapInterval(int interval) override;
+    int GetSwapInterval() const override { return _swapInterval; }
+
     bool IsWindowed() const override;
     bool CanBeWindowed() const override;
 
@@ -80,6 +83,8 @@ class EngineWgpu : public EngineDummy
     void FinishDraw() override;
     void NextFrame() override;
     void Clear(bool clearZ, bool clearColor, PackedColor color) override;
+    void Screenshot(RString filename) override;
+    void FlushPendingScreenshot() override;
 
     void Draw2D(const Draw2DPars& pars, const Rect2DAbs& rect, const Rect2DAbs& clip) override;
     void DrawPoly(const MipInfo& mip, const Vertex2DAbs* vertices, int n, const Rect2DAbs& clip, int specFlags) override;
@@ -154,7 +159,7 @@ class EngineWgpu : public EngineDummy
     // pushes them into the water UBO each frame. Gated on the water renderer existing.
     bool SupportsWater() const override { return _renderer != nullptr && _water != nullptr; }
     WaterSettings GetWaterSettings() const override { return _waterLook; }
-    void SetWaterSettings(const WaterSettings& s) override { _waterLook = s; }
+    void SetWaterSettings(const WaterSettings& s) override;
     // Legacy terrain grass layers call these while submitting their GrassTexture
     // overlays.  The procedural system uses that exact hook as its eligibility
     // signal instead of drawing over every opaque terrain cell.
@@ -176,6 +181,7 @@ class EngineWgpu : public EngineDummy
     // WgrGpuTimerRegion index contract.
     int GetWaterGpuTimings(float* outMs, int maxCount) const override;
     const char* GetWaterGpuTimingName(int region) const override;
+    uint32_t GetRuntimeCapabilityFlags() const override;
 
     // GRS-A — grass instance counts, read back from wgr_get_grass_stats.
     bool GetGrassStats(GrassStatsOut& out) const override;
@@ -276,12 +282,14 @@ class EngineWgpu : public EngineDummy
     // current game time into _sky (preserving the live toggle knobs). Called once per
     // frame from NextFrame, before the render-params push.
     void UpdateAutoSky();
+    void SyncWaterLookProfile();
     // Gentle, view-dependent eye accommodation for the visible sun. Kept separate
     // from scene-average auto-exposure, which remains disabled to prevent white-outs.
     void UpdateSunGlareExposure();
 
     SDL_Window* _window = nullptr;
     WgrRenderer* _renderer = nullptr;
+    RString _pendingScreenshotPath;
     // HDR path enabled (mirrors the renderer's WGR_HDR gate) — gates the tonemap tab.
     // Default on, matching the renderer; WGR_HDR=0 forces it off (see the ctor env read).
     bool _hdrEnabled = true;
@@ -294,6 +302,8 @@ class EngineWgpu : public EngineDummy
     float _sunGlareExposure = 1.0f;
     // Live GPU-water look, edited by the Water tab, read by WaterWgpu each frame.
     Engine::WaterSettings _waterLook;
+    std::string _waterLookMap;
+    bool _waterLookDirty = false;
     // Authored procedural-sky params (atmosphere + look); celestial fields are filled
     // per frame from LightSun in PushSkyRuntime.
     Engine::SkySettings _sky;
@@ -311,6 +321,7 @@ class EngineWgpu : public EngineDummy
     SDLEventWindow _eventWindow;
     int _w = 0;
     int _h = 0;
+    int _swapInterval = 1;
     bool _windowed = true;
 
     float _clear[4] = {0.0f, 0.0f, 0.0f, 1.0f};

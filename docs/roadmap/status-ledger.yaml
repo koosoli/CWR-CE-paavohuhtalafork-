@@ -1,0 +1,271 @@
+schema_version: 3
+purpose: Preview-0 authoritative execution ledger.
+execution:
+  integration_target: new-renderer-infrastructure
+  baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
+  integration_owner: Oliver Kay
+  activation_state: PREPARED
+tickets:
+  - id: PERF-001
+    is_example: false
+    title: Platform and performance targets
+    class: BUILD_INFRA
+    obligation: REQUIRED
+    execution_mode: VALIDATE
+    scheduling_state: DONE
+    status: VALIDATED
+    outcome: ADOPTED
+    owner: null
+    branch: null
+    baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
+    verification_commit: null
+    milestone: -1
+    milestone_role: BLOCKING
+    depends_on: []
+    blocked_by: []
+    blocks: [CORE-NEG-001]
+    implementation_commits: []
+    production_call_sites: []
+    test_ids: [tier1-wgpu-check, tier1-gl33-check]
+    benchmark_artifacts: []
+    evidence_hash: null
+    decision_record: docs/roadmap/decisions/PERF-001-water-draw-scaling-20260801.md
+    known_failures: []
+    fallback: GL33 remains available when explicitly selected.
+    reviewer: null
+    supersedes: []
+    evidence:
+      - docs/roadmap/tier1-preview0-validation.md
+      - cmake PoseidonGame build (2026-08-01)
+      - docs/roadmap/evidence/preview0-wgpu-automation-check-20260801.log
+      - docs/roadmap/evidence/preview0-gl33-automation-final-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-water-scaling-baseline-20260801-original-training-capture.json
+      - docs/roadmap/decisions/PERF-001-water-draw-scaling-20260801.md
+  - id: CORE-005
+    is_example: false
+    title: Authoritative machine-readable status ledger
+    class: BUILD_INFRA
+    obligation: REQUIRED
+    execution_mode: IMPLEMENT
+    scheduling_state: OPEN
+    status: INTEGRATED
+    outcome: ADAPTED
+    owner: null
+    branch: null
+    baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
+    verification_commit: null
+    milestone: -1
+    milestone_role: BLOCKING
+    depends_on: []
+    blocked_by: []
+    blocks: [CORE-NEG-001, CORE-NEG-002, RND-005A, TEST-002]
+    implementation_commits: []
+    production_call_sites: []
+    test_ids: [preview0-ledger-validation]
+    benchmark_artifacts: []
+    evidence_hash: null
+    decision_record: null
+    known_failures:
+      - No reviewed activation commit exists; the overlay remains PREPARED.
+    fallback: Bootstrap ledger remains valid until all complete-schema and overlay checks pass.
+    reviewer: null
+    supersedes: []
+    evidence:
+      - scripts/validate_preview0_ledger.py
+      - docs/roadmap/status-ledger.yaml
+      - .github/workflows/lint.yml (Preview-0 ledger job)
+  - id: CORE-NEG-001
+    is_example: false
+    title: Reproducible WGPU build and startup
+    class: BUILD_INFRA
+    obligation: REQUIRED
+    execution_mode: IMPLEMENT
+    scheduling_state: OPEN
+    status: INTEGRATED
+    outcome: ADAPTED
+    owner: null
+    branch: null
+    baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
+    verification_commit: null
+    milestone: -1
+    milestone_role: BLOCKING
+    depends_on: [PERF-001, CORE-005]
+    blocked_by: []
+    blocks: []
+    implementation_commits: []
+    production_call_sites:
+      - file: apps/cwr/Game/GameApplication.cpp
+        symbol: CreateEngine
+        verified_commit: null
+    test_ids: [cargo-wgpu-renderer, wgpu-strict-check, wgpu-no-fallback-check, gl33-explicit-check, perf-water-mission-wgpu, perf-water-mission-gl33, original-training-mission-wgpu]
+    benchmark_artifacts: [docs/roadmap/evidence/preview0-manifest.json]
+    evidence_hash: null
+    decision_record: null
+    known_failures:
+      - CI execution remains outstanding.
+    fallback: Explicit GL33 selection is retained; explicit WGPU cannot silently select it.
+    reviewer: null
+    supersedes: []
+    evidence:
+      - cargo test --package wgpu_renderer (64 passed, 1 intentional ignore; 2026-08-01)
+      - docs/roadmap/evidence/preview0-manifest.json
+      - docs/roadmap/evidence/preview0-wgpu-automation-check-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-no-fallback-check-20260801.log
+      - docs/roadmap/evidence/preview0-gl33-automation-final-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-perf-water-mission-check-20260801.log
+      - docs/roadmap/evidence/preview0-gl33-perf-water-mission-check-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-original-training-mission-check-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-original-training-bounded-smoke-current-20260801.log
+      - docs/roadmap/evidence/preview0-gl33-post-lifecycle-stress-check-20260801.log
+  - id: CORE-NEG-002
+    is_example: false
+    title: Versioned C++/Rust ABI
+    class: BUILD_INFRA
+    obligation: REQUIRED
+    execution_mode: IMPLEMENT
+    scheduling_state: OPEN
+    status: INTEGRATED
+    outcome: ADAPTED
+    owner: null
+    branch: null
+    baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
+    verification_commit: null
+    milestone: -1
+    milestone_role: BLOCKING
+    depends_on: [CORE-005]
+    blocked_by: []
+    blocks: []
+    implementation_commits: []
+    production_call_sites:
+      - file: engine/WgpuRenderer/EngineWgpu.cpp
+        symbol: EngineWgpu::EngineWgpu
+        verified_commit: null
+    test_ids: [ffi-abi-layout-refusal, ffi-abi-version-contract, ffi-separately-built-dll-refusal]
+    benchmark_artifacts: []
+    evidence_hash: null
+    decision_record: null
+    known_failures: []
+    fallback: C++ refuses an ABI mismatch before renderer creation.
+    reviewer: null
+    supersedes: []
+    evidence:
+      - engine/WgpuRenderer/docs/ffi-contract.md
+      - engine/WgpuRenderer/include/wgpu_renderer.hpp
+      - engine/WgpuRenderer/rust/src/ffi.rs
+      - docs/roadmap/evidence/preview0-wgpu-automation-check-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-abi-mismatch-check-20260801.log
+  - id: RND-005A
+    is_example: false
+    title: Renderer startup, capability, and safe shutdown
+    class: RUNTIME_INFRA
+    obligation: REQUIRED
+    execution_mode: IMPLEMENT
+    scheduling_state: DONE
+    status: VALIDATED
+    outcome: ADAPTED
+    owner: null
+    branch: null
+    baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
+    verification_commit: null
+    milestone: 0
+    milestone_role: BLOCKING
+    depends_on: [CORE-005]
+    blocked_by: []
+    blocks: []
+    implementation_commits: []
+    production_call_sites:
+      - file: engine/WgpuRenderer/rust/src/lib.rs
+        symbol: WgpuRenderer::new
+        verified_commit: null
+      - file: engine/Poseidon/Dev/Debug/DebugOverlay.cpp
+        symbol: DrawProfileTab
+        verified_commit: null
+      - file: engine/WgpuRenderer/rust/src/ffi.rs
+        symbol: wgr_get_runtime_capabilities
+        verified_commit: null
+    test_ids: [wgpu-capabilities-check, wgpu-windowed-resize-capture, wgpu-normal-loop-minimize-restore, wgpu-lifecycle-repeat-in-session, runtime-diagnostics-once]
+    benchmark_artifacts: [docs/roadmap/evidence/preview0-manifest.json]
+    evidence_hash: null
+    decision_record: null
+    known_failures: []
+    fallback: Unsupported optional capabilities are reported and feature paths remain gated.
+    reviewer: null
+    supersedes: []
+    evidence:
+      - engine/WgpuRenderer/rust/src/lib.rs
+      - engine/WgpuRenderer/docs/runtime-capability-matrix.md
+      - engine/Poseidon/Dev/Debug/DebugOverlay.cpp (live renderer identity in Profile tab)
+      - cargo test --package wgpu_renderer (65 passed, 1 intentional ignore; 2026-08-01)
+      - docs/roadmap/evidence/preview0-wgpu-runtime-diagnostics-check-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-windowed-1280x720-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-windowed-1280x720-20260801.png
+      - scripts/run_preview0_wgpu_check.ps1 (-LifecycleSmoke)
+      - docs/roadmap/evidence/preview0-wgpu-lifecycle-automation-verified-20260801-normal-loop-minimize-restore.log
+      - docs/roadmap/evidence/preview0-wgpu-lifecycle-automation-verified-20260801-normal-loop-minimize-restore.png
+      - docs/roadmap/evidence/preview0-wgpu-lifecycle-repeat-1-20260801-normal-loop-minimize-restore.log
+      - docs/roadmap/evidence/preview0-wgpu-lifecycle-repeat-2-20260801-normal-loop-minimize-restore.log
+      - docs/roadmap/evidence/preview0-wgpu-resize-minimize-restore-20260801-normal-loop-minimize-restore.log
+      - docs/roadmap/evidence/preview0-wgpu-resize-minimize-restore-20260801-normal-loop-minimize-restore.png
+      - scripts/run_preview0_wgpu_check.ps1 (-ProfileOverlaySmoke)
+      - docs/roadmap/evidence/preview0-wgpu-profile-overlay-automation-20260801-profile-overlay.png
+      - docs/roadmap/evidence/preview0-wgpu-profile-overlay-automation-20260801-profile-overlay.log
+  - id: TEST-002
+    is_example: false
+    title: Capture, metrics, and build fingerprint
+    class: BUILD_INFRA
+    obligation: REQUIRED
+    execution_mode: IMPLEMENT
+    scheduling_state: OPEN
+    status: INTEGRATED
+    outcome: ADAPTED
+    owner: null
+    branch: null
+    baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
+    verification_commit: null
+    milestone: 0
+    milestone_role: BLOCKING
+    depends_on: [CORE-005]
+    blocked_by: []
+    blocks: []
+    implementation_commits: []
+    production_call_sites:
+      - apps/cwr/Game/GameApplication.cpp (WriteCaptureMetrics and capture-sidecar paths)
+      - engine/WgpuRenderer/EngineWgpu.cpp (Screenshot and frame-end PNG write)
+      - engine/WgpuRenderer/rust/src/lib.rs (surface readback after WGPU presentation)
+      - engine/WgpuRenderer/rust/src/ffi.rs (C ABI capture bridge)
+    test_ids: [preview0-build-manifest, wgpu-menu-screenshot, gl33-metrics-fallback, original-training-wgpu-capture, original-training-gl33-capture, mission-screenshot-deferral, visual-acceptance-profile]
+    benchmark_artifacts:
+      - docs/roadmap/evidence/preview0-manifest.json
+      - docs/roadmap/evidence/preview0-wgpu-menu-metrics-20260801.json
+      - docs/roadmap/evidence/preview0-gl33-vs-wgpu-menu-diff-20260801.json
+      - docs/roadmap/evidence/preview0-wgpu-mission-capture-automation-20260801-original-training-capture.json
+      - docs/roadmap/evidence/preview0-gl33-vs-wgpu-original-training-current-build-diff-20260801.json
+    evidence_hash: null
+    decision_record: docs/roadmap/decisions/TEST-002-visual-divergence-20260801.md
+    known_failures:
+      - The generated original-training mask records substantial GL33/WGPU visual divergence. Per the TEST-002 decision record, it is EXPECTED_DIFFERENCE unless a specific CORRECTNESS_BUG is identified.
+    fallback: Runtime log and manifest preserve the available fingerprint evidence.
+    reviewer: null
+    supersedes: []
+    evidence:
+      - scripts/write_preview0_manifest.py
+      - docs/roadmap/evidence/preview0-manifest.json
+      - docs/roadmap/evidence/preview0-wgpu-automation-check-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-menu-capture-v2-20260801.png
+      - docs/roadmap/evidence/preview0-wgpu-menu-metrics-capture-20260801.png
+      - docs/roadmap/evidence/preview0-wgpu-menu-metrics-20260801.json
+      - docs/roadmap/evidence/preview0-wgpu-menu-metrics-20260801.log
+      - docs/roadmap/evidence/preview0-gl33-menu-metrics-20260801.json
+      - scripts/compare_preview0_captures.py
+      - docs/roadmap/visual-acceptance-profile.preview0-original-training.json
+      - docs/roadmap/evidence/preview0-gl33-vs-wgpu-menu-diff-20260801.json
+      - docs/roadmap/evidence/preview0-gl33-vs-wgpu-menu-diff-20260801.png
+      - scripts/run_preview0_wgpu_check.ps1 (-MissionCaptureSmoke)
+      - docs/roadmap/evidence/preview0-wgpu-mission-capture-automation-20260801-original-training-capture.png
+      - docs/roadmap/evidence/preview0-wgpu-mission-capture-automation-20260801-original-training-capture.json
+      - docs/roadmap/evidence/preview0-wgpu-mission-capture-automation-20260801-original-training-capture.log
+      - docs/roadmap/evidence/preview0-gl33-original-training-current-capture-20260801.png
+      - docs/roadmap/evidence/preview0-gl33-original-training-current-metrics-20260801.json
+      - docs/roadmap/evidence/preview0-gl33-original-training-current-capture-20260801.log
+      - docs/roadmap/evidence/preview0-gl33-vs-wgpu-original-training-current-build-diff-20260801.json
+      - docs/roadmap/evidence/preview0-gl33-vs-wgpu-original-training-current-build-diff-20260801.png

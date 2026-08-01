@@ -327,6 +327,9 @@ public:
     /// Screenshot output path (empty = no screenshot)
     const std::string& GetScreenshotPath() const { return _screenshotPath; }
 
+    /// Optional JSON sidecar written with renderer timings for a capture.
+    const std::string& GetCaptureMetricsPath() const { return _captureMetricsPath; }
+
     /// CLI view distance override (--vd N, 0 = use config file value)
     float GetViewDistanceOverride() const { return _viewDistanceOverride; }
     
@@ -453,6 +456,7 @@ private:
 
     // Screenshot output (shared between --viewer and --test-mission screenshot)
     std::string _screenshotPath;
+    std::string _captureMetricsPath;
 
     // Working directory
     std::string _workingDirectory;  // Game data directory (empty = current directory)

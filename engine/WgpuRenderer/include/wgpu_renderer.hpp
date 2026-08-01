@@ -9,6 +9,30 @@
 
 #include <cstdint>
 
+// Increment when an incompatible change is made to the public C ABI.  The
+// engine checks this before creating a renderer so a matched build fails with a
+// useful diagnostic instead of proceeding with incompatible assumptions.
+#define WGR_ABI_VERSION 4u
+
+// Required capabilities are negotiated as a bit set inside WgrAbiCheck. A
+// newer engine can reject an older renderer DLL even if the shared layouts
+// still happen to match.
+#define WGR_ABI_FEATURE_BUILD_ID 0x00000001u
+#define WGR_ABI_FEATURE_SAFE_DIAGNOSTICS 0x00000002u
+#define WGR_ABI_FEATURE_RUNTIME_CAPABILITIES 0x00000004u
+
+enum WgrRuntimeCapability : uint32_t
+{
+    WGR_RUNTIME_CAP_BC_TEXTURES = 1u << 0,
+    WGR_RUNTIME_CAP_PARTIALLY_BOUND = 1u << 1,
+    WGR_RUNTIME_CAP_INDIRECT_FIRST_INSTANCE = 1u << 2,
+    WGR_RUNTIME_CAP_MULTI_DRAW_COUNT = 1u << 3,
+    WGR_RUNTIME_CAP_GPU_TIMESTAMPS = 1u << 4,
+    WGR_RUNTIME_CAP_TIMESTAMPS_IN_PASSES = 1u << 5,
+    WGR_RUNTIME_CAP_HDR = 1u << 6,
+    WGR_RUNTIME_CAP_MSAA = 1u << 7,
+};
+
 #if defined(_WIN32) && !defined(WGR_STATIC)
   #define WGR_API __declspec(dllimport)
 #else
@@ -677,6 +701,19 @@ struct WgrGrassTrack
     float age;
 };
 
+// Versioned size handshake performed before renderer construction. C++ fills
+// every field; Rust rejects a missing or stale structure instead of accepting
+// a binary pair that merely happens to link.
+struct WgrAbiCheck
+{
+    uint32_t abi_version;
+    uint32_t struct_size;
+    uint32_t surface_desc_size;
+    uint32_t log_callbacks_size;
+    uint32_t frame_size;
+    uint32_t required_features;
+};
+
 /* A transient rotor-wash field. Unlike tracks this is rebuilt from the live
  * helicopter list each frame, so grass springs upright as the aircraft leaves. */
 struct WgrGrassDownwash
@@ -895,7 +932,8 @@ enum WgrGpuTimerRegion : uint32_t
     WGR_GPU_TIMER_GRASS_PREPASS = 22,       // grass depth/normal prepass (near + mid)
     WGR_GPU_TIMER_GRASS_COLOR = 23,         // grass colour pass (far + mid + near)
     WGR_GPU_TIMER_GRASS_SHADOW = 24,        // near blades into the cascade depth map
-    WGR_GPU_TIMER_REGION_COUNT = 25,
+    WGR_GPU_TIMER_FRAME_TOTAL = 25,         // all submitted frame work (excludes acquire/present pacing)
+    WGR_GPU_TIMER_REGION_COUNT = 26,
 };
 
 /* GRS-A — grass instance accounting (mirrors WgrGrassStats in rust/src/ffi.rs).
@@ -1088,6 +1126,8 @@ static_assert(sizeof(WgrVec2) == 8, "WgrVec2 must be 2 floats");
 static_assert(sizeof(WgrVec3) == 12, "WgrVec3 must be 3 floats");
 static_assert(sizeof(WgrVec4) == 16, "WgrVec4 must be 4 floats");
 static_assert(sizeof(WgrMat4) == 64, "WgrMat4 must be 16 floats");
+static_assert(sizeof(WgrSurfaceDesc) == 32, "WgrSurfaceDesc must match Rust on 64-bit targets");
+static_assert(sizeof(WgrLogCallbacks) == 16, "WgrLogCallbacks must match Rust on 64-bit targets");
 static_assert(sizeof(WgrSlice<WgrCamera>) == 16 && alignof(WgrSlice<WgrCamera>) == 8,
               "WgrSlice must be a { pointer, u32 } with 8-byte alignment");
 static_assert(sizeof(WgrBlend) == 4, "WgrBlend must be 4 bytes to match the Rust #[repr(u32)] enum");
@@ -1126,18 +1166,27 @@ static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the 
 static_assert(sizeof(WgrWaterInteractionEvent) == 64 && alignof(WgrWaterInteractionEvent) == 16, "WgrWaterInteractionEvent must match Rust");
 static_assert(sizeof(WgrWaterInteractionParams) == 96 && alignof(WgrWaterInteractionParams) == 16, "WgrWaterInteractionParams must match Rust");
 static_assert(sizeof(WgrFrame) == 576, "WgrFrame layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrAbiCheck) == 24, "WgrAbiCheck layout must match Rust");
 
 // --- Functions ---------------------------------------------------------------
 
 extern "C"
 {
     WGR_API const char* wgr_version(void);
+    WGR_API uint32_t wgr_abi_version(void);
+    WGR_API const char* wgr_build_id(void);
+    WGR_API int32_t wgr_abi_validate(const WgrAbiCheck* check);
+    WGR_API void wgr_screenshot_request(WgrRenderer* renderer);
+    WGR_API uint32_t wgr_screenshot_take(WgrRenderer* renderer, uint8_t* out, uint32_t out_len, uint32_t* width,
+                                          uint32_t* height);
 
     /* Returns NULL on failure (reason reported via `log` if supplied). `log` may be NULL. */
     WGR_API WgrRenderer* wgr_create(const WgrSurfaceDesc* desc, const WgrLogCallbacks* log);
 
     WGR_API void wgr_destroy(WgrRenderer* renderer);
     WGR_API void wgr_resize(WgrRenderer* renderer, uint32_t width, uint32_t height);
+    /* Presentation interval: 0 = immediate/no VSync, 1 = FIFO/VSync, -1 = adaptive. */
+    WGR_API int32_t wgr_set_present_mode(WgrRenderer* renderer, int32_t interval);
 
     /* Upload a texture in `format` (WgrTextureFormat); returns a non-zero id, or
      * 0 on failure. `data` holds `mip_count` tightly packed mip levels, level i

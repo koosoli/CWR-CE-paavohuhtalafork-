@@ -8,6 +8,7 @@
 #include <Poseidon/Dev/Debug/DebugOverlay.hpp>
 #include <Poseidon/Foundation/Framework/AppFrame.hpp>
 #include <Poseidon/Foundation/Framework/Log.hpp>
+#include <Poseidon/Foundation/Platform/GamePaths.hpp>
 #include <Poseidon/Graphics/Core/MeshVertex.hpp>
 #include <Poseidon/Graphics/Core/ZBiasMath.hpp>
 #include <Poseidon/Graphics/Shared/SdlWindow.hpp>
@@ -28,6 +29,7 @@
 #include <Poseidon/World/Scene/ObjectClasses.hpp> // ForestPlain (mode-1 conform exclusion)
 #include <Poseidon/World/Terrain/Landscape.hpp> // GLandscape->SurfaceY (GPU-driven conform bcSurfaceY)
 #include <Poseidon/Graphics/Shared/PNGWriter.hpp>
+#include <Poseidon/Graphics/Shared/ScreenshotWriter.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
 #include <Poseidon/World/Simulation/Animation/RtAnimation.hpp>
 #include <Poseidon/World/Scene/Scene.hpp>
@@ -35,13 +37,19 @@
 #include <Poseidon/Foundation/Types/Memtype.h> // DWORD
 
 #include <SDL3/SDL.h>
+#ifdef _WIN32
+#include <windows.h>
+#endif
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <limits>
@@ -507,8 +515,21 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     desc.height = U32(_h > 0 ? _h : 1);
 
     const WgrLogCallbacks log{&WgrLogThunk, nullptr};
-    LOG_INFO(Graphics, "Wgpu: creating renderer {} ({}x{}), crate v{}", GetRendererName().Data(), _w, _h,
-             wgr_version());
+    LOG_INFO(Graphics, "Wgpu: creating renderer {} ({}x{}), crate v{}, build {}", GetRendererName().Data(), _w, _h,
+             wgr_version(), wgr_build_id());
+
+    const WgrAbiCheck abiCheck{WGR_ABI_VERSION, sizeof(WgrAbiCheck), sizeof(WgrSurfaceDesc), sizeof(WgrLogCallbacks),
+                               sizeof(WgrFrame), WGR_ABI_FEATURE_BUILD_ID | WGR_ABI_FEATURE_SAFE_DIAGNOSTICS |
+                                                     WGR_ABI_FEATURE_RUNTIME_CAPABILITIES};
+    const uint32_t runtimeAbi = wgr_abi_version();
+    if (runtimeAbi != WGR_ABI_VERSION || !wgr_abi_validate(&abiCheck))
+    {
+        LOG_ERROR(Graphics, "Wgpu: ABI mismatch (engine {}, renderer {}); refusing renderer startup", WGR_ABI_VERSION,
+                  runtimeAbi);
+        SDL_DestroyWindow(_window);
+        _window = nullptr;
+        return;
+    }
 
     _renderer = wgr_create(&desc, &log);
     if (!_renderer)
@@ -655,6 +676,22 @@ bool EngineWgpu::IsWindowed() const
 
 bool EngineWgpu::CanBeWindowed() const
 {
+    return true;
+}
+
+bool EngineWgpu::SetSwapInterval(int interval)
+{
+    if (interval != 0 && interval != 1 && interval != -1)
+    {
+        return false;
+    }
+    if (!_renderer || !wgr_set_present_mode(_renderer, interval))
+    {
+        LOG_WARN(Graphics, "Wgpu: requested VSync interval {} is unavailable", interval);
+        return false;
+    }
+    _swapInterval = interval;
+    LOG_INFO(Graphics, "Wgpu: VSync interval set to {}", interval);
     return true;
 }
 
@@ -863,6 +900,7 @@ void EngineWgpu::NextFrame()
 {
     if (_renderer)
     {
+        SyncWaterLookProfile();
         // Interpolate the per-time-of-day tonemap/grade + atmosphere presets for this frame
         // into _tonemap / _sky (auto mode only; manual override holds the tabs' values).
         UpdateAutoTonemap();
@@ -1105,6 +1143,7 @@ void EngineWgpu::NextFrame()
         frame.water_batches = _waterBatches;
         frame.grass_batches = _grassBatches;
         wgr_render_frame(_renderer, &frame);
+        FlushPendingScreenshot();
     }
     _verts.clear();
     _batches.clear();
@@ -2782,6 +2821,7 @@ const char* EngineWgpu::GetWaterGpuTimingName(int region) const
         "Grass prepass",         // WGR_GPU_TIMER_GRASS_PREPASS (needs in-pass timestamps)
         "Grass colour",          // WGR_GPU_TIMER_GRASS_COLOR (needs in-pass timestamps)
         "Grass shadow",          // WGR_GPU_TIMER_GRASS_SHADOW (needs in-pass timestamps)
+        "GPU frame total",       // WGR_GPU_TIMER_FRAME_TOTAL (all submitted work)
     };
     return (region >= 0 && region < (int)WGR_GPU_TIMER_REGION_COUNT) ? kNames[region] : "";
 }
@@ -2877,6 +2917,100 @@ void EngineWgpu::SetGrassParams(float, float, float, float)
     // actually uses grass, unlike the opaque terrain submission (which also occurs
     // for desert, rock, and road-heavy maps).
     SubmitGrass();
+}
+
+uint32_t EngineWgpu::GetRuntimeCapabilityFlags() const
+{
+    if (!_renderer)
+        return 0;
+#ifdef _WIN32
+    // Keep this optional at the PE import boundary. A deliberately mismatched
+    // older DLL must reach wgr_abi_validate and be refused with its diagnostic,
+    // rather than failing Windows module loading because this new helper export
+    // is absent.
+    using GetRuntimeCapabilitiesFn = uint32_t (*)(WgrRenderer*);
+    const HMODULE module = GetModuleHandleA("wgpu_renderer.dll");
+    const auto getCapabilities = module
+                                     ? reinterpret_cast<GetRuntimeCapabilitiesFn>(
+                                           GetProcAddress(module, "wgr_get_runtime_capabilities"))
+                                     : nullptr;
+    return getCapabilities ? getCapabilities(_renderer) : 0;
+#else
+    return 0;
+#endif
+}
+
+void EngineWgpu::Screenshot(RString filename)
+{
+    _pendingScreenshotPath = filename;
+    if (_renderer)
+        wgr_screenshot_request(_renderer);
+}
+
+void EngineWgpu::FlushPendingScreenshot()
+{
+    if (!_renderer || _pendingScreenshotPath.GetLength() == 0)
+        return;
+
+    uint32_t width = 0, height = 0;
+    wgr_screenshot_take(_renderer, nullptr, 0, &width, &height);
+    const uint64_t bytes = static_cast<uint64_t>(width) * height * 4;
+    if (width == 0 || height == 0 || bytes > UINT32_MAX)
+        return;
+    std::vector<uint8_t> rgba(static_cast<size_t>(bytes));
+    if (wgr_screenshot_take(_renderer, rgba.data(), static_cast<uint32_t>(rgba.size()), &width, &height) != bytes)
+        return;
+
+    std::vector<uint8_t> rgb(static_cast<size_t>(width) * height * 3);
+    for (size_t src = 0, dst = 0; src < rgba.size(); src += 4, dst += 3)
+    {
+        rgb[dst] = rgba[src];
+        rgb[dst + 1] = rgba[src + 1];
+        rgb[dst + 2] = rgba[src + 2];
+    }
+    ScreenshotWriter::WriteRGB(_pendingScreenshotPath, static_cast<int>(width), static_cast<int>(height), rgb.data());
+    _pendingScreenshotPath = "";
+}
+
+void EngineWgpu::SetWaterSettings(const WaterSettings& s)
+{
+    _waterLook = s;
+    _waterLookDirty = true;
+}
+
+void EngineWgpu::SyncWaterLookProfile()
+{
+    if (!GLandscape) return;
+    const std::string map = GLandscape->GetName();
+    if (map.empty()) return;
+    auto pathFor = [](const std::string& name) {
+        std::string safe;
+        for (char c : name) safe += (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
+        return std::filesystem::path(GamePaths::Instance().UserDir()) / "water-look" / (safe + ".cfg");
+    };
+    auto save = [&](const std::string& name) {
+        if (!_waterLookDirty || name.empty()) return;
+        const auto path = pathFor(name); std::error_code ec; std::filesystem::create_directories(path.parent_path(), ec);
+        std::ofstream out(path, std::ios::trunc); if (!out) { LOG_WARN(Graphics, "Water look: cannot write '{}'", path.string()); return; }
+        const auto& s = _waterLook;
+        out << "v 1\nwave " << s.waveAmp << ' ' << s.waveChoppy << ' ' << s.waveSpeed << ' ' << s.waveScale << '\n';
+        out << "colour " << s.shallowColor[0] << ' ' << s.shallowColor[1] << ' ' << s.shallowColor[2] << ' ' << s.deepColor[0] << ' ' << s.deepColor[1] << ' ' << s.deepColor[2] << '\n';
+        out << "coast " << s.colorExt << ' ' << s.coastFade << ' ' << s.foamWidth << ' ' << s.foamIntensity << ' ' << s.swashAmp << ' ' << s.swashSpeed << ' ' << s.wetHeight << ' ' << s.wetDarken << '\n';
+        out << "surface " << s.glitterGain << ' ' << s.sssGain << ' ' << s.reflectionGain << '\n';
+        if (out.good()) _waterLookDirty = false;
+    };
+    if (map == _waterLookMap) { save(map); return; }
+    save(_waterLookMap); _waterLook = WaterSettings{};
+    std::ifstream in(pathFor(map)); std::string key;
+    while (in >> key) {
+        if (key == "v") { int v; in >> v; }
+        else if (key == "wave") in >> _waterLook.waveAmp >> _waterLook.waveChoppy >> _waterLook.waveSpeed >> _waterLook.waveScale;
+        else if (key == "colour") in >> _waterLook.shallowColor[0] >> _waterLook.shallowColor[1] >> _waterLook.shallowColor[2] >> _waterLook.deepColor[0] >> _waterLook.deepColor[1] >> _waterLook.deepColor[2];
+        else if (key == "coast") in >> _waterLook.colorExt >> _waterLook.coastFade >> _waterLook.foamWidth >> _waterLook.foamIntensity >> _waterLook.swashAmp >> _waterLook.swashSpeed >> _waterLook.wetHeight >> _waterLook.wetDarken;
+        else if (key == "surface") in >> _waterLook.glitterGain >> _waterLook.sssGain >> _waterLook.reflectionGain;
+        else in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    }
+    _waterLookMap = map; _waterLookDirty = false;
 }
 
 void EngineWgpu::AddGrassImpact(Vector3Par position, float radius)
@@ -2980,7 +3114,10 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
           // depending solely on the broader world-vehicle query below. This
           // also covers the first few frames of takeoff before the helicopter
           // has settled into the distributed vehicle list.
-          if (const Helicopter* helicopter = dyn_cast<const Helicopter>(interactor);
+          // CameraOn is normally a Soldier, not a helicopter. dyn_cast is an
+          // asserting checked cast in this codebase, so use RTTI's nullable
+          // form for this optional rotor-wash branch.
+          if (const Helicopter* helicopter = dynamic_cast<const Helicopter*>(interactor);
               helicopter && helicopter->RotorSpeed() > 0.02f)
           {
               _lastGrassRotor = const_cast<Helicopter*>(helicopter);
@@ -3040,7 +3177,7 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
           bool lastRotorWasListed = false;
           for (int i = 0; i < GWorld->NVehicles(); ++i)
           {
-              const Helicopter* helicopter = dyn_cast<const Helicopter>(GWorld->GetVehicle(i));
+              const Helicopter* helicopter = dynamic_cast<const Helicopter*>(GWorld->GetVehicle(i));
               if (helicopter == _lastGrassRotor) lastRotorWasListed = true;
               addDownwash(helicopter);
           }

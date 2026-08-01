@@ -1,0 +1,93 @@
+{
+	"schema_version":	1,
+	"renderer":	"WGPU (Rust / wgpu)",
+	"runtime":	"Wgpu",
+	"gpu_timestamps_available":	true,
+	"gpu_timings_ms":	[{
+			"name":	"Spectrum init",
+			"milliseconds":	0.72192001342773438
+		}, {
+			"name":	"Spectrum evolve",
+			"milliseconds":	0.13414399325847626
+		}, {
+			"name":	"FFT horizontal",
+			"milliseconds":	0.22118400037288666
+		}, {
+			"name":	"FFT vertical",
+			"milliseconds":	0.21401600539684296
+		}, {
+			"name":	"FFT compose",
+			"milliseconds":	0.11366400122642517
+		}, {
+			"name":	"Interaction (inject+propagate)",
+			"milliseconds":	0.011264000087976456
+		}, {
+			"name":	"Foam update",
+			"milliseconds":	0.19046400487422943
+		}, {
+			"name":	"Whitewater",
+			"milliseconds":	-1
+		}, {
+			"name":	"Planar: sky",
+			"milliseconds":	0.27852800488471985
+		}, {
+			"name":	"Planar: terrain",
+			"milliseconds":	0.515071988105774
+		}, {
+			"name":	"Planar: objects",
+			"milliseconds":	0.158720001578331
+		}, {
+			"name":	"Planar: clouds",
+			"milliseconds":	0.159743994474411
+		}, {
+			"name":	"Planar: mips",
+			"milliseconds":	0.034816000610589981
+		}, {
+			"name":	"Water SSR",
+			"milliseconds":	-1
+		}, {
+			"name":	"Water refraction",
+			"milliseconds":	-1
+		}, {
+			"name":	"Water draw",
+			"milliseconds":	1.08953595161438
+		}, {
+			"name":	"Underwater froxel",
+			"milliseconds":	-1
+		}, {
+			"name":	"Underwater composite",
+			"milliseconds":	-1
+		}, {
+			"name":	"Caustics",
+			"milliseconds":	-1
+		}, {
+			"name":	"Place near (compute)",
+			"milliseconds":	0.045056000351905823
+		}, {
+			"name":	"Place mid (compute)",
+			"milliseconds":	0.026623999699950218
+		}, {
+			"name":	"Place far (compute)",
+			"milliseconds":	0.0092160003259778
+		}, {
+			"name":	"Grass prepass",
+			"milliseconds":	0.97791999578475952
+		}, {
+			"name":	"Grass colour",
+			"milliseconds":	1.0536960363388062
+		}, {
+			"name":	"Grass shadow",
+			"milliseconds":	0.17203199863433838
+		}],
+	"grass":	{
+		"near_instances":	48591,
+		"mid_instances":	14176,
+		"far_instances":	1,
+		"near_candidates":	262144,
+		"mid_candidates":	147456,
+		"far_candidates":	147456,
+		"near_vertices":	2915460,
+		"mid_vertices":	170112,
+		"far_vertices":	6
+	}
+}

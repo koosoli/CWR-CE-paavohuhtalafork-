@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "path": "docs\\roadmap\\evidence\\preview0-gl33-original-training-capture-20260801.png",
+    "sha256": "4b0d4da3fbe3426b5d53a42439dc9d660f03ed86389210f85492cbfd2c172f7e"
+  },
+  "candidate": {
+    "path": "docs\\roadmap\\evidence\\preview0-wgpu-original-training-capture-20260801.png",
+    "sha256": "4cceda87dfea909e7b36db9017fc20a6cda15a677820ab66495cca9572aeedf3"
+  },
+  "dimensions": {
+    "width": 3441,
+    "height": 1440
+  },
+  "threshold": 12,
+  "changed_pixels": 4387920,
+  "changed_pixel_ratio": 0.8855468371597404,
+  "mean_absolute_rgb_delta": 44.509731640288635,
+  "max_absolute_rgb_delta": 238.66666666666666,
+  "mask": {
+    "path": "docs\\roadmap\\evidence\\preview0-gl33-vs-wgpu-original-training-diff-20260801.png",
+    "sha256": "a5a2fc2fff143b0031a08dc094fc9544149a8e400f2926a93aa95d05bbe04aee"
+  },
+  "acceptance": {
+    "profile": "docs\\roadmap\\visual-acceptance-profile.preview0-original-training.json",
+    "policy": "review-required",
+    "verdict": "REVIEW_REQUIRED",
+    "reason": "The WGPU renderer intentionally changes HDR/tonemap, lighting, vegetation, and water. Oliver Kay must approve scene-specific parity criteria before a numerical pass can be claimed."
+  }
+}

@@ -1602,6 +1602,25 @@ void DrawProfileTab()
     const float ms = ProfileFrameMs();
     ImGui::Text("FPS:   %.1f", fps);
     ImGui::Text("Frame: %.2f ms", ms);
+    if (GEngine)
+    {
+        // Keep the selected renderer visible in the always-available Profile
+        // tab. This is intentionally sourced from the live engine rather than
+        // the requested command-line backend, which can differ after a
+        // fallback or a failed backend construction.
+        ImGui::Text("Renderer: %s", static_cast<const char*>(GEngine->GetRendererName()));
+        ImGui::TextDisabled("Runtime: %s", static_cast<const char*>(GEngine->GetDebugName()));
+        const uint32_t caps = GEngine->GetRuntimeCapabilityFlags();
+        if (caps)
+        {
+            ImGui::TextDisabled("Capabilities: BC=%s bindless=%s timestamps=%s in-pass=%s HDR=%s MSAA=%s",
+                                (caps & (1u << 0)) ? "yes" : "no", "yes",
+                                (caps & (1u << 4)) ? "yes" : "no",
+                                (caps & (1u << 5)) ? "yes" : "no",
+                                (caps & (1u << 6)) ? "yes" : "no",
+                                (caps & (1u << 7)) ? "yes" : "no");
+        }
+    }
 
     // Frame-time plot.  PlotLines is fine for ring-buffered floats;
     // ImGui handles the visual stride.  Y-axis fixed 0..50 ms (~20fps
@@ -2647,6 +2666,17 @@ void DrawPerfTab()
         ImGui::EndTable();
     }
     ImGui::Text("draw calls %.0f avg", perf.AvgDrawCalls());
+    if (GEngine)
+    {
+        const int swapInterval = GEngine->GetSwapInterval();
+        ImGui::Text("Presentation: %s", swapInterval == 0  ? "VSync off"
+                                        : swapInterval < 0 ? "Adaptive VSync"
+                                                           : "VSync on");
+        float gpuMs[32];
+        const int gpuRegions = GEngine->GetWaterGpuTimings(gpuMs, 32);
+        if (gpuRegions > Engine::kFrameGpuRegionTotal && gpuMs[Engine::kFrameGpuRegionTotal] >= 0.0f)
+            ImGui::Text("GPU submitted frame %.2f ms (excludes present wait)", gpuMs[Engine::kFrameGpuRegionTotal]);
+    }
     ImGui::SameLine();
     if (ImGui::Button("Reset window"))
         perf.Reset();
@@ -3327,8 +3357,8 @@ void DrawWaterTab()
     changed |= ImGui::Combo("Wave mesh quality", &s.geometryQuality, geometryPresets,
                             IM_ARRAYSIZE(geometryPresets));
     ImGui::SetItemTooltip("Live coast-aware equivalent of GodotOceanWaves' clipmap mesh-quality selector. "
-                          "Higher settings retain dense wave geometry farther from the camera. Reference "
-                          "High is the default; Performance roughly halves visible water triangles, while "
+                          "Higher settings retain dense wave geometry farther from the camera. Balanced "
+                          "is the default; Performance roughly halves visible water triangles, while "
                           "Ultra is intended for screenshots or fast GPUs. Shoreline pruning and the ocean "
                           "horizon remain active at every setting.");
 

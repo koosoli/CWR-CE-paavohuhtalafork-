@@ -43,6 +43,7 @@
 #include <SDL3/SDL_scancode.h>
 #include <cjson/cJSON.h>
 #include <stdint.h>
+#include <fstream>
 #include <stdlib.h>
 #include <optional>
 #include <string>
@@ -77,6 +78,53 @@ namespace
 {
 // Test hook for --remount-fail-selftest. One-shot; cleared on the first check.
 bool s_forceRemountReloadFailOnce = false;
+
+// Capture sidecar for reproducible renderer evidence.  It deliberately reports
+// unavailable timer regions instead of synthesising zeroes, so a non-WGPU run
+// cannot be mistaken for a measured GPU result.
+bool WriteCaptureMetrics(const std::string& path)
+{
+    if (path.empty() || !GEngine)
+        return false;
+
+    cJSON* root = cJSON_CreateObject();
+    cJSON_AddNumberToObject(root, "schema_version", 1);
+    cJSON_AddStringToObject(root, "renderer", GEngine->GetRendererName().Data());
+    cJSON_AddStringToObject(root, "runtime", GEngine->GetDebugName().Data());
+    float timings[32] = {};
+    const int count = GEngine->GetWaterGpuTimings(timings, 32);
+    cJSON_AddBoolToObject(root, "gpu_timestamps_available", count > 0);
+    cJSON* regions = cJSON_AddArrayToObject(root, "gpu_timings_ms");
+    for (int i = 0; i < count; ++i)
+    {
+        cJSON* region = cJSON_CreateObject();
+        cJSON_AddStringToObject(region, "name", GEngine->GetWaterGpuTimingName(i));
+        cJSON_AddNumberToObject(region, "milliseconds", timings[i]);
+        cJSON_AddItemToArray(regions, region);
+    }
+    Engine::GrassStatsOut grass;
+    if (GEngine->GetGrassStats(grass))
+    {
+        cJSON* grassObject = cJSON_AddObjectToObject(root, "grass");
+        cJSON_AddNumberToObject(grassObject, "near_instances", grass.nearInstances);
+        cJSON_AddNumberToObject(grassObject, "mid_instances", grass.midInstances);
+        cJSON_AddNumberToObject(grassObject, "far_instances", grass.farInstances);
+        cJSON_AddNumberToObject(grassObject, "near_candidates", grass.nearCandidates);
+        cJSON_AddNumberToObject(grassObject, "mid_candidates", grass.midCandidates);
+        cJSON_AddNumberToObject(grassObject, "far_candidates", grass.farCandidates);
+        cJSON_AddNumberToObject(grassObject, "near_vertices", grass.nearVertices);
+        cJSON_AddNumberToObject(grassObject, "mid_vertices", grass.midVertices);
+        cJSON_AddNumberToObject(grassObject, "far_vertices", grass.farVertices);
+    }
+    char* rendered = cJSON_Print(root);
+    cJSON_Delete(root);
+    if (!rendered)
+        return false;
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file << rendered << '\n';
+    cJSON_free(rendered);
+    return static_cast<bool>(file);
+}
 } // namespace
 
 // Force-link INIT_MODULE registrations that have no other references.
@@ -958,6 +1006,10 @@ void GameApplication::RunMainLoop()
         GEngine->Screenshot(screenshotPath.c_str());
         m_forceRender = true;
         Poseidon::AppIdle(); // renders frame that captures screenshot before swap
+        const std::string& captureMetricsPath = AppConfig::Instance().GetCaptureMetricsPath();
+        if (!captureMetricsPath.empty())
+            LOG_INFO(Core, "Capture metrics {}: {}", WriteCaptureMetrics(captureMetricsPath) ? "saved" : "failed",
+                     captureMetricsPath);
         LOG_INFO(Core, "Screenshot saved to: {}", screenshotPath);
         _exit(0);
     }
@@ -1090,8 +1142,10 @@ void GameApplication::RunMainLoop()
         }
 
         // Screenshot test: capture after configured delay frames
-        if (screenshotTestMode && !screenshotCaptured &&
-            (GWorld->GetMode() == GModeArcade || GWorld->GetMode() == GModeIntro))
+        // A --test-mission screenshot is evidence for the mission, not the
+        // menu/intro transition.  Waiting for GModeIntro here could capture a
+        // valid PNG before staged mission startup had reached gameplay.
+        if (screenshotTestMode && !screenshotCaptured && GWorld->GetMode() == GModeArcade)
         {
             screenshotFrameCount++;
             if (screenshotFrameCount >= screenshotDelay)
@@ -1099,6 +1153,10 @@ void GameApplication::RunMainLoop()
                 GEngine->Screenshot(screenshotTestPath.c_str());
                 m_forceRender = true;
                 Poseidon::AppIdle(); // render frame that captures the screenshot
+                const std::string& captureMetricsPath = AppConfig::Instance().GetCaptureMetricsPath();
+                if (!captureMetricsPath.empty())
+                    LOG_INFO(Core, "Capture metrics {}: {}",
+                             WriteCaptureMetrics(captureMetricsPath) ? "saved" : "failed", captureMetricsPath);
                 LOG_INFO(Core, "Screenshot test: saved to {}", screenshotTestPath);
                 LOG_INFO(Core, "AUTO-TEST SUCCESS");
                 screenshotCaptured = true;
@@ -1115,6 +1173,10 @@ void GameApplication::RunMainLoop()
             GEngine->Screenshot(as.path.c_str());
             m_forceRender = true;
             Poseidon::AppIdle();
+            const std::string& captureMetricsPath = AppConfig::Instance().GetCaptureMetricsPath();
+            if (!captureMetricsPath.empty())
+                LOG_INFO(Core, "Capture metrics {}: {}", WriteCaptureMetrics(captureMetricsPath) ? "saved" : "failed",
+                         captureMetricsPath);
             LOG_INFO(Core, "Auto-screenshot saved: frame={} t={:.1f}s -> {}", mainFrameCounter, elapsedMs / 1000.0f,
                      as.path);
             nextAutoScreenshot++;
@@ -1311,6 +1373,10 @@ void GameApplication::RunMainLoop()
                 GEngine->Screenshot(it->path.c_str());
                 m_forceRender = true;
                 Poseidon::AppIdle();
+                const std::string& captureMetricsPath = AppConfig::Instance().GetCaptureMetricsPath();
+                if (!captureMetricsPath.empty())
+                    LOG_INFO(Core, "Capture metrics {}: {}", WriteCaptureMetrics(captureMetricsPath) ? "saved" : "failed",
+                             captureMetricsPath);
                 LOG_INFO(Core, "Auto-screenshot saved: frame={} t={:.1f}s -> {}", mainFrameCounter, elapsedMs / 1000.0f,
                          it->path);
                 autoScreenshotList.erase(it);
@@ -1562,6 +1628,14 @@ Engine* GameApplication::CreateGraphicsEngine(const GraphicsEngineParams& params
     Engine* engine = GraphicsEngineFactory::Create(renderBackend, params);
     if (!engine && !renderBackend.empty() && _stricmp(renderBackend.c_str(), "auto") != 0)
     {
+        // An explicit WGPU request is a test/diagnostic contract, not a hint:
+        // silently falling through to Auto could run GL33 and falsely report a
+        // successful WGPU smoke test. Auto remains the deliberate fallback path.
+        if (_stricmp(renderBackend.c_str(), "wgpu") == 0)
+        {
+            RptF("Requested WGPU renderer is unavailable; refusing automatic GL33 fallback");
+            return nullptr;
+        }
         RptF("Unknown or unavailable render backend '%s', defaulting to Auto", renderBackend.c_str());
         engine = GraphicsEngineFactory::Create(GraphicsBackend::Auto, params);
     }

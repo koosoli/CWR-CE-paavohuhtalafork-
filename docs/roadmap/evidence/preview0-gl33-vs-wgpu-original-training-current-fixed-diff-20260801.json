@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "path": "docs\\roadmap\\evidence\\preview0-gl33-original-training-capture-20260801.png",
+    "sha256": "4b0d4da3fbe3426b5d53a42439dc9d660f03ed86389210f85492cbfd2c172f7e"
+  },
+  "candidate": {
+    "path": "docs\\roadmap\\evidence\\preview0-wgpu-original-training-current-fixed-capture-20260801.png",
+    "sha256": "4de52e1c55f5f109c55775ebd22c8e61ad34749c1a441443a437f8d622764657"
+  },
+  "dimensions": {
+    "width": 3441,
+    "height": 1440
+  },
+  "threshold": 12,
+  "changed_pixels": 4387805,
+  "changed_pixel_ratio": 0.8855236284671768,
+  "mean_absolute_rgb_delta": 44.49747529792512,
+  "max_absolute_rgb_delta": 238.66666666666666,
+  "mask": {
+    "path": "docs\\roadmap\\evidence\\preview0-gl33-vs-wgpu-original-training-current-fixed-diff-20260801.png",
+    "sha256": "2cc7eb4e23bd3d1c3ee7c95a0a6696b99740adae1e9449d70f6a82966dfac92a"
+  },
+  "acceptance": {
+    "profile": "docs\\roadmap\\visual-acceptance-profile.preview0-original-training.json",
+    "policy": "review-required",
+    "verdict": "REVIEW_REQUIRED",
+    "reason": "The WGPU renderer intentionally changes HDR/tonemap, lighting, vegetation, and water. Oliver Kay must approve scene-specific parity criteria before a numerical pass can be claimed."
+  }
+}

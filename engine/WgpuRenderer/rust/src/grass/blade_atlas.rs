@@ -629,4 +629,3 @@ mod tests {
         assert!(luma(&flower, 8) > luma(&flower, 200));
     }
 }
-

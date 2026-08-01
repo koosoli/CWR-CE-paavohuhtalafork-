@@ -1,0 +1,126 @@
+#!/usr/bin/env python3
+"""Validate the Preview-0 overlay and status ledger without external packages."""
+from __future__ import annotations
+
+import hashlib
+import pathlib
+import sys
+
+
+ROOT = pathlib.Path(__file__).resolve().parents[1]
+OVERLAY = ROOT / ".agents/modernisation/PoseidonWGPU_Execution_Overlay_Preview0_v1.2.1.yaml"
+LEDGER = ROOT / "docs/roadmap/status-ledger.yaml"
+
+
+def text(path: pathlib.Path) -> str:
+    if not path.is_file():
+        raise ValueError(f"missing: {path.relative_to(ROOT)}")
+    return path.read_text(encoding="utf-8")
+
+
+def ids(doc: str, key: str) -> list[str]:
+    lines = doc.splitlines()
+    try:
+        start = next(i for i, line in enumerate(lines) if line == f"{key}:") + 1
+    except StopIteration as exc:
+        raise ValueError(f"missing overlay key: {key}") from exc
+    found = []
+    for line in lines[start:]:
+        if line and not line.startswith(" "):
+            break
+        stripped = line.strip()
+        if stripped.startswith("- id: "):
+            found.append(stripped.removeprefix("- id: "))
+        elif key in {"preview_blockers", "authorised_tickets"} and stripped.startswith("- "):
+            found.append(stripped.removeprefix("- "))
+    return found
+
+
+def ticket_block(doc: str, ticket: str) -> str:
+    marker = f"- id: {ticket}"
+    try:
+        return marker + doc.split(marker, 1)[1].split("\n  - id:", 1)[0]
+    except IndexError as exc:
+        raise ValueError(f"missing ledger record: {ticket}") from exc
+
+
+def value(block: str, field: str) -> str:
+    for line in block.splitlines():
+        if line.strip().startswith(f"{field}:"):
+            return line.split(":", 1)[1].strip()
+    raise ValueError(f"missing {field}")
+
+
+def main() -> int:
+    try:
+        overlay = text(OVERLAY)
+        ledger = text(LEDGER)
+        path_line = next(line for line in overlay.splitlines() if line.startswith("  path: "))
+        roadmap = ROOT / path_line.split(": ", 1)[1]
+        roadmap_text = text(roadmap)
+        expected_hash = next(line for line in overlay.splitlines() if line.startswith("  sha256: ")).split(": ", 1)[1]
+        actual_hash = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+        if actual_hash != expected_hash:
+            raise ValueError("canonical roadmap hash mismatch")
+        authorised = ids(overlay, "authorised_tickets")
+        blockers = ids(overlay, "preview_blockers")
+        queue = ids(overlay, "execution_queue")
+        ledger_ids = [line.strip().removeprefix("- id: ") for line in ledger.splitlines() if line.strip().startswith("- id: ")]
+        if len(queue) != len(set(queue)) or len(ledger_ids) != len(set(ledger_ids)):
+            raise ValueError("duplicate ticket ID")
+        if set(authorised) != set(queue) or set(authorised) != set(ledger_ids):
+            raise ValueError("authorised, queue, and ledger ticket sets differ")
+        if not set(blockers).issubset(authorised):
+            raise ValueError("preview blocker is not authorised")
+        holds = ids(overlay, "named_holds")
+        candidates = ids(overlay, "next_candidates")
+        if set(holds) & set(authorised):
+            raise ValueError("named hold appears in authorised tickets")
+        for ticket in authorised + holds + candidates:
+            if ticket not in roadmap_text:
+                raise ValueError(f"canonical roadmap does not define {ticket}")
+        active = []
+        for ticket in ledger_ids:
+            block = ticket_block(ledger, ticket)
+            required_fields = (
+                "id:", "is_example:", "title:", "class:", "obligation:",
+                "execution_mode:", "scheduling_state:", "status:", "outcome:",
+                "owner:", "branch:", "baseline_commit:", "verification_commit:",
+                "milestone:", "milestone_role:", "depends_on:", "blocked_by:",
+                "blocks:", "implementation_commits:", "production_call_sites:",
+                "test_ids:", "benchmark_artifacts:", "evidence_hash:",
+                "decision_record:", "known_failures:", "fallback:", "reviewer:",
+                "supersedes:", "evidence:",
+            )
+            for field in required_fields:
+                if field not in block:
+                    raise ValueError(f"{ticket} missing {field}")
+            scheduling = value(block, "scheduling_state")
+            lifecycle = value(block, "status")
+            if scheduling not in {"OPEN", "ACTIVE", "BLOCKED", "DONE", "HOLD"}:
+                raise ValueError(f"{ticket} has invalid scheduling state {scheduling}")
+            if lifecycle not in {"PLANNED", "RESEARCHED", "PROTOTYPED", "INTEGRATED", "VALIDATED", "SHIPPABLE", "DEFERRED", "SUPERSEDED"}:
+                raise ValueError(f"{ticket} has invalid lifecycle status {lifecycle}")
+            if value(block, "outcome") not in {"ADOPTED", "ADAPTED", "REJECTED", "DEFERRED", "NOT_APPLICABLE"}:
+                raise ValueError(f"{ticket} has invalid outcome")
+            if lifecycle == "SHIPPABLE":
+                raise ValueError(f"{ticket} is SHIPPABLE without an independent approval record")
+            if scheduling == "ACTIVE":
+                for field in ("owner", "branch", "baseline_commit"):
+                    if value(block, field) in {"", "null"}:
+                        raise ValueError(f"ACTIVE {ticket} has no {field}")
+                active.append(ticket)
+            for dependency in (value(block, "depends_on").strip("[]").replace(" ", "").split(",")):
+                if dependency and dependency not in ledger_ids:
+                    raise ValueError(f"{ticket} depends on unknown ticket {dependency}")
+        if len(active) > 3:
+            raise ValueError("active ticket count exceeds Preview-0 WIP maximum")
+        print(f"Preview-0 ledger valid: {len(authorised)} tickets, roadmap SHA-256 {actual_hash}")
+    except ValueError as exc:
+        print(f"Preview-0 ledger invalid: {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
