@@ -19,6 +19,38 @@ jobs:
       - name: Validate execution ledger and overlay
         run: python3 scripts/validate_preview0_ledger.py
 
+      - name: Validate explicit visual-review acceptance gate
+        run: |
+          python3 -m pip install --disable-pip-version-check Pillow
+          probe_dir="$(mktemp -d)"
+          python3 scripts/compare_preview0_captures.py \
+            --reference docs/roadmap/evidence/preview0-gl33-original-training-current-capture-20260801.png \
+            --candidate docs/roadmap/evidence/preview0-wgpu-clean-baseline-20260802-original-training-capture.png \
+            --mask "$probe_dir/accepted.png" \
+            --out "$probe_dir/accepted.json" \
+            --acceptance-profile docs/roadmap/visual-acceptance-profile.preview0-original-training.json \
+            --require-accepted
+          python3 - "$probe_dir/blocking-profile.json" <<'PY'
+          import json
+          import pathlib
+          import sys
+          profile = json.loads(pathlib.Path(
+              "docs/roadmap/visual-acceptance-profile.preview0-original-training.json"
+          ).read_text(encoding="utf-8"))
+          profile["review"]["classification"] = "CORRECTNESS_BUG"
+          pathlib.Path(sys.argv[1]).write_text(json.dumps(profile), encoding="utf-8")
+          PY
+          if python3 scripts/compare_preview0_captures.py \
+            --reference docs/roadmap/evidence/preview0-gl33-original-training-current-capture-20260801.png \
+            --candidate docs/roadmap/evidence/preview0-wgpu-clean-baseline-20260802-original-training-capture.png \
+            --mask "$probe_dir/blocking.png" \
+            --out "$probe_dir/blocking.json" \
+            --acceptance-profile "$probe_dir/blocking-profile.json" \
+            --require-accepted; then
+            echo "CORRECTNESS_BUG review was incorrectly accepted" >&2
+            exit 1
+          fi
+
       - name: Validate WGPU renderer and composed WGSL
         run: cargo test --manifest-path engine/WgpuRenderer/rust/Cargo.toml --package wgpu_renderer
 
