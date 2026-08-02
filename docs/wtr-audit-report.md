@@ -6,6 +6,31 @@
 
 ---
 
+
+> **WTR-001 reconciliation (2026-08-02).** This audit was accurate when written on
+> 2026-07-25 and is largely accurate still — its findings on `WaterSurfaceState`
+> were independently re-derived a week later and matched. Two entries have since
+> drifted and are superseded:
+>
+> - **WTR-032** (*"single fade per cascade used across both geometry and normals;
+>   separate weights missing"*) — **now implemented.** `CascadeWeights` in
+>   `water/water.wgsl` carries separate `geometry_weight`, `normal_weight` and
+>   `foam_weight`, each from its own `smoothstep` on projected pixel footprint.
+>   There is still no `roughness_weight`; roughness comes from `slope_variance`
+>   via `water_roughness()`.
+> - **WTR-013** (*"`world_to_material_pos()` implemented but has no callers"*) —
+>   the function **is** called now (`water.wgsl:470`). Note the related
+>   `WaterSurfaceState.material_position` field is still written and never read,
+>   so the underlying observation survives one level down.
+>
+> Entries re-confirmed as still true: **WTR-011** and **WTR-012**. Six
+> `WaterSurfaceState` fields are written and never read back —
+> `material_position`, `displaced_pos`, `previous_displaced_pos`, `jacobian`,
+> `interaction_height`, `breaking_energy` — so previous displacement still has no
+> consumer, exactly as recorded here.
+>
+> Kept rather than rewritten, per RND-030: the reasoning is still worth reading.
+
 ## 1. Executive Summary & Revised Status Matrix
 
 Following the AI Overseer's review directive, all water rework tasks have been audited against the actual production codebase. Several tasks previously marked as complete have been reclassified as **provisional**, **infrastructure-only**, or **partial** to reflect the gap between initial helper/shader implementation and full system integration.
