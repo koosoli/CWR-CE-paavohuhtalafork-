@@ -194,9 +194,12 @@ def main() -> None:
             "mask": comparison_data.get("mask"),
         }
     commit = git("rev-parse", "HEAD")
-    dirty = bool(git("status", "--porcelain"))
+    # Build directories and test artefacts are intentionally untracked.  They
+    # must not turn a clean source build into a falsely "dirty" manifest;
+    # only tracked/index changes can alter the compiled source provenance.
+    dirty = bool(git("status", "--porcelain", "--untracked-files=no"))
     if dirty:
-        raise SystemExit("refusing to write Preview-0 manifest from a dirty working tree")
+        raise SystemExit("refusing to write Preview-0 manifest with tracked source changes")
     manifest = {
         "schema_version": 3,
         "created_utc": datetime.now(timezone.utc).isoformat(),
