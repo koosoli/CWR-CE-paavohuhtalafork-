@@ -1,0 +1,12 @@
+# Runs on a retail island (Malden/abel), so it needs the full game data rather
+# than packages/Demo. Hosted CI only downloads the Demo assets, hence
+# ci-host-blocked: this is a workstation test, skipped by the CI --skip-tag.
+#
+# Water observability is WGPU-only, so this fixture must run under --render wgpu.
+# Under GL33 it fails with FAIL:no_water_frame, which is the correct report of a
+# backend that has no CDLOD water path rather than a false pass.
+binary = "PoseidonGame"
+mission = "tests/integration/missions/water_alive.abel"
+timeout = 900
+assert_timeout = 120
+tags = ["headless", "ci-host-blocked", "wgpu-only"]

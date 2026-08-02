@@ -217,6 +217,7 @@ GameValue TriIsWindowed(const GameState*);
 GameValue TriGetWindowSize(const GameState*);
 GameValue TriAssertWindowedSmallerThanDesktop(const GameState*);
 GameValue TriGetFrameShape(const GameState*);
+GameValue TriWaterStats(const GameState*);
 GameValue TriAssertFrameShape(const GameState*, GameValuePar);
 GameValue TriResetGLErrorBaseline(const GameState*);
 GameValue TriGetGLErrorCount(const GameState*);
@@ -2144,6 +2145,7 @@ INIT_MODULE(GameStateExtTest, 3)
     GGameState.NewNularOp(
         GameNular(GameString, "triAssertWindowedSmallerThanDesktop", TriAssertWindowedSmallerThanDesktop));
     GGameState.NewNularOp(GameNular(GameString, "triGetFrameShape", TriGetFrameShape));
+    GGameState.NewNularOp(GameNular(GameString, "triWaterStats", TriWaterStats));
     GGameState.NewFunction(GameFunction(GameString, "triAssertFrameShape", TriAssertFrameShape, GameArray));
     GGameState.NewNularOp(GameNular(GameString, "triResetGLErrorBaseline", TriResetGLErrorBaseline));
     GGameState.NewNularOp(GameNular(GameString, "triDrawColorbar", TriDrawColorbar));

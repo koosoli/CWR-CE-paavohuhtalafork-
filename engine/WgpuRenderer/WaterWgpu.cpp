@@ -925,6 +925,22 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         {
             histogram[std::min<size_t>(n.lod, histogram.size() - 1)]++;
         }
+
+        // Publish the same numbers to the harness every frame, not on the
+        // edge-triggered schedule the log below uses: a test that samples water
+        // state must not depend on whether a log row happened to fire.
+        {
+            WaterFrameStats stats;
+            stats.frame = GEngine ? static_cast<unsigned long long>(GEngine->GetFrameCounter()) : 0ull;
+            stats.nodes = static_cast<unsigned int>(_selected.size());
+            stats.triangles = static_cast<unsigned int>(_selected.size()) * 96u * 96u * 2u;
+            for (int i = 0; i < WaterFrameStats::kLodBuckets; ++i)
+            {
+                stats.lod[i] = static_cast<unsigned int>(histogram[static_cast<size_t>(i)]);
+            }
+            PublishWaterFrameStats(stats);
+        }
+
         static std::array<int, 16> lastHistogram{};
         static float lastLoggedBaseMult = -1.0f;
         // The histogram changes on almost every frame the camera moves, so edge-triggering
