@@ -55,14 +55,18 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.CWR_ARTIFACT_PREFIX }}-Game-${{ steps.build_metadata.outputs.sha_short }}
-          path: ${{ env.CWR_DIST_DIR }}/PoseidonGame
+          path: |
+            ${{ env.CWR_DIST_DIR }}/PoseidonGame
+            ${{ env.CWR_DIST_DIR }}/libwgpu_renderer.so
           if-no-files-found: error
 
       - name: Upload GameDemo
         uses: actions/upload-artifact@v7
         with:
           name: ${{ env.CWR_ARTIFACT_PREFIX }}-GameDemo-${{ steps.build_metadata.outputs.sha_short }}
-          path: ${{ env.CWR_DIST_DIR }}/PoseidonGameDemo
+          path: |
+            ${{ env.CWR_DIST_DIR }}/PoseidonGameDemo
+            ${{ env.CWR_DIST_DIR }}/libwgpu_renderer.so
           if-no-files-found: error
 
       - name: Upload Server

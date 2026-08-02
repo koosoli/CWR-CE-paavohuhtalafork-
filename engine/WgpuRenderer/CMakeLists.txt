@@ -91,4 +91,12 @@ function(wgpu_renderer_stage_dll APP_TARGET)
         VERBATIM
     )
     add_custom_target(${APP_TARGET}_stage_wgpu ALL DEPENDS ${_stamp})
+
+    # The Rust cdylib ships beside each game executable.  Linux's dynamic loader
+    # does not search the executable directory by default, so make that packaged
+    # layout an explicit runtime contract instead of relying on a build-tree path.
+    if(UNIX AND NOT APPLE)
+        set_property(TARGET ${APP_TARGET} APPEND PROPERTY BUILD_RPATH "$ORIGIN")
+        set_property(TARGET ${APP_TARGET} APPEND PROPERTY INSTALL_RPATH "$ORIGIN")
+    endif()
 endfunction()
