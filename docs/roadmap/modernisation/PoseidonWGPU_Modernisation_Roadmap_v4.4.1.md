@@ -1605,6 +1605,78 @@ Potential later work:
 - [ ] Advanced receiving-pool turbulence.
 - [ ] High-quality foam and particle coupling.
 
+## WTR-190 — Water optical model and underwater transition — NON_BLOCKING_VALIDATION, INVESTIGATE
+
+Origin: external proposal, reviewed in [`WTR-external-proposal-review-20260802.md`](../decisions/WTR-external-proposal-review-20260802.md). Renumbered from the proposal's `WTR-150`, which names *Optional local volumetric fluid rendering* in the Water Master Plan. **Scope this as a revision**, not greenfield: `WTR-050`/`WTR-100`–`WTR-120` in the Master Plan cover the same ground, and absorption/scattering terms already ship in `water/water.wgsl`.
+
+Define a coherent optical contract for viewing water from above, through the surface, and underwater: how absorption, scattering, depth colour and visibility are represented; how normals, roughness, foam and turbidity affect transmission; how the renderer behaves as the camera crosses the surface; how sun, sky, fog, shoreline depth and underwater objects combine; and the low-end fallback.
+
+- [ ] No abrupt exposure, fog or colour discontinuity when crossing the surface.
+- [ ] Shallow and deep water remain visually distinguishable.
+- [ ] Underwater visibility is bounded and quality-scalable.
+- [ ] Optical effects stay cosmetic and never alter gameplay queries.
+- [ ] Missing optical data falls back safely.
+- [ ] Above-water, waterline and underwater captures exist.
+- [ ] GPU cost measured against a named platform tier.
+
+Volumetric caustics, ray tracing and any one scattering model are explicitly *not* required.
+
+## WTR-240 — Shoreline contact, wetness and waterline contract — CONDITIONAL_DEPENDENCY, INVESTIGATE
+
+Origin: same review; renumbered from the proposal's `WTR-160` (*Weather and water-body integration* in the Master Plan). `WTR-220` already covers coast **inputs** — shore distance, bathymetry, slope, material. This ticket covers the **rendering and contact** side, which is absent.
+
+Define how water visually and semantically meets terrain, structures, vehicles and characters: shoreline foam, wet terrain darkening, object waterlines, temporary wetness after leaving water, shallow-depth blending, wave run-up, and steep or vertical geometry.
+
+- [ ] No persistent floating shoreline seam.
+- [ ] Wetness and foam never alter collision or authoritative gameplay state.
+- [ ] Original terrain and materials stay immutable; derived shoreline data is versioned and rebuildable.
+- [ ] Ocean, river and shallow-water domains share one engine-facing contract while keeping specialised implementations.
+- [ ] Missing shoreline data falls back to the existing water path.
+
+Do not build a universal wet-material framework until at least two production consumers prove the need.
+
+## WTR-250 — Water interaction event interface — CONDITIONAL_DEPENDENCY, IMPLEMENT after WaterQuery migration is stable
+
+Origin: same review; renumbered from the proposal's `WTR-170` (*Gameplay, buoyancy and physics* in the Master Plan). **A water interaction system already ships** — `water/interaction.rs`, `water/interaction.wgsl`, `docs/water-interaction-emitters.md`, and Master Plan phases `WTR-060`/`WTR-070`. Treat this as hardening that system into a bounded interface, never as a second implementation.
+
+Give authorised systems a bounded way to submit interactions — wakes, character entry, projectiles, explosions, rotor downwash, falling objects, inflow — without touching renderer simulation state directly. Candidate event fields: stable ID, simulation tick, water-body ID, position and radius, impulse, direction, type, gameplay-authoritative versus cosmetic classification, lifetime, source entity.
+
+- [ ] Duplicate events are idempotent.
+- [ ] Gameplay-relevant effects are server-authoritative or deterministically reconstructed.
+- [ ] Fine ripples, spray and foam may stay local cosmetic results.
+- [ ] Events outside active water domains degrade safely.
+- [ ] Late join does not replay irrelevant historical ripples.
+- [ ] Debug tools show recent interactions and their ownership.
+- [ ] Event rate and CPU/GPU cost are bounded.
+
+Do not build a universal fluid-event system in the first implementation.
+
+## WTR-260 — Water temporal, lifecycle and invalidation rules — NON_BLOCKING_VALIDATION, VALIDATE
+
+Origin: same review; renumbered from the proposal's `WTR-180` (*FFT and GPU optimisation* in the Master Plan). Covered by neither namespace today — a clean gap.
+
+Define what happens to water histories and derived resources across camera cuts and teleports, resize and minimise, quality changes, backend changes, world or mission changes, device loss and renderer restart, origin changes, water-body creation/destruction/streaming, and bathymetry changes.
+
+- [ ] Foam, reflection and simulation history never leak between unrelated worlds or water bodies.
+- [ ] Invalid history is cleared or safely reconstructed.
+- [ ] Repeated restart and mission-transition tests do not leak resources.
+- [ ] Water resources identify their owner, generation and invalidation reason.
+- [ ] Composes with the project-wide temporal and spatial-invalidation contracts rather than inventing parallel lifecycle rules.
+
+## TEST-WTR-001 — Water reference and conformance pack — VALIDATE
+
+Origin: same review; no identifier collision. Extends `TEST-002` rather than adding a parallel capture system. `BLOCKING` only for milestones that release activated water scope.
+
+Fixtures: calm ocean; windy ocean; shore at ground level; shore from the air; underwater and waterline cameras; one river or flowing-water fixture; one small non-ocean body; a boat wake or representative interaction; a projectile crossing the surface; resize, minimise and restart; late join with authoritative water state active.
+
+- [ ] Screenshots with approved visual tolerances.
+- [ ] CPU and GPU timings against a named platform tier.
+- [ ] Water-body and backend identity recorded.
+- [ ] Query-versus-rendered-height error where applicable.
+- [ ] Foam/history reset state.
+- [ ] Active-domain count and memory.
+- [ ] Multiplayer revision and reconstruction result.
+
 ## WTR-230 — Multiplayer — REQUIRED
 
 Server authoritative:
