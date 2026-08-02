@@ -265,6 +265,21 @@ Vector3 ZeusSpawnPosition(int index, int count)
     return pos;
 }
 
+Vector3 ZeusSpawnPositionFromAnchor(Vector3Par anchor, int index, int count)
+{
+    // A single placement must land exactly under the cursor.  More than one
+    // infantry/vehicle cannot safely occupy exactly the same collision volume,
+    // so only a multi-spawn uses a compact lateral formation around that
+    // literal cursor anchor.
+    if (count <= 1)
+        return anchor;
+    Object* source = s_zeusCamera ? static_cast<Object*>(s_zeusCamera) : GWorld->CameraOn();
+    const float offset = (static_cast<float>(index) - (static_cast<float>(count) - 1.0f) * 0.5f) * 4.0f;
+    Vector3 pos = anchor + source->DirectionAside() * offset;
+    pos[1] = GLandscape->RoadSurfaceYAboveWater(pos[0], pos[2]);
+    return pos;
+}
+
 bool ZeusClickPositionAtScreen(Vector3& position, float screenX, float screenY)
 {
     if (!s_zeusCamera || !GLandscape)
@@ -599,10 +614,15 @@ void SpawnZeusSelection()
     }
 
     const int count = std::clamp(s_zeusCount, 1, 32);
+    Vector3 anchor;
+    const bool cursorAnchor = ZeusClickPosition(anchor);
     int spawned = 0;
     for (int i = 0; i < count; ++i)
     {
-        const Vector3 position = ZeusSpawnPosition(i, count);
+        // Preserve the former camera-forward placement only if the cursor ray
+        // has no terrain/sea intersection (for example, when pointed beyond
+        // the map); normal Zeus spawning is cursor-anchored.
+        const Vector3 position = cursorAnchor ? ZeusSpawnPositionFromAnchor(anchor, i, count) : ZeusSpawnPosition(i, count);
         const bool didSpawn = s_zeusSpawnKind == 0
                                   ? SpawnZeusUnit(s_zeusClassName, kZeusSides[s_zeusSide], position, s_zeusHeading)
                                   : SpawnZeusVehicle(s_zeusClassName, position, s_zeusHeading);
