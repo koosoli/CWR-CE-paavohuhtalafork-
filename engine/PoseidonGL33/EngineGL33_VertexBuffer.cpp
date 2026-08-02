@@ -582,6 +582,17 @@ int EngineGL33::SampleBackBufferNonBlack()
     if (w <= 0 || h <= 0)
         return -1;
 
+    // Read the default framebuffer explicitly. ResolveSSAAToDefault() puts the
+    // image there but does not change the read binding, so without this the
+    // sample reads whatever framebuffer happened to be bound — and when that is
+    // a multisampled post-FX FBO every glReadPixels fails with
+    // "GL_INVALID_OPERATION: FBO anti-alias method is not valid for read
+    // pixels", leaving the caller with a count of zero and no clue why.
+    GLint prevRead = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
+
     int nonBlack = 0;
     // Sample a grid of 16x16 = 256 pixels across the framebuffer
     for (int sy = 0; sy < 16; sy++)
@@ -596,6 +607,7 @@ int EngineGL33::SampleBackBufferNonBlack()
                 nonBlack++;
         }
     }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
     if (SSAAActive())
         BindFrameRenderTarget();
     return nonBlack;
@@ -615,10 +627,17 @@ bool EngineGL33::SamplePixel(int x, int y, uint8_t* outRGB)
     if (w <= 0 || h <= 0 || x < 0 || y < 0 || x >= w || y >= h)
         return false;
 
+    // Read the default framebuffer explicitly — see SampleBackBufferNonBlack.
+    GLint prevRead = 0;
+    glGetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &prevRead);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glReadBuffer(GL_BACK);
+
     // glReadPixels uses bottom-left origin; tri verbs use top-left.
     int glY = h - 1 - y;
     uint8_t pixel[4];
     glReadPixels(x, glY, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, static_cast<GLuint>(prevRead));
     if (SSAAActive())
         BindFrameRenderTarget();
     outRGB[0] = pixel[0];
