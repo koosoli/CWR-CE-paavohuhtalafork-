@@ -5,6 +5,10 @@
 **Status:** Stage 1 IMPLEMENTED in the working tree (2026-07-08, uncommitted; pending user
 build + in-game validation). Stages 0/2/3 still planned. Concrete.
 
+> **RND-030 reconciliation (2026-08-02):** the "uncommitted" caveat above is obsolete. Stage 1 was committed on 2026-07-09 and is present in `gfx3d/cull.rs`, `cull.wgsl` and `hiz.rs`.
+>
+> The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+
 > **Stage 1 bring-up notes.** Shipped: shared `shaders/gbuffer.wgsl` (octahedral view-space
 > normal encode/decode); `fs_prepass` (shader3d) + `fs_terrain_prepass` (terrain) reusing the
 > colour VS + override constants unchanged; an `Rg16Float` normal G-buffer allocated with the

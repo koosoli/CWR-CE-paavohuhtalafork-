@@ -4,6 +4,10 @@
 **Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust) + C++ bridge (`EngineWgpu`)
 **Status:** FINALIZED (2026-07-06). Design decisions locked (§0); implementation staged (§8).
 
+> **RND-030 reconciliation (2026-08-02):** "implementation staged" above is out of date: the HDR pipeline is **implemented** -- `bloom.rs`, `bloom.wgsl`, `exposure.wgsl` and the HDR render targets are all present.
+>
+> The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+
 > First item on the renderer roadmap (**HDR** → per-pixel → CSM → Forward+). Per-pixel sun +
 > point lights landed ahead of it; HDR lands **before** Forward+, because clustered lighting exists
 > to pile many lights on a fragment and without an HDR target they clip at 1.0. Independent of the

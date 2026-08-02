@@ -5,6 +5,10 @@
 **Status:** PLANNED — revised 2026-07-12 (supersedes the 2026-07-08 draft). Concrete.
 **Scope:** FFI ergonomics only — no shader, UBO, or visual change.
 
+> **RND-030 reconciliation (2026-08-02):** the status line above is out of date: the consolidated parameter block is **implemented** as `WgrRenderParams` (`ffi.rs:589`), with its 368-byte layout locked by a compile-time ABI assert (`ffi.rs:1026`).
+>
+> The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+
 > **Governing rule:** every ImGui-tweakable render parameter that crosses the FFI as a *setter* flows
 > through a single monolithic `WgrRenderParams` struct (a struct of structs) pushed via one
 > `wgr_set_render_params` call. Per-frame **runtime** state the engine computes (sun/moon direction,

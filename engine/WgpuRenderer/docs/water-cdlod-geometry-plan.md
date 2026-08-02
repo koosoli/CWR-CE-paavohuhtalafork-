@@ -5,6 +5,10 @@
 **Status:** PLANNED (2026-07-08)
 **Roadmap slot:** Phase 1 (no infra dependencies) — see [implementation-roadmap.md](implementation-roadmap.md).
 
+> **RND-030 reconciliation (2026-08-02):** the status line above is out of date: water CDLOD is **implemented and live** in this branch (`water/mod.rs`, `water/water.wgsl`), and logs its node and triangle counts at runtime from `WaterWgpu.cpp:979`.
+>
+> The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+
 > This is the **infrastructure** half of the water rework: replace the legacy per-segment mesh water
 > with a GPU vertex-shader CDLOD water surface that mirrors the terrain system, and disable the legacy
 > water path on the wgpu backend. It deliberately stops at a *flat, GPU-driven, frustum-culled,

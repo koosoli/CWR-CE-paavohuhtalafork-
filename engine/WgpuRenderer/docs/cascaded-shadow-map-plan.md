@@ -7,6 +7,10 @@
 **Roadmap slot:** consumes Phase 2 (depth prepass) and Phase 4 (GPU-driven multi-view cull). See
 [implementation-roadmap.md](implementation-roadmap.md). Tier 1 needs neither and can land immediately.
 
+> **RND-030 reconciliation (2026-08-02):** the status line above is out of date: cascaded shadow maps are **implemented and live** in this branch. `MAX_CASCADES = 4` (`gfx3d/mod.rs:42`), a `wgr_shadow_cascades` pass (`lib.rs:1874`), `shadow_depth.wgsl` and `gpu_driven_shadow.wgsl`, plus far-cascade caster handling in `gfx3d/cull.rs:1392`.
+>
+> The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+
 > **The ask.** Current shadows are sharp for ~7 m, then mush, and hard-cap at 250 m. Push usable object
 > shadows to **several hundred metres → ~1 km** for an open-world game, and fix the "low quality after
 > the first cascade", light-leak/peter-panning, and short-range complaints. Terrain-on-terrain is already

@@ -3,6 +3,10 @@
 **Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** PLAN (updated 2026-07-12, revised
 for the landed SH sky-irradiance ambient + env-map water reflection).
 
+> **RND-030 reconciliation (2026-08-02):** the status line above is out of date: terrain sky-visibility AO is **implemented** -- `WgrSkyVisibility` (`ffi.rs:594`) and `terrain_set_sky_visibility` (`ffi.rs:1899`).
+>
+> The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+
 ## 0. What landed since the first draft (read this first)
 
 Two features this plan originally anticipated as *future* work have **landed**, changing the exact

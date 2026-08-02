@@ -9,6 +9,10 @@ validation). The sampler-array half is new-on-this-device — see §4.
 [gpu-culling-and-depth-plan.md](gpu-culling-and-depth-plan.md)) because it cuts per-draw bind churn for
 **every** pass — colour, the new depth prepass, and the coming CSM-8 + planar-reflection passes.
 
+> **RND-030 reconciliation (2026-08-02):** the "uncommitted; pending user build" caveat above is obsolete. The work was committed on 2026-07-09 and is present in `ffi.rs`, `gfx3d/cull.rs`, `gfx3d/mod.rs` and `gpu_driven*.wgsl`.
+>
+> The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+
 ---
 
 ## 0. Why (measured motivation)
