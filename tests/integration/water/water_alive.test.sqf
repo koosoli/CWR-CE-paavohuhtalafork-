@@ -33,4 +33,13 @@ _s2 = triWaterStats
 triAssertNe [_s2, "FAIL:no_water_frame"]
 triAssertNe [_s2, _s1]
 
+// Bound the CDLOD selection. The point is to catch the two silent failure
+// modes: a selection that collapses to nothing (water stops being meshed) and
+// one that runs away (an unbounded node count is a frame-time cliff). The upper
+// bound is deliberately loose -- this is a guard, not a performance target.
+//
+// Measured on this fixture at the time of writing: nodes=24, tris=442368.
+triAssertGt [(triWaterNodeCount), 0]
+triAssertLt [(triWaterNodeCount), 4096]
+
 triEndTest

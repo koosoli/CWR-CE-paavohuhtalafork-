@@ -2051,6 +2051,19 @@ GameValue TriWaterStats(const GameState* /*state*/)
     return GameValue(out.c_str());
 }
 
+/// triWaterNodeCount -> number of CDLOD nodes in the last rendered water
+/// frame, or -1 when no backend has published one.  The numeric companion to
+/// triWaterStats, so a test can bound the selection rather than string-match
+/// it: 0 means water collapsed to nothing, an unbounded climb means the
+/// selection is running away.
+GameValue TriWaterNodeCount(const GameState* /*state*/)
+{
+    const WaterFrameStats& stats = LastWaterFrameStats();
+    if (!stats.published)
+        return GameValue(-1.0f);
+    return GameValue(static_cast<float>(stats.nodes));
+}
+
 /// triGetFrameShape -> "Sky:3,WorldOpaque:55,ScreenSpace:8" — pass kinds
 /// and draw counts of the most recently observed frame, in emission order.
 GameValue TriGetFrameShape(const GameState* /*state*/)
