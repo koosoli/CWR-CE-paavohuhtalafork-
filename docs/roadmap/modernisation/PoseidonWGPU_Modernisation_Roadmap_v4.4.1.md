@@ -469,7 +469,7 @@ UNSUPPORTED
 - [x] Artifacts contain the executable, renderer library, shader hashes, and a build manifest.
 - [x] Test output records commit, dirty-tree state, compiler, Rust toolchain, adapter, driver, backend, and enabled features.
 - [x] One original mission loads in confirmed WGPU mode.
-- [ ] Missing optional packages do not prevent startup.
+- [x] Missing optional packages do not prevent startup.
 - [x] Deliberate GL33 fallback still works.
 
 ## CORE-NEG-002 — Versioned C++/Rust ABI — REQUIRED
@@ -2306,7 +2306,7 @@ Ships at the end of Milestone −1.
 - [x] Build fingerprint and adapter/backend report are available.
 - [x] CI validates composed WGSL and ABI compatibility.
 - [x] Silent GL33 fallback is impossible in the WGPU startup test.
-- [ ] Missing optional content does not prevent startup.
+- [x] Missing optional content does not prevent startup.
 - [x] Timings and at least one reproducible capture are produced.
 - [x] Deliberate, explicit GL33 fallback remains available.
 

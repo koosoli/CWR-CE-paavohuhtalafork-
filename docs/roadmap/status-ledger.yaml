@@ -117,6 +117,7 @@ tickets:
       - docs/roadmap/evidence/preview0-wgpu-original-training-mission-check-20260801.log
       - docs/roadmap/evidence/preview0-wgpu-original-training-bounded-smoke-current-20260801.log
       - docs/roadmap/evidence/preview0-gl33-post-lifecycle-stress-check-20260801.log
+      - docs/roadmap/evidence/preview0-wgpu-missing-optional-mods-dir-20260802.log
   - id: CORE-NEG-002
     is_example: false
     title: Versioned C++/Rust ABI
