@@ -162,8 +162,6 @@ float s_zeusLassoStartX = 0.0f;
 float s_zeusLassoStartY = 0.0f;
 float s_zeusLassoEndX = 0.0f;
 float s_zeusLassoEndY = 0.0f;
-float s_zeusMoveEndX = 0.0f;
-float s_zeusMoveEndY = 0.0f;
 Ref<ControlsContainer> s_zeusCursor;
 
 struct ZeusSpawnRecord
@@ -255,6 +253,69 @@ void DisableZeusCamera()
     s_zeusStatus = "Free-fly ended; returned to the normal camera.";
 }
 
+// --- Zeus cursor coordinates ------------------------------------------------
+//
+// The focused Zeus viewport draws the engine's own cursor sprite
+// (ControlsContainer::DrawCursor).  That sprite is placed from the engine's
+// normalised cursor (InputSubsystem::GetCursorX/Y, -1..+1 across the 2D
+// surface), which is accumulated from *relative* mouse motion and scaled by
+// the engine's own cursor sensitivity and aspect correction.  SDL button and
+// motion events carry absolute window pixels instead: a different origin, a
+// different scale, and — under relative mouse mode — no meaningful value at
+// all.  The two spaces drift apart, so a click lands somewhere other than
+// where the visible cursor points.
+//
+// Every Zeus interaction (pick, lasso, group move, paste, cursor spawning)
+// therefore resolves its position through ZeusCursorPixel() below, and never
+// from raw SDL event coordinates.  ZeusCursorPixel returns *framebuffer
+// pixels*, which is the space camera->Projection() maps world positions into,
+// so picking and the ImGui overlay share one frame of reference.
+struct ZeusPoint
+{
+    float x = 0.0f;
+    float y = 0.0f;
+};
+
+ZeusPoint ZeusCursorPixel()
+{
+    ZeusPoint point;
+    if (!GEngine)
+        return point;
+    const auto& input = InputSubsystem::Instance();
+    point.x = (input.GetCursorX() * 0.5f + 0.5f) * static_cast<float>(GEngine->Width());
+    point.y = (input.GetCursorY() * 0.5f + 0.5f) * static_cast<float>(GEngine->Height());
+    return point;
+}
+
+// Framebuffer pixels -> ImGui overlay coordinates.  ImGui works in window
+// logical units, which differ from framebuffer pixels whenever the display
+// scale is not 1.
+ImVec2 ZeusPixelToImGui(float pixelX, float pixelY)
+{
+    const ImVec2 display = ImGui::GetIO().DisplaySize;
+    const float scaleX = (GEngine && GEngine->Width() > 0) ? display.x / static_cast<float>(GEngine->Width()) : 1.0f;
+    const float scaleY = (GEngine && GEngine->Height() > 0) ? display.y / static_cast<float>(GEngine->Height()) : 1.0f;
+    return ImVec2(pixelX * scaleX, pixelY * scaleY);
+}
+
+// World position -> framebuffer pixels, or false when the position is behind
+// the near plane.  Shared by picking, lasso hit-testing and marker drawing so
+// they can never disagree about where an object appears.
+bool ZeusProjectToPixel(Vector3Par position, ZeusPoint& pixel)
+{
+    const Camera* camera = GScene ? GScene->GetCamera() : nullptr;
+    if (!camera)
+        return false;
+    Vector3 projected = GScene->ScaledInvTransform() * position;
+    if (projected.Z() < camera->Near())
+        return false;
+    const Matrix4& projection = camera->Projection();
+    const float invZ = 1.0f / projected.Z();
+    pixel.x = projection(0, 2) + projection(0, 0) * projected[0] * invZ;
+    pixel.y = projection(1, 2) + projection(1, 1) * projected[1] * invZ;
+    return true;
+}
+
 Vector3 ZeusSpawnPosition(int index, int count)
 {
     Object* source = s_zeusCamera ? static_cast<Object*>(s_zeusCamera) : GWorld->CameraOn();
@@ -280,26 +341,34 @@ Vector3 ZeusSpawnPositionFromAnchor(Vector3Par anchor, int index, int count)
     return pos;
 }
 
-bool ZeusClickPositionAtScreen(Vector3& position, float screenX, float screenY)
+bool ZeusClickPositionAtPixel(Vector3& position, float pixelX, float pixelY)
 {
     if (!s_zeusCamera || !GLandscape)
         return false;
     const Camera* camera = GScene ? GScene->GetCamera() : nullptr;
     if (!camera)
         return false;
-    const float cursorX = screenX * (2.0f / GEngine->Width()) - 1.0f;
-    const float cursorY = screenY * (2.0f / GEngine->Height()) - 1.0f;
-    const Vector3 direction = (s_zeusCamera->Direction() + s_zeusCamera->DirectionAside() * cursorX * camera->Left() -
-                               s_zeusCamera->DirectionUp() * cursorY * camera->Top())
+    // Invert exactly the projection ZeusProjectToPixel applies.  Doing the
+    // unprojection this way (rather than assuming the world fills the
+    // framebuffer) keeps the ray correct when AspectSettings renders the world
+    // into a sub-rectangle, and makes the ray agree with the pick test.
+    const Matrix4& projection = camera->Projection();
+    if (projection(0, 0) == 0.0f || projection(1, 1) == 0.0f)
+        return false;
+    const float ndcX = (pixelX - projection(0, 2)) / projection(0, 0);
+    // projection(1, 1) is negative (screen Y grows downwards), so ndcY comes
+    // out positive-up and adds to DirectionUp directly.
+    const float ndcY = (pixelY - projection(1, 2)) / projection(1, 1);
+    const Vector3 direction = (s_zeusCamera->Direction() + s_zeusCamera->DirectionAside() * ndcX * camera->Left() +
+                               s_zeusCamera->DirectionUp() * ndcY * camera->Top())
                                   .Normalized();
     return GLandscape->IntersectWithGroundOrSea(&position, s_zeusCamera->Position(), direction, 0.0f, 10000.0f) >= 0.0f;
 }
 
 bool ZeusClickPosition(Vector3& position)
 {
-    const auto& input = InputSubsystem::Instance();
-    return ZeusClickPositionAtScreen(position, GEngine->Width() * (input.GetCursorX() * 0.5f + 0.5f),
-                                     GEngine->Height() * (input.GetCursorY() * 0.5f + 0.5f));
+    const ZeusPoint cursor = ZeusCursorPixel();
+    return ZeusClickPositionAtPixel(position, cursor.x, cursor.y);
 }
 
 void RememberZeusSpawn(Entity* object, const char* className, int kind, TargetSide side)
@@ -315,6 +384,7 @@ void PruneZeusRecords(std::vector<ZeusSpawnRecord>& records)
         records.end());
 }
 
+// cursorX/cursorY are framebuffer pixels from ZeusCursorPixel().
 void SelectZeusAtCursor(float cursorX, float cursorY)
 {
     PruneZeusRecords(s_zeusSpawned);
@@ -325,14 +395,10 @@ void SelectZeusAtCursor(float cursorX, float cursorY)
     float closestDistance2 = Square(30.0f);
     for (auto& record : s_zeusSpawned)
     {
-        Vector3 projected = GScene->ScaledInvTransform() * record.object->Position();
-        if (projected.Z() < camera->Near())
+        ZeusPoint pixel;
+        if (!ZeusProjectToPixel(record.object->Position(), pixel))
             continue;
-        const Matrix4& projection = camera->Projection();
-        const float invZ = 1.0f / projected.Z();
-        projected[0] = projection(0, 2) + projection(0, 0) * projected[0] * invZ;
-        projected[1] = projection(1, 2) + projection(1, 1) * projected[1] * invZ;
-        const float distance2 = Square(projected[0] - cursorX) + Square(projected[1] - cursorY);
+        const float distance2 = Square(pixel.x - cursorX) + Square(pixel.y - cursorY);
         if (distance2 < closestDistance2)
         {
             closest = &record;
@@ -345,16 +411,17 @@ void SelectZeusAtCursor(float cursorX, float cursorY)
         // move.  Do not collapse the selection to the clicked unit: the
         // move-drag code deliberately keeps every member's offset from the
         // anchor and places the group atomically on mouse release.
-        const bool alreadySelected = std::any_of(
-            s_zeusSelection.begin(), s_zeusSelection.end(),
-            [closest](const ZeusSpawnRecord& record) { return record.object.GetLink() == closest->object.GetLink(); });
+        const bool alreadySelected =
+            std::any_of(s_zeusSelection.begin(), s_zeusSelection.end(), [closest](const ZeusSpawnRecord& record)
+                        { return record.object.GetLink() == closest->object.GetLink(); });
         if (!alreadySelected)
         {
             s_zeusSelection.clear();
             s_zeusSelection.push_back(*closest);
         }
-        s_zeusStatus = alreadySelected ? "Moving " + std::to_string(s_zeusSelection.size()) + " selected Zeus object(s)."
-                                       : "Selected " + closest->className + ".";
+        s_zeusStatus = alreadySelected
+                           ? "Moving " + std::to_string(s_zeusSelection.size()) + " selected Zeus object(s)."
+                           : "Selected " + closest->className + ".";
     }
     else
     {
@@ -363,6 +430,7 @@ void SelectZeusAtCursor(float cursorX, float cursorY)
     }
 }
 
+// The rectangle corners are framebuffer pixels from ZeusCursorPixel().
 void SelectZeusInRect(float startX, float startY, float endX, float endY)
 {
     PruneZeusRecords(s_zeusSpawned);
@@ -374,16 +442,12 @@ void SelectZeusInRect(float startX, float startY, float endX, float endY)
     const float top = std::min(startY, endY);
     const float bottom = std::max(startY, endY);
     s_zeusSelection.clear();
-    const Matrix4& projection = camera->Projection();
     for (const auto& record : s_zeusSpawned)
     {
-        Vector3 projected = GScene->ScaledInvTransform() * record.object->Position();
-        if (projected.Z() < camera->Near())
+        ZeusPoint pixel;
+        if (!ZeusProjectToPixel(record.object->Position(), pixel))
             continue;
-        const float invZ = 1.0f / projected.Z();
-        const float x = projection(0, 2) + projection(0, 0) * projected[0] * invZ;
-        const float y = projection(1, 2) + projection(1, 1) * projected[1] * invZ;
-        if (x >= left && x <= right && y >= top && y <= bottom)
+        if (pixel.x >= left && pixel.x <= right && pixel.y >= top && pixel.y <= bottom)
             s_zeusSelection.push_back(record);
     }
     s_zeusStatus = "Selected " + std::to_string(s_zeusSelection.size()) + " Zeus object(s).";
@@ -429,10 +493,11 @@ void BeginZeusMoveDrag()
     s_zeusStatus = "Drag to move the selected Zeus object(s).";
 }
 
-void MoveZeusSelectionAtScreen(float screenX, float screenY)
+// pixelX/pixelY are framebuffer pixels from ZeusCursorPixel().
+void MoveZeusSelectionAtPixel(float pixelX, float pixelY)
 {
     Vector3 target;
-    if (!ZeusClickPositionAtScreen(target, screenX, screenY))
+    if (!ZeusClickPositionAtPixel(target, pixelX, pixelY))
         return;
     PruneZeusRecords(s_zeusSelection);
     for (int i = 0; i < static_cast<int>(s_zeusSelection.size()) && i < static_cast<int>(s_zeusMoveOffsets.size()); ++i)
@@ -661,7 +726,8 @@ void SpawnZeusSelection()
         // Preserve the former camera-forward placement only if the cursor ray
         // has no terrain/sea intersection (for example, when pointed beyond
         // the map); normal Zeus spawning is cursor-anchored.
-        const Vector3 position = cursorAnchor ? ZeusSpawnPositionFromAnchor(anchor, i, count) : ZeusSpawnPosition(i, count);
+        const Vector3 position =
+            cursorAnchor ? ZeusSpawnPositionFromAnchor(anchor, i, count) : ZeusSpawnPosition(i, count);
         const bool didSpawn = s_zeusSpawnKind == 0
                                   ? SpawnZeusUnit(s_zeusClassName, kZeusSides[s_zeusSide], position, s_zeusHeading)
                                   : SpawnZeusVehicle(s_zeusClassName, position, s_zeusHeading);
@@ -718,21 +784,26 @@ void DrawZeusInteractionOverlay()
     ImDrawList* draw = ImGui::GetForegroundDrawList();
     if (s_zeusLassoDrag)
     {
-        const ImVec2 min(std::min(s_zeusLassoStartX, s_zeusLassoEndX), std::min(s_zeusLassoStartY, s_zeusLassoEndY));
-        const ImVec2 max(std::max(s_zeusLassoStartX, s_zeusLassoEndX), std::max(s_zeusLassoStartY, s_zeusLassoEndY));
+        // Track the engine cursor per frame rather than per SDL motion event:
+        // the engine cursor is integrated once per input tick, so the last
+        // event of a frame can still carry the previous tick's position.
+        const ZeusPoint cursor = ZeusCursorPixel();
+        s_zeusLassoEndX = cursor.x;
+        s_zeusLassoEndY = cursor.y;
+        const ImVec2 min = ZeusPixelToImGui(std::min(s_zeusLassoStartX, s_zeusLassoEndX),
+                                            std::min(s_zeusLassoStartY, s_zeusLassoEndY));
+        const ImVec2 max = ZeusPixelToImGui(std::max(s_zeusLassoStartX, s_zeusLassoEndX),
+                                            std::max(s_zeusLassoStartY, s_zeusLassoEndY));
         draw->AddRectFilled(min, max, IM_COL32(80, 220, 255, 40));
         draw->AddRect(min, max, IM_COL32(80, 220, 255, 255), 0.0f, 0, 1.5f);
     }
     PruneZeusRecords(s_zeusSelection);
     for (const auto& record : s_zeusSelection)
     {
-        Vector3 projected = GScene->ScaledInvTransform() * record.object->Position();
-        if (projected.Z() < camera->Near())
+        ZeusPoint pixel;
+        if (!ZeusProjectToPixel(record.object->Position(), pixel))
             continue;
-        const Matrix4& projection = camera->Projection();
-        const float invZ = 1.0f / projected.Z();
-        const ImVec2 center(projection(0, 2) + projection(0, 0) * projected[0] * invZ,
-                            projection(1, 2) + projection(1, 1) * projected[1] * invZ);
+        const ImVec2 center = ZeusPixelToImGui(pixel.x, pixel.y);
         const ImU32 selectionColor = IM_COL32(80, 220, 255, 255);
         draw->AddCircle(center, 20.0f, selectionColor, 20, 2.0f);
         draw->AddLine(center, ImVec2(center.x + 30.0f, center.y), selectionColor, 2.0f);
@@ -832,8 +903,8 @@ void DrawZeusTab()
         Defer(
             []
             {
-                SelectZeusAtCursor(GEngine->Width() * (InputSubsystem::Instance().GetCursorX() * 0.5f + 0.5f),
-                                   GEngine->Height() * (InputSubsystem::Instance().GetCursorY() * 0.5f + 0.5f));
+                const ZeusPoint cursor = ZeusCursorPixel();
+                SelectZeusAtCursor(cursor.x, cursor.y);
             });
     ImGui::SameLine();
     if (ImGui::Button("Select all Zeus objects"))
@@ -1974,24 +2045,34 @@ void ApplyDevPanelMouseState()
 {
     if (!GEngine)
         return;
-    const bool releaseMouseForOverlay = s_visible || s_zeusCamera;
-    if (releaseMouseForOverlay && !s_mouseReleasedByPanel)
+    const bool overlayOwnsMouse = s_visible || s_zeusCamera;
+    if (overlayOwnsMouse && !s_mouseReleasedByPanel)
     {
         s_savedMouseGrab = GEngine->IsMouseGrabbed();
-        GEngine->SetMouseGrab(false);
         s_mouseReleasedByPanel = true;
     }
-    else if (!releaseMouseForOverlay && s_mouseReleasedByPanel)
+
+    if (overlayOwnsMouse)
+    {
+        // Panel open: the OS pointer must be free, both to reach ImGui widgets
+        // and to drag-resize the window.
+        //
+        // Panel hidden with Zeus active: grab.  Zeus resolves every position
+        // from the engine's own cursor sprite (see ZeusCursorPixel), never from
+        // absolute SDL coordinates, so relative mouse mode is exactly what that
+        // cursor wants — it cannot stall against the window edge, and SDL keeps
+        // the desktop pointer hidden while it is engaged.
+        GEngine->SetMouseGrab(!s_visible);
+    }
+    else if (s_mouseReleasedByPanel)
     {
         GEngine->SetMouseGrab(s_savedMouseGrab);
         s_mouseReleasedByPanel = false;
     }
 
-    // Zeus draws the in-game cursor itself.  Releasing relative mouse mode is
-    // necessary for its absolute pick/lasso controls, but SDL consequently
-    // makes the Windows cursor visible as well.  Keep the desktop cursor only
-    // while the ImGui panel is open; the focused game viewport must show one
-    // cursor, not the OS cursor over the game's cursor sprite.
+    // SDL can still restore the desktop pointer across focus transitions, so
+    // assert the intended state explicitly: the focused game viewport must show
+    // one cursor, not the OS cursor over the game's cursor sprite.
     if (s_visible)
         SDL_ShowCursor();
     else if (s_zeusCamera)
@@ -4177,15 +4258,19 @@ void ProcessEvent(const SDL_Event& event)
             }
             else
             {
-                SelectZeusAtCursor(event.button.x, event.button.y);
+                // Absolute SDL event coordinates are not the space the visible
+                // in-game cursor lives in; resolve every Zeus position from the
+                // engine cursor instead.  See ZeusCursorPixel().
+                const ZeusPoint cursor = ZeusCursorPixel();
+                SelectZeusAtCursor(cursor.x, cursor.y);
                 if (s_zeusSelection.empty())
                 {
                     // With click placement disabled, an empty left-drag is a
                     // lasso by default. This keeps ordinary click-selection
                     // and dragging an existing selection to move it intact.
                     s_zeusLassoDrag = true;
-                    s_zeusLassoStartX = s_zeusLassoEndX = event.button.x;
-                    s_zeusLassoStartY = s_zeusLassoEndY = event.button.y;
+                    s_zeusLassoStartX = s_zeusLassoEndX = cursor.x;
+                    s_zeusLassoStartY = s_zeusLassoEndY = cursor.y;
                     s_zeusStatus = "Drag to lasso Zeus-spawned objects.";
                 }
                 else
@@ -4196,10 +4281,11 @@ void ProcessEvent(const SDL_Event& event)
                  (s_zeusSuppressNextMouseUp || s_zeusRotateDrag || s_zeusMoveDrag || s_zeusLassoDrag))
         {
             s_zeusConsumeMouseEvent = true;
+            const ZeusPoint cursor = ZeusCursorPixel();
             if (s_zeusLassoDrag)
-                SelectZeusInRect(s_zeusLassoStartX, s_zeusLassoStartY, event.button.x, event.button.y);
+                SelectZeusInRect(s_zeusLassoStartX, s_zeusLassoStartY, cursor.x, cursor.y);
             else if (s_zeusMoveDrag)
-                MoveZeusSelectionAtScreen(event.button.x, event.button.y);
+                MoveZeusSelectionAtPixel(cursor.x, cursor.y);
             s_zeusSuppressNextMouseUp = false;
             s_zeusRotateDrag = false;
             s_zeusMoveDrag = false;
@@ -4208,9 +4294,10 @@ void ProcessEvent(const SDL_Event& event)
         }
         else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusLassoDrag)
         {
+            // The lasso end point is refreshed from the engine cursor in
+            // DrawZeusInteractionOverlay; the event is only consumed here so it
+            // does not also reach the game.
             s_zeusConsumeMouseEvent = true;
-            s_zeusLassoEndX = event.motion.x;
-            s_zeusLassoEndY = event.motion.y;
         }
         else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusRotateDrag)
         {
@@ -4220,11 +4307,10 @@ void ProcessEvent(const SDL_Event& event)
         }
         else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusMoveDrag)
         {
+            // Man animation code is not safe to teleport every mouse event, so
+            // the drag only consumes the event: the single placement happens on
+            // release, from the engine cursor position at that moment.
             s_zeusConsumeMouseEvent = true;
-            // Man animation code is not safe to teleport every mouse event.
-            // Keep the final terrain target and perform one placement on release.
-            s_zeusMoveEndX = event.motion.x;
-            s_zeusMoveEndY = event.motion.y;
         }
         else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
         {
