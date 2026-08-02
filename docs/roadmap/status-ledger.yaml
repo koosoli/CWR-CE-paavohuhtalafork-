@@ -180,6 +180,28 @@ tickets:
         Whether these three are regressions or long-standing is unknown: no
         prior run ever finished, so there is no baseline to compare against.
       - >-
+        DIAGNOSED (2026-08-02) using the Demo install Oliver already had at
+        "D:\SteamLibrary\steamapps\common\Arma Cold War Assault Demo" -- no
+        asset download was needed. Both campaign tests PASS locally on Demo data
+        serially (6.0s) and still pass at -j4 on a 16-core workstation, so
+        neither the data nor parallelism as such is the cause.
+        Oversubscribing locally (-j12) reproduces the CI failure classes
+        exactly: HARNESS_PORT spawn timeouts, UI assertions firing before the
+        display settles (mods tests reading an empty or wrong active set), and
+        I-20 GL errors under many concurrent contexts. It is contention, not
+        state corruption -- triGetModsActiveSet reads in-process UI state, not a
+        shared file, so nothing leaks between instances. An earlier note in this
+        session claiming the mods fixtures made parallelism safe was reasoning
+        about the wrong kind of state.
+        Parallelism also scales poorly here: serial exceeded 2100s and -j4
+        finished in 1554s, about 1.35x for 4x the concurrency, because the cost
+        is game startup against a shared Xvfb display and disk rather than CPU.
+        CI therefore drops to -j2, which keeps most of the wall-clock win with
+        far less contention. This is a judgement call on imperfect data: -j2's
+        wall time is unmeasured, and if it approaches the 35m bound the honest
+        next step is to make the load-sensitive tests' timing budgets robust
+        rather than to raise the bound again.
+      - >-
         The raised bound did still bind. Run 30758908654 (the first hosted run
         after Actions resumed) was SIGTERMed at 2081s -- exactly the new 35m
         bound -- with scenarios still queued. Every other job in that run

@@ -326,17 +326,31 @@ jobs:
           # Xvfb.  Raising the bound a third time only buys another slow run, so
           # the suite now runs in parallel instead.
           #
-          # -j4 matches the hosted runner's core count.  Trident's scheduler is
-          # built for this: `exclusive` tests reserve the whole pool and run
-          # alone, and multi-instance tests reserve one slot per game process,
-          # so overlap is opt-out where a test needs isolation.
+          # -j2, not -j4, and the reason is measured rather than cautious.
+          #
+          # Parallelism scales badly here: serial exceeded 2100s, -j4 finished in
+          # 1554s. That is ~1.35x for 4x the concurrency, because the cost is
+          # game startup against a shared Xvfb display and disk, not CPU. So the
+          # extra slots buy little wall time while adding real contention.
+          #
+          # And the contention has a price. Oversubscribing locally reproduces
+          # exactly the failures run 30760957610 hit: HARNESS_PORT spawn
+          # timeouts, UI assertions firing before the display settles, and GL
+          # errors under many concurrent contexts. None of it is state
+          # corruption -- the mods getters read in-process UI state, not shared
+          # files -- it is simply tests whose timing budgets were written for a
+          # machine that is not fighting three other game instances.
+          #
+          # -j2 keeps most of the wall-clock win with far less of that. Trident's
+          # scheduler handles the rest: `exclusive` tests reserve the whole pool
+          # and run alone, multi-instance tests reserve one slot per process.
           timeout --preserve-status --kill-after=30s 35m \
             xvfb-run -a --server-args="$TRIDENT_XVFB_ARGS" \
             bash -c 'openbox & trap "kill $!" EXIT; sleep 1; exec "$@"' bash \
             exe/tri test \
             --output-dir "$TRI_OUTPUT_DIR" \
             --render "$TRIDENT_RENDER" \
-            -j4 \
+            -j2 \
             --retries 2 \
             --skip-tag ci-host-blocked \
             --game-arg --audio \
