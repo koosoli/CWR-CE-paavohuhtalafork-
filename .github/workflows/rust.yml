@@ -3,7 +3,7 @@ name: Rust
 on:
   push:
     branches:
-      - main
+      - new-renderer-infrastructure
   pull_request:
   workflow_dispatch:
 

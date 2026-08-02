@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import re
+import subprocess
 import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
-OVERLAY = ROOT / ".agents/modernisation/PoseidonWGPU_Execution_Overlay_Preview0_v1.2.1.yaml"
+OVERLAY = ROOT / "docs/roadmap/modernisation/PoseidonWGPU_Execution_Overlay_Preview0_v1.2.1.yaml"
 LEDGER = ROOT / "docs/roadmap/status-ledger.yaml"
 
 
@@ -51,13 +53,53 @@ def value(block: str, field: str) -> str:
     raise ValueError(f"missing {field}")
 
 
+def git(*args: str) -> str:
+    result = subprocess.run(("git", *args), cwd=ROOT, text=True, capture_output=True)
+    if result.returncode:
+        raise ValueError(result.stderr.strip() or f"git {' '.join(args)} failed")
+    return result.stdout.strip()
+
+
+def tracked_file(raw_path: str, context: str) -> pathlib.Path:
+    path = ROOT / raw_path
+    if not path.is_file():
+        raise ValueError(f"{context} missing file: {raw_path}")
+    git("ls-files", "--error-unmatch", "--", raw_path)
+    return path
+
+
+def evidence_paths(block: str) -> list[str]:
+    paths: list[str] = []
+    for line in block.splitlines():
+        match = re.match(r"\s+-\s+((?:docs|engine|apps|scripts|\.github)/\S+)", line)
+        if match:
+            paths.append(match.group(1))
+    return paths
+
+
+def list_values(raw: str) -> list[str]:
+    return [item for item in raw.strip("[]").replace(" ", "").split(",") if item]
+
+
 def main() -> int:
     try:
         overlay = text(OVERLAY)
         ledger = text(LEDGER)
+        if value(overlay, "template") not in {"true", "false"}:
+            raise ValueError("overlay template must be true or false")
+        overlay_template = value(overlay, "template") == "true"
+        activation = value(ledger, "activation_state")
+        if activation not in {"PREPARED", "ACTIVE"}:
+            raise ValueError(f"invalid activation state {activation}")
+        if overlay_template and activation != "PREPARED":
+            raise ValueError("template overlay must remain PREPARED")
+        if not overlay_template and activation != "ACTIVE":
+            raise ValueError("resolved overlay must be ACTIVE")
         path_line = next(line for line in overlay.splitlines() if line.startswith("  path: "))
         roadmap = ROOT / path_line.split(": ", 1)[1]
         roadmap_text = text(roadmap)
+        tracked_file(path_line.split(": ", 1)[1], "canonical roadmap")
+        tracked_file(str(OVERLAY.relative_to(ROOT)), "canonical overlay")
         expected_hash = next(line for line in overlay.splitlines() if line.startswith("  sha256: ")).split(": ", 1)[1]
         actual_hash = hashlib.sha256(roadmap.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
@@ -105,14 +147,40 @@ def main() -> int:
                 raise ValueError(f"{ticket} has invalid outcome")
             if lifecycle == "SHIPPABLE":
                 raise ValueError(f"{ticket} is SHIPPABLE without an independent approval record")
+            evidence = evidence_paths(block)
+            for evidence_path in evidence:
+                tracked_file(evidence_path, ticket)
+            decision = value(block, "decision_record")
+            if decision != "null":
+                tracked_file(decision, ticket)
+            completed = scheduling == "DONE" or lifecycle in {"VALIDATED", "SHIPPABLE"}
+            if completed:
+                verification = value(block, "verification_commit")
+                if not re.fullmatch(r"[0-9a-f]{7,64}", verification):
+                    raise ValueError(f"completed {ticket} needs a verification commit")
+                git("cat-file", "-e", f"{verification}^{{commit}}")
+                evidence_hash = value(block, "evidence_hash")
+                if not re.fullmatch(r"[0-9a-f]{64}", evidence_hash):
+                    raise ValueError(f"completed {ticket} needs a SHA-256 evidence hash")
+                reviewer = value(block, "reviewer")
+                owner = value(block, "owner")
+                integration_owner = value(ledger, "integration_owner")
+                if reviewer in {"", "null", owner, integration_owner}:
+                    raise ValueError(f"completed {ticket} needs an independent reviewer")
+                if not evidence:
+                    raise ValueError(f"completed {ticket} needs tracked file evidence")
+                if not list_values(value(block, "implementation_commits")):
+                    raise ValueError(f"completed {ticket} needs implementation commits")
             if scheduling == "ACTIVE":
                 for field in ("owner", "branch", "baseline_commit"):
                     if value(block, field) in {"", "null"}:
                         raise ValueError(f"ACTIVE {ticket} has no {field}")
                 active.append(ticket)
-            for dependency in (value(block, "depends_on").strip("[]").replace(" ", "").split(",")):
+            for dependency in list_values(value(block, "depends_on")):
                 if dependency and dependency not in ledger_ids:
                     raise ValueError(f"{ticket} depends on unknown ticket {dependency}")
+                if scheduling == "DONE" and dependency and value(ticket_block(ledger, dependency), "scheduling_state") != "DONE":
+                    raise ValueError(f"completed {ticket} depends on unfinished {dependency}")
         if len(active) > 3:
             raise ValueError("active ticket count exceeds Preview-0 WIP maximum")
         print(f"Preview-0 ledger valid: {len(authorised)} tickets, roadmap SHA-256 {actual_hash}")

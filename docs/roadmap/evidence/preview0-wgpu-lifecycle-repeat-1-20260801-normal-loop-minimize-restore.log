@@ -1,0 +1,735 @@
+[2026-08-01 21:32:53.663] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    TaskPool initialised: 8 task threads (16 logical cores)
+[2026-08-01 21:32:53.672] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    Command-line parsing complete
+[2026-08-01 21:32:53.672] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]      user_dir:  C:\Users\mail\AppData\Roaming\CWR/
+[2026-08-01 21:32:53.672] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]      user_content_dir: C:\Users\mail\OneDrive\Documents\Cold War Assault/
+[2026-08-01 21:32:53.672] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]      cache_dir: C:\Users\mail\AppData\Local\CWR/
+[2026-08-01 21:32:53.672] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]      temp_dir:  C:\Users\mail\AppData\Local\Temp\cwr/
+[2026-08-01 21:32:53.672] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    Game starting: version 3.01-513430a
+[2026-08-01 21:32:53.672] [app-1f50] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Initializing configuration system...
+[2026-08-01 21:32:53.673] [app-1f50] [[0;36mDBUG[0m] [[0;33mCONFIG[0m]  Configuration loaded: 14 settings total
+[2026-08-01 21:32:53.673] [app-1f50] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Configuration system ready
+[2026-08-01 21:32:53.673] [app-1f50] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Initializing game configuration (language, stringtables, config files)...
+[2026-08-01 21:32:53.673] [app-1f50] [[0;32mINFO[0m] [[0;33mCONFIG[0m]    Language: English
+[2026-08-01 21:32:53.673] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.790] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.791] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.910] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_CANCEL_MENU' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.910] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_RADIO_UNASSIGNED' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.911] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_ESCAPE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.911] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_1' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.911] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_2' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.912] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_3' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.912] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_4' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.912] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_5' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.912] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_6' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.912] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_7' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.912] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_8' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.912] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_9' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.912] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_0' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MINUS' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_EQUALS' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_BACKSPACE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_TAB' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_Q' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_W' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_E' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_R' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_T' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_Y' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.913] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_U' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_I' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_O' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_P' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LEFTBRACKET' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RIGHTBRACKET' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RETURN' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LCTRL' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_A' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_S' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_D' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_G' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_H' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_J' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_K' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_L' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SEMICOLON' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.914] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_APOSTROPHE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_GRAVE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LSHIFT' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_BACKSLASH' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_Z' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_X' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_C' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_V' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_B' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_N' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_M' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_COMMA' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PERIOD' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SLASH' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RSHIFT' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_MULTIPLY' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LALT' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SPACE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_CAPSLOCK' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F1' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.915] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F2' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F3' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F4' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F5' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F6' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F7' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F8' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F9' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F10' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_NUMLOCKCLEAR' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SCROLLLOCK' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_7' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_8' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_9' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_MINUS' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_4' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_5' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_6' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_PLUS' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_1' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_2' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.916] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_3' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_0' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_PERIOD' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_NONUSBACKSLASH' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F11' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F12' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F13' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F14' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F15' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL2' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL6' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL4' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL5' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL3' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL7' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_EQUALS' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_PREVIOUS_TRACK' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.917] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL8' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL9' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LANG3' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LANG2' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_STOP' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LANG6' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LANG7' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_NEXT_TRACK' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_ENTER' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RCTRL' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MUTE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_PLAY_PAUSE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_STOP' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_VOLUMEDOWN' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_VOLUMEUP' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_HOME' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_COMMA' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_DIVIDE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PRINTSCREEN' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RALT' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PAUSE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.918] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_HOME' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_UP' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PAGEUP' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LEFT' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RIGHT' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_END' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_DOWN' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PAGEDOWN' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INSERT' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_DELETE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LGUI' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RGUI' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_APPLICATION' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_POWER' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SLEEP' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_WAKE' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_SEARCH' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_BOOKMARKS' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_REFRESH' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_STOP' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_FORWARD' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_BACK' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_SELECT' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.919] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_MP_LOCKED' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.920] [app-1f50] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_MP_UNLOCKED' not found in stringtable; callers will get empty string
+[2026-08-01 21:32:53.922] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.922] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.973] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.973] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.973] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.974] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.974] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.974] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.974] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.993] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.994] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\Users\UserInfo.cfg
+[2026-08-01 21:32:53.994] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - File does not exist: C:\Users\mail\AppData\Roaming\CWR\Users\UserInfo.cfg
+[2026-08-01 21:32:53.994] [app-1f50] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Game configuration initialized successfully
+[2026-08-01 21:32:53.994] [app-1f50] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Game configuration initialized (stringtables, modules, configs loaded)
+[2026-08-01 21:32:53.995] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.995] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.995] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.995] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.995] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.995] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.995] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.995] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.996] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.997] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.997] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:53.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:53.999] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.001] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.002] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.002] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.005] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.006] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.006] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.007] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.007] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.008] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.008] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.009] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.009] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.010] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.011] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.011] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.013] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\ch47\config.cpp
+[2026-08-01 21:32:54.015] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.015] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.019] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.020] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.020] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.021] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.021] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.021] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.023] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\humr\config.cpp
+[2026-08-01 21:32:54.024] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.024] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.024] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.024] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.025] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.025] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.025] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Cannot evaluate ReadOnly - no file
+[2026-08-01 21:32:54.026] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.026] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.027] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\kozl\config.cpp
+[2026-08-01 21:32:54.028] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.028] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.028] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.029] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.029] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.032] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.033] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.033] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.035] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.035] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.035] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.036] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.036] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.037] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.037] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.038] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.038] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.090] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.110] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.114] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.116] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.117] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.117] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.118] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.118] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Cannot evaluate ReadOnly - no file
+[2026-08-01 21:32:54.118] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Cannot evaluate ReadOnly - no file
+[2026-08-01 21:32:54.118] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Cannot evaluate ReadOnly - no file
+[2026-08-01 21:32:54.119] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Cannot evaluate ReadOnly - no file
+[2026-08-01 21:32:54.119] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Cannot evaluate ReadOnly - no file
+[2026-08-01 21:32:54.119] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.120] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.121] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.122] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.122] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.124] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\su25\config.cpp
+[2026-08-01 21:32:54.125] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.126] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.127] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\trab\config.cpp
+[2026-08-01 21:32:54.128] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.128] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.129] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.129] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.130] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.130] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.130] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:54.131] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.131] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Open bank %s
+[2026-08-01 21:32:54.131] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.132] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.132] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.132] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.132] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.133] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.133] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.133] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.133] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.155] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.156] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.157] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.157] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.158] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.158] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.159] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.159] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Parsing addon config '%s' %s
+[2026-08-01 21:32:54.161] [app-1f50] [[0;32mINFO[0m] [[0;35mMEMORY[0m]  Process memory: 16237 MB physical, soft=4096 MB hard=8192 MB (auto)
+[2026-08-01 21:32:54.165] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\Users\mail\UserInfo.cfg
+[2026-08-01 21:32:54.166] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\game.cfg
+[2026-08-01 21:32:54.166] [app-1f50] [[0;36mDBUG[0m] [[0;33mCONFIG[0m]  GameSettings: text='English' voice='German' blood=true viewDistance=5000 respectMissionViewDistance=true
+[2026-08-01 21:32:54.167] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\contextControls.cfg
+[2026-08-01 21:32:54.344] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\gamepad.cfg
+[2026-08-01 21:32:54.345] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\mouse.cfg
+[2026-08-01 21:32:54.346] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\difficulty.cfg
+[2026-08-01 21:32:54.347] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\Users\mail\UserInfo.cfg
+[2026-08-01 21:32:54.389] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu: creating renderer WGPU (Rust / wgpu) (1280x720), crate v0.1.0, build 513430ae392f-debug
+[2026-08-01 21:32:54.390] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu instance flags: InstanceFlags(DEBUG | VALIDATION | VALIDATION_INDIRECT_CALL)
+[2026-08-01 21:32:54.774] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu adapter: NVIDIA GeForce RTX 3070 (Vulkan, DiscreteGpu)
+[2026-08-01 21:32:54.774] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu capabilities: bc=true bindless=true partially_bound=true indirect_first_instance=true multi_draw_count=true vertex_writable_storage=true timestamps=true timestamps_in_passes=true
+[2026-08-01 21:32:55.050] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu MSAA enabled: 4x (WGR_MSAA)
+[2026-08-01 21:32:55.050] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu HDR path enabled (WGR_HDR)
+[2026-08-01 21:32:55.050] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu GPU-driven indirect draws enabled (WGR_INDIRECT)
+[2026-08-01 21:32:55.744] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu GPU-driven rendering enabled (WGR_GPU_DRIVEN); inert until a scene registers
+[2026-08-01 21:32:56.670] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: Hydro FFT ocean enabled: initial 512x512 cascade maps; live tiers 256/512/1024
+[2026-08-01 21:32:59.017] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: WTR-002 GPU timestamp instrumentation enabled
+[2026-08-01 21:32:59.018] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: GRS-A in-pass timestamps enabled; grass draw rows will report
+[2026-08-01 21:32:59.018] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu renderer created
+[2026-08-01 21:32:59.019] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  DebugOverlay: ImGui initialized on the engine overlay backend (press Ctrl+` / Ctrl+; to toggle)
+[2026-08-01 21:32:59.019] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\display.cfg
+[2026-08-01 21:32:59.020] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  LoadDisplayConfig: applied explicit CLI display overrides
+[2026-08-01 21:32:59.020] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Aspect: viewport=1280x720 style=0 clamp=1 override=0 -> leftFOV=1.333 topFOV=0.750 uiX=[0.000..1.000] uiY=[0.000..1.000] world=[0.000..1.000]x[0.000..1.000]
+[2026-08-01 21:32:59.020] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  LoadDisplayConfig: monitor=0 mode=2 res=1280x720 refresh=0
+[2026-08-01 21:32:59.020] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\graphics.cfg
+[2026-08-01 21:32:59.021] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  LoadGraphicsConfig: preset=3 terrain=4 objectLod=4 shadow=3 particles=3 vsync=1 fpsCap=0 brightness=1.6 gamma=1
+[2026-08-01 21:32:59.021] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\Users\mail\UserInfo.cfg
+[2026-08-01 21:32:59.022] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Object size %d
+[2026-08-01 21:32:59.022] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Frame size %d
+[2026-08-01 21:32:59.022] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    RemoveLinks size %d
+[2026-08-01 21:32:59.022] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    OLink<Object> size %d
+[2026-08-01 21:32:59.022] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Entity size %d
+[2026-08-01 21:32:59.022] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LODShapeWithShadow size %d
+[2026-08-01 21:32:59.022] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Shape size %d
+[2026-08-01 21:32:59.145] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_body.ttf not in bank
+[2026-08-01 21:32:59.145] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_body.ttf not in bank
+[2026-08-01 21:32:59.146] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:59.149] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:59.149] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:59.150] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_title.ttf not in bank
+[2026-08-01 21:32:59.150] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_title.ttf not in bank
+[2026-08-01 21:32:59.151] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_title.ttf not in bank
+[2026-08-01 21:32:59.159] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    CleanUp world
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CfgPreloadTextures'
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.textureDefault'
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.textureWhite'
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.textureBlack'
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.textureLine'
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.trackTexture'
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.trackTextureFour'
+[2026-08-01 21:32:59.160] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.compass000'
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.compass090'
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.compass180'
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.compass270'
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.161] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.skyBright'
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.skyCloudy'
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.skyRainy'
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.textureRain'
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.flares'
+[2026-08-01 21:32:59.162] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:59.221] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Creating landscape...
+[2026-08-01 21:32:59.222] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CfgLandscapeSky'
+[2026-08-01 21:32:59.222] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sky'
+[2026-08-01 21:32:59.222] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:32:59.222] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.222] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.stars'
+[2026-08-01 21:32:59.222] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:32:59.222] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.horizont'
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sunHalo'
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sun'
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.moon'
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:32:59.223] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:32:59.224] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sky' has no model configured
+[2026-08-01 21:32:59.224] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'stars' has no model configured
+[2026-08-01 21:32:59.224] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'horizont' has no model configured
+[2026-08-01 21:32:59.224] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sunHalo' has no model configured
+[2026-08-01 21:32:59.224] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sun' has no model configured
+[2026-08-01 21:32:59.224] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'moon' has no model configured
+[2026-08-01 21:32:59.224] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:59.226] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Initializing world landscape...
+[2026-08-01 21:32:59.234] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    CleanUp world
+[2026-08-01 21:32:59.235] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    World set time %s, %s
+[2026-08-01 21:32:59.252] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_body.ttf not in bank
+[2026-08-01 21:32:59.257] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ResetObjectIDs
+[2026-08-01 21:32:59.258] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Landscape::ClearIDCache
+[2026-08-01 21:32:59.286] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\les ctverec mlazi.p3d took 28.55ms (4 LODs)
+[2026-08-01 21:32:59.290] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\les trojuhelnik.p3d took 3.51ms (5 LODs)
+[2026-08-01 21:32:59.303] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\les trojuhelnik pruchozi.p3d took 12.47ms (8 LODs)
+[2026-08-01 21:32:59.306] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\les ctverec.p3d took 2.86ms (5 LODs)
+[2026-08-01 21:32:59.323] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\les ctverec pruchozi_t1.p3d took 17.29ms (7 LODs)
+[2026-08-01 21:32:59.338] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\les ctverec pruchozi_t2.p3d took 14.28ms (7 LODs)
+[2026-08-01 21:32:59.348] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    InitLandscape ResetIDs
+[2026-08-01 21:32:59.348] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    World::ResetIDs
+[2026-08-01 21:32:59.348] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ResetObjectIDs
+[2026-08-01 21:32:59.348] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Landscape::ClearIDCache
+[2026-08-01 21:32:59.348] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Preloading vehicle types...
+[2026-08-01 21:32:59.676] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:32:59.698] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Final world initialization...
+[2026-08-01 21:32:59.699] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    World initialized successfully
+[2026-08-01 21:32:59.699] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\graphics.cfg
+[2026-08-01 21:32:59.699] [app-1f50] [[0;36mDBUG[0m] [[0;32mWORLD[0m]   Terrain subdivision wanted: 3 (3.000)
+[2026-08-01 21:32:59.700] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: SubdivCache HIT from C:\Users\mail\AppData\Local\CWR//cwr_subdiv__L3.cache
+[2026-08-01 21:32:59.700] [app-1f50] [[0;36mDBUG[0m] [[1;33mSCRIPT[0m]  Visibility set: view=5000 objects=3000 shadows=500
+[2026-08-01 21:32:59.700] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: AdjustSubdivision 0ms (grid=6.25 vd=5000)
+[2026-08-01 21:32:59.700] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  LoadGraphicsConfig: preset=3 terrain=4 objectLod=4 shadow=3 particles=3 vsync=1 fpsCap=0 brightness=1.6 gamma=1
+[2026-08-01 21:33:00.130] [app-1f50] [[0;32mINFO[0m] [[1;36mAUDIO[0m]   EFX extension: available
+[2026-08-01 21:33:00.131] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=1 speech=1 music=1 gain=0.5 (vols 5/5/5)
+[2026-08-01 21:33:00.131] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=1 speech=1 music=1 gain=0.5 (vols 5/5/5)
+[2026-08-01 21:33:00.131] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=1 speech=1 music=1 gain=0.5 (vols 5/5/5)
+[2026-08-01 21:33:00.131] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\audio.cfg
+[2026-08-01 21:33:00.132] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=0.122456424 speech=0.122456424 music=1 gain=0.8 (vols 5/5/8)
+[2026-08-01 21:33:00.132] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=1 speech=0.122456424 music=1 gain=0.8 (vols 8/5/8)
+[2026-08-01 21:33:00.132] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=1 speech=1 music=1 gain=0.8 (vols 8/8/8)
+[2026-08-01 21:33:00.132] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   LoadConfig: music=80% fx=80% speech=80% eax=false out='' in=''
+[2026-08-01 21:33:00.132] [app-1f50] [[0;32mINFO[0m] [[1;36mAUDIO[0m]   Init OK: OpenAL Soft
+[2026-08-01 21:33:00.132] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Audio backend: OpenAL audio engine (default)
+[2026-08-01 21:33:00.133] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\audio.cfg
+[2026-08-01 21:33:00.133] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=1 speech=1 music=1 gain=0.8 (vols 8/8/8)
+[2026-08-01 21:33:00.133] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=1 speech=1 music=1 gain=0.8 (vols 8/8/8)
+[2026-08-01 21:33:00.133] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   UpdateMixer: wave=1 speech=1 music=1 gain=0.8 (vols 8/8/8)
+[2026-08-01 21:33:00.133] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   LoadConfig: music=80% fx=80% speech=80% eax=false out='' in=''
+[2026-08-01 21:33:00.133] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_title.ttf not in bank
+[2026-08-01 21:33:00.133] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_body.ttf not in bank
+[2026-08-01 21:33:00.133] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_mono.ttf not in bank
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_serif.ttf not in bank
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_hand.ttf not in bank
+[2026-08-01 21:33:00.134] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  FontSystem initialized (5 fonts in slot 0)
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CfgScenePreload'
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CraterShell'
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.SlopBlood'
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.134] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CloudletBasic'
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CloudletFire'
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CloudletWater'
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CinemaBorder'
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.135] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CobraLight'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.SphereLight'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.HalfLight'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.Marker'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.FootStepL'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.136] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.FootStepR'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.ForceArrowModel'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.SphereModel'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.RectangleModel'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.Cloud1'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.Cloud2'
+[2026-08-01 21:33:00.137] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.Cloud3'
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.Cloud4'
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CollisionStar'
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.138] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  ScenePreloader initialized (20 slot classes)
+[2026-08-01 21:33:00.138] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.141] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.141] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.141] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.141] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.141] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.141] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.141] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.141] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.142] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.143] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.144] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\anims\intro.Intro\mission.sqm
+[2026-08-01 21:33:00.145] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: D:\SteamLibrary\steamapps\common\ARMA Cold War Assault\anims\intro.Intro\mission.sqm
+[2026-08-01 21:33:00.148] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    CleanUp world
+[2026-08-01 21:33:00.149] [app-1f50] [[0;36mDBUG[0m] [[0;32mWORLD[0m]   Landscape::LoadData start
+[2026-08-01 21:33:00.149] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Load landscape %s
+[2026-08-01 21:33:00.180] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CfgLandscapeSky'
+[2026-08-01 21:33:00.180] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sky'
+[2026-08-01 21:33:00.181] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.181] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.181] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.stars'
+[2026-08-01 21:33:00.181] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.181] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.181] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.horizont'
+[2026-08-01 21:33:00.181] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sunHalo'
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sun'
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.moon'
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:00.182] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:00.182] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sky' has no model configured
+[2026-08-01 21:33:00.183] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'stars' has no model configured
+[2026-08-01 21:33:00.183] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'horizont' has no model configured
+[2026-08-01 21:33:00.183] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sunHalo' has no model configured
+[2026-08-01 21:33:00.183] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sun' has no model configured
+[2026-08-01 21:33:00.183] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'moon' has no model configured
+[2026-08-01 21:33:00.205] [app-1f50] [[0;36mDBUG[0m] [[0;32mWORLD[0m]   Landscape::LoadData time 57
+[2026-08-01 21:33:00.206] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: LoadData 47ms
+[2026-08-01 21:33:00.206] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: ParseCfgWorld 0ms
+[2026-08-01 21:33:00.206] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    CleanUp world
+[2026-08-01 21:33:00.209] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    World set time %s, %s
+[2026-08-01 21:33:00.229] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    InitLandscape ResetIDs
+[2026-08-01 21:33:00.229] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    World::ResetIDs
+[2026-08-01 21:33:00.229] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ResetObjectIDs
+[2026-08-01 21:33:00.229] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Landscape::ClearIDCache
+[2026-08-01 21:33:00.230] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    Landscape::RebuildIDCache
+[2026-08-01 21:33:00.230] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: InitLandscape+RebuildIDCache 31ms
+[2026-08-01 21:33:00.232] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: SwitchLandscape total 78ms (flush 0ms)
+[2026-08-01 21:33:00.257] [app-1f50] [[0;36mDBUG[0m] [[0;32mWORLD[0m]   Terrain subdivision wanted: 3 (3.000)
+[2026-08-01 21:33:00.264] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: SubdivCache HIT from C:\Users\mail\AppData\Local\CWR//cwr_subdiv_worlds_intro.wrp_L3.cache
+[2026-08-01 21:33:00.265] [app-1f50] [[0;36mDBUG[0m] [[1;33mSCRIPT[0m]  Visibility set: view=5000 objects=3000 shadows=500
+[2026-08-01 21:33:00.265] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: AdjustSubdivision 16ms (grid=6.25 vd=5000)
+[2026-08-01 21:33:00.269] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\papauto.p3d took 3.74ms (4 LODs)
+[2026-08-01 21:33:00.269] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    File fonts\cwr_body.ttf not in bank
+[2026-08-01 21:33:00.272] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: CreateCenters 0ms
+[2026-08-01 21:33:00.318] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.318] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.320] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\m16_proxy.p3d took 7.03ms (7 LODs)
+[2026-08-01 21:33:00.325] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\law_proxy.p3d took 4.17ms (7 LODs)
+[2026-08-01 21:33:00.326] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\flag_vojak.p3d took 1.60ms (2 LODs)
+[2026-08-01 21:33:00.329] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\dalekohled_proxy.p3d took 2.26ms (5 LODs)
+[2026-08-01 21:33:00.333] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\nvg_proxy.p3d took 3.84ms (4 LODs)
+[2026-08-01 21:33:00.338] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\mc vojake2.p3d took 64.51ms (11 LODs)
+[2026-08-01 21:33:00.620] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\nabojnice.p3d took 1.13ms (4 LODs)
+[2026-08-01 21:33:00.626] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.626] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.628] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\ak_74_proxy.p3d took 7.09ms (7 LODs)
+[2026-08-01 21:33:00.630] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]      -> Checking base directory: ''
+[2026-08-01 21:33:00.675] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\mc vojakw2.p3d took 39.78ms (11 LODs)
+[2026-08-01 21:33:00.881] [app-1f50] [[0;36mDBUG[0m] [[0;32mWORLD[0m]   Camera switched to WEST Alpha Black:1 (mail)
+[2026-08-01 21:33:00.893] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\m113t.p3d took 11.00ms (8 LODs)
+[2026-08-01 21:33:00.914] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\jeept_tanker.p3d took 14.40ms (8 LODs)
+[2026-08-01 21:33:00.934] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\jeept.p3d took 14.01ms (8 LODs)
+[2026-08-01 21:33:00.939] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\hrobecek_krizekhelma.p3d took 2.38ms (5 LODs)
+[2026-08-01 21:33:00.943] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\hrobecek_krizek2.p3d took 1.11ms (4 LODs)
+[2026-08-01 21:33:00.945] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\hrobecek_krizek1.p3d took 1.59ms (5 LODs)
+[2026-08-01 21:33:00.967] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  PERF: ShapeBank::New data3d\uralt.p3d took 20.95ms (8 LODs)
+[2026-08-01 21:33:00.988] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: TextBank Preload 0ms
+[2026-08-01 21:33:00.989] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  ShapeBank::OptimizeAll
+[2026-08-01 21:33:00.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: Shapes.OptimizeAll 16ms
+[2026-08-01 21:33:00.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: Terrain FillCache start pos=(9871.385,21.617138,3365.9182)
+[2026-08-01 21:33:00.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: Terrain FillCache+NearVBs 0ms
+[2026-08-01 21:33:00.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    LOAD: InitVehicles total 766ms
+[2026-08-01 21:33:00.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    SetTitleEffect %p
+[2026-08-01 21:33:00.998] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    SetCutEffect %p
+[2026-08-01 21:33:00.998] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    Auto-screenshot: 1 captures scheduled
+[2026-08-01 21:33:01.060] [app-1f50] [[0;36mDBUG[0m] [[1;33mSCRIPT[0m]  camCreate: created 'camera' at (9578.6, 31.5, 3540.3)
+[2026-08-01 21:33:01.065] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   WaveOAL::KickAsyncLoad sync-fallback: sound\ui\ui_over.wss (1856 bytes, pool=live)
+[2026-08-01 21:33:01.065] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   Loaded: sound\ui\ui_over.wss (22050Hz 1ch 0.04208617s)
+[2026-08-01 21:33:01.065] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   Play: sound\ui\ui_over.wss (vol=0.2 adj=1 once)
+[2026-08-01 21:33:01.065] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   WaveOAL::KickAsyncLoad sync-fallback: sound\animals\crickets07.wss (180440 bytes, pool=live)
+[2026-08-01 21:33:01.066] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   Loaded: sound\animals\crickets07.wss (22050Hz 1ch 4.09161s)
+[2026-08-01 21:33:01.066] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   Play: sound\animals\crickets07.wss (vol=0.0032159737 adj=1 loop)
+[2026-08-01 21:33:09.118] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu grass: no named grass textures on this legacy world; enabling all 138 terrain layers
+[2026-08-01 21:33:09.132] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu grass texture mask: 138 layer(s), 65536 / 65536 surface cells, 950 renderable after geography, 950 with forest relaxed (road/water/building always excluded) [data\more_anim.01.pac, landtext\s3.paa, landtext\sh.paa, landtext\p4.paa, landtext\pi.paa, landtext\tt.paa, landtext\bt.paa, landtext\tv.paa, landtext\pipipish.paa, landtext\pishpish.paa, landtext\pishpitt.paa, landtext\pittpish.paa, landtext\pishpipi.paa, landtext\pipishsh.paa, landtext\shshttsh.paa, landtext\ttshshsh.paa, landtext\shshpipi.paa, landtext\pipishpi.paa, landtext\shpishsh.paa, landtext\shshshpi.paa, landtext\shpipipi.paa, landtext\shpishpi.paa, landtext\pishshsh.paa, landtext\shshpish.paa, landtext\pishshpi.paa, landtext\pittpitt.paa, landtext\pittpipi.paa, landtext\shpitttt.paa, landtext\ttttpitt.paa, landtext\pipipitt.paa, landtext\pittshtt.paa, landtext\shttshtt.paa, landtext\shttshsh.paa, landtext\shshpitt.paa, landtext\shpipish.paa, landtext\pipitttt.paa, landtext\pitttttt.paa, landtext\ttttttsh.paa, landtext\ttshtttt.paa, landtext\ttttshtt.paa, landtext\shtttttt.paa, landtext\ttttpipi.paa, landtext\pipishtt.paa, landtext\shttshpi.paa, landtext\shpipitt.paa, landtext\ttshttsh.paa, landtext\ttttshsh.paa, landtext\ttttttp4.paa, landtext\ttp4tttt.paa, landtext\ttp4p4p4.paa, landtext\p4p4tttt.paa, landtext\tttttttv.paa, landtext\tttvtttv.paa, landtext\tttvtttt.paa, landtext\ttttttpi.paa, landtext\ttpipipi.paa, landtext\ttttp4p4.paa, landtext\p4p4p4tt.paa, landtext\p4tttttt.paa, landtext\tttttvtt.paa, landtext\tvtttvtv.paa, landtext\tvtvtttv.paa, landtext\ttttttbt.paa, landtext\ttbtttbt.paa, landtext\ttbttttt.paa, landtext\tttvtvtv.paa, landtext\tvtvtttt.paa, landtext\p4p4ttp4.paa, landtext\tvtttvtt.paa, landtext\ttttbttt.paa, landtext\btttbttt.paa, landtext\btttbtbt.paa, landtext\btbtttbt.paa, landtext\tvtvtvtt.paa, landtext\tvtttttt.paa, landtext\ttttp4tt.paa, landtext\p4ttp4tt.paa, landtext\ttbtbtbt.paa, landtext\btbttttt.paa, landtext\tttttvtv.paa, landtext\ttpittpi.paa, landtext\ttpitttt.paa, landtext\bttttttt.paa, landtext\pipittpi.paa, landtext\ttpittbt.paa, landtext\ttbtpipi.paa, landtext\pipibtbt.paa, landtext\btbtpipi.paa, landtext\pipipibt.paa, landtext\pibtpipi.paa, landtext\ttpipibt.paa, landtext\pibtbtpi.paa, landtext\btpipipi.paa, landtext\pipibtpi.paa, landtext\ttttbtbt.paa, landtext\pibtpibt.paa, landtext\btpibtpi.paa, landtext\tttvshtt.paa, landtext\shttpipi.paa, landtext\shshtttt.paa, landtext\shshshtt.paa, landtext\tttttts3.paa, landtext\tts3tttt.paa, landtext\tttts3tt.paa, landtext\s3tttts3.paa, landtext\tts3s3s3.paa, landtext\s3s3tttt.paa, landtext\s3tts3tt.paa, landtext\s3tttttt.paa, landtext\tttvpitt.paa, landtext\pittttpi.paa, landtext\tts3tts3.paa, landtext\tttts3s3.paa, landtext\pb.paa, landtext\pbpbtttt.paa, landtext\ttpbtttt.paa, landtext\ttpbttpb.paa, landtext\tvtvttpb.paa, landtext\tvttpbpb.paa, landtext\pbpbttpb.paa, landtext\ttttpbpb.paa, landtext\pbpbtttv.paa, landtext\pbtvpbpb.paa, landtext\ttttpbtv.paa, landtext\pbtvtvtv.paa, landtext\pbtvpbtv.paa, landtext\tvttpbtv.paa, landtext\tvttttpb.paa, landtext\ttttttpb.paa, landtext\pbttpbpb.paa, landtext\ttttpbtt.paa, landtext\pbttpbtv.paa, landtext\tttvtvtt.paa, landtext\pbtttvtv.paa, landtext\pbttpbtt.paa, landtext\pbtttvtt.paa, landtext\pbtttttt.paa, landtext\pbpbpbtt.paa]
+[2026-08-01 21:33:09.132] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu terrain texture layers: [0:data\more_anim.01.pac, 1:landtext\s3.paa, 2:landtext\sh.paa, 3:landtext\p4.paa, 4:landtext\pi.paa, 5:landtext\tt.paa, 6:landtext\bt.paa, 7:landtext\tv.paa, 8:landtext\pipipish.paa, 9:landtext\pishpish.paa, 10:landtext\pishpitt.paa, 11:landtext\pittpish.paa, 12:landtext\pishpipi.paa, 13:landtext\pipishsh.paa, 14:landtext\shshttsh.paa, 15:landtext\ttshshsh.paa, 16:landtext\shshpipi.paa, 17:landtext\pipishpi.paa, 18:landtext\shpishsh.paa, 19:landtext\shshshpi.paa, 20:landtext\shpipipi.paa, 21:landtext\shpishpi.paa, 22:landtext\pishshsh.paa, 23:landtext\shshpish.paa, 24:landtext\pishshpi.paa, 25:landtext\pittpitt.paa, 26:landtext\pittpipi.paa, 27:landtext\shpitttt.paa, 28:landtext\ttttpitt.paa, 29:landtext\pipipitt.paa, 30:landtext\pittshtt.paa, 31:landtext\shttshtt.paa, 32:landtext\shttshsh.paa, 33:landtext\shshpitt.paa, 34:landtext\shpipish.paa, 35:landtext\pipitttt.paa, 36:landtext\pitttttt.paa, 37:landtext\ttttttsh.paa, 38:landtext\ttshtttt.paa, 39:landtext\ttttshtt.paa, 40:landtext\shtttttt.paa, 41:landtext\ttttpipi.paa, 42:landtext\pipishtt.paa, 43:landtext\shttshpi.paa, 44:landtext\shpipitt.paa, 45:landtext\ttshttsh.paa, 46:landtext\ttttshsh.paa, 47:landtext\ttttttp4.paa, 48:landtext\ttp4tttt.paa, 49:landtext\ttp4p4p4.paa, 50:landtext\p4p4tttt.paa, 51:landtext\tttttttv.paa, 52:landtext\tttvtttv.paa, 53:landtext\tttvtttt.paa, 54:landtext\ttttttpi.paa, 55:landtext\ttpipipi.paa, 56:landtext\ttttp4p4.paa, 57:landtext\p4p4p4tt.paa, 58:landtext\p4tttttt.paa, 59:landtext\tttttvtt.paa, 60:landtext\tvtttvtv.paa, 61:landtext\tvtvtttv.paa, 62:landtext\ttttttbt.paa, 63:landtext\ttbtttbt.paa, 64:landtext\ttbttttt.paa, 65:landtext\tttvtvtv.paa, 66:landtext\tvtvtttt.paa, 67:landtext\p4p4ttp4.paa, 68:landtext\tvtttvtt.paa, 69:landtext\ttttbttt.paa, 70:landtext\btttbttt.paa, 71:landtext\btttbtbt.paa, 72:landtext\btbtttbt.paa, 73:landtext\tvtvtvtt.paa, 74:landtext\tvtttttt.paa, 75:landtext\ttttp4tt.paa, 76:landtext\p4ttp4tt.paa, 77:landtext\ttbtbtbt.paa, 78:landtext\btbttttt.paa, 79:landtext\tttttvtv.paa, 80:landtext\ttpittpi.paa, 81:landtext\ttpitttt.paa, 82:landtext\bttttttt.paa, 83:landtext\pipittpi.paa, 84:landtext\ttpittbt.paa, 85:landtext\ttbtpipi.paa, 86:landtext\pipibtbt.paa, 87:landtext\btbtpipi.paa, 88:landtext\pipipibt.paa, 89:landtext\pibtpipi.paa, 90:landtext\ttpipibt.paa, 91:landtext\pibtbtpi.paa, 92:landtext\btpipipi.paa, 93:landtext\pipibtpi.paa, 94:landtext\ttttbtbt.paa, 95:landtext\pibtpibt.paa, 96:landtext\btpibtpi.paa, 97:landtext\tttvshtt.paa, 98:landtext\shttpipi.paa, 99:landtext\shshtttt.paa, 100:landtext\shshshtt.paa, 101:landtext\tttttts3.paa, 102:landtext\tts3tttt.paa, 103:landtext\tttts3tt.paa, 104:landtext\s3tttts3.paa, 105:landtext\tts3s3s3.paa, 106:landtext\s3s3tttt.paa, 107:landtext\s3tts3tt.paa, 108:landtext\s3tttttt.paa, 109:landtext\tttvpitt.paa, 110:landtext\pittttpi.paa, 111:landtext\tts3tts3.paa, 112:landtext\tttts3s3.paa, 113:landtext\pb.paa, 114:landtext\pbpbtttt.paa, 115:landtext\ttpbtttt.paa, 116:landtext\ttpbttpb.paa, 117:landtext\tvtvttpb.paa, 118:landtext\tvttpbpb.paa, 119:landtext\pbpbttpb.paa, 120:landtext\ttttpbpb.paa, 121:landtext\pbpbtttv.paa, 122:landtext\pbtvpbpb.paa, 123:landtext\ttttpbtv.paa, 124:landtext\pbtvtvtv.paa, 125:landtext\pbtvpbtv.paa, 126:landtext\tvttpbtv.paa, 127:landtext\tvttttpb.paa, 128:landtext\ttttttpb.paa, 129:landtext\pbttpbpb.paa, 130:landtext\ttttpbtt.paa, 131:landtext\pbttpbtv.paa, 132:landtext\tttvtvtt.paa, 133:landtext\pbtttvtv.paa, 134:landtext\pbttpbtt.paa, 135:landtext\pbtttvtt.paa, 136:landtext\pbtttttt.paa, 137:landtext\pbpbpbtt.paa]
+[2026-08-01 21:33:09.426] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu grass: mid-LOD clump texture uploaded (1024x1024, 4 src channels) from 'assets/grass/meadow-grass-clump-alpha-1024.png'
+[2026-08-01 21:33:09.443] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu grass: near-LOD photo blade atlas uploaded (8 layers, 64x256)
+[2026-08-01 21:33:09.446] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CfgDetailTextures'
+[2026-08-01 21:33:09.446] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.detail'
+[2026-08-01 21:33:09.446] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:11.957] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water geometry quality applied: preset=2 baseMult=8.00 range0=1600m
+[2026-08-01 21:33:12.001] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water look applied: amplitude=1.000, choppiness=1.000, speed=1.000, preset=1, FFT=512x512
+[2026-08-01 21:33:12.003] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD config: leafSize=200.0m levels=9 baseMult=8.0 ratio=2.00 range0=1600m
+[2026-08-01 21:33:12.003] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.570 fftH=1.580 fftV=1.367 compose=1.564 draw=-1.000 foam=0.537 interaction=0.053 planar=0.000 total=5.941
+[2026-08-01 21:33:12.004] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=227 lod0=76 lod1=74 lod2=64 lod3=12 lod4=1 lod5+=0 tris=4184064
+[2026-08-01 21:33:12.306] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  SDLEventWindow: window minimized; renderer will skip occluded frames
+[2026-08-01 21:33:12.351] [app-1f50] [[1;33mWARN[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu surface outdated; reconfiguring and skipping frame
+[2026-08-01 21:33:12.876] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  SDLEventWindow: window restored; renderer may resume presentation
+[2026-08-01 21:33:12.935] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  SDLEventWindow: window minimized; renderer will skip occluded frames
+[2026-08-01 21:33:13.529] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  SDLEventWindow: window restored; renderer may resume presentation
+[2026-08-01 21:33:13.536] [app-1f50] [[1;33mWARN[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu surface outdated; reconfiguring and skipping frame
+[2026-08-01 21:33:13.599] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  SDLEventWindow: window minimized; renderer will skip occluded frames
+[2026-08-01 21:33:14.145] [app-1f50] [[0;36mDBUG[0m] [[1;32mGRAPHICS[0m]  SDLEventWindow: window restored; renderer may resume presentation
+[2026-08-01 21:33:14.149] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.111 fftH=0.221 fftV=0.212 compose=0.114 draw=3.841 foam=0.190 interaction=0.011 planar=0.384 total=5.912
+[2026-08-01 21:33:16.161] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.111 fftH=0.220 fftV=0.212 compose=0.114 draw=3.890 foam=0.187 interaction=0.011 planar=0.376 total=5.948
+[2026-08-01 21:33:18.192] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.111 fftH=0.225 fftV=0.221 compose=0.114 draw=3.966 foam=0.205 interaction=0.011 planar=0.414 total=6.094
+[2026-08-01 21:33:18.192] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=226 lod0=75 lod1=74 lod2=64 lod3=12 lod4=1 lod5+=0 tris=4165632
+[2026-08-01 21:33:20.192] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.118 fftH=0.239 fftV=0.227 compose=0.115 draw=4.264 foam=0.222 interaction=0.012 planar=0.435 total=6.459
+[2026-08-01 21:33:22.197] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.111 fftH=0.241 fftV=0.231 compose=0.114 draw=4.252 foam=0.227 interaction=0.012 planar=0.449 total=6.463
+[2026-08-01 21:33:22.197] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=225 lod0=74 lod1=74 lod2=64 lod3=12 lod4=1 lod5+=0 tris=4147200
+[2026-08-01 21:33:24.220] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.112 fftH=0.233 fftV=0.224 compose=0.114 draw=4.145 foam=0.215 interaction=0.011 planar=0.412 total=6.294
+[2026-08-01 21:33:24.220] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=224 lod0=74 lod1=73 lod2=64 lod3=12 lod4=1 lod5+=0 tris=4128768
+[2026-08-01 21:33:26.250] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.112 fftH=0.238 fftV=0.229 compose=0.114 draw=4.269 foam=0.222 interaction=0.012 planar=0.425 total=6.448
+[2026-08-01 21:33:28.275] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.112 fftH=0.234 fftV=0.227 compose=0.115 draw=2.380 foam=0.219 interaction=0.011 planar=0.380 total=4.506
+[2026-08-01 21:33:28.276] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=154 lod0=60 lod1=58 lod2=36 lod3=0 lod4=0 lod5+=0 tris=2838528
+[2026-08-01 21:33:30.298] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.153 fftH=0.286 fftV=0.276 compose=0.156 draw=2.721 foam=0.254 interaction=0.016 planar=0.438 total=5.127
+[2026-08-01 21:33:30.298] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=157 lod0=58 lod1=60 lod2=37 lod3=2 lod4=0 lod5+=0 tris=2893824
+[2026-08-01 21:33:32.329] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.151 fftH=0.289 fftV=0.281 compose=0.156 draw=1.851 foam=0.265 interaction=0.014 planar=0.891 total=4.725
+[2026-08-01 21:33:32.329] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=154 lod0=55 lod1=62 lod2=35 lod3=2 lod4=0 lod5+=0 tris=2838528
+[2026-08-01 21:33:34.365] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.151 fftH=0.289 fftV=0.276 compose=0.156 draw=1.220 foam=0.261 interaction=0.013 planar=0.807 total=4.000
+[2026-08-01 21:33:34.365] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=146 lod0=52 lod1=59 lod2=34 lod3=1 lod4=0 lod5+=0 tris=2691072
+[2026-08-01 21:33:36.386] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.154 fftH=0.305 fftV=0.293 compose=0.158 draw=1.398 foam=0.294 interaction=0.015 planar=1.026 total=4.470
+[2026-08-01 21:33:36.386] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=151 lod0=58 lod1=58 lod2=33 lod3=2 lod4=0 lod5+=0 tris=2783232
+[2026-08-01 21:33:38.408] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=1.217 fftH=1.395 fftV=1.377 compose=1.154 draw=3.564 foam=0.454 interaction=0.035 planar=0.816 total=10.838
+[2026-08-01 21:33:38.408] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=142 lod0=66 lod1=42 lod2=33 lod3=1 lod4=0 lod5+=0 tris=2617344
+[2026-08-01 21:33:40.433] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.110 fftH=0.244 fftV=0.237 compose=0.115 draw=1.109 foam=0.238 interaction=0.020 planar=0.396 total=3.295
+[2026-08-01 21:33:40.433] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=143 lod0=64 lod1=44 lod2=33 lod3=2 lod4=0 lod5+=0 tris=2635776
+[2026-08-01 21:33:42.464] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.153 fftH=0.286 fftV=0.279 compose=0.157 draw=1.245 foam=0.258 interaction=0.013 planar=0.446 total=3.664
+[2026-08-01 21:33:42.464] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=145 lod0=68 lod1=44 lod2=31 lod3=2 lod4=0 lod5+=0 tris=2672640
+[2026-08-01 21:33:44.477] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.155 fftH=0.288 fftV=0.280 compose=0.157 draw=1.229 foam=0.266 interaction=0.014 planar=0.485 total=3.701
+[2026-08-01 21:33:44.478] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=151 lod0=67 lod1=47 lod2=35 lod3=2 lod4=0 lod5+=0 tris=2783232
+[2026-08-01 21:33:46.508] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water GPU ms: evolve=0.150 fftH=0.284 fftV=0.273 compose=0.158 draw=1.524 foam=0.255 interaction=0.020 planar=0.423 total=3.914
+[2026-08-01 21:33:46.509] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Water CDLOD nodes: total=151 lod0=68 lod1=49 lod2=32 lod3=2 lod4=0 lod5+=0 tris=2783232
+[2026-08-01 21:33:46.723] [app-1f50] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu screenshot readback completed
+[2026-08-01 21:33:47.012] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    Auto-screenshot saved: frame=900 t=45.6s -> C:\Users\mail\OneDrive\Documents\GitHub\CWR-CE-paavohuhtalafork-\docs\roadmap\evidence\preview0-wgpu-lifecycle-repeat-1-20260801-normal-loop-minimize-restore.png
+[2026-08-01 21:33:47.012] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    Shutdown: begin (exit code 0)
+[2026-08-01 21:33:47.012] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    Shutdown: DDTerm
+[2026-08-01 21:33:47.050] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    World destruct
+[2026-08-01 21:33:47.050] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    CleanUp world
+[2026-08-01 21:33:47.051] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.CfgLandscapeSky'
+[2026-08-01 21:33:47.051] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sky'
+[2026-08-01 21:33:47.051] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.stars'
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.horizont'
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sunHalo'
+[2026-08-01 21:33:47.052] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:47.053] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:47.053] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.sun'
+[2026-08-01 21:33:47.053] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:47.053] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:47.053] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.moon'
+[2026-08-01 21:33:47.053] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: No entry '.model'
+[2026-08-01 21:33:47.053] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile error: '/' is not a value
+[2026-08-01 21:33:47.053] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sky' has no model configured
+[2026-08-01 21:33:47.053] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'stars' has no model configured
+[2026-08-01 21:33:47.053] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'horizont' has no model configured
+[2026-08-01 21:33:47.053] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sunHalo' has no model configured
+[2026-08-01 21:33:47.053] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'sun' has no model configured
+[2026-08-01 21:33:47.053] [app-1f50] [[1;33mWARN[0m] [[0;32mWORLD[0m]   Landscape sky slot 'moon' has no model configured
+[2026-08-01 21:33:47.069] [app-1f50] [[0;36mDBUG[0m] [[1;34mCORE[0m]    ParamFile::Parse() - Loading config file: C:\Users\mail\AppData\Roaming\CWR\Users\mail\UserInfo.cfg
+[2026-08-01 21:33:47.073] [app-1f50] [[0;36mDBUG[0m] [[1;36mAUDIO[0m]   TerminatePreview
+[2026-08-01 21:33:47.096] [app-1f50] [[0;32mINFO[0m] [[1;36mAUDIO[0m]   System shutdown
+[2026-08-01 21:33:47.284] [app-1f50] [[0;32mINFO[0m] [[1;34mCORE[0m]    Shutdown complete

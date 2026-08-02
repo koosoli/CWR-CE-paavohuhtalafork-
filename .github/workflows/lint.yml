@@ -19,6 +19,9 @@ jobs:
       - name: Validate execution ledger and overlay
         run: python3 scripts/validate_preview0_ledger.py
 
+      - name: Validate WGPU renderer and composed WGSL
+        run: cargo test --manifest-path engine/WgpuRenderer/rust/Cargo.toml --package wgpu_renderer
+
   clang-format:
     name: Lint
     runs-on: ubuntu-24.04

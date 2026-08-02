@@ -3,7 +3,7 @@ name: C++ / Build
 on:
   push:
     branches:
-      - main
+      - new-renderer-infrastructure
   pull_request:
   workflow_dispatch:
 
@@ -100,6 +100,14 @@ jobs:
           build-dir: ${{ env.CWR_BUILD_DIR }}
           ctest-exclude: ${{ env.CWR_CTEST_EXCLUDE }}
 
+      - name: Write Preview-0 WGPU manifest
+        run: >
+          python scripts/write_preview0_manifest.py
+          --exe "${{ env.CWR_DIST_DIR }}/PoseidonGame.exe"
+          --dll "${{ env.CWR_BUILD_DIR }}/engine/WgpuRenderer/wgpu_renderer.dll"
+          --cmake-cache "${{ env.CWR_BUILD_DIR }}/CMakeCache.txt"
+          --out "${{ env.CWR_BUILD_DIR }}/preview0-manifest.json"
+
       - name: Upload Game
         uses: actions/upload-artifact@v7
         with:
@@ -108,6 +116,17 @@ jobs:
             ${{ env.CWR_DIST_DIR }}/PoseidonGame.exe
             ${{ env.CWR_DIST_DIR }}/OpenAL32.dll
             ${{ env.CWR_DIST_DIR }}/OpenAL-Soft.LICENSE.txt
+          if-no-files-found: error
+
+      - name: Upload Preview-0 WGPU bundle
+        uses: actions/upload-artifact@v7
+        with:
+          name: Preview0-WGPU-${{ steps.build_metadata.outputs.sha_short }}
+          path: |
+            ${{ env.CWR_DIST_DIR }}/PoseidonGame.exe
+            ${{ env.CWR_BUILD_DIR }}/engine/WgpuRenderer/wgpu_renderer.dll
+            ${{ env.CWR_BUILD_DIR }}/preview0-manifest.json
+            docs/roadmap/evidence
           if-no-files-found: error
 
       - name: Upload GameDemo

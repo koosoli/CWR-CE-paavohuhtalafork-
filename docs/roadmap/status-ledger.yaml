@@ -12,8 +12,8 @@ tickets:
     class: BUILD_INFRA
     obligation: REQUIRED
     execution_mode: VALIDATE
-    scheduling_state: DONE
-    status: VALIDATED
+    scheduling_state: OPEN
+    status: INTEGRATED
     outcome: ADOPTED
     owner: null
     branch: null
@@ -160,8 +160,8 @@ tickets:
     class: RUNTIME_INFRA
     obligation: REQUIRED
     execution_mode: IMPLEMENT
-    scheduling_state: DONE
-    status: VALIDATED
+    scheduling_state: OPEN
+    status: INTEGRATED
     outcome: ADAPTED
     owner: null
     branch: null

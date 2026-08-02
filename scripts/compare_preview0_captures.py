@@ -93,13 +93,25 @@ def main() -> None:
             accepted = False
         elif policy == "correctness-review":
             classification = profile.get("classification", {})
-            accepted = True
+            review = profile.get("review")
+            review_matches_capture = (
+                isinstance(review, dict)
+                and review.get("reference_sha256") == result["reference"]["sha256"]
+                and review.get("candidate_sha256") == result["candidate"]["sha256"]
+                and isinstance(review.get("reviewer"), str)
+                and bool(review["reviewer"].strip())
+                and isinstance(review.get("approved_at"), str)
+                and bool(review["approved_at"].strip())
+            )
+            accepted = review_matches_capture
             acceptance = {
                 "profile": str(args.acceptance_profile),
                 "policy": policy,
-                "verdict": "ACCEPTED_EXPECTED_DIFFERENCE",
-                "reason": profile.get("reason", "comparison is a correctness review, not a parity gate"),
+                "verdict": "ACCEPTED_EXPECTED_DIFFERENCE" if accepted else "REVIEW_REQUIRED",
+                "reason": profile.get("reason", "comparison requires an explicit correctness review"),
                 "classification": classification,
+                "review": review if isinstance(review, dict) else None,
+                "review_matches_capture": review_matches_capture,
             }
         else:
             thresholds = profile["thresholds"]

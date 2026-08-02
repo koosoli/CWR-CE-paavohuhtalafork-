@@ -47,6 +47,8 @@ before Preview 0 acceptance.
 Use the evidence paths above with `scripts/compare_preview0_captures.py` and
 `docs/roadmap/visual-acceptance-profile.preview0-original-training.json`. The
 profile records this classification policy rather than asserting visual parity.
-Do not use `--require-accepted` as a GL33 visual-identity gate. The
+`correctness-review` produces `REVIEW_REQUIRED` until an explicit reviewer
+approval names the exact reference and candidate image hashes. Do not use
+`--require-accepted` as a GL33 visual-identity gate. The
 build/runtime fingerprint is in
 `docs/roadmap/evidence/preview0-manifest.json`.
