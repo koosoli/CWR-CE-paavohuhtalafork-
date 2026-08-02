@@ -916,6 +916,8 @@ void DrawZeusTab()
                 s_zeusStatus = "Selected " + std::to_string(s_zeusSelection.size()) + " Zeus object(s).";
             });
     ImGui::TextDisabled("Selected: %d", static_cast<int>(s_zeusSelection.size()));
+    ImGui::TextDisabled("With a selection: wheel raises/lowers (Shift = 5m), Shift+drag rotates,");
+    ImGui::TextDisabled("Ctrl+C / Ctrl+V copies at the cursor, Delete removes.");
     ImGui::BeginDisabled(s_zeusSelection.empty());
     if (ImGui::Button("Rotate selected to heading"))
         Defer([] { RotateZeusSelection(); });
@@ -4305,19 +4307,24 @@ void ProcessEvent(const SDL_Event& event)
             if (event.motion.xrel != 0.0f)
                 RotateZeusSelectionBy(event.motion.xrel * 0.5f);
         }
+        // Raise/lower the selection with the wheel.  Page Up / Page Down cannot
+        // serve here: they are the alternate bindings for the MoveUp/MoveDown
+        // user actions (see InputSubsystem's action table), so they already fly
+        // the free-fly camera vertically and a Zeus binding would fight it.
+        // The wheel is only claimed while something is selected, leaving it to
+        // the game otherwise.
+        else if (event.type == SDL_EVENT_MOUSE_WHEEL && !s_zeusSelection.empty() && event.wheel.y != 0.0f)
+        {
+            s_zeusConsumeMouseEvent = true;
+            const bool shiftDown = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
+            const float step = shiftDown ? 5.0f : 0.5f;
+            const float deltaY = event.wheel.y * step;
+            Defer([deltaY] { MoveZeusSelectionVertical(deltaY); });
+        }
         else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
         {
             const bool ctrlDown = (SDL_GetModState() & SDL_KMOD_CTRL) != 0;
-            const bool shiftDown = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
-            if ((event.key.scancode == SDL_SCANCODE_PAGEUP || event.key.scancode == SDL_SCANCODE_PAGEDOWN) &&
-                !s_zeusSelection.empty())
-            {
-                s_zeusConsumeKeyboardEvent = true;
-                const float step = shiftDown ? 5.0f : 1.0f;
-                const float deltaY = event.key.scancode == SDL_SCANCODE_PAGEUP ? step : -step;
-                Defer([deltaY] { MoveZeusSelectionVertical(deltaY); });
-            }
-            else if (event.key.scancode == SDL_SCANCODE_DELETE)
+            if (event.key.scancode == SDL_SCANCODE_DELETE)
             {
                 s_zeusConsumeKeyboardEvent = true;
                 Defer([] { DeleteZeusSelection(); });
