@@ -254,8 +254,11 @@ tickets:
     depends_on: [CORE-005]
     blocked_by: []
     blocks: []
-    implementation_commits: []
+    implementation_commits: [dacdf77]
     production_call_sites:
+      - file: engine/PoseidonGL33/EngineGL33_VertexBuffer.cpp
+        symbol: EngineGL33::CaptureScreenshotIfPending
+        verified_commit: null
       - file: apps/cwr/Game/GameApplication.cpp
         symbol: WriteCaptureMetrics
         verified_commit: null
@@ -279,6 +282,16 @@ tickets:
     decision_record: docs/roadmap/decisions/TEST-002-visual-divergence-20260801.md
     known_failures:
       - Oliver Kay classified the clean original-training comparison as EXPECTED_DIFFERENCE. An independent evidence reviewer and hosted CI result are still required before the ticket can be VALIDATED.
+      - >-
+        The GL33 capture path emitted one GL error per screenshot under
+        Xvfb (glReadPixels on a multisample default framebuffer), which is
+        what failed hosted Trident's I-20 gate. dacdf77 resolves to a
+        single-sample target first. Verified locally on 2026-08-02 only that
+        normal GL33 captures are unaffected (original-training capture,
+        correct orientation and colour); the multisample default framebuffer
+        does not reproduce on the Windows workstation, so the fix itself is
+        confirmed by hosted CI alone. GL33 is the fallback renderer: this is
+        a keep-it-working fix, not WGPU feature parity work.
     fallback: Runtime log and manifest preserve the available fingerprint evidence.
     reviewer: null
     supersedes: []

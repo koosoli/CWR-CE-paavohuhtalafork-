@@ -1,0 +1,12 @@
+# Runs on a retail island (Malden/abel), so it needs the full game data rather
+# than packages/Demo.  Hosted CI only downloads the Demo assets, hence
+# ci-host-blocked: this is a workstation test, skipped by the CI --skip-tag.
+#
+# The budget is sized for WGPU, which takes considerably longer to start and
+# load the world than GL33 (measured ~90s under GL33, well over 300s under
+# WGPU on the reference workstation).
+binary = "PoseidonGame"
+mission = "tests/integration/missions/ai_combat_death.abel"
+timeout = 900
+assert_timeout = 120
+tags = ["headless", "ci-host-blocked"]
