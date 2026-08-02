@@ -24,7 +24,7 @@ tickets:
     depends_on: []
     blocked_by: []
     blocks: [CORE-NEG-001]
-    implementation_commits: []
+    implementation_commits: [a3f3a1a]
     production_call_sites: []
     test_ids: [tier1-wgpu-check, tier1-gl33-check]
     benchmark_artifacts: []
@@ -92,7 +92,7 @@ tickets:
     depends_on: [PERF-001, CORE-005]
     blocked_by: []
     blocks: []
-    implementation_commits: []
+    implementation_commits: [816ec28]
     production_call_sites:
       - file: apps/cwr/Game/GameApplication.cpp
         symbol: CreateEngine
