@@ -102,8 +102,66 @@ that cohort is where every contradiction sits.
    `terrain-fractal-detail` are the genuinely unbuilt candidates.** Any future
    renderer work should start from those four, not from the contradicted five.
 
+## Water — a different problem
+
+RND-030 also asks for dependencies on water to be recorded. Water turns out to
+have the opposite documentation failure to the renderer plans above.
+
+The renderer plans carry a status line that is *wrong*. **The Water System
+Master Plan carries no status at all**: 113 `WTR-` phase IDs and zero
+completion markers. Nothing in it distinguishes a shipped phase from an
+untouched one.
+
+Three partial sources exist, and none of them is authoritative:
+
+| Source | Coverage |
+| --- | --- |
+| `WTR-` tags in `engine/` source | 28 phase IDs |
+| Reports under `docs/wtr-*.md` | 13 phase IDs (all committed 2026-07-25) |
+| The master plan itself | 113 phase IDs, no status |
+
+Cross-referencing them gives three concrete facts:
+
+1. **Five phases exist in code but not in the plan** — `WTR-036C`, `WTR-037`,
+   `WTR-038`, `WTR-072`, `WTR-074`. Work was done outside the documented phase
+   structure, consistent with water having been driven by visual priority
+   rather than plan order.
+2. **Four phases have a report but no code tag** — `WTR-013`, `WTR-050`,
+   `WTR-060`, `WTR-070`.
+3. **86 plan phases have neither a code tag nor a report.**
+
+### That third number is not a work estimate
+
+Checking fact (2) against the source shows why. `WTR-050` (optics),
+`WTR-060` (solver) and `WTR-070` (wakes) all have substantial implementations —
+absorption/scattering terms in `water/water.wgsl` and `water/mod.rs`, the
+spectrum solver across `water/fft.rs` and `fft_spectrum*.wgsl`, wake and
+interaction handling in `water/interaction.rs`, `interaction.wgsl` and
+`foam.wgsl` — while carrying no `WTR-` tag at all.
+
+**Absence of a tag is therefore not evidence that a phase is unbuilt.** Tag
+coverage is partial and inconsistent. The 86 figure is an upper bound on
+remaining water work, not a count of it, and it must not be read as a backlog.
+
+### The actual finding
+
+**There is currently no reliable way to determine water progress from this
+repository.** The plan has no status, the code tags are partial, and the
+reports cover a subset. Any estimate of what water work remains is guesswork
+until one of those three becomes authoritative.
+
+The cheapest fix is to give the master plan the status column it lacks, seeded
+from the code tags and reports, and to keep tagging new water work with its
+phase ID. That is a water-owner decision, not something to infer here — which
+is why this report records the gap rather than inventing statuses.
+
 ## Scope note
 
 This inventory verifies that a system *exists* in the branch. It does not
 assess quality, measure performance, or confirm each plan's individual staged
 acceptance criteria. Those belong to the per-system tickets recommended above.
+
+The renderer-plan findings rest on locating a named symbol or shader for each
+claim, which is positive evidence. The water section additionally reports
+*absence*, which is weaker: it is bounded by tag coverage, and is labelled
+accordingly above.
