@@ -478,8 +478,43 @@ void EngineGL33::CaptureScreenshotIfPending()
     if (w <= 0 || h <= 0)
         return;
 
+    // SDL/Xvfb may expose the default framebuffer as multisampled. OpenGL
+    // forbids glReadPixels directly from a multisample framebuffer, which made
+    // otherwise valid Trident captures fail only in headless CI. Resolve to a
+    // short-lived single-sample texture first; this leaves presentation and the
+    // pixels seen by the player unchanged.
+    GLuint captureFbo = 0;
+    GLuint captureTexture = 0;
+    glGenFramebuffers(1, &captureFbo);
+    glGenTextures(1, &captureTexture);
+    glBindTexture(GL_TEXTURE_2D, captureTexture);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, captureFbo);
+    glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, captureTexture, 0);
+    const bool captureTargetReady = glCheckFramebufferStatus(GL_DRAW_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE;
+
     std::vector<uint8_t> pixels(w * h * 4);
-    glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    if (captureTargetReady)
+    {
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+        glReadBuffer(GL_BACK);
+        glBlitFramebuffer(0, 0, w, h, 0, 0, w, h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, captureFbo);
+        glReadBuffer(GL_COLOR_ATTACHMENT0);
+        glReadPixels(0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, pixels.data());
+    }
+    else
+    {
+        LOG_ERROR(Graphics, "GL33: screenshot resolve target is incomplete; capture skipped");
+    }
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glDeleteFramebuffers(1, &captureFbo);
+    glDeleteTextures(1, &captureTexture);
+    if (!captureTargetReady)
+        return;
 
     // GL_LOWER_LEFT: glReadPixels Y=0 = bottom, need to flip rows.
     // Convert RGBA → RGB with Y flip.
