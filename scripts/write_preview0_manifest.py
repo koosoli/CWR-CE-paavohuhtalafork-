@@ -54,7 +54,12 @@ def tool_version(*command: str) -> str | None:
 def cmake_compiler(cache: pathlib.Path) -> str | None:
     if not cache.is_file():
         return None
-    match = re.search(r"^CMAKE_CXX_COMPILER:FILEPATH=(.+)$",
+    # The cache entry's type is not stable across configurations: a cache
+    # configured from the preset records STRING, an older/interactive one
+    # records FILEPATH.  Matching only FILEPATH silently dropped the compiler
+    # identity out of the manifest -- the one field that says what actually
+    # built the artefacts -- so accept whatever type the cache used.
+    match = re.search(r"^CMAKE_CXX_COMPILER:[A-Z]+=(.+)$",
                       cache.read_text(encoding="utf-8", errors="replace"), re.MULTILINE)
     return match.group(1).strip() if match else None
 

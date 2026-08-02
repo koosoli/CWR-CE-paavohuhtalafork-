@@ -4292,25 +4292,18 @@ void ProcessEvent(const SDL_Event& event)
             s_zeusLassoDrag = false;
             s_zeusMoveOffsets.clear();
         }
-        else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusLassoDrag)
-        {
-            // The lasso end point is refreshed from the engine cursor in
-            // DrawZeusInteractionOverlay; the event is only consumed here so it
-            // does not also reach the game.
-            s_zeusConsumeMouseEvent = true;
-        }
+        // Zeus drags must NOT consume mouse motion.  Every Zeus position now
+        // comes from the engine cursor, and that cursor is advanced by
+        // SDLInput_BufferMouseMotion — which SDLEventWindow::HandleEvents skips
+        // for any event WantsMouse() claims.  Consuming motion here therefore
+        // freezes the cursor for the whole drag: the lasso stays a zero-area
+        // rectangle and selects nothing.  Motion reaching the free-fly camera is
+        // harmless, because that camera only looks while the right button is
+        // held (SetMouseLookRequiresRightButton).
         else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusRotateDrag)
         {
-            s_zeusConsumeMouseEvent = true;
             if (event.motion.xrel != 0.0f)
                 RotateZeusSelectionBy(event.motion.xrel * 0.5f);
-        }
-        else if (event.type == SDL_EVENT_MOUSE_MOTION && s_zeusMoveDrag)
-        {
-            // Man animation code is not safe to teleport every mouse event, so
-            // the drag only consumes the event: the single placement happens on
-            // release, from the engine cursor position at that moment.
-            s_zeusConsumeMouseEvent = true;
         }
         else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
         {
