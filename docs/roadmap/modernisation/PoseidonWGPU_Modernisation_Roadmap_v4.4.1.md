@@ -459,7 +459,7 @@ UNSUPPORTED
 ## CORE-NEG-001 — Reproducible WGPU build and startup — REQUIRED
 
 - [x] `PERF-001` declares initial platform support before CI release gates are finalised.
-- [ ] CI builds every Tier 1 C++/Rust configuration.
+- [x] CI builds every Tier 1 C++/Rust configuration.
 - [ ] Tier 2 configurations compile and test where runners are available.
 - [ ] Tier 3 failures are recorded but do not block Preview 0 unless promoted.
 - [ ] Every composed WGSL shader is validated during CI.
@@ -585,21 +585,21 @@ DEFERRED
 NOT_APPLICABLE
 ```
 
-- [ ] “Completed” is not accepted as a standalone status.
+- [x] “Completed” is not accepted as a standalone status.
 - [ ] Every status names a baseline and verification commit.
 - [ ] Production call sites use file plus symbol, not fragile line numbers.
 - [ ] Class, obligation, execution mode, scheduling state, lifecycle status, milestone, milestone role, and outcome are explicit where applicable.
 - [ ] Every milestone-linked ticket declares `milestone_role`; CI treats omission as a schema error.
 - [ ] Owner, branch, blocking relationships, evidence, and decision record are explicit.
 - [ ] Old audits preserve historical truth but link to the superseding record.
-- [ ] CI validates schema, dependencies, and duplicate ticket IDs.
+- [x] CI validates schema, dependencies, and duplicate ticket IDs.
 - [ ] A `SHIPPABLE` ticket requires review by someone other than its implementation owner.
 - [ ] Adopted external middleware records its upstream URL, version or commit, licence, maturity, known blockers, local patches, last review date, and reassessment triggers.
-- [ ] The repository contains a machine-readable Execution Overlay that references only canonical ticket IDs.
-- [ ] A bootstrap lock ledger can be created before full `CORE-005` completion and is promoted without losing valid claims.
+- [x] The repository contains a machine-readable Execution Overlay that references only canonical ticket IDs.
+- [x] A bootstrap lock ledger can be created before full `CORE-005` completion and is promoted without losing valid claims.
 - [ ] Overlay `initial_scheduling_state` and `initial_blocked_by` values seed missing records only and never overwrite live ledger state.
 - [ ] Canonical milestone roles come from this roadmap and the validated ledger rather than from duplicated overlay metadata.
-- [ ] CI validates the overlay schema, WIP limits, referenced IDs, and conflicts between active tickets and dependency or hold states.
+- [x] CI validates the overlay schema, WIP limits, referenced IDs, and conflicts between active tickets and dependency or hold states.
 - [ ] The overlay is allowed to change without a master-roadmap version bump; role or constraint changes still require the appropriate decision record.
 - [ ] Start with a simple ledger and overlay; generated dashboards may come later.
 
@@ -691,11 +691,11 @@ Do not require bit-identical images across GPU vendors. Gameplay-state checksums
 
 ## TEST-006 — GL33/WGPU comparison — REQUIRED where applicable
 
-- [ ] Same mission and camera.
-- [ ] Confirm selected backend.
-- [ ] Record expected visual differences.
-- [ ] Detect accidental WGPU fallback.
-- [ ] Verify original-data compatibility.
+- [x] Same mission and camera.
+- [x] Confirm selected backend.
+- [x] Record expected visual differences.
+- [x] Detect accidental WGPU fallback.
+- [x] Verify original-data compatibility.
 
 ## NET-001 — Canonical authoritative tick identity and ordering — REQUIRED
 
@@ -2302,13 +2302,13 @@ The ledger may change these roles when implementation evidence justifies promoti
 
 Ships at the end of Milestone −1.
 
-- [ ] An original mission loads with confirmed WGPU.
-- [ ] Build fingerprint and adapter/backend report are available.
+- [x] An original mission loads with confirmed WGPU.
+- [x] Build fingerprint and adapter/backend report are available.
 - [ ] CI validates composed WGSL and ABI compatibility.
-- [ ] Silent GL33 fallback is impossible in the WGPU startup test.
+- [x] Silent GL33 fallback is impossible in the WGPU startup test.
 - [ ] Missing optional content does not prevent startup.
-- [ ] Timings and at least one reproducible capture are produced.
-- [ ] Deliberate, explicit GL33 fallback remains available.
+- [x] Timings and at least one reproducible capture are produced.
+- [x] Deliberate, explicit GL33 fallback remains available.
 
 Preview 0 requires optional-content startup safety, not the complete HD package system.
 
