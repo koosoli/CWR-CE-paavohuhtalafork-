@@ -103,7 +103,14 @@ void Man::ProcessMoveFunction(ActionContextBase* context)
         case MFDead:
             if (ENGINE_CONFIG.blood && GRandGen.RandomValue() <= 0.3f)
             {
-                LODShapeWithShadow* shape = GLOB_SCENE->Preloaded(SlopBlood);
+                // Some lightweight/demo worlds do not preload the optional
+                // blood-decal model.  Combat AI can therefore reach this
+                // death callback with no usable shape; a cosmetic effect
+                // must never invalidate the soldier's move queue or crash
+                // the simulation.
+                LODShapeWithShadow* shape = GLOB_SCENE ? GLOB_SCENE->Preloaded(SlopBlood) : nullptr;
+                if (!shape)
+                    break;
                 float azimut = GRandGen.RandomValue() * H_PI * 2;
 
                 Matrix4 transform(MIdentity);

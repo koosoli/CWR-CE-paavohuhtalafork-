@@ -324,14 +324,28 @@ void SelectZeusAtCursor(float cursorX, float cursorY)
             closestDistance2 = distance2;
         }
     }
-    s_zeusSelection.clear();
     if (closest)
     {
-        s_zeusSelection.push_back(*closest);
-        s_zeusStatus = "Selected " + closest->className + ".";
+        // Clicking a member of an existing lasso selection starts a group
+        // move.  Do not collapse the selection to the clicked unit: the
+        // move-drag code deliberately keeps every member's offset from the
+        // anchor and places the group atomically on mouse release.
+        const bool alreadySelected = std::any_of(
+            s_zeusSelection.begin(), s_zeusSelection.end(),
+            [closest](const ZeusSpawnRecord& record) { return record.object.GetLink() == closest->object.GetLink(); });
+        if (!alreadySelected)
+        {
+            s_zeusSelection.clear();
+            s_zeusSelection.push_back(*closest);
+        }
+        s_zeusStatus = alreadySelected ? "Moving " + std::to_string(s_zeusSelection.size()) + " selected Zeus object(s)."
+                                       : "Selected " + closest->className + ".";
     }
     else
+    {
+        s_zeusSelection.clear();
         s_zeusStatus = "No Zeus-spawned object under the cursor.";
+    }
 }
 
 void SelectZeusInRect(float startX, float startY, float endX, float endY)
