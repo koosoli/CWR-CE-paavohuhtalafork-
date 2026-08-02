@@ -184,7 +184,7 @@ def main() -> None:
         "schema_version": 3,
         "created_utc": datetime.now(timezone.utc).isoformat(),
         "git_commit": commit,
-        "git_dirty": false,
+        "git_dirty": False,
         "platform": platform.platform(),
         "backend_requested": args.backend,
         "adapter": args.adapter,
