@@ -1548,6 +1548,47 @@ void DrawInputContextDiagnostics()
 
 void DrawGameTab()
 {
+    // Player/camera position, with a copy button. Reading coordinates out of the
+    // SQF console meant `getPos player`, which returns an array — and until the
+    // formatter above, arrays printed as nothing. A readout is also simply less
+    // work than typing a command to answer "where am I".
+    ImGui::TextUnformatted("Position");
+    ImGui::Separator();
+    if (GWorld && GWorld->CameraOn())
+    {
+        char line[192] = {};
+        const Object* player = GWorld->PlayerOn();
+        const Object* cam = GWorld->CameraOn();
+        if (player)
+        {
+            const Vector3 p = player->Position();
+            // Reported as SQF sees it: [east, north, elevation]. mission.sqm
+            // stores {east, elevation, north}, and mixing the two up is an easy
+            // way to place something a long way from where it was meant to go.
+            // Heading the same way getDir does it: atan2(dir.x, dir.z) in degrees,
+            // wrapped to [0,360) so it matches what the console reports.
+            const Vector3 d = player->Direction();
+            float heading = atan2(d.X(), d.Z()) * (180.0f / H_PI);
+            if (heading < 0.0f)
+                heading += 360.0f;
+            snprintf(line, sizeof(line), "player [%.2f, %.2f, %.2f]  dir %.2f", p.X(), p.Z(), p.Y(), heading);
+        }
+        else
+        {
+            const Vector3 p = cam->Position();
+            snprintf(line, sizeof(line), "camera [%.2f, %.2f, %.2f]  (no player)", p.X(), p.Z(), p.Y());
+        }
+        ImGui::TextUnformatted(line);
+        ImGui::SameLine();
+        if (ImGui::Button("Copy##pos"))
+            ImGui::SetClipboardText(line);
+    }
+    else
+    {
+        ImGui::TextDisabled("no world loaded");
+    }
+    ImGui::Spacing();
+
     ImGui::TextUnformatted("Language");
     ImGui::Separator();
 
@@ -1632,6 +1673,27 @@ void ConsoleAppend(const std::string& line)
                                    s_console.scrollback.begin() + (s_console.scrollback.size() - 200));
 }
 
+// GameValue::GetText() renders an array as nothing, so `getPos player` came back
+// blank and the console could not report a position at all. Format arrays
+// recursively instead; scalars keep GetText's own formatting.
+std::string FormatConsoleValue(const GameValue& value)
+{
+    if (value.GetType() == GameArray)
+    {
+        const GameArrayType& items = value;
+        std::string out = "[";
+        for (int i = 0; i < items.Size(); ++i)
+        {
+            if (i != 0)
+                out += ", ";
+            out += FormatConsoleValue(items[i]);
+        }
+        return out + "]";
+    }
+    const char* text = static_cast<const char*>(value.GetText());
+    return text ? std::string(text) : std::string();
+}
+
 void ConsoleRun(std::string_view line)
 {
     while (!line.empty() && (line.front() == ' ' || line.front() == '\t'))
@@ -1665,7 +1727,7 @@ void ConsoleRun(std::string_view line)
     }
     GameValue result = GWorld->GetGameState()->EvaluateMultiple(std::string(line).c_str());
     if (result.GetType() != GameNothing)
-        ConsoleAppend(std::string("= ") + (const char*)result.GetText());
+        ConsoleAppend(std::string("= ") + FormatConsoleValue(result));
 }
 } // namespace
 
