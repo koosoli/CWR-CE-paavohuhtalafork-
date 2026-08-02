@@ -457,6 +457,38 @@ void MoveZeusSelectionAtScreen(float screenX, float screenY)
     }
 }
 
+void MoveZeusSelectionVertical(float deltaY)
+{
+    PruneZeusRecords(s_zeusSelection);
+    if (s_zeusSelection.empty() || !GLandscape)
+        return;
+
+    int moved = 0;
+    for (const auto& record : s_zeusSelection)
+    {
+        Matrix4 transform = record.object->Transform();
+        Vector3 position = transform.Position();
+        const float groundY = GLandscape->RoadSurfaceYAboveWater(position[0], position[2]);
+        position[1] = std::max(groundY, position[1] + deltaY);
+        transform.SetPosition(position);
+
+        if (Person* person = dyn_cast<Person>(record.object.GetLink()))
+        {
+            // Do not call PlaceOnSurface here: Game Master elevation is an
+            // explicit vertical transform, while terrain placement should
+            // remain reserved for spawn and horizontal drag/drop.
+            person->SetTransform(transform);
+            StabilizeZeusInfantry(person, transform.Direction());
+        }
+        else
+        {
+            record.object->MoveNetAware(transform);
+        }
+        ++moved;
+    }
+    s_zeusStatus = "Raised/lowered " + std::to_string(moved) + " Zeus object(s).";
+}
+
 void RotateZeusSelection()
 {
     PruneZeusRecords(s_zeusSelection);
@@ -4197,7 +4229,16 @@ void ProcessEvent(const SDL_Event& event)
         else if (event.type == SDL_EVENT_KEY_DOWN && !event.key.repeat)
         {
             const bool ctrlDown = (SDL_GetModState() & SDL_KMOD_CTRL) != 0;
-            if (event.key.scancode == SDL_SCANCODE_DELETE)
+            const bool shiftDown = (SDL_GetModState() & SDL_KMOD_SHIFT) != 0;
+            if ((event.key.scancode == SDL_SCANCODE_PAGEUP || event.key.scancode == SDL_SCANCODE_PAGEDOWN) &&
+                !s_zeusSelection.empty())
+            {
+                s_zeusConsumeKeyboardEvent = true;
+                const float step = shiftDown ? 5.0f : 1.0f;
+                const float deltaY = event.key.scancode == SDL_SCANCODE_PAGEUP ? step : -step;
+                Defer([deltaY] { MoveZeusSelectionVertical(deltaY); });
+            }
+            else if (event.key.scancode == SDL_SCANCODE_DELETE)
             {
                 s_zeusConsumeKeyboardEvent = true;
                 Defer([] { DeleteZeusSelection(); });
