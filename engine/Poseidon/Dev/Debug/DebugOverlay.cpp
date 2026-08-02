@@ -1947,6 +1947,16 @@ void ApplyDevPanelMouseState()
         GEngine->SetMouseGrab(s_savedMouseGrab);
         s_mouseReleasedByPanel = false;
     }
+
+    // Zeus draws the in-game cursor itself.  Releasing relative mouse mode is
+    // necessary for its absolute pick/lasso controls, but SDL consequently
+    // makes the Windows cursor visible as well.  Keep the desktop cursor only
+    // while the ImGui panel is open; the focused game viewport must show one
+    // cursor, not the OS cursor over the game's cursor sprite.
+    if (s_visible)
+        SDL_ShowCursor();
+    else if (s_zeusCamera)
+        SDL_HideCursor();
 }
 
 // Resize the window to the largest box of the given aspect ratio that fits
@@ -4104,6 +4114,12 @@ void ProcessEvent(const SDL_Event& event)
         return;
     s_zeusConsumeMouseEvent = false;
     s_zeusConsumeKeyboardEvent = false;
+    if (event.type == SDL_EVENT_WINDOW_FOCUS_GAINED && s_zeusCamera && !s_visible)
+    {
+        // SDL can restore the desktop cursor when a window regains focus even
+        // though the game remains in absolute mouse mode for Zeus editing.
+        SDL_HideCursor();
+    }
     if (!s_visible && s_zeusCamera)
     {
         if (event.type == SDL_EVENT_MOUSE_BUTTON_DOWN && event.button.button == SDL_BUTTON_LEFT)
