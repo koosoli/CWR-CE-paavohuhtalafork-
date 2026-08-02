@@ -23,6 +23,12 @@ jobs:
       - name: Validate execution ledger and overlay
         run: python3 scripts/validate_preview0_ledger.py
 
+      # Cheap, and it guards a failure mode that is invisible when it happens:
+      # two tests writing the same screenshot filename is a false pass under a
+      # parallel run, not merely an overwritten file.
+      - name: Check integration screenshot labels are unique
+        run: python3 scripts/check_screenshot_labels.py
+
       - name: Validate explicit visual-review acceptance gate
         run: |
           python3 -m pip install --disable-pip-version-check Pillow

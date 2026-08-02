@@ -24,7 +24,7 @@ triScreenshot "01_one_local_mod"
 // Tick the mod -> active set
 triModsRowClick [0, 0.03]
 triAssertEq [(triGetModsActiveSet), "fixturemod"]
-triScreenshot "02_ticked"
+triScreenshot "02_ticked_local"
 
 // Apply -> in-process re-mount with the ticked local mod
 triClick 115                 // IDC_MODS_APPLY

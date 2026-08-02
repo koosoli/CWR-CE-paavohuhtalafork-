@@ -2,7 +2,7 @@
 
 triSetLanguage "English"
 triAssertEq [(triDisplay), 0]
-triScreenshot "00_main_menu"
+triScreenshot "00_browser_main_menu"
 
 triClick 105
 triAssertEq [(triDisplay), 8]
