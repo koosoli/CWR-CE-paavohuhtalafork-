@@ -1,0 +1,15 @@
+# Water observability exists only in the WGPU backend, so this pins the
+# renderer rather than inheriting the suite's gl33 default.
+#
+# Held at ci-host-blocked for now, even though it uses Demo data the hosted
+# runner has. The one other wgpu-pinned test, rendering/shadow_map_scene_dump,
+# currently fails hosted with a HARNESS_PORT spawn timeout, so WGPU startup
+# under Xvfb is not yet dependable enough to hang new coverage on. Drop the tag
+# once that scenario is green -- at which point this becomes the suite's first
+# hosted water test.
+binary = "PoseidonGame"
+mission = "tests/integration/missions/water_demo.Demo"
+render = "wgpu"
+timeout = 900
+assert_timeout = 120
+tags = ["headless", "ci-host-blocked", "wgpu-only"]
