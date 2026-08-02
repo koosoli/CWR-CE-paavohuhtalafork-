@@ -6,6 +6,19 @@
 **Relates to:** `WTR-030` (frequency-aware distance filtering and ocean LOD),
 `engine/WgpuRenderer/docs/water-cdlod-geometry-plan.md`
 
+
+> **CORRECTION (2026-08-02, later the same day).** A second measurement with
+> steady-state sampling reports `lod0=27, lod1=1` — see
+> [`water-baseline-20260802.md`](../evidence/water-baseline-20260802.md).
+> **The hierarchy does engage, marginally.** The reading below came from a single
+> sample and the claim that "no node is ever selected at any coarser level" was
+> stated too strongly.
+>
+> The substance survives — a multi-level structure delivering 27:1 is close to
+> single-level output, and the tuning question is unchanged — but the distinction
+> matters: the mechanism is **mistuned, not broken**, and a reader deciding where
+> to look should start with `ranges[]` rather than with whether selection works.
+
 ## Observation
 
 Measured from a running mission on Malden, sampled after 90 simulated frames:

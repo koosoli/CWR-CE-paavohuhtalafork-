@@ -1011,7 +1011,7 @@ Agents must re-audit the current branch and update the status ledger.
 - [ ] Every claimed ocean feature has a production call-site audit.
 - [ ] Visual captures verify reflection ownership.
 - [ ] Aerial and pitch tests pass or accepted limitations are recorded.
-- [ ] Performance baseline exists.
+- [x] Performance baseline exists. [`docs/roadmap/evidence/water-baseline-20260802.md`](../evidence/water-baseline-20260802.md) — WGPU on an RTX 3070, Malden ground level, steady-state: **~3.2 ms** water GPU total, 28 CDLOD nodes, 516,096 triangles, `lod0=27 lod1=1`. Sample spread is ±0.45 ms, so **sub-15% changes at this viewpoint are not distinguishable from noise**. It is one viewpoint and a regression anchor, not a characterisation of water cost across the game — extend with aerial and coastal before generalising.
 - [ ] Water can be disabled independently.
 - [ ] Contradictory status reports are resolved in CORE-005.
 

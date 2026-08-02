@@ -932,6 +932,25 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         {
             WaterFrameStats stats;
             stats.frame = GEngine ? static_cast<unsigned long long>(GEngine->GetFrameCounter()) : 0ull;
+
+            // Same regions the log row below sums, but read every frame: a
+            // baseline that only exists when a 2 s log budget happens to fire
+            // is not a baseline.
+            float regionMs[WGR_GPU_TIMER_WATER_REGION_COUNT] = {};
+            const int regions = _engine.GetWaterGpuTimings(regionMs, WGR_GPU_TIMER_WATER_REGION_COUNT);
+            if (regions > 0)
+            {
+                float total = 0.0f;
+                for (int i = 0; i < regions; ++i)
+                {
+                    // Negative means the pass did not run this frame; excluded
+                    // rather than summed, matching the logged total.
+                    if (regionMs[i] > 0.0f)
+                        total += regionMs[i];
+                }
+                stats.gpuMsTotal = total;
+            }
+
             stats.nodes = static_cast<unsigned int>(_selected.size());
             stats.triangles = static_cast<unsigned int>(_selected.size()) * 96u * 96u * 2u;
             for (int i = 0; i < WaterFrameStats::kLodBuckets; ++i)

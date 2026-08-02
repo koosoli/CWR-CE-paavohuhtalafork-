@@ -2042,8 +2042,10 @@ GameValue TriWaterStats(const GameState* /*state*/)
     if (!stats.published)
         return GameValue("FAIL:no_water_frame");
 
+    char gpu[48];
+    snprintf(gpu, sizeof(gpu), " gpuMs=%.3f", static_cast<double>(stats.gpuMsTotal));
     std::string out = "frame=" + std::to_string(stats.frame) + " nodes=" + std::to_string(stats.nodes) +
-                      " tris=" + std::to_string(stats.triangles);
+                      " tris=" + std::to_string(stats.triangles) + gpu;
     for (int i = 0; i < WaterFrameStats::kLodBuckets; ++i)
     {
         out += " lod" + std::to_string(i) + "=" + std::to_string(stats.lod[i]);
@@ -2062,6 +2064,18 @@ GameValue TriWaterNodeCount(const GameState* /*state*/)
     if (!stats.published)
         return GameValue(-1.0f);
     return GameValue(static_cast<float>(stats.nodes));
+}
+
+/// triWaterGpuMs -> summed GPU milliseconds across the water regions in the
+/// last rendered water frame, or -1 when no frame was published or the backend
+/// reports no timestamps.  The numeric companion to triWaterStats' gpuMs field,
+/// so a performance baseline can be asserted instead of eyeballed in a log.
+GameValue TriWaterGpuMs(const GameState* /*state*/)
+{
+    const WaterFrameStats& stats = LastWaterFrameStats();
+    if (!stats.published)
+        return GameValue(-1.0f);
+    return GameValue(stats.gpuMsTotal);
 }
 
 /// triGetFrameShape -> "Sky:3,WorldOpaque:55,ScreenSpace:8" — pass kinds

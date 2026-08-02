@@ -35,6 +35,17 @@ struct WaterFrameStats
     unsigned int nodes = 0;       // CDLOD nodes selected for this frame
     unsigned int triangles = 0;
     unsigned int lod[kLodBuckets] = {}; // selected node count per LOD level
+
+    // Summed GPU time across the water regions, in milliseconds, or -1 when the
+    // backend has no timestamp support. Regions that did not run this frame
+    // report negative and are excluded rather than summed.
+    //
+    // Carried here so a water performance baseline can be asserted rather than
+    // scraped out of a rate-limited log line. WTR-GATE-1 requires such a
+    // baseline, and both the LOD-0 collapse and the roughness double-count are
+    // recorded as unactionable precisely because none exists to change against.
+    float gpuMsTotal = -1.0f;
+
     bool published = false;
 };
 
