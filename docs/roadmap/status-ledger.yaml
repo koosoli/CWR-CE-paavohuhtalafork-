@@ -153,6 +153,33 @@ tickets:
         raised bound still binds, use tri's -j parallelism (documented locally
         as -j6) rather than raising it again.
       - >-
+        RESOLVED (2026-08-02, run 30760957610). The first hosted Trident run to
+        complete: 81 tests, 78 passed, 3 failed, 1554.6s under -j4, inside the
+        35m bound. flows/demo/credits and flows/demo/mission_load -- the two
+        I-20 GL-error failures that blocked Preview 0 -- both PASS. dacdf77's
+        capture rework is therefore confirmed by hosted CI, which was the only
+        environment that could confirm it. Note the cause recorded for it was
+        still wrong (see the correction below); the fix works regardless.
+        Three failures remain, none of them the capture gate:
+        rendering/shadow_map_scene_dump still times out waiting for HARNESS_PORT
+        in the explicit-WGPU scenario, which is the pre-existing failure already
+        recorded above and is unrelated to -j4.
+        flows/campaign/campaign_flow and
+        flows/demo/full_game_demo_campaign_placeholder both fail at the same
+        step: after the campaign screen opens (display 43 asserted OK, and the
+        placeholder test's "Demo Campaign" text assert also passes), clicking
+        Back leaves the game short of the main menu, so
+        `triSimUntil { triDisplay == 0 }` never satisfies. Both failed their
+        retries, so this is not load flakiness -- unlike
+        ui/editor/editor_altenter_keeps_rendering and
+        ui/options/audio/new_audio_music_suppress, which failed once and
+        recovered, the signature of contention under -j4.
+        campaign_flow passes locally on retail data under GL33 (3.9s), so the
+        failure is specific to the hosted environment or to packages/Demo, which
+        this workstation does not have. Reproducing it needs the Demo assets.
+        Whether these three are regressions or long-standing is unknown: no
+        prior run ever finished, so there is no baseline to compare against.
+      - >-
         The raised bound did still bind. Run 30758908654 (the first hosted run
         after Actions resumed) was SIGTERMed at 2081s -- exactly the new 35m
         bound -- with scenarios still queued. Every other job in that run
