@@ -55,175 +55,175 @@
   "shaders": [
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\bloom.wgsl",
-      "sha256": "e3a405fc2356bf2fa26daa5f2654712c9bc24d9b06489a90166c14a2972ace4b"
+      "sha256": "e7eca28fbd208e7f48fd0d00d276fad3d7648b4a6504eb24a061da564d859706"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\exposure.wgsl",
-      "sha256": "492a58f5d9c72adb751074f1ad4079532d3d0ff5204dd39d6550da4c722a5342"
+      "sha256": "df7c12fb1211afcc32cf7a01db716912555d30a5a252ec406803ad462ba0dea4"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx2d\\overlay.wgsl",
-      "sha256": "c15ae0b7e6d2bc985997eef3ff82f6a2403ad3d43b22b786cfe8b2d4e8f6fa83"
+      "sha256": "35b01491e45d799196e85bcd609ec59deabdcafe7849feebb08498b3ecaab343"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx2d\\shader.wgsl",
-      "sha256": "70a0a0195283f5fb39da9edc29fc2b854ccb006f24f0e2dad07f93d7b6c2cde2"
+      "sha256": "9ab4bec53293d125b43373a148fdf395ea1785a667d0a9db6b66f9316b14006d"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\cull.wgsl",
-      "sha256": "9fb0ea963848a78d7524cdfc2d3823d0612105a4af48f2a88e9718a0fa08d82b"
+      "sha256": "41b554ca5ce4d65eb7f3acd6594bb44ea9837135435e03f982ab9ed93916e2bd"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\cull_debug.wgsl",
-      "sha256": "8c972e7f4b99c8fded6526bdb578db748f4905e29609df65028347766f33f139"
+      "sha256": "d8c3cf3833a08fb96c2c807a50c08704d4467efb36ecb6a2a86864a8fa1d32ca"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\depth_resolve.wgsl",
-      "sha256": "abac0a5ff0193cf93b34a76db92cef54ca05286273fe35961698bf6050b7f170"
+      "sha256": "549e651cb81f87437477e5b0c9fd8f6b4399384652dd32003fdcaa20d2cdca91"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\gpu_driven.wgsl",
-      "sha256": "d2f0da84129403b1865d42936f99e8a36d4425ed55592fa7b6b8f57b4c9ffe24"
+      "sha256": "47d3522dd33804f0d893c4a0316cdacf218a1b8769604ebfb5dcefd28af18c99"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\gpu_driven_shadow.wgsl",
-      "sha256": "22c4cdbf3d3c6f181d33421d0a1f7c0a961a649767af2d4fd4641934869feb59"
+      "sha256": "466d84a8e9c4d11fbced4658e7fe365a32564098e2df53b196ff8fdd8596197b"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\hiz.wgsl",
-      "sha256": "5e954c1fbafe1d5da66aebc89b6104d9ef5c79d5d8837a6b01d073bba5cacb48"
+      "sha256": "fa718f53d3c223aa26d986b0fed474ae2917d94388a77c6cdd4c92c4605e32b6"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\shader3d.wgsl",
-      "sha256": "ece6b8ff99050ea6769b0e6aaf10de764a0da24507574c9dc629a354e9d27876"
+      "sha256": "5e6ee16d67934969cdb7c987372417763ea004aa8184d8d742e61e5763cdaff5"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\shadow_depth.wgsl",
-      "sha256": "2efcbc25aad30d2db70fd2280f956ce94b7e0f6581f4a7ed9e4a2e7334050a39"
+      "sha256": "6113bfdd95ce323f4275a5c57c5d043d53a10ce8e03e23252d612c17cdefb74c"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\skin_bake.wgsl",
-      "sha256": "b6d919829d7c35f2e7f9bfe70f9cd7886eba0329af6959e816f315158ca046c5"
+      "sha256": "8c0722a5ae42ece551936699a459b87b0a897cabf5e689b03d93d61e997850b8"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\grass\\grass.wgsl",
-      "sha256": "a603355b742a5fc573f0e3fc9de1fcf36d9c64e35c1f044e8db13cbb0c503832"
+      "sha256": "1ce17c13eeb1e6293f944093d55fb6d29ca76e7b72472c19a8a58d2e8fb73964"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\grass\\grass_shadow.wgsl",
-      "sha256": "bdaa9b1044917830c6bafc149e48ceedf8003376f6049ee4f727f168c8da63a6"
+      "sha256": "7c1c524d14fe570335ddd134a25b07ba7c5b3859840f612e5774595baa5ab15e"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\planar_mips.wgsl",
-      "sha256": "28c2053e6860f1c66d5b53b1b632f7377aa625437a4dbe25a141601681a153ad"
+      "sha256": "13876423b96f1bc6a28054a7103923d9a7c0353b1f5a455854b63cb6ae807e26"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\color.wgsl",
-      "sha256": "3cd1a31599bf7d9c5f297810a61bde6a0bd24a56fb8415a16f13b1d9ccc03532"
+      "sha256": "c99a901ea5a1b2c7cc139521b5497690c8db324d1d58a2e1964a1c868c6156b3"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\conform.wgsl",
-      "sha256": "fa4e079d10e7d5cc4201e0a362ddc7ca70f57f0360930e4fd818b6e695636108"
+      "sha256": "0b62236bf19a48900d94731a426cc13bcc918b7b7d9da1533b07dc24cc7c06c8"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\frame.wgsl",
-      "sha256": "d805cddc420aa49e30c78b0d5c2346f2c5f9d811a03a5567fc487f10d533d355"
+      "sha256": "059670cb673415727ab5ed3c6e10af06cceb6e93734b49dbc94d98adeb2c56f9"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\gbuffer.wgsl",
-      "sha256": "bcbf1590454a10e37dac800e405a7731fd83ffe8718385e1252e03e8ed80287f"
+      "sha256": "16e041919e781e3b2b70584c978069f919bbefc8a131eade4739629d1694b44c"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\lighting.wgsl",
-      "sha256": "0c3d2a78d4cb45d48e6e74c3892ea71d6608425bf54267d087d9ef66cab5558b"
+      "sha256": "d9d22ae766e8612b94b1fd1866baa7ff9fa23f5d944c6c4dd97d0edb60f9ee22"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\shading.wgsl",
-      "sha256": "48d8d4095ce5e74357a9d425328d746976798cbce403c286f75fc0be7eb91062"
+      "sha256": "4253651dc5321c428d290e334b78bf445d9919e0998af4ff3d2b89ada50d8a45"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\shadow.wgsl",
-      "sha256": "733f3079d4994ed1076fdaec9bcc003d2d98b121b00852cd4914991e666d9055"
+      "sha256": "f3fb397be139b5447531c152b27e172c35f8a209c15aec35afbf635c2c436287"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\skin.wgsl",
-      "sha256": "e9712fa3b70c48e001befc407a196c18dae46ae276dcc482fac9a9f1810a23cb"
+      "sha256": "93df348d3411a07c770473fb470971fc1b3143cfeb8f447b148b0ad41319f9e1"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\sky\\cloud_composite.wgsl",
-      "sha256": "b8d6428b08ae81ff0996a259f7a336ba0f7c27bd3f4ee34e9cae63fe86adedbc"
+      "sha256": "1359ce4b70eb0694d9339b6b8f4feb171dcc81601724a3c130124ae8047af5c4"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\sky\\sky.wgsl",
-      "sha256": "053e6c19d9f5c271f2acef9081cbb6b7ba697cd2202c36294fb65b02d7320990"
+      "sha256": "89aca282462c027a1627e1f681b32ad22c0076b276e02f35bcd6ac7f3c807b3e"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\sky\\sky_sh.wgsl",
-      "sha256": "44fcd282865382a327219d512c9f65979fa888ae3c5848e4b77b602cd282ac9b"
+      "sha256": "71b8944a45d8bab647d804dccd8ebcc191afd49782b41c87f262cdc6dd55e45b"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\terrain\\terrain.wgsl",
-      "sha256": "312090819914a72cea7b0ab7c47dab396b4e71047072f1ea1ad574f6a274eee1"
+      "sha256": "1c0bb11e8961a3d57b5001d7df6221d68d71fae11ce58792dd3e2ae44d02bda7"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\terrain\\terrain_shadow.wgsl",
-      "sha256": "9242890f3bd594427e61b3486e4a4749208d19aa1ba34a8e6adb3bab36ceb4a9"
+      "sha256": "8f737fbfb90572497ce3991d4b0ef66624b31306c243a132d93847409a585b59"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\tonemap.wgsl",
-      "sha256": "9f93f2aabba57e2d65222e6724f3c629ae564b2d9e2728a115702c42b302e6e4"
+      "sha256": "756f12082c45403a38730e272be657bd74eba30020e07ddcede9a66a36ea24f5"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\underwater.wgsl",
-      "sha256": "885cb574a56eb9b399ee377100f823c8dc52b43a1faaa05dec49bd72746db3d2"
+      "sha256": "1eca6eaa7736027db5c20acebb7a94879e80629d397917b278c0f4596d1bc406"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\underwater_caustics.wgsl",
-      "sha256": "c271ccf7f123bb094aac8a2bc7c0bf3a0f2022ed73bf570b1519392a4d6090d4"
+      "sha256": "f519e5ca1af2443735d60f15374eff1bf5536d53187032dfcc6f9dc4172ee9c5"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\underwater_froxel.wgsl",
-      "sha256": "1ad7368a19fcc465ff5dc10ef1c0bf497e3c830ac9bcfba7fa6a557a8ed67289"
+      "sha256": "fb283087446ffb45a10529f5548eba1b3a86a3639db7952cdca4af696c306a4e"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_compose.wgsl",
-      "sha256": "a9a5e63ca554cd8f0b18f4706bebc0a6aefe269bdfdf807744b39dd9e1f7b857"
+      "sha256": "12df3094e2b4ca3bf36a4fe47ff91b24f446c6712cffe87831869658a725282b"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_row.wgsl",
-      "sha256": "a8b4371ca8d5b4e559f05f0923021d80da014a2b1ca2f8bb0e8bb1cb85819d90"
+      "sha256": "11e55d34df067c0ca0d69d34eab8b05bd0d8d56f8ae71dccc80481acb6b69708"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_sampling.wgsl",
-      "sha256": "bf7b6352c8ef5669cfd62ccf0022fd95379777a3dd7c77f5d99a6f2f2aa94895"
+      "sha256": "3435dbff5fc86a7305aa1bcc4e93d9c3a6910fb2a171c28039dee3a4f98ba33d"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_spectrum.wgsl",
-      "sha256": "b053cfa6c84e8a75d5d41564959131ebdf2d2324d1fc118f9255c27265d840b1"
+      "sha256": "78c277479e638d1922104dcddbd013af4d311898be6a13316c32c2c177b8f0e2"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_spectrum_init.wgsl",
-      "sha256": "103beeba5b71d1e82207613ad5a32abe959bcb4038b33697ca33782442bf89ad"
+      "sha256": "a2226ea44017ea25c1661e140aff3392da53d7fb86908666a06a5bc61013137c"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\foam.wgsl",
-      "sha256": "a986430f13585337bdeb1d3431beee5b1b0505918867134c49b1c2bf26d4f38f"
+      "sha256": "9b35e26d5ae9ea96798e8f7d04398ece771b52534d36ab827b4f527d286d021c"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\interaction.wgsl",
-      "sha256": "4805a0801d1a3d13bd52d646f9c227688c9f2657c3ead301c75cc12a5d63a861"
+      "sha256": "53ccb2f49160eb70febb5f35c1ac0d926e287be8d27392f0b0cc0d9801c835d2"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\water.wgsl",
-      "sha256": "5025feab2b42d970441b125f96fe8588d6901db1fa4864f59b6a2f2f429e84ec"
+      "sha256": "95b1dc57ca03f96d3df3f6cb857df08afde6116b64ccc8592d07445744524119"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\whitewater.wgsl",
-      "sha256": "3fb9b9e019e2d6ff0aa47c0b7f1ff2b8aeef8f8fd4b6d932ce4ee49172f4dbd7"
+      "sha256": "909a5994c6890c5c42d7890833e71cc49624fde9a34c1c3962552149c9408f23"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\whitewater_render.wgsl",
-      "sha256": "37840a5f587727b50f36323811c525d2d2cd53131d4a29936079cc4d280e0a36"
+      "sha256": "0cf12733af2ca5f0d3dd5dcf222a70d8982434ce17f7b07969f820e1590782ed"
     }
   ],
   "artifacts": [

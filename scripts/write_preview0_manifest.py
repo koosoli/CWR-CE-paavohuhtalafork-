@@ -42,11 +42,20 @@ def cmake_compiler(cache: pathlib.Path) -> str | None:
     return match.group(1).strip() if match else None
 
 
-def shader_hashes(root: pathlib.Path) -> list[dict[str, str]]:
+def shader_hashes(root: pathlib.Path, commit: str) -> list[dict[str, str]]:
+    """Hash canonical Git blobs so the manifest is portable across line endings."""
     if not root.is_dir():
         raise SystemExit(f"missing shader root: {root}")
     return [
-        {"path": str(path.relative_to(ROOT)), "sha256": digest(path)}
+        {
+            "path": str(path.relative_to(ROOT)),
+            "sha256": hashlib.sha256(
+                subprocess.check_output(
+                    ["git", "show", f"{commit}:{path.relative_to(ROOT).as_posix()}"],
+                    cwd=ROOT,
+                )
+            ).hexdigest(),
+        }
         for path in sorted(root.rglob("*.wgsl"))
     ]
 
@@ -167,11 +176,15 @@ def main() -> None:
             "mean_absolute_rgb_delta": comparison_data.get("mean_absolute_rgb_delta"),
             "mask": comparison_data.get("mask"),
         }
+    commit = git("rev-parse", "HEAD")
+    dirty = bool(git("status", "--porcelain"))
+    if dirty:
+        raise SystemExit("refusing to write Preview-0 manifest from a dirty working tree")
     manifest = {
         "schema_version": 3,
         "created_utc": datetime.now(timezone.utc).isoformat(),
-        "git_commit": git("rev-parse", "HEAD"),
-        "git_dirty": bool(git("status", "--porcelain")),
+        "git_commit": commit,
+        "git_dirty": false,
         "platform": platform.platform(),
         "backend_requested": args.backend,
         "adapter": args.adapter,
@@ -186,7 +199,7 @@ def main() -> None:
         "capture": capture,
         "metrics": metrics,
         "comparison": comparison,
-        "shaders": shader_hashes(args.shader_root),
+        "shaders": shader_hashes(args.shader_root, commit),
         "artifacts": [{"path": str(path), "sha256": digest(path), "bytes": path.stat().st_size}
                       for path in (args.exe, args.dll)],
     }
