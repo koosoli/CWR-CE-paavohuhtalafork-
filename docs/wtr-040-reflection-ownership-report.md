@@ -1,5 +1,25 @@
 # WTR-040 — Reflection Ownership & Cloud Pitch Audit Report
 
+
+> **WTR-001 reconciliation (2026-08-02).** The diagnostic channels described below
+> exist, but **their indices have shifted**: they are now `debug_view` **39–46**,
+> not 37–44. Selecting 37 or 38 gets the WTR-012 views instead, so the numbering
+> here will silently mislead.
+>
+> Current mapping: 39 directional sky, 40 directional clouds, 41 planar sky,
+> 42 planar clouds, 43 planar terrain/objects, 44 planar geometry validity,
+> 45 SSR, 46 final reflection-owner badge.
+>
+> Separately, **debug view 38 is mislabelled** in the shader. It reads
+> "WTR-012 Previous displacement delta" but computes `abs(interaction.y * 0.0333)`
+> — the interaction field, not `previous_displaced_pos`, which is still written
+> once and read by nothing. The shared `0.0333` timestep makes the output look
+> right, which is what makes it dangerous.
+>
+> Whether cloud duplication is actually resolved remains a visual question this
+> reconciliation cannot answer; `docs/wtr-audit-report.md` still records it as
+> outstanding.
+
 ## Summary
 
 Completed **Step 7 (WTR-040 Reflection Ownership)**:
