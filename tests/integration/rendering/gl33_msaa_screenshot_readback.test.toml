@@ -1,0 +1,10 @@
+# Retail island, so it needs full game data rather than packages/Demo: hence
+# ci-host-blocked. That is the awkward part of this fixture -- the bug it covers
+# only reproduces in hosted CI, but the fixture itself cannot run there yet.
+# It still earns its place by making the fix reproducible on a workstation,
+# where the multisample default framebuffer is otherwise never seen.
+binary = "PoseidonGame"
+mission = "tests/integration/missions/water_alive.abel"
+timeout = 600
+assert_timeout = 120
+tags = ["headless", "ci-host-blocked", "gl33-only"]

@@ -126,14 +126,22 @@ tickets:
         Hosted Linux Trident run 91499679288 (GL33, Xvfb) failed the automatic
         I-20 GL-error post-check on flows/demo/credits (2 errors) and
         flows/demo/mission_load (3 errors). The counts equal each test's number
-        of triScreenshot calls exactly: EngineGL33::CaptureScreenshotIfPending
-        called glReadPixels on a default framebuffer that SDL/Xvfb exposes as
-        multisampled, which is a GL_INVALID_OPERATION per capture. Fixed in
-        dacdf77 by blitting to a single-sample resolve target before readback.
-        Verified locally only that normal GL33 captures are unchanged
-        (original-training screenshot, 2026-08-02); the multisample default
-        framebuffer itself reproduces only in hosted CI, so hosted
-        confirmation is still outstanding.
+        of triScreenshot calls exactly, which places the errors in
+        EngineGL33::CaptureScreenshotIfPending's readback beyond reasonable
+        doubt. dacdf77 addresses it by binding the default read framebuffer and
+        blitting to a single-sample target before glReadPixels.
+        CORRECTION (2026-08-02): dacdf77's stated cause -- a default framebuffer
+        that SDL/Xvfb exposes as multisampled -- was recorded here as fact and
+        should not have been. EngineGL33 never requests multisampling on its GL
+        context: it sets only CONTEXT_*, DOUBLEBUFFER, DEPTH_SIZE and
+        STENCIL_SIZE, with no SDL_GL_MULTISAMPLEBUFFERS anywhere in the tree. A
+        likelier cause is that the pre-fix code called glReadPixels against
+        whatever framebuffer post-FX had left bound, since it never bound
+        framebuffer 0 first. dacdf77 fixes that case too -- it binds the default
+        read framebuffer explicitly -- so the fix is plausibly right for a
+        reason other than the one given. The per-capture correlation is
+        evidence; the specific GL cause is a hypothesis, and only a hosted log
+        can settle it.
       - >-
         The same run was SIGTERMed at exactly 15m by the step bound added in
         816ec28, with scenarios still queued. 81 sequential scenarios each pay
