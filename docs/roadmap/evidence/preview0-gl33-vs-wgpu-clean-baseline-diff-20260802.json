@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "reference": {
+    "path": "docs\\roadmap\\evidence\\preview0-gl33-original-training-current-capture-20260801.png",
+    "sha256": "4e69db5f6b723c30b548170f4ce37ababa495645d6a0be6f89ae1d0e517f237d"
+  },
+  "candidate": {
+    "path": "docs\\roadmap\\evidence\\preview0-wgpu-clean-baseline-20260802-original-training-capture.png",
+    "sha256": "085a2a39b27a003573d366717d1c540b8cb48ca53c17a5908c5e754a1baae384"
+  },
+  "dimensions": {
+    "width": 3441,
+    "height": 1440
+  },
+  "threshold": 12,
+  "changed_pixels": 4387880,
+  "changed_pixel_ratio": 0.8855387645710227,
+  "mean_absolute_rgb_delta": 44.50891906696323,
+  "max_absolute_rgb_delta": 238.66666666666666,
+  "mask": {
+    "path": "docs\\roadmap\\evidence\\preview0-gl33-vs-wgpu-clean-baseline-diff-20260802.png",
+    "sha256": "00e21a3433836540a0df2dd5c527198da17391d2d9e0314d7a41b91d81a81810"
+  },
+  "acceptance": {
+    "profile": "docs\\roadmap\\visual-acceptance-profile.preview0-original-training.json",
+    "policy": "correctness-review",
+    "verdict": "REVIEW_REQUIRED",
+    "reason": "GL33 is a correctness oracle, not an art-direction target. WGPU HDR/tonemap, lighting, terrain, vegetation, and water differences are expected unless they demonstrate a correctness bug.",
+    "classification": {
+      "preview0_blocker": "CORRECTNESS_BUG",
+      "non_blocking": [
+        "EXPECTED_DIFFERENCE",
+        "DEFERRED_VISUAL_WORK"
+      ]
+    },
+    "review": null,
+    "review_matches_capture": false
+  }
+}
