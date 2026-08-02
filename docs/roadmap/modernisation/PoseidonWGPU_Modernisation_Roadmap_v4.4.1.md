@@ -987,9 +987,9 @@ Not Quick Wins:
 
 Agents must re-audit the current branch and update the status ledger.
 
-- [ ] Verify `WaterSurfaceState` reaches every intended consumer.
-- [ ] Verify previous displacement and velocity persist and are consumed.
-- [ ] Remove or integrate zero-call-site helpers.
+- [x] Verify `WaterSurfaceState` reaches every intended consumer. **It does not.** Audited 2026-08-02 against `water/water.wgsl`: six of its nineteen fields are written and never read back — `material_position`, `displaced_pos`, `previous_displaced_pos`, `jacobian`, `interaction_height`, and `breaking_energy`, the last of which is neither written nor read (a placeholder for `WTR-080`). `jacobian` is set to a constant `1.0` at line 1226 and never consulted; the breaking logic derives `jacobian_break` from `compression` instead.
+- [x] Verify previous displacement and velocity persist and are consumed. **Split result:** `velocity` is consumed; `previous_displaced_pos` is computed (`world_pos - velocity * 0.0333`, line 1218) and then **never read by anything**. Reprojection currently has no consumer.
+- [x] Remove or integrate zero-call-site helpers. None found at the FFI boundary: all 49 `wgr_*` exports have C++ call sites, and `cargo clippy` reports no dead code in the renderer crate (`pub extern` items are invisible to `dead_code`, so they were checked explicitly). The dead *fields* above are the equivalent finding one level down. **Recorded, not deleted** — removing them is a shader change whose value depends on whether `WTR-080` is imminent, which is a water-owner call.
 - [ ] Separate geometry, normal, foam, and roughness cascade weights.
 - [ ] Verify slope variance and roughness compensation.
 - [ ] Resolve reflection ownership and add contribution debug views.
