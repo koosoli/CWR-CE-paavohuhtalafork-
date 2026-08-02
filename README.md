@@ -74,6 +74,18 @@ winget install Kitware.CMake LLVM.LLVM Ninja-build.Ninja
 Then install and configure vcpkg following the
 [official guide](https://learn.microsoft.com/en-us/vcpkg/get_started/get-started?pivots=shell-powershell).
 
+Windows also needs the Windows SDK's `mt.exe` on `PATH`. Configuring from a
+plain shell without it fails at the compiler check with `CMAKE_MT-NOTFOUND`,
+which reads like a broken toolchain rather than a missing tool. Either build
+from a Developer PowerShell, or add the SDK's bin directory yourself:
+
+```powershell
+$env:PATH = "C:\Program Files (x86)\Windows Kits\10\bin\<sdk-version>\x64;" + $env:PATH
+```
+
+An existing `build/` directory hides this, because the cache already recorded
+`mt.exe` — so the failure only shows up on a fresh clone.
+
 ### Build
 
 ```powershell
