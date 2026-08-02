@@ -298,6 +298,10 @@ jobs:
       - name: Run Trident tests
         env:
           ALSOFT_DRIVERS: 'null'
+          # The Ubuntu runner is a headless compatibility lane.  Keep the
+          # explicit WGPU scenario on wgpu's GL backend under the Xvfb display;
+          # Preview-0's release-tier Vulkan validation remains on Windows.
+          WGPU_BACKEND: 'gl'
           HARNESS_CMD_TIMEOUT_SEC: '180'
           PAPA_BEAR_MASTER_SERVICE: ${{ github.workspace }}/exe/papa-bear-master-service
           TRI_OUTPUT_DIR: ${{ github.workspace }}/trident-output
