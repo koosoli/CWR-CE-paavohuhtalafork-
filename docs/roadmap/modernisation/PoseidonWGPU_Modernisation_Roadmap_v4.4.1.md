@@ -5,6 +5,23 @@
 **Audience:** AI implementation agents and human reviewers
 **Status:** Frozen core roadmap with a machine-readable execution overlay, early compatibility proof, narrow water interoperability slice, and evidence-gated capability domains; future structural changes require implementation evidence.
 
+## Execution status snapshot — 2026-08-02
+
+This is a deliberately conservative handover checklist. The status ledger remains
+the mutable authority; a checked item below means the implementation/evidence is
+tracked in the repository, not that Preview 0 has passed its independent release
+gate.
+
+- [x] Canonical roadmap, execution overlay, checksum manifest, evidence, and status ledger are tracked under `docs/roadmap/`.
+- [x] The Preview-0 ledger validator checks canonical paths, checksums, clean-manifest evidence, ticket schema, dependencies, and tracked evidence files.
+- [x] Tier-1 WGPU build/startup, explicit-backend proof, ABI refusal, runtime diagnostics, capture/metrics, and initial visual-difference classification are integrated with repository evidence.
+- [x] CI archives the executable, `wgpu_renderer` library, manifest, and available evidence for the matching build.
+- [x] Local WGPU water timing and Zeus debug-tool stability work are archived as implementation commits and retained pending runtime smoke evidence.
+- [ ] Hosted Trident screenshot capture must resolve the GL33 multisample-readback failure before that lane can be accepted.
+- [ ] Populate independent verification commits, evidence hashes, and reviewers; then move each Preview-0 blocker from `INTEGRATED` to `VALIDATED` only when its state-dependent gate passes.
+- [ ] Perform the reviewed activation/clean-checkout reproducibility pass before authorising `REL-000`.
+- [ ] Build and install the pending Zeus smoke executable after the currently running game releases its output lock; verify cursor ownership, lasso/copy-paste, unit elevation, side relations, combat, and death handling.
+
 ## Version 4.4.1 execution-contract correction
 
 - Preserves the Version 4.4 architecture, release order, compatibility proof, narrow water slice, semantic-physics rules, public framing, and evidence-driven agent freedom.
