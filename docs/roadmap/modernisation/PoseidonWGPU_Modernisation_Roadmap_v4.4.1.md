@@ -587,7 +587,7 @@ NOT_APPLICABLE
 
 - [x] “Completed” is not accepted as a standalone status.
 - [ ] Every status names a baseline and verification commit.
-- [ ] Production call sites use file plus symbol, not fragile line numbers.
+- [x] Production call sites use file plus symbol, not fragile line numbers.
 - [ ] Class, obligation, execution mode, scheduling state, lifecycle status, milestone, milestone role, and outcome are explicit where applicable.
 - [ ] Every milestone-linked ticket declares `milestone_role`; CI treats omission as a schema error.
 - [ ] Owner, branch, blocking relationships, evidence, and decision record are explicit.

@@ -230,10 +230,18 @@ tickets:
     blocks: []
     implementation_commits: []
     production_call_sites:
-      - apps/cwr/Game/GameApplication.cpp (WriteCaptureMetrics and capture-sidecar paths)
-      - engine/WgpuRenderer/EngineWgpu.cpp (Screenshot and frame-end PNG write)
-      - engine/WgpuRenderer/rust/src/lib.rs (surface readback after WGPU presentation)
-      - engine/WgpuRenderer/rust/src/ffi.rs (C ABI capture bridge)
+      - file: apps/cwr/Game/GameApplication.cpp
+        symbol: WriteCaptureMetrics
+        verified_commit: null
+      - file: engine/WgpuRenderer/EngineWgpu.cpp
+        symbol: EngineWgpu::Screenshot
+        verified_commit: null
+      - file: engine/WgpuRenderer/rust/src/lib.rs
+        symbol: WgpuRenderer::take_screenshot
+        verified_commit: null
+      - file: engine/WgpuRenderer/rust/src/ffi.rs
+        symbol: wgr_screenshot_take
+        verified_commit: null
     test_ids: [preview0-build-manifest, wgpu-menu-screenshot, gl33-metrics-fallback, original-training-wgpu-capture, original-training-gl33-capture, mission-screenshot-deferral, visual-acceptance-profile]
     benchmark_artifacts:
       - docs/roadmap/evidence/preview0-manifest.json

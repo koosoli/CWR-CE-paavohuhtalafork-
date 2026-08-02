@@ -91,6 +91,35 @@ def list_values(raw: str) -> list[str]:
     return [item for item in raw.strip("[]").replace(" ", "").split(",") if item]
 
 
+def verify_production_call_sites(block: str, ticket: str) -> None:
+    """Require stable file/symbol records instead of prose-only call sites."""
+    lines = block.splitlines()
+    start = next(i for i, line in enumerate(lines) if line.strip().startswith("production_call_sites:"))
+    if lines[start].strip() == "production_call_sites: []":
+        return
+    entries: list[dict[str, str]] = []
+    current: dict[str, str] | None = None
+    for line in lines[start + 1:]:
+        if line.startswith("    ") and not line.startswith("      "):
+            break
+        stripped = line.strip()
+        if stripped.startswith("- file: "):
+            if current is not None:
+                entries.append(current)
+            current = {"file": stripped.removeprefix("- file: ")}
+        elif current is not None and stripped.startswith("symbol: "):
+            current["symbol"] = stripped.removeprefix("symbol: ")
+    if current is not None:
+        entries.append(current)
+    for entry in entries:
+        if not entry.get("file") or not entry.get("symbol"):
+            raise ValueError(f"{ticket} production call site needs file and symbol")
+        tracked_file(entry["file"], f"{ticket} production call site")
+    raw_lines = [line.strip() for line in lines[start + 1:] if line.startswith("      - ")]
+    if raw_lines and not entries:
+        raise ValueError(f"{ticket} production call sites must use file/symbol records")
+
+
 def verify_clean_manifest() -> None:
     """Verify the tracked Preview-0 evidence bundle was made from a clean tree."""
     tracked_file(str(MANIFEST.relative_to(ROOT)), "Preview-0 manifest")
@@ -198,6 +227,7 @@ def main() -> int:
             for field in required_fields:
                 if field not in block:
                     raise ValueError(f"{ticket} missing {field}")
+            verify_production_call_sites(block, ticket)
             scheduling = value(block, "scheduling_state")
             lifecycle = value(block, "status")
             if scheduling not in {"OPEN", "ACTIVE", "BLOCKED", "DONE", "HOLD"}:
