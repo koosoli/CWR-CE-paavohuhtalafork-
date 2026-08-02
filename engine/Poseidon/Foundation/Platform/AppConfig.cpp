@@ -552,106 +552,103 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
                          "core); >0 = explicit count.")
             ->check(CLI::Range(0, 1024));
 
+        auto* debugGroup = app.add_option_group("Debug & Testing", "Development and testing options");
+
+        showOption(debugGroup->add_flag("--benchmark", _benchmark, "Benchmark mode"), CliHelpVisibility::Dev);
+
         if (!BuildInfo::ReleaseBuild)
         {
-            auto* debugGroup = app.add_option_group("Debug & Testing", "Development and testing options");
-
-            showOption(debugGroup->add_flag("--benchmark", _benchmark, "Benchmark mode"), CliHelpVisibility::Dev);
-
             debugGroup->add_flag(
                 "--dev", _devMode,
                 serverRole ? "Enable developer and test-oriented command-line options"
                            : "Enable the dev panel (Ctrl+` toggles; Cheats/Game/Console/Profile/Memory/Font tabs)");
-
-            showOption(
-                debugGroup->add_option("--vd", _viewDistanceOverride, "Override view distance (bypass 5000 clamp)")
-                    ->check(CLI::Range(100.0f, 100000.0f)),
-                CliHelpVisibility::Dev);
-
-            showOption(debugGroup->add_flag("--logfiles,--log-files", _logFileOps, "Enable file operation logging"),
-                       CliHelpVisibility::Dev);
-
-            showOption(debugGroup->add_flag("--netlog,--net-log", _netLog, "Enable network logging"),
-                       CliHelpVisibility::Dev);
-            showOption(debugGroup->add_flag("--write-mpreport,--after-action-report", _writeMPReport,
-                                            "Write MP after-action report to a timestamped file in UserDir"),
-                       CliHelpVisibility::Dev);
-
-            showOption(debugGroup->add_flag("--autotest,--auto-test", _autoTest, "Auto test mode"),
-                       CliHelpVisibility::Dev);
-
-            showOption(
-                debugGroup
-                    ->add_option("--confirm-revert-timeout", _confirmRevertTimeoutSeconds,
-                                 "Override the Display-confirm-revert modal timeout in seconds (0 = engine default "
-                                 "15s). Lets integration tests exercise the auto-revert path without paying the full "
-                                 "real-time wait.")
-                    ->check(CLI::Range(0.0f, 60.0f)),
-                CliHelpVisibility::Dev);
-
-            showOption(debugGroup
-                           ->add_option("--timeout", _appTimeoutSeconds,
-                                        "Auto-exit after N seconds (0 = disabled, useful for app smoke runs).")
-                           ->check(CLI::Range(0.0f, 3600.0f)),
-                       CliHelpVisibility::Dev);
-
-            showOption(debugGroup->add_option("--auto-keys", _autoKeys,
-                                              "Inject key events at specific frames (format: "
-                                              "frame:scancode,frame:scancode,...)"),
-                       CliHelpVisibility::Dev);
-            showOption(debugGroup->add_option("--auto-screenshot", _autoScreenshot,
-                                              "Capture screenshot at frame and exit (format: frame:path)"),
-                       CliHelpVisibility::Dev);
-            showOption(debugGroup->add_option("--rdc-trigger", _rdcTrigger,
-                                              "RenderDoc trigger: capture next swap when frame/time is reached "
-                                              "(format: '60' = frame 60, '2s' = 2 seconds elapsed). No-op unless game "
-                                              "launched from RenderDoc UI."),
-                       CliHelpVisibility::Dev);
-            showOption(debugGroup->add_option("--screenshot-delay", _screenshotDelay,
-                                              "Gameplay frames to wait before screenshot capture (default: 10)"),
-                       CliHelpVisibility::Dev);
-            showOption(debugGroup->add_option("--ui-test", _uiTest, "Run UI test scenario and exit (e.g., 'exit')"),
-                       CliHelpVisibility::Dev);
-
-            showOption(debugGroup
-                           ->add_option("--harness", _harnessPort,
-                                        "Enable TCP harness server (0 = auto-assign port, >0 = explicit port)")
-                           ->check(CLI::Range(0, 65535)),
-                       CliHelpVisibility::Dev);
-
-            showOption(debugGroup->add_option("--test-mission,--test", _testMissionPath,
-                                              "Run mission folder or mission.sqm directly and exit"),
-                       CliHelpVisibility::Dev);
-
-            showOption(debugGroup
-                           ->add_option("--test-type", _testType,
-                                        "Test type: autotest (default) or screenshot (capture and exit)")
-                           ->check(CLI::IsMember({"autotest", "screenshot"})),
-                       CliHelpVisibility::Dev);
-
-            showOption(debugGroup
-                           ->add_option("--simulate", _simulateMissionPath,
-                                        "Headless mission simulation with given mission path")
-                           ->check(CLI::ExistingPath),
-                       CliHelpVisibility::Dev);
-
-            showOption(
-                debugGroup
-                    ->add_option("--duration", _simulateDuration, "Simulation duration in seconds (0 = until endGame)")
-                    ->check(CLI::NonNegativeNumber),
-                CliHelpVisibility::Dev);
-
-            showOption(
-                debugGroup->add_option("--stats", _statsInterval, "Log world stats every N seconds (simulate mode)")
-                    ->check(CLI::PositiveNumber),
-                CliHelpVisibility::Dev);
-
-            showOption(debugGroup
-                           ->add_option("--time-scale", _timeScale,
-                                        "Time acceleration multiplier for simulate mode (1-16, default 1)")
-                           ->check(CLI::Range(1, 16)),
-                       CliHelpVisibility::Dev);
         }
+
+        showOption(debugGroup->add_option("--vd", _viewDistanceOverride, "Override view distance (bypass 5000 clamp)")
+                       ->check(CLI::Range(100.0f, 100000.0f)),
+                   CliHelpVisibility::Dev);
+
+        showOption(debugGroup->add_flag("--logfiles,--log-files", _logFileOps, "Enable file operation logging"),
+                   CliHelpVisibility::Dev);
+
+        showOption(debugGroup->add_flag("--netlog,--net-log", _netLog, "Enable network logging"),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_flag("--write-mpreport,--after-action-report", _writeMPReport,
+                                        "Write MP after-action report to a timestamped file in UserDir"),
+                   CliHelpVisibility::Dev);
+
+        showOption(debugGroup->add_flag("--autotest,--auto-test", _autoTest, "Auto test mode"), CliHelpVisibility::Dev);
+
+        showOption(
+            debugGroup
+                ->add_option("--confirm-revert-timeout", _confirmRevertTimeoutSeconds,
+                             "Override the Display-confirm-revert modal timeout in seconds (0 = engine default "
+                             "15s). Lets integration tests exercise the auto-revert path without paying the full "
+                             "real-time wait.")
+                ->check(CLI::Range(0.0f, 60.0f)),
+            CliHelpVisibility::Dev);
+
+        showOption(debugGroup
+                       ->add_option("--timeout", _appTimeoutSeconds,
+                                    "Auto-exit after N seconds (0 = disabled, useful for app smoke runs).")
+                       ->check(CLI::Range(0.0f, 3600.0f)),
+                   CliHelpVisibility::Dev);
+
+        showOption(debugGroup->add_option("--auto-keys", _autoKeys,
+                                          "Inject key events at specific frames (format: "
+                                          "frame:scancode,frame:scancode,...)"),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_option("--auto-screenshot", _autoScreenshot,
+                                          "Capture screenshot at frame and exit (format: frame:path)"),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_option("--rdc-trigger", _rdcTrigger,
+                                          "RenderDoc trigger: capture next swap when frame/time is reached "
+                                          "(format: '60' = frame 60, '2s' = 2 seconds elapsed). No-op unless game "
+                                          "launched from RenderDoc UI."),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_option("--screenshot-delay", _screenshotDelay,
+                                          "Gameplay frames to wait before screenshot capture (default: 10)"),
+                   CliHelpVisibility::Dev);
+        showOption(debugGroup->add_option("--ui-test", _uiTest, "Run UI test scenario and exit (e.g., 'exit')"),
+                   CliHelpVisibility::Dev);
+
+        showOption(debugGroup
+                       ->add_option("--harness", _harnessPort,
+                                    "Enable TCP harness server (0 = auto-assign port, >0 = explicit port)")
+                       ->check(CLI::Range(0, 65535)),
+                   CliHelpVisibility::Dev);
+
+        showOption(debugGroup->add_option("--test-mission,--test", _testMissionPath,
+                                          "Run mission folder or mission.sqm directly and exit"),
+                   CliHelpVisibility::Dev);
+
+        showOption(
+            debugGroup
+                ->add_option("--test-type", _testType, "Test type: autotest (default) or screenshot (capture and exit)")
+                ->check(CLI::IsMember({"autotest", "screenshot"})),
+            CliHelpVisibility::Dev);
+
+        showOption(
+            debugGroup
+                ->add_option("--simulate", _simulateMissionPath, "Headless mission simulation with given mission path")
+                ->check(CLI::ExistingPath),
+            CliHelpVisibility::Dev);
+
+        showOption(
+            debugGroup
+                ->add_option("--duration", _simulateDuration, "Simulation duration in seconds (0 = until endGame)")
+                ->check(CLI::NonNegativeNumber),
+            CliHelpVisibility::Dev);
+
+        showOption(debugGroup->add_option("--stats", _statsInterval, "Log world stats every N seconds (simulate mode)")
+                       ->check(CLI::PositiveNumber),
+                   CliHelpVisibility::Dev);
+
+        showOption(debugGroup
+                       ->add_option("--time-scale", _timeScale,
+                                    "Time acceleration multiplier for simulate mode (1-16, default 1)")
+                       ->check(CLI::Range(1, 16)),
+                   CliHelpVisibility::Dev);
 
         auto* loggingGroup = app.add_option_group("Logging", "Log output and verbosity options");
         showGroup(loggingGroup, serverRole ? CliHelpVisibility::Basic : CliHelpVisibility::Full);
