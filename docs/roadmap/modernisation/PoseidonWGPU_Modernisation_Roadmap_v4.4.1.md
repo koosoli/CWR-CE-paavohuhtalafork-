@@ -1008,7 +1008,7 @@ Agents must re-audit the current branch and update the status ledger.
 
 ## WTR-GATE-1 — Ocean production closure — REQUIRED before unified water
 
-- [ ] Every claimed ocean feature has a production call-site audit.
+- [x] Every claimed ocean feature has a production call-site audit. Covered by the `WTR-001` audit (all 49 `wgr_*` FFI exports have C++ call sites; six `WaterSurfaceState` fields are written and never read; `world_to_material_pos` has one caller; debug view 38 reports a different quantity than its label) and by [`engine/WgpuRenderer/docs/env-switches.md`](../../../engine/WgpuRenderer/docs/env-switches.md), which inventories all 30 `WGR_*` switches and records that eight of them were inert before `9fb2e47`. **Any earlier report claiming a feature was verified via one of those eight should be distrusted** — before that fix the switch could not have taken effect.
 - [ ] Visual captures verify reflection ownership.
 - [ ] Aerial and pitch tests pass or accepted limitations are recorded.
 - [x] Performance baseline exists. [`docs/roadmap/evidence/water-baseline-20260802.md`](../evidence/water-baseline-20260802.md) — WGPU on an RTX 3070, Malden ground level, steady-state: **~3.2 ms** water GPU total, 28 CDLOD nodes, 516,096 triangles, `lod0=27 lod1=1`. Sample spread is ±0.45 ms, so **sub-15% changes at this viewpoint are not distinguishable from noise**. It is one viewpoint and a regression anchor, not a characterisation of water cost across the game — extend with aerial and coastal before generalising.
