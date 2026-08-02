@@ -493,7 +493,7 @@ Keep this proportional: do not build an elaborate plugin protocol unless the act
 - [x] Selected backend is queryable by tests and debug UI.
 - [x] WGPU-active diagnostic or watermark state.
 - [x] Explicit unsupported-feature fallback matrix.
-- [ ] Pipeline and shader creation errors identify the responsible resource/pass.
+- [x] Pipeline and shader creation errors identify the responsible resource/pass.
 - [x] Resize and minimise do not corrupt the surface lifecycle.
 - [x] Device loss is detected and reported gracefully.
 - [x] Clean renderer shutdown.
