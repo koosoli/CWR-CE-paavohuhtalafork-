@@ -626,8 +626,8 @@ A stronger agent may improve the packaging, demonstration, or capability-report 
 
 ## CORE-000 — Repository and architecture audit — REQUIRED
 
-- [ ] Map renderer entry points and resource ownership.
-- [ ] Map C++/Rust/WGPU FFI and ABI assumptions.
+- [x] Map renderer entry points and resource ownership.
+- [x] Map C++/Rust/WGPU FFI and ABI assumptions.
 - [x] Map terrain, weather, water, grass, smoke, physics, and Zeus ownership.
 - [ ] Map current network authority and replication calls.
 - [ ] Find direct reads bypassing canonical world APIs.
