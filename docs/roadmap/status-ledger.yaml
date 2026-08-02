@@ -153,6 +153,22 @@ tickets:
         raised bound still binds, use tri's -j parallelism (documented locally
         as -j6) rather than raising it again.
       - >-
+        WGPU startup cost measured (2026-08-02). Renderer init builds 38
+        pipelines from 43 WGSL sources with no pipeline cache before the harness
+        can be served. On an RTX 3070 that is ~3s more than GL33 for the same
+        mission (7.4s vs 4.5s total startup), and it is shader-compile bound --
+        the part that scales worst on the hosted runner's software rasteriser.
+        rendering/shadow_map_scene_dump, the only WGPU-pinned scenario, times
+        out hosted at its 90s HARNESS_PORT budget.
+        Trident gains a per-test connect_timeout so startup can have its own
+        budget without also lengthening command and event waits, which with
+        retries would spend minutes waiting on an already-broken run. The
+        scenario is set to 300s. Verified the knob is wired by setting it to 1s
+        and reproducing the hosted failure signature exactly, then restoring it.
+        This buys time for a slow start; it does not prove WGPU starts reliably
+        under Xvfb. If the scenario still fails hosted, the numbered per-instance
+        logs will now show whether it was slow or crashed.
+      - >-
         RESOLVED (2026-08-02, run 30760957610). The first hosted Trident run to
         complete: 81 tests, 78 passed, 3 failed, 1554.6s under -j4, inside the
         35m bound. flows/demo/credits and flows/demo/mission_load -- the two

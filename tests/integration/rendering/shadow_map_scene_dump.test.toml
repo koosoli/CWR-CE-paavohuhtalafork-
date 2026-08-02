@@ -4,3 +4,15 @@ render = "wgpu"
 mission = "tests/integration/missions/cargo_leader_getout.Demo"
 timeout = 90
 assert_timeout = 30
+
+# WGPU startup is shader-compile bound and has no pipeline cache: 38 pipelines
+# from 43 WGSL sources before the harness can be served. Measured on a discrete
+# GPU that costs ~3s more than GL33 (7.4s vs 4.5s total startup), and it is the
+# part that scales worst on the hosted runner's software rasteriser under Xvfb,
+# where this test has timed out at the 90s mark.
+#
+# Startup gets its own budget rather than raising `timeout`, which also governs
+# command and event waits -- a slow boot should not buy a long tail on a genuine
+# mid-test failure, especially with retries.
+connect_timeout = 300
+
