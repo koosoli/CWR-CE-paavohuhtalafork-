@@ -134,6 +134,7 @@ def verify_clean_manifest() -> None:
     if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
         raise ValueError("Preview-0 manifest must record a full git commit")
     git("cat-file", "-e", f"{commit}^{{commit}}")
+    git("merge-base", "--is-ancestor", commit, "HEAD")
 
     for section, required_keys in (
         ("runtime_check", ("log", "sha256")),
