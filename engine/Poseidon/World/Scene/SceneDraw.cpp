@@ -193,8 +193,9 @@ static void SortDrawMergersByShape(SortObjectList& mergers)
         mergers,
         [](SortObject* o) -> DrawKey
         {
-            return {o, o->object ? static_cast<const void*>(o->object->GetShape()) : nullptr, o->passNum,
-                    o->sortComplexity, o->drawLOD, o->distance2};
+            return {o,          o->object ? static_cast<const void*>(o->object->GetShape()) : nullptr,
+                    o->passNum, o->sortComplexity,
+                    o->drawLOD, o->distance2};
         },
         [](const DrawKey* p1, const DrawKey* p2, int) -> int
         {
@@ -1858,11 +1859,11 @@ static int CmpSurfaceObj(const SortObjectItem* p1, const SortObjectItem* p2)
     const SortObject* o2 = *p2;
     // PassOrder precomputed in AdjustComplexity (was a virtual call per comparison).
     const Poseidon::SurfaceDraw::SurfaceDrawKey k1{
-        o1->object ? o1->sortPassOrder : 0,
-        o1->object ? static_cast<const void*>(o1->object->GetShape()) : nullptr, o1->distance2};
+        o1->object ? o1->sortPassOrder : 0, o1->object ? static_cast<const void*>(o1->object->GetShape()) : nullptr,
+        o1->distance2};
     const Poseidon::SurfaceDraw::SurfaceDrawKey k2{
-        o2->object ? o2->sortPassOrder : 0,
-        o2->object ? static_cast<const void*>(o2->object->GetShape()) : nullptr, o2->distance2};
+        o2->object ? o2->sortPassOrder : 0, o2->object ? static_cast<const void*>(o2->object->GetShape()) : nullptr,
+        o2->distance2};
     return Poseidon::SurfaceDraw::CompareSurfaceDraw(k1, k2);
 }
 

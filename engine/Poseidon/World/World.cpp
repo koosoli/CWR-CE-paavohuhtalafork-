@@ -1369,8 +1369,7 @@ void World::Simulate(float deltaT, bool& enableDraw)
     // / loading progress (!IsDisplayEnabled()), and shutdown (Glob.exit / m_closeRequest). In
     // these we skip the 3D scene submission below and clear to black — otherwise the world keeps
     // rendering behind the UI and leaks through the letterboxed sides (HUD aspect limit).
-    const bool suppressWorld =
-        _editor || !IsDisplayEnabled() || Glob.exit || (GApp && GApp->m_closeRequest);
+    const bool suppressWorld = _editor || !IsDisplayEnabled() || Glob.exit || (GApp && GApp->m_closeRequest);
     // The GPU-driven backend keeps a GPU-resident world set that draws every frame regardless
     // of the per-frame 3D lists we skip below, so it needs the suppression signalled explicitly.
     GEngine->SuppressWorldObjects(suppressWorld);

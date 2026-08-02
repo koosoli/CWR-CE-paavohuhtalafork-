@@ -1375,8 +1375,8 @@ void GameApplication::RunMainLoop()
                 Poseidon::AppIdle();
                 const std::string& captureMetricsPath = AppConfig::Instance().GetCaptureMetricsPath();
                 if (!captureMetricsPath.empty())
-                    LOG_INFO(Core, "Capture metrics {}: {}", WriteCaptureMetrics(captureMetricsPath) ? "saved" : "failed",
-                             captureMetricsPath);
+                    LOG_INFO(Core, "Capture metrics {}: {}",
+                             WriteCaptureMetrics(captureMetricsPath) ? "saved" : "failed", captureMetricsPath);
                 LOG_INFO(Core, "Auto-screenshot saved: frame={} t={:.1f}s -> {}", mainFrameCounter, elapsedMs / 1000.0f,
                          it->path);
                 autoScreenshotList.erase(it);

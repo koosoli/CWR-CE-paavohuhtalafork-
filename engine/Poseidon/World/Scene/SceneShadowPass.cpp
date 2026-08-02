@@ -518,8 +518,8 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
         if (tune.casterLodBias > 1.0f)
         {
             const float biased2 = oi->distance2 * Square(tune.casterLodBias);
-            int coarse = LevelFromDistance2(oi->shape, biased2, oi->object->Scale(), oi->object->Direction(),
-                                            cam->Direction());
+            int coarse =
+                LevelFromDistance2(oi->shape, biased2, oi->object->Scale(), oi->object->Direction(), cam->Direction());
             if (coarse != LOD_INVISIBLE && coarse > geomLOD)
             {
                 geomLOD = coarse;
@@ -593,8 +593,7 @@ void Scene::RenderShadowMapDepthPassGpu(int nDraw)
                 continue;
             }
             const float pdist2 = ptrans.Position().Distance2(camPos);
-            int plevel =
-                LevelFromDistance2(pshape, pdist2, ptrans.Scale(), ptrans.Direction(), cam->Direction());
+            int plevel = LevelFromDistance2(pshape, pdist2, ptrans.Scale(), ptrans.Direction(), cam->Direction());
             if (plevel == LOD_INVISIBLE)
             {
                 continue;

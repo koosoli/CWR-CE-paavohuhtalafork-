@@ -349,10 +349,10 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
                     forward.Normalize();
                 Vector3Val pos = Position();
                 const WaterSurfaceSample center = QueryWaterSurface(pos.X(), pos.Z(), waveTime, seaLevel);
-                const WaterSurfaceSample front = QueryWaterSurface(pos.X() + forward.X() * 0.65f,
-                                                                     pos.Z() + forward.Z() * 0.65f, waveTime, seaLevel);
-                const WaterSurfaceSample back = QueryWaterSurface(pos.X() - forward.X() * 0.65f,
-                                                                    pos.Z() - forward.Z() * 0.65f, waveTime, seaLevel);
+                const WaterSurfaceSample front =
+                    QueryWaterSurface(pos.X() + forward.X() * 0.65f, pos.Z() + forward.Z() * 0.65f, waveTime, seaLevel);
+                const WaterSurfaceSample back =
+                    QueryWaterSurface(pos.X() - forward.X() * 0.65f, pos.Z() - forward.Z() * 0.65f, waveTime, seaLevel);
                 const float forwardSlope = (front.height - back.height) / 1.30f;
                 Vector3 waterNormal(center.normalX, center.normalY, center.normalZ);
                 const float normalForward = waterNormal.X() * forward.X() + waterNormal.Z() * forward.Z();
@@ -550,9 +550,9 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
                                     landDX = info.dX, landDZ = info.dZ;
                                     if (info.obj == nullptr)
                                     {
-                                        // not standing on an object -> we are standing on the landscape -> get the surface sound from the landscape
-                                        _surfaceSound =
-                                            GLandscape->SurfaceAt(info.pos.X(), info.pos.Z())._soundEnv;
+                                        // not standing on an object -> we are standing on the landscape -> get the
+                                        // surface sound from the landscape
+                                        _surfaceSound = GLandscape->SurfaceAt(info.pos.X(), info.pos.Z())._soundEnv;
                                     }
                                     else if (info.texture)
                                     {
@@ -928,13 +928,13 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
 
         if (playerControlled)
         {
-            const WaterSurfaceSample water = QueryWaterSurface(Position().X(), Position().Z(), Glob.time.toFloat(),
-                                                                GLOB_LAND->GetSeaLevel());
+            const WaterSurfaceSample water =
+                QueryWaterSurface(Position().X(), Position().Z(), Glob.time.toFloat(), GLOB_LAND->GetSeaLevel());
             const float planeOffset = water.height - Position().Y();
             // Separate enter/exit thresholds prevent buoyancy from chattering at crests while
             // collision remains the authority for whether this location contains water.
             _waterBuoyancyContact = _waterBuoyancyContact ? (_waterDepth > 0.01f || planeOffset > -0.20f)
-                                                           : (_waterDepth > 0.08f && planeOffset > -0.05f);
+                                                          : (_waterDepth > 0.08f && planeOffset > -0.05f);
         }
         else
         {
@@ -949,8 +949,8 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
             Vector3Val speed = Speed();
             const float horizontalSpeed = sqrt(speed.X() * speed.X() + speed.Z() * speed.Z());
             const bool inWater = _waterDepth > 0.05f;
-            const uint32_t waterFlag = _waterDepth > 0.65f ? HydroWaterInteractionPlayerSwimming
-                                                            : HydroWaterInteractionPlayerWading;
+            const uint32_t waterFlag =
+                _waterDepth > 0.65f ? HydroWaterInteractionPlayerSwimming : HydroWaterInteractionPlayerWading;
             if (inWater && _hydroWaterDepth <= 0.05f)
             {
                 HydroWaterInteractionEvent event{};
@@ -982,7 +982,8 @@ void Man::Simulate(float deltaT, SimulationImportance prec)
                 event.directionDepthFlags[0] = speed.X() / horizontalSpeed;
                 event.directionDepthFlags[1] = speed.Z() / horizontalSpeed;
                 event.directionDepthFlags[2] = _waterDepth;
-                event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse | HydroWaterInteractionCapsule | waterFlag;
+                event.directionDepthFlags[3] =
+                    HydroWaterInteractionPendingImpulse | HydroWaterInteractionCapsule | waterFlag;
                 SubmitWaterInteraction(event);
             }
             _hydroWaterDepth = _waterDepth;

@@ -661,7 +661,7 @@ Man::Man(VehicleType* name, bool fullCreate)
 
       _lastObjectContactTime(Glob.time), _lastMovementTime(Glob.time),
 
-        _waterDepth(0), _hydroWaterDepth(0), _waterBuoyancyContact(false), _unitPos(UPAuto),
+      _waterDepth(0), _hydroWaterDepth(0), _waterBuoyancyContact(false), _unitPos(UPAuto),
 
       _hideBody(0), _hideBodyWanted(0),
 

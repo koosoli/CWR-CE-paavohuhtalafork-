@@ -822,41 +822,33 @@ void Ship::Simulate(float deltaT, SimulationImportance prec)
                 // refreshes this record by id, so a ship consumes one of the fixed 48
                 // slots instead of appending a new wake every simulation frame.
                 Vector3Val worldSpeed = Speed();
-                const float wakeSpeed =
-                    std::sqrt(worldSpeed.X() * worldSpeed.X() + worldSpeed.Z() * worldSpeed.Z());
+                const float wakeSpeed = std::sqrt(worldSpeed.X() * worldSpeed.X() + worldSpeed.Z() * worldSpeed.Z());
                 if (wakeSpeed > 0.25f)
                 {
                     const float hullRadius = _shape->GeometrySphere();
                     const float sternOffset = floatMin(floatMax(hullRadius * 0.55f, 2.0f), 25.0f);
-                    const Vector3 stern = PositionModelToWorld(
-                        Vector3(0, 0, -sternOffset) - _shape->BoundingCenter());
+                    const Vector3 stern = PositionModelToWorld(Vector3(0, 0, -sternOffset) - _shape->BoundingCenter());
                     HydroWaterInteractionEvent event{};
                     event.positionRadius[0] = stern.X();
                     event.positionRadius[1] = stern.Z();
-                    event.positionRadius[2] =
-                        floatMin(floatMax(hullRadius * 0.35f + wakeSpeed * 0.45f, 1.5f), 18.0f);
-                    event.positionRadius[3] =
-                        floatMin(floatMax(wakeSpeed * 0.045f +
-                                              (std::fabs(_thrustL) + std::fabs(_thrustR)) * 0.04f,
-                                          0.08f),
-                                 0.75f);
+                    event.positionRadius[2] = floatMin(floatMax(hullRadius * 0.35f + wakeSpeed * 0.45f, 1.5f), 18.0f);
+                    event.positionRadius[3] = floatMin(
+                        floatMax(wakeSpeed * 0.045f + (std::fabs(_thrustL) + std::fabs(_thrustR)) * 0.04f, 0.08f),
+                        0.75f);
                     event.velocityKind[0] = worldSpeed.X();
                     event.velocityKind[1] = worldSpeed.Z();
                     event.velocityKind[3] = HydroWaterInteractionContinuous;
                     event.timeLifeFoamMass[1] = 0.25f;
-                    event.timeLifeFoamMass[2] =
-                        floatMin(floatMax(0.12f + wakeSpeed * 0.03f, 0.12f), 0.70f);
+                    event.timeLifeFoamMass[2] = floatMin(floatMax(0.12f + wakeSpeed * 0.03f, 0.12f), 0.70f);
                     // IEEE float exactly represents this 23-bit id. Reserve 0/1 for
                     // one-shot events and the local-player continuous emitter.
-                    const uintptr_t wakeId =
-                        (reinterpret_cast<uintptr_t>(this) >> 4u) & 0x007fffffu;
+                    const uintptr_t wakeId = (reinterpret_cast<uintptr_t>(this) >> 4u) & 0x007fffffu;
                     event.timeLifeFoamMass[3] = static_cast<float>(wakeId + 2u);
                     event.directionDepthFlags[0] = worldSpeed.X() / wakeSpeed;
                     event.directionDepthFlags[1] = worldSpeed.Z() / wakeSpeed;
                     event.directionDepthFlags[2] = floatMin(hullRadius * 0.15f, 6.0f);
-                    event.directionDepthFlags[3] =
-                        HydroWaterInteractionPendingImpulse | HydroWaterInteractionCapsule |
-                        HydroWaterInteractionLargeBody;
+                    event.directionDepthFlags[3] = HydroWaterInteractionPendingImpulse | HydroWaterInteractionCapsule |
+                                                   HydroWaterInteractionLargeBody;
                     SubmitWaterInteraction(event);
                 }
 

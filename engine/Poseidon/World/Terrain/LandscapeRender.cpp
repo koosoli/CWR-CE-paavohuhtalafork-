@@ -1734,11 +1734,12 @@ void Landscape::DrawSky(Scene& scene)
         _skyObject->Draw(0, ClipAll & ~ClipBack | ClipUser0, *_skyObject);
     }
     float starsVisibility = sun ? (
-        // see TLVertexMesh::DoStarLighting
-        // overcast limitation
-        (1.5 * SkyThrough() - 0.5) *
-        // daytime limitation
-        sun->StarsVisibility()) : 0.0f;
+                                      // see TLVertexMesh::DoStarLighting
+                                      // overcast limitation
+                                      (1.5 * SkyThrough() - 0.5) *
+                                      // daytime limitation
+                                      sun->StarsVisibility())
+                                : 0.0f;
     if (_starsObject && starsVisibility >= 0.1)
     {
         _starsObject->DrawPoints(0, ClipAll & ~ClipBack | ClipUser0, *_starsObject);

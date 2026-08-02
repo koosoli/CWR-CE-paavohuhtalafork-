@@ -2465,7 +2465,7 @@ void CStaticMap::ScrollOnEdges(float mouseX, float mouseY)
     // The edge scroll step used to be applied once per OnSimulate, so it scaled
     // directly with the framerate.
     // We'll assume a target frame rate of 60 FPS, and scale the step accordingly.
-    const float refFrameTime = 1.0f / 60.0f; 
+    const float refFrameTime = 1.0f / 60.0f;
     float dt = Glob.uiTime - _edgeScrollLast;
     _edgeScrollLast = Glob.uiTime;
     // Limit scroll speed to avoid excessive movement during lag spikes, alt-tab, etc.

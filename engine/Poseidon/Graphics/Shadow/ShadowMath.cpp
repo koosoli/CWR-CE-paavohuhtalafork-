@@ -607,7 +607,8 @@ float QuantizeShadowRadius(float radius, float minRadius, float stepRatio)
     {
         return minRadius;
     }
-    const double n = std::ceil(std::log(static_cast<double>(radius) / minRadius) / std::log(static_cast<double>(stepRatio)) - 1e-9);
+    const double n =
+        std::ceil(std::log(static_cast<double>(radius) / minRadius) / std::log(static_cast<double>(stepRatio)) - 1e-9);
     return static_cast<float>(minRadius * std::pow(static_cast<double>(stepRatio), n));
 }
 

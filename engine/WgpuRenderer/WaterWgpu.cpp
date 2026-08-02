@@ -100,10 +100,8 @@ static std::vector<ReferenceWaveMode> BuildReferenceWaveModes()
         std::vector<ReferenceWaveMode> all;
         all.reserve(resolution * resolution);
         const float dk = tau / cascade.length;
-        const float alpha =
-            0.076f * std::pow(cascade.windSpeed * cascade.windSpeed / (cascade.fetch * gravity), 0.22f);
-        const float peak =
-            22.0f * std::pow(gravity * gravity / (cascade.windSpeed * cascade.fetch), 1.0f / 3.0f);
+        const float alpha = 0.076f * std::pow(cascade.windSpeed * cascade.windSpeed / (cascade.fetch * gravity), 0.22f);
+        const float peak = 22.0f * std::pow(gravity * gravity / (cascade.windSpeed * cascade.fetch), 1.0f / 3.0f);
 
         for (int y = 0; y < resolution; ++y)
         {
@@ -115,34 +113,26 @@ static std::vector<ReferenceWaveMode> BuildReferenceWaveModes()
                 const float kd = k * 20.0f;
                 const float tanhKd = std::tanh(kd);
                 const float omega = std::sqrt(gravity * k * tanhKd);
-                const float derivative =
-                    0.5f * gravity * (tanhKd + kd * (1.0f - tanhKd * tanhKd)) / omega;
+                const float derivative = 0.5f * gravity * (tanhKd + kd * (1.0f - tanhKd * tanhKd)) / omega;
                 const float p = omega / peak;
-                const float s = omega <= peak
-                                    ? 6.97f * std::pow(std::abs(p), 4.06f)
-                                    : 9.77f * std::pow(std::abs(p),
-                                                       -2.33f - 1.45f *
-                                                                    (cascade.windSpeed * peak / gravity - 1.17f));
+                const float s =
+                    omega <= peak
+                        ? 6.97f * std::pow(std::abs(p), 4.06f)
+                        : 9.77f * std::pow(std::abs(p), -2.33f - 1.45f * (cascade.windSpeed * peak / gravity - 1.17f));
                 const float sx = 16.0f * std::tanh(peak / omega) * cascade.swell * cascade.swell;
                 const float alignment =
                     (kx * std::sin(cascade.windDirection) + kz * std::cos(cascade.windDirection)) / k;
-                const float directional = ReferenceSpreadNormalization(s + sx) *
-                                          std::pow(std::max(0.5f * (1.0f + alignment), 0.0f), s + sx);
-                const float spread =
-                    directional * (1.0f - cascade.spread) + (0.5f / pi) * cascade.spread;
+                const float directional =
+                    ReferenceSpreadNormalization(s + sx) * std::pow(std::max(0.5f * (1.0f + alignment), 0.0f), s + sx);
+                const float spread = directional * (1.0f - cascade.spread) + (0.5f / pi) * cascade.spread;
                 const float sigma = omega <= peak ? 0.07f : 0.09f;
-                const float r = std::exp(-(omega - peak) * (omega - peak) /
-                                         (2.0f * sigma * sigma * peak * peak));
+                const float r = std::exp(-(omega - peak) * (omega - peak) / (2.0f * sigma * sigma * peak * peak));
                 const float jonswap = alpha * gravity * gravity / std::pow(omega, 5.0f) *
-                                      std::exp(-1.25f * std::pow(peak / omega, 4.0f)) *
-                                      std::pow(3.3f, r);
+                                      std::exp(-1.25f * std::pow(peak / omega, 4.0f)) * std::pow(3.3f, r);
                 const float wh = std::min(omega * std::sqrt(20.0f / gravity), 2.0f);
-                const float attenuation =
-                    wh <= 1.0f ? 0.5f * wh * wh : 1.0f - 0.5f * (2.0f - wh) * (2.0f - wh);
-                const float damping =
-                    std::exp(-(1.0f - cascade.detail) * (1.0f - cascade.detail) * k * k);
-                const float variance =
-                    jonswap * attenuation * spread * damping * derivative / k * dk * dk;
+                const float attenuation = wh <= 1.0f ? 0.5f * wh * wh : 1.0f - 0.5f * (2.0f - wh) * (2.0f - wh);
+                const float damping = std::exp(-(1.0f - cascade.detail) * (1.0f - cascade.detail) * k * k);
+                const float variance = jonswap * attenuation * spread * damping * derivative / k * dk * dk;
                 const auto uniform = ReferenceHash(static_cast<uint32_t>(x), static_cast<uint32_t>(y));
                 const float radius = std::sqrt(-2.0f * std::log(std::max(uniform[0], 1e-7f)));
                 const float theta = tau * uniform[1];
@@ -163,8 +153,7 @@ static std::vector<ReferenceWaveMode> BuildReferenceWaveModes()
     return retained;
 }
 
-static float ReferenceSurfaceHeight(float x, float z, float time, float amplitude, float speed,
-                                    float wavelengthScale)
+static float ReferenceSurfaceHeight(float x, float z, float time, float amplitude, float speed, float wavelengthScale)
 {
     static const std::vector<ReferenceWaveMode> modes = BuildReferenceWaveModes();
     const float invScale = 1.0f / std::max(wavelengthScale, 0.01f);
@@ -172,8 +161,7 @@ static float ReferenceSurfaceHeight(float x, float z, float time, float amplitud
     for (const ReferenceWaveMode& mode : modes)
     {
         const float phase = mode.omega * time * speed + (mode.kx * x + mode.kz * z) * invScale;
-        height += 2.0f * (mode.h0Real * std::cos(phase) - mode.h0Imag * std::sin(phase)) *
-                  mode.displacementScale;
+        height += 2.0f * (mode.h0Real * std::cos(phase) - mode.h0Imag * std::sin(phase)) * mode.displacementScale;
     }
     return height * std::max(amplitude, 0.0f);
 }
@@ -240,14 +228,12 @@ static float SeaStateLengthMultiplier(float amplitude)
     return std::max(std::pow(ratio, 0.75f), 1.0f);
 }
 
-static void ApplyCascadePreset(WgrRenderer* renderer, int preset, int fftResolution = 512,
-                               uint32_t seedXor = 0,
+static void ApplyCascadePreset(WgrRenderer* renderer, int preset, int fftResolution = 512, uint32_t seedXor = 0,
                                float windMultiplier = 1.0f, float lengthMultiplier = 1.0f)
 {
     WgrWaterCascadeConfig c{};
     c.enabled = 1;
-    c.resolution = static_cast<uint32_t>(
-        fftResolution == 256 || fftResolution == 1024 ? fftResolution : 512);
+    c.resolution = static_cast<uint32_t>(fftResolution == 256 || fftResolution == 1024 ? fftResolution : 512);
     c.displacement_scale = 1.0f;
     c.horiz_displacement_scale = 1.0f;
     c.normal_scale = 1.0f;
@@ -268,8 +254,7 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset, int fftResolut
     // Push one cascade config, applying the WTR-001 dev seed override (xor) so a non-zero
     // override re-randomises the whole h0 field deterministically while seedXor == 0 leaves
     // the tuned preset seeds untouched.
-    auto push = [renderer, seedXor, windMultiplier, lengthMultiplier](uint32_t index,
-                                                                      const WgrWaterCascadeConfig& cfg)
+    auto push = [renderer, seedXor, windMultiplier, lengthMultiplier](uint32_t index, const WgrWaterCascadeConfig& cfg)
     {
         WgrWaterCascadeConfig out = cfg;
         out.spectrum_seed ^= seedXor;
@@ -318,9 +303,21 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset, int fftResolut
     {
         // Retained solely for visual A/B of the old harmonic implementation.
         c.tile_length_x = c.tile_length_y = 48.0f;
-        WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 144.0f; b.wind_speed = 8.5f; b.spectrum_seed = 5678; b.phase_offset_seconds += 3.14159265359f;
-        WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 432.0f; d.wind_speed = 7.0f; d.spectrum_seed = 91011; d.phase_offset_seconds += 2.0f * 3.14159265359f;
-        WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1296.0f; e.wind_speed = 6.0f; e.spectrum_seed = 121314; e.phase_offset_seconds += 3.0f * 3.14159265359f;
+        WgrWaterCascadeConfig b = c;
+        b.tile_length_x = b.tile_length_y = 144.0f;
+        b.wind_speed = 8.5f;
+        b.spectrum_seed = 5678;
+        b.phase_offset_seconds += 3.14159265359f;
+        WgrWaterCascadeConfig d = c;
+        d.tile_length_x = d.tile_length_y = 432.0f;
+        d.wind_speed = 7.0f;
+        d.spectrum_seed = 91011;
+        d.phase_offset_seconds += 2.0f * 3.14159265359f;
+        WgrWaterCascadeConfig e = c;
+        e.tile_length_x = e.tile_length_y = 1296.0f;
+        e.wind_speed = 6.0f;
+        e.spectrum_seed = 121314;
+        e.phase_offset_seconds += 3.0f * 3.14159265359f;
         push(0, c);
         push(1, b);
         push(2, d);
@@ -336,9 +333,26 @@ static void ApplyCascadePreset(WgrRenderer* renderer, int preset, int fftResolut
     c.wind_direction_rad = 0.31f;
     c.fetch_meters = 210000.0f;
     c.spectrum_seed = 1471;
-    WgrWaterCascadeConfig b = c; b.tile_length_x = b.tile_length_y = 257.0f; b.wind_speed = 9.5f; b.wind_direction_rad = 0.43f; b.spectrum_seed = 8623; b.phase_offset_seconds += 3.14159265359f;
-    WgrWaterCascadeConfig d = c; d.tile_length_x = d.tile_length_y = 683.0f; d.wind_speed = 7.5f; d.wind_direction_rad = 0.22f; d.fetch_meters = 350000.0f; d.spectrum_seed = 24593; d.phase_offset_seconds += 2.0f * 3.14159265359f;
-    WgrWaterCascadeConfig e = c; e.tile_length_x = e.tile_length_y = 1777.0f; e.wind_speed = 6.0f; e.wind_direction_rad = 0.37f; e.fetch_meters = 550000.0f; e.spectrum_seed = 73471; e.phase_offset_seconds += 3.0f * 3.14159265359f;
+    WgrWaterCascadeConfig b = c;
+    b.tile_length_x = b.tile_length_y = 257.0f;
+    b.wind_speed = 9.5f;
+    b.wind_direction_rad = 0.43f;
+    b.spectrum_seed = 8623;
+    b.phase_offset_seconds += 3.14159265359f;
+    WgrWaterCascadeConfig d = c;
+    d.tile_length_x = d.tile_length_y = 683.0f;
+    d.wind_speed = 7.5f;
+    d.wind_direction_rad = 0.22f;
+    d.fetch_meters = 350000.0f;
+    d.spectrum_seed = 24593;
+    d.phase_offset_seconds += 2.0f * 3.14159265359f;
+    WgrWaterCascadeConfig e = c;
+    e.tile_length_x = e.tile_length_y = 1777.0f;
+    e.wind_speed = 6.0f;
+    e.wind_direction_rad = 0.37f;
+    e.fetch_meters = 550000.0f;
+    e.spectrum_seed = 73471;
+    e.phase_offset_seconds += 3.0f * 3.14159265359f;
     push(0, c);
     push(1, b);
     push(2, d);
@@ -380,7 +394,8 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // WTR-034 — Conservative CDLOD displacement bounds:
     // Derivation of conservative bounding volume expansion:
     // 1. Vertical displacement bound (D_y): sum of FFT cascade max crest heights (wave_amp * 1.8f)
-    // 2. Horizontal choppiness bound (D_xz): horizontal displacement shifts vertices by up to choppiness * wave_amp (1.2f * wave_amp)
+    // 2. Horizontal choppiness bound (D_xz): horizontal displacement shifts vertices by up to choppiness * wave_amp
+    // (1.2f * wave_amp)
     // 3. Interaction & particle impulse padding: maximum vessel/interaction splash impulse height (+/- 1.5m)
     // 4. Safety margin (1.25x): guarantees bounding spheres never cull crests near frustum edges.
     constexpr float OffMapSurface = 0.0f;
@@ -400,15 +415,14 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
         {
             for (int x = ox; x <= ox + span; x++)
             {
-                const float h =
-                    (x < 0 || z < 0 || x >= range || z >= range) ? OffMapSurface : land.GetHeight(z, x);
+                const float h = (x < 0 || z < 0 || x >= range || z >= range) ? OffMapSurface : land.GetHeight(z, x);
                 mn = std::min(mn, h - crestPadding);
                 mx = std::max(mx, h + crestPadding);
             }
         }
     };
-    BuildCdlodTree(rootTexels, originTexel, originTexel, grid, WaterGridN, leafBounds, _tree, _rootIndex,
-                   _numLevels, _leafSize);
+    BuildCdlodTree(rootTexels, originTexel, originTexel, grid, WaterGridN, leafBounds, _tree, _rootIndex, _numLevels,
+                   _leafSize);
     if (_rootIndex < 0)
     {
         return;
@@ -444,8 +458,7 @@ void WaterWgpu::BuildQuadtree(const Landscape& land)
     // WTR-001: pass the dev-tab seed override (>= 0) as the xor so the initial spectrum
     // build honours it; 0 when the override is disabled.
     const auto& fz0 = _engine.WaterLook().freeze;
-    ApplyCascadePreset(_renderer, _engine.WaterLook().cascadePreset,
-                       _engine.WaterLook().fftResolution,
+    ApplyCascadePreset(_renderer, _engine.WaterLook().cascadePreset, _engine.WaterLook().fftResolution,
                        fz0.fftSeed >= 0 ? static_cast<uint32_t>(fz0.fftSeed) : 0u);
 }
 
@@ -500,8 +513,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         _activeGeometryQuality = geometryQuality;
         _baseMult = desiredBaseMult;
         ComputeCdlodRanges(_leafSize * _baseMult, _lodRatio, _numLevels, _ranges);
-        LOG_INFO(Graphics, "Water geometry quality applied: preset={} baseMult={:.2f} range0={:.0f}m",
-                 geometryQuality, _baseMult, _ranges.empty() ? 0.0f : _ranges[0]);
+        LOG_INFO(Graphics, "Water geometry quality applied: preset={} baseMult={:.2f} range0={:.0f}m", geometryQuality,
+                 _baseMult, _ranges.empty() ? 0.0f : _ranges[0]);
     }
 
     Camera* camera = scene.GetCamera();
@@ -546,8 +559,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     float localSurface = land.GetSeaLevel();
     if (look.cascadePreset == 1)
     {
-        localSurface += ReferenceSurfaceHeight(cameraPos.X(), cameraPos.Z(), _params.time,
-                                               look.waveAmp, look.waveSpeed, look.waveScale);
+        localSurface += ReferenceSurfaceHeight(cameraPos.X(), cameraPos.Z(), _params.time, look.waveAmp, look.waveSpeed,
+                                               look.waveScale);
     }
     // Small asymmetric hysteresis keeps the compositor from flickering when the eye
     // rides exactly on a moving FFT crest.
@@ -574,9 +587,18 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // bits as the WGR_WATER_FREEZE_* mask and skips the matching compute dispatch. Encoding is
     // bit-cast so the shaders still see a normal IEEE float (0.0 with no bits = no freeze).
     uint32_t freezeMask = 0u;
-    if (fz.freezeFft) { freezeMask |= WGR_WATER_FREEZE_FFT; }
-    if (fz.freezeInteraction) { freezeMask |= WGR_WATER_FREEZE_INTERACTION; }
-    if (fz.freezeFoam) { freezeMask |= WGR_WATER_FREEZE_FOAM; }
+    if (fz.freezeFft)
+    {
+        freezeMask |= WGR_WATER_FREEZE_FFT;
+    }
+    if (fz.freezeInteraction)
+    {
+        freezeMask |= WGR_WATER_FREEZE_INTERACTION;
+    }
+    if (fz.freezeFoam)
+    {
+        freezeMask |= WGR_WATER_FREEZE_FOAM;
+    }
     float freezeBits = 0.0f;
     std::memcpy(&freezeBits, &freezeMask, sizeof(freezeBits));
     _params.fft_control.z = freezeBits;
@@ -613,8 +635,7 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // WTR-001: per-frame preset push carries the dev-tab seed override (>= 0) as the xor
     // so toggling it live re-randomises h0 deterministically on the next spectrum rebuild.
     ApplyCascadePreset(_renderer, look.cascadePreset, look.fftResolution,
-                       fz.fftSeed >= 0 ? static_cast<uint32_t>(fz.fftSeed) : 0u, windMultiplier,
-                       lengthMultiplier);
+                       fz.fftSeed >= 0 ? static_cast<uint32_t>(fz.fftSeed) : 0u, windMultiplier, lengthMultiplier);
 
     // y gates the GPU whitewater/spray billboard pass and z controls its activity.
     // The authored default is enabled at a restrained 0.25 activity. x remains the
@@ -626,8 +647,7 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
                             look.waterSplashParticleActivity, static_cast<float>(std::max(_engine.Height(), 1))};
     // WTR-LOOK — surface energy model + artist gains. x selects the composite (0 legacy,
     // 1 physical); y/z/w gain the sun glitter, subsurface scattering and environment reflection.
-    _params.look_params = {look.physicalLook ? 1.0f : 0.0f, look.glitterGain, look.sssGain,
-                           look.reflectionGain};
+    _params.look_params = {look.physicalLook ? 1.0f : 0.0f, look.glitterGain, look.sssGain, look.reflectionGain};
     // WTR-LOOK — sea state / quality / shore lanes. y is the residual spectrum amplitude: 1.0 in
     // coupled mode (the wind speed and cascade lengths above already carry the energy), the raw
     // slider in legacy mode.
@@ -638,13 +658,11 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // edge-triggered: one log row per edited amplitude/resolution, not one row per frame.
     static float lastLoggedWaveAmp = -1.0f;
     static int lastLoggedFftResolution = 0;
-    if (std::abs(lastLoggedWaveAmp - look.waveAmp) > 0.0001f ||
-        lastLoggedFftResolution != look.fftResolution)
+    if (std::abs(lastLoggedWaveAmp - look.waveAmp) > 0.0001f || lastLoggedFftResolution != look.fftResolution)
     {
-        LOG_INFO(Graphics,
-                 "Water look applied: amplitude={:.3f}, choppiness={:.3f}, speed={:.3f}, preset={}, FFT={}x{}",
-                 look.waveAmp, look.waveChoppy, look.waveSpeed, look.cascadePreset,
-                 look.fftResolution, look.fftResolution);
+        LOG_INFO(
+            Graphics, "Water look applied: amplitude={:.3f}, choppiness={:.3f}, speed={:.3f}, preset={}, FFT={}x{}",
+            look.waveAmp, look.waveChoppy, look.waveSpeed, look.cascadePreset, look.fftResolution, look.fftResolution);
         lastLoggedWaveAmp = look.waveAmp;
         lastLoggedFftResolution = look.fftResolution;
     }
@@ -664,8 +682,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         }
         LOG_INFO(Graphics,
                  "WTR-001 camPath frame={} waterUboDigest={:08x} cam=({:.3f},{:.3f},{:.3f}) dir=({:.3f},{:.3f},{:.3f})",
-                 fz.cameraPathFrame, digest, cameraPos.X(), cameraPos.Y(), cameraPos.Z(),
-                 camera->Direction().X(), camera->Direction().Y(), camera->Direction().Z());
+                 fz.cameraPathFrame, digest, cameraPos.X(), cameraPos.Y(), cameraPos.Z(), camera->Direction().X(),
+                 camera->Direction().Y(), camera->Direction().Z());
     }
     constexpr float interactionSize = 256.0f;
     const float originX = std::floor((cameraPos.X() - interactionSize * 0.5f) / 4.0f) * 4.0f;
@@ -675,7 +693,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // Accumulates frame dt and executes sub-steps of fixed 1/60s (0.016666s) to ensure wave physics stability.
     static float s_interactionAccumulator = 0.0f;
     constexpr float kFixedStep = 1.0f / 60.0f;
-    const float rawDt = fz.freezeInteraction ? 0.0f : (fz.fixedDelta > 0.0f ? fz.fixedDelta : (now - _lastInteractionTime));
+    const float rawDt =
+        fz.freezeInteraction ? 0.0f : (fz.fixedDelta > 0.0f ? fz.fixedDelta : (now - _lastInteractionTime));
     s_interactionAccumulator += std::clamp(rawDt, 0.0f, 0.1f);
     // The accumulator existed but `dt` was set to kFixedStep unconditionally and the accumulator
     // was only drained when it happened to hold a full step. That advanced the simulation by 1/60 s
@@ -701,8 +720,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         {
             const Vector3 direction = camera->Direction();
             WgrWaterInteractionEvent& event = events[eventCount++];
-            event.position_radius = {cameraPos.X() + direction.X() * 14.0f, cameraPos.Z() + direction.Z() * 14.0f,
-                                     1.7f, 0.30f};
+            event.position_radius = {cameraPos.X() + direction.X() * 14.0f, cameraPos.Z() + direction.Z() * 14.0f, 1.7f,
+                                     0.30f};
             event.velocity_kind = {direction.X() * 2.0f, direction.Z() * 2.0f, -4.0f,
                                    static_cast<float>(WGR_WATER_INTERACTION_OBJECT)};
             event.time_life_foam_mass = {0.0f, 1.6f, 0.35f, 0.0f};
@@ -721,8 +740,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
                                  source.positionRadius[3]};
         event.velocity_kind = {source.velocityKind[0], source.velocityKind[1], source.velocityKind[2],
                                source.velocityKind[3]};
-        event.time_life_foam_mass = {source.timeLifeFoamMass[0], source.timeLifeFoamMass[1],
-                                     source.timeLifeFoamMass[2], source.timeLifeFoamMass[3]};
+        event.time_life_foam_mass = {source.timeLifeFoamMass[0], source.timeLifeFoamMass[1], source.timeLifeFoamMass[2],
+                                     source.timeLifeFoamMass[3]};
         event.direction_depth_flags = {source.directionDepthFlags[0], source.directionDepthFlags[1],
                                        source.directionDepthFlags[2], source.directionDepthFlags[3]};
     }
@@ -734,26 +753,26 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     const Helicopter* lastRotor = _engine.LastGrassRotor();
     auto addRotorWash = [&](const Helicopter* helicopter)
     {
-        if (!helicopter || eventCount >= WGR_MAX_WATER_INTERACTIONS) return;
+        if (!helicopter || eventCount >= WGR_MAX_WATER_INTERACTIONS)
+            return;
         const float rotorSpeed = std::clamp(helicopter->RotorSpeed(), 0.0f, 1.0f);
-        if (rotorSpeed <= 0.02f) return;
+        if (rotorSpeed <= 0.02f)
+            return;
         const Vector3 pos = helicopter->Position();
         const float altitude = pos.Y() - _params.sea_level;
         // A hovering aircraft can still stir the surface from several metres
         // up, but do not inject ripples from a helicopter high in the sky or
         // parked over dry land.
-        if (altitude < -2.0f || altitude > 30.0f || GLandscape->SurfaceY(pos.X(), pos.Z()) > _params.sea_level + 0.25f) return;
+        if (altitude < -2.0f || altitude > 30.0f || GLandscape->SurfaceY(pos.X(), pos.Z()) > _params.sea_level + 0.25f)
+            return;
         WgrWaterInteractionEvent& event = events[eventCount++];
-        event.position_radius = {pos.X(), pos.Z(), 3.0f + 12.0f * rotorSpeed,
-                                 1.10f * rotorSpeed * rotorSpeed};
-        event.velocity_kind = {0.0f, 0.0f, -20.0f,
-                               static_cast<float>(WGR_WATER_INTERACTION_BULLET)};
+        event.position_radius = {pos.X(), pos.Z(), 3.0f + 12.0f * rotorSpeed, 1.10f * rotorSpeed * rotorSpeed};
+        event.velocity_kind = {0.0f, 0.0f, -20.0f, static_cast<float>(WGR_WATER_INTERACTION_BULLET)};
         // Bullet events are one-frame impulses. Re-emitting them every frame
         // while the rotor turns creates a fast, dense ripple field that stops
         // immediately when the RPM reaches zero.
         event.time_life_foam_mass = {now, 0.0f, 0.0f, 0.0f};
-        event.direction_depth_flags = {0.0f, 0.0f, 0.0f,
-                                       static_cast<float>(WGR_WATER_INTERACTION_PENDING_IMPULSE)};
+        event.direction_depth_flags = {0.0f, 0.0f, 0.0f, static_cast<float>(WGR_WATER_INTERACTION_PENDING_IMPULSE)};
     };
     bool lastRotorWasListed = false;
     if (GWorld)
@@ -761,16 +780,21 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         for (int i = 0; i < GWorld->NVehicles(); ++i)
         {
             const Helicopter* helicopter = dynamic_cast<const Helicopter*>(GWorld->GetVehicle(i));
-            if (helicopter == lastRotor) lastRotorWasListed = true;
+            if (helicopter == lastRotor)
+                lastRotorWasListed = true;
             addRotorWash(helicopter);
         }
     }
     // Mirrors grass: the dismounted player helicopter may be absent from the
     // distributed list for a short handoff, but its weak link still exposes RPM.
-    if (!lastRotorWasListed) addRotorWash(lastRotor);
+    if (!lastRotorWasListed)
+        addRotorWash(lastRotor);
 
-    const bool reset = !_haveInteractionDomain || std::abs(originX - _interaction.domain.x) > interactionSize * 0.5f || std::abs(originZ - _interaction.domain.y) > interactionSize * 0.5f;
-    _interaction.previous_domain = _haveInteractionDomain ? _interaction.domain : WgrVec4{originX, originZ, interactionSize, 1.0f / interactionSize};
+    const bool reset = !_haveInteractionDomain || std::abs(originX - _interaction.domain.x) > interactionSize * 0.5f ||
+                       std::abs(originZ - _interaction.domain.y) > interactionSize * 0.5f;
+    _interaction.previous_domain = _haveInteractionDomain
+                                       ? _interaction.domain
+                                       : WgrVec4{originX, originZ, interactionSize, 1.0f / interactionSize};
     _interaction.domain = {originX, originZ, interactionSize, 1.0f / interactionSize};
     _interaction.grid = {256.0f, dt, static_cast<float>(eventCount), reset ? 1.0f : 0.0f};
     _interaction.physics = {12.0f, 1.6f, 0.35f, 1.2f};
@@ -828,16 +852,14 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
             // is continuous in the node centre, so neighbouring nodes now agree and the crease is
             // gone. Uphill (toward shallower water) is the direction the waves run.
             auto sampleHeight = [&](int x, int z)
-            {
-                return land.GetHeight(std::clamp(z, 0, terrainRange - 1), std::clamp(x, 0, terrainRange - 1));
-            };
+            { return land.GetHeight(std::clamp(z, 0, terrainRange - 1), std::clamp(x, 0, terrainRange - 1)); };
             // A multi-cell radius smooths out single-cell terrain noise so the train direction is
             // stable rather than jittering along a rough seabed.
             constexpr int kGradientRadius = 4;
-            const float gx = sampleHeight(centreIx + kGradientRadius, centreIz) -
-                             sampleHeight(centreIx - kGradientRadius, centreIz);
-            const float gz = sampleHeight(centreIx, centreIz + kGradientRadius) -
-                             sampleHeight(centreIx, centreIz - kGradientRadius);
+            const float gx =
+                sampleHeight(centreIx + kGradientRadius, centreIz) - sampleHeight(centreIx - kGradientRadius, centreIz);
+            const float gz =
+                sampleHeight(centreIx, centreIz + kGradientRadius) - sampleHeight(centreIx, centreIz - kGradientRadius);
             const float gradientLength = std::sqrt(gx * gx + gz * gz);
             if (gradientLength > 1.0e-5f)
             {
@@ -846,7 +868,7 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
             }
             // Distance to land is still useful as a band, but it no longer sets the direction, so
             // the coarse 8-way probe is fine here.
-            constexpr int directions[8][2] = {{1,0},{-1,0},{0,1},{0,-1},{1,1},{1,-1},{-1,1},{-1,-1}};
+            constexpr int directions[8][2] = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}, {1, 1}, {1, -1}, {-1, 1}, {-1, -1}};
             for (const auto& d : directions)
             {
                 for (int step = 2; step <= 64; step += 2)
@@ -889,8 +911,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     auto belowSea = [&](const CdlodNode& n) { return n.minY <= _seaThreshold; };
 
     _selected.clear();
-    SelectVisibleCdlod(_tree, _rootIndex, _numLevels, _ranges, _morphRegion, *camera, rx0, rz0, rx1, rz1,
-                       belowSea, emit);
+    SelectVisibleCdlod(_tree, _rootIndex, _numLevels, _ranges, _morphRegion, *camera, rx0, rz0, rx1, rz1, belowSea,
+                       emit);
 
     // WTR-LOD diagnostic: the per-LOD mesh-density work only pays off if the selection
     // actually spreads across levels. With _baseMult = 8 and a 32-texel leaf, ranges[0]
@@ -912,7 +934,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
         const bool rateOk = (nowClock - lastLog) >= std::chrono::seconds(2);
         if (std::abs(lastLoggedBaseMult - _baseMult) > 0.001f)
         {
-            LOG_INFO(Graphics, "Water CDLOD config: leafSize={:.1f}m levels={} baseMult={:.1f} ratio={:.2f} range0={:.0f}m",
+            LOG_INFO(Graphics,
+                     "Water CDLOD config: leafSize={:.1f}m levels={} baseMult={:.1f} ratio={:.2f} range0={:.0f}m",
                      _leafSize, _numLevels, _baseMult, _lodRatio, _ranges.empty() ? 0.0f : _ranges[0]);
             lastLoggedBaseMult = _baseMult;
         }
@@ -935,19 +958,17 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
                         total += ms[i];
                     }
                 }
-                LOG_INFO(Graphics,
-                         "Water GPU ms: evolve={:.3f} fftH={:.3f} fftV={:.3f} compose={:.3f} "
-                         "draw={:.3f} foam={:.3f} interaction={:.3f} planar={:.3f} total={:.3f}",
-                         ms[WGR_GPU_TIMER_SPECTRUM_EVOLVE], ms[WGR_GPU_TIMER_FFT_HORIZONTAL],
-                         ms[WGR_GPU_TIMER_FFT_VERTICAL], ms[WGR_GPU_TIMER_FFT_COMPOSE],
-                         ms[WGR_GPU_TIMER_WATER_DRAW], ms[WGR_GPU_TIMER_FOAM],
-                         ms[WGR_GPU_TIMER_INTERACTION],
-                         std::max(ms[WGR_GPU_TIMER_PLANAR_SKY], 0.0f) +
-                             std::max(ms[WGR_GPU_TIMER_PLANAR_TERRAIN], 0.0f) +
-                             std::max(ms[WGR_GPU_TIMER_PLANAR_OBJECTS], 0.0f) +
-                             std::max(ms[WGR_GPU_TIMER_PLANAR_CLOUDS], 0.0f) +
-                             std::max(ms[WGR_GPU_TIMER_PLANAR_MIPS], 0.0f),
-                         total);
+                LOG_INFO(
+                    Graphics,
+                    "Water GPU ms: evolve={:.3f} fftH={:.3f} fftV={:.3f} compose={:.3f} "
+                    "draw={:.3f} foam={:.3f} interaction={:.3f} planar={:.3f} total={:.3f}",
+                    ms[WGR_GPU_TIMER_SPECTRUM_EVOLVE], ms[WGR_GPU_TIMER_FFT_HORIZONTAL], ms[WGR_GPU_TIMER_FFT_VERTICAL],
+                    ms[WGR_GPU_TIMER_FFT_COMPOSE], ms[WGR_GPU_TIMER_WATER_DRAW], ms[WGR_GPU_TIMER_FOAM],
+                    ms[WGR_GPU_TIMER_INTERACTION],
+                    std::max(ms[WGR_GPU_TIMER_PLANAR_SKY], 0.0f) + std::max(ms[WGR_GPU_TIMER_PLANAR_TERRAIN], 0.0f) +
+                        std::max(ms[WGR_GPU_TIMER_PLANAR_OBJECTS], 0.0f) +
+                        std::max(ms[WGR_GPU_TIMER_PLANAR_CLOUDS], 0.0f) + std::max(ms[WGR_GPU_TIMER_PLANAR_MIPS], 0.0f),
+                    total);
             }
         }
         if (rateOk)

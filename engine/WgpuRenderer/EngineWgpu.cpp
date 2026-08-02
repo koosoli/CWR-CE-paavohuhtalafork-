@@ -22,12 +22,12 @@
 #include <Poseidon/Graphics/Rendering/Lighting/Material.hpp> // TexMaterial::Combine (GPU-driven material extract)
 #include <Poseidon/Graphics/Rendering/Shape/ClipShape.hpp>
 #include <Poseidon/Graphics/Rendering/Shape/Shape.hpp>
-#include <Poseidon/World/MapTypes.hpp> // MapBush (spherical/canopy-normal flagging)
-#include <Poseidon/World/Scene/Object.hpp> // Object accessors (GPU-driven retained scene)
-#include <Poseidon/World/World.hpp> // live player/vehicle interaction for grass
+#include <Poseidon/World/MapTypes.hpp>                         // MapBush (spherical/canopy-normal flagging)
+#include <Poseidon/World/Scene/Object.hpp>                     // Object accessors (GPU-driven retained scene)
+#include <Poseidon/World/World.hpp>                            // live player/vehicle interaction for grass
 #include <Poseidon/World/Entities/Vehicles/Air/Helicopter.hpp> // rotor wash for grass
-#include <Poseidon/World/Scene/ObjectClasses.hpp> // ForestPlain (mode-1 conform exclusion)
-#include <Poseidon/World/Terrain/Landscape.hpp> // GLandscape->SurfaceY (GPU-driven conform bcSurfaceY)
+#include <Poseidon/World/Scene/ObjectClasses.hpp>              // ForestPlain (mode-1 conform exclusion)
+#include <Poseidon/World/Terrain/Landscape.hpp>                // GLandscape->SurfaceY (GPU-driven conform bcSurfaceY)
 #include <Poseidon/Graphics/Shared/PNGWriter.hpp>
 #include <Poseidon/Graphics/Shared/ScreenshotWriter.hpp>
 #include <Poseidon/Graphics/Textures/TexturePreload.hpp>
@@ -74,7 +74,7 @@ constexpr uint32_t U32(T value)
 
 WgrSlice<WgrMeshVertex> AsMeshVerts(const std::vector<SVertex>& v)
 {
-    return { reinterpret_cast<const WgrMeshVertex*>(v.data()), U32(v.size()) };
+    return {reinterpret_cast<const WgrMeshVertex*>(v.data()), U32(v.size())};
 }
 
 // By-eye tonemap/grade presets keyed by time of day (hours). Sorted ascending; the
@@ -92,12 +92,12 @@ struct TonemapKey
 // duplicated at 2:00 and 20:00 so the [first,last]-clamping interpolation wraps midnight
 // (00:00-02:00 clamps to the 2:00 night key; 20:00-24:00 clamps to the 20:00 night key).
 const TonemapKey kTonemapPresets[] = {
-    {2.0f,   {3.625f, 0.031f, 0.145f, 1.0f, 0.939f, 0.0f, 1.029f, true, true}}, // night
+    {2.0f, {3.625f, 0.031f, 0.145f, 1.0f, 0.939f, 0.0f, 1.029f, true, true}},   // night
     {5.833f, {2.512f, 0.258f, 0.056f, 1.0f, 1.083f, 0.0f, 2.758f, true, true}}, // 5:50 dawn
-    {12.0f,  {3.625f, 0.045f, 0.040f, 1.0f, 1.119f, 0.0f, 0.945f, true, true}}, // noon
-    {17.0f,  {3.625f, 0.150f, 0.109f, 1.0f, 1.066f, 0.0f, 1.016f, true, true}}, // 17:00
-    {18.5f,  {3.625f, 0.107f, 0.145f, 1.0f, 1.142f, 0.0f, 1.061f, true, true}}, // 18:30 dusk
-    {20.0f,  {3.625f, 0.031f, 0.145f, 1.0f, 0.939f, 0.0f, 1.029f, true, true}}, // night
+    {12.0f, {3.625f, 0.045f, 0.040f, 1.0f, 1.119f, 0.0f, 0.945f, true, true}},  // noon
+    {17.0f, {3.625f, 0.150f, 0.109f, 1.0f, 1.066f, 0.0f, 1.016f, true, true}},  // 17:00
+    {18.5f, {3.625f, 0.107f, 0.145f, 1.0f, 1.142f, 0.0f, 1.061f, true, true}},  // 18:30 dusk
+    {20.0f, {3.625f, 0.031f, 0.145f, 1.0f, 0.939f, 0.0f, 1.029f, true, true}},  // night
 };
 
 // By-eye procedural-sky atmosphere presets keyed by time of day (hours), interpolated
@@ -112,24 +112,66 @@ struct SkyKey
     Engine::SkySettings s;
 };
 const SkyKey kSkyPresets[] = {
-    {2.0f, {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f}, .mie = 20.94e-6f, .mieG = 0.752f,
-            .turbidity = 2.44f, .ozone = 3.73f, .sunAngularRadius = 0.0051f, .sunIntensity = 2.07f,
-            .exposure = 0.272f, .nightIntensity = 0.0002f}}, // night
-    {5.833f, {.rayleigh = {5.80e-6f, 13.50e-6f, 33.10e-6f}, .mie = 16.18e-6f, .mieG = 0.760f,
-              .turbidity = 2.56f, .ozone = 1.55f, .sunAngularRadius = 0.0070f, .sunIntensity = 4.01f,
-              .exposure = 0.329f, .nightIntensity = 0.0005f}}, // 5:50 dawn
-    {12.0f, {.rayleigh = {5.80e-6f, 14.13e-6f, 48.89e-6f}, .mie = 22.42e-6f, .mieG = 0.760f,
-             .turbidity = 2.44f, .ozone = 1.00f, .sunAngularRadius = 0.0070f, .sunIntensity = 24.74f,
-             .exposure = 0.909f, .nightIntensity = 0.0005f}}, // noon
-    {17.0f, {.rayleigh = {1.99e-6f, 9.08e-6f, 48.89e-6f}, .mie = 20.94e-6f, .mieG = 0.857f,
-             .turbidity = 2.44f, .ozone = 1.55f, .sunAngularRadius = 0.0183f, .sunIntensity = 24.74f,
-             .exposure = 0.909f, .nightIntensity = 0.0005f}}, // 17:00
-    {18.5f, {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f}, .mie = 20.94e-6f, .mieG = 0.752f,
-             .turbidity = 2.44f, .ozone = 3.73f, .sunAngularRadius = 0.0173f, .sunIntensity = 8.26f,
-             .exposure = 0.385f, .nightIntensity = 0.0005f}}, // 18:30 dusk
-    {20.0f, {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f}, .mie = 20.94e-6f, .mieG = 0.752f,
-             .turbidity = 2.44f, .ozone = 3.73f, .sunAngularRadius = 0.0051f, .sunIntensity = 2.07f,
-             .exposure = 0.272f, .nightIntensity = 0.0002f}}, // night
+    {2.0f,
+     {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f},
+      .mie = 20.94e-6f,
+      .mieG = 0.752f,
+      .turbidity = 2.44f,
+      .ozone = 3.73f,
+      .sunAngularRadius = 0.0051f,
+      .sunIntensity = 2.07f,
+      .exposure = 0.272f,
+      .nightIntensity = 0.0002f}}, // night
+    {5.833f,
+     {.rayleigh = {5.80e-6f, 13.50e-6f, 33.10e-6f},
+      .mie = 16.18e-6f,
+      .mieG = 0.760f,
+      .turbidity = 2.56f,
+      .ozone = 1.55f,
+      .sunAngularRadius = 0.0070f,
+      .sunIntensity = 4.01f,
+      .exposure = 0.329f,
+      .nightIntensity = 0.0005f}}, // 5:50 dawn
+    {12.0f,
+     {.rayleigh = {5.80e-6f, 14.13e-6f, 48.89e-6f},
+      .mie = 22.42e-6f,
+      .mieG = 0.760f,
+      .turbidity = 2.44f,
+      .ozone = 1.00f,
+      .sunAngularRadius = 0.0070f,
+      .sunIntensity = 24.74f,
+      .exposure = 0.909f,
+      .nightIntensity = 0.0005f}}, // noon
+    {17.0f,
+     {.rayleigh = {1.99e-6f, 9.08e-6f, 48.89e-6f},
+      .mie = 20.94e-6f,
+      .mieG = 0.857f,
+      .turbidity = 2.44f,
+      .ozone = 1.55f,
+      .sunAngularRadius = 0.0183f,
+      .sunIntensity = 24.74f,
+      .exposure = 0.909f,
+      .nightIntensity = 0.0005f}}, // 17:00
+    {18.5f,
+     {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f},
+      .mie = 20.94e-6f,
+      .mieG = 0.752f,
+      .turbidity = 2.44f,
+      .ozone = 3.73f,
+      .sunAngularRadius = 0.0173f,
+      .sunIntensity = 8.26f,
+      .exposure = 0.385f,
+      .nightIntensity = 0.0005f}}, // 18:30 dusk
+    {20.0f,
+     {.rayleigh = {1.99e-6f, 9.08e-6f, 29.94e-6f},
+      .mie = 20.94e-6f,
+      .mieG = 0.752f,
+      .turbidity = 2.44f,
+      .ozone = 3.73f,
+      .sunAngularRadius = 0.0051f,
+      .sunIntensity = 2.07f,
+      .exposure = 0.272f,
+      .nightIntensity = 0.0002f}}, // night
 };
 
 float LerpF(float a, float b, float t)
@@ -274,11 +316,19 @@ void WgrLogThunk(int32_t level, const char* msg, void* /*user*/)
     switch (level)
     {
         case WGR_LOG_TRACE:
-        case WGR_LOG_DEBUG: LOG_DEBUG(Graphics, "wgpu: {}", msg); break;
-        case WGR_LOG_WARN: LOG_WARN(Graphics, "wgpu: {}", msg); break;
-        case WGR_LOG_ERROR: LOG_ERROR(Graphics, "wgpu: {}", msg); break;
+        case WGR_LOG_DEBUG:
+            LOG_DEBUG(Graphics, "wgpu: {}", msg);
+            break;
+        case WGR_LOG_WARN:
+            LOG_WARN(Graphics, "wgpu: {}", msg);
+            break;
+        case WGR_LOG_ERROR:
+            LOG_ERROR(Graphics, "wgpu: {}", msg);
+            break;
         case WGR_LOG_INFO:
-        default: LOG_INFO(Graphics, "wgpu: {}", msg); break;
+        default:
+            LOG_INFO(Graphics, "wgpu: {}", msg);
+            break;
     }
 }
 
@@ -518,9 +568,13 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     LOG_INFO(Graphics, "Wgpu: creating renderer {} ({}x{}), crate v{}, build {}", GetRendererName().Data(), _w, _h,
              wgr_version(), wgr_build_id());
 
-    const WgrAbiCheck abiCheck{WGR_ABI_VERSION, sizeof(WgrAbiCheck), sizeof(WgrSurfaceDesc), sizeof(WgrLogCallbacks),
-                               sizeof(WgrFrame), WGR_ABI_FEATURE_BUILD_ID | WGR_ABI_FEATURE_SAFE_DIAGNOSTICS |
-                                                     WGR_ABI_FEATURE_RUNTIME_CAPABILITIES};
+    const WgrAbiCheck abiCheck{WGR_ABI_VERSION,
+                               sizeof(WgrAbiCheck),
+                               sizeof(WgrSurfaceDesc),
+                               sizeof(WgrLogCallbacks),
+                               sizeof(WgrFrame),
+                               WGR_ABI_FEATURE_BUILD_ID | WGR_ABI_FEATURE_SAFE_DIAGNOSTICS |
+                                   WGR_ABI_FEATURE_RUNTIME_CAPABILITIES};
     const uint32_t runtimeAbi = wgr_abi_version();
     if (runtimeAbi != WGR_ABI_VERSION || !wgr_abi_validate(&abiCheck))
     {
@@ -817,14 +871,14 @@ WgrRgba8 PackColor(PackedColor c)
 
 WgrVertex2D MakeVertex(float x, float y, float u, float v, PackedColor c)
 {
-    return WgrVertex2D {{x, y, 0.0f}, 1.0f, 1.0f, {u, v}, PackColor(c)};
+    return WgrVertex2D{{x, y, 0.0f}, 1.0f, 1.0f, {u, v}, PackColor(c)};
 }
 
 WgrVertex2D MakeScreenVertex(const TLVertex& v)
 {
     // Fog blend factor = specular alpha (GL33's vFogTC): 255 -> keep colour, 0 -> full fog.
     const float fog = v.specular.A8() / 255.0f;
-    return WgrVertex2D {{v.pos[0], v.pos[1], v.pos[2]}, v.rhw, fog, {v.t0.u, v.t0.v}, PackColor(v.color)};
+    return WgrVertex2D{{v.pos[0], v.pos[1], v.pos[2]}, v.rhw, fog, {v.t0.u, v.t0.v}, PackColor(v.color)};
 }
 
 uint64_t ResolveTexture(const MipInfo& mip)
@@ -881,7 +935,7 @@ void EngineWgpu::Clear(bool clearZ, bool clearColor, PackedColor color)
     }
     if (clearZ)
     {
-        _cmds.push_back(WgrCmd { WGR_CMD_CLEAR_DEPTH, 0 });
+        _cmds.push_back(WgrCmd{WGR_CMD_CLEAR_DEPTH, 0});
     }
 }
 
@@ -1320,7 +1374,6 @@ VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType type)
     if (ni <= 0)
     {
         return nullptr;
-
     }
 
     static_assert(sizeof(SVertex) == sizeof(WgrMeshVertex), "SVertex must match WgrMeshVertex");
@@ -1330,10 +1383,7 @@ VertexBuffer* EngineWgpu::CreateVertexBuffer(const Shape& src, VBType type)
     render::mesh::BuildIndices(src, indices.data());
 
     const uint64_t mesh = wgr_mesh_create(
-        _renderer,
-        AsMeshVerts(verts),
-        WgrSlice<uint16_t>{reinterpret_cast<const uint16_t*>(indices.data()), U32(ni)}
-    );
+        _renderer, AsMeshVerts(verts), WgrSlice<uint16_t>{reinterpret_cast<const uint16_t*>(indices.data()), U32(ni)});
 
     if (!mesh)
     {
@@ -1702,8 +1752,8 @@ namespace
 // DrawSectionTL's texture/sampler/alpha/material derivation, minus the sun fold (done
 // in-shader) and the per-object/mesh spec (registration is per-shape, object spec ~0 for
 // static clutter).
-bool ClassifyGpuSection(const Shape& s, uint64_t mesh, const AutoArray<render::mesh::MeshSection>& secs,
-                        int i, WgrModelSection& secOut, WgrModelMaterial& matOut)
+bool ClassifyGpuSection(const Shape& s, uint64_t mesh, const AutoArray<render::mesh::MeshSection>& secs, int i,
+                        WgrModelSection& secOut, WgrModelMaterial& matOut)
 {
     if (i >= secs.Size())
     {
@@ -1843,8 +1893,8 @@ WgrInstance BuildGpuInstance(const Object& obj, uint32_t model, const ConformPla
         {
             const float surf = GLandscape ? GLandscape->SurfaceY(center.X(), center.Z()) : 0.0f;
             const LODShapeWithShadow* s = obj.GetShape();
-            LOG_INFO(Graphics, "CONFORM name={} mode={} posY={} surfY={} above={} scale={}",
-                     s ? s->Name() : "?", cp.mode, center.Y(), surf, center.Y() - surf, obj.Scale());
+            LOG_INFO(Graphics, "CONFORM name={} mode={} posY={} surfY={} above={} scale={}", s ? s->Name() : "?",
+                     cp.mode, center.Y(), surf, center.Y() - surf, obj.Scale());
         }
     }
     return inst;
@@ -1919,10 +1969,8 @@ static ConformPlane GpuConformFor(Object& obj, const LODShapeWithShadow& shape, 
 //
 // The per-tree centroid is exactly the pivot future tree-sway will animate around, so this data is
 // reusable beyond lighting.
-static uint32_t BuildForestCrownComponents(const std::vector<SVertex>& verts,
-                                           const std::vector<VertexIndex>& indices,
-                                           std::vector<WgrVec4>& centresOut,
-                                           std::vector<uint32_t>& compOut)
+static uint32_t BuildForestCrownComponents(const std::vector<SVertex>& verts, const std::vector<VertexIndex>& indices,
+                                           std::vector<WgrVec4>& centresOut, std::vector<uint32_t>& compOut)
 {
     const uint32_t nv = U32(verts.size());
     compOut.assign(nv, 0);
@@ -1962,8 +2010,7 @@ static uint32_t BuildForestCrownComponents(const std::vector<SVertex>& verts,
     std::map<std::array<int64_t, 3>, uint32_t> weld;
     for (uint32_t i = 0; i < nv; i++)
     {
-        const std::array<int64_t, 3> key{std::llround(verts[i].pos.X() / eps),
-                                         std::llround(verts[i].pos.Y() / eps),
+        const std::array<int64_t, 3> key{std::llround(verts[i].pos.X() / eps), std::llround(verts[i].pos.Y() / eps),
                                          std::llround(verts[i].pos.Z() / eps)};
         auto [it, inserted] = weld.try_emplace(key, i);
         if (!inserted)
@@ -2040,8 +2087,7 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
     // per LOD so vs_gpu can bend its cutout normals radially per tree (its single instance centre
     // is meaningless per-tree). Individual trees/bushes keep using inst.center (BuildGpuInstance).
     const MapType mapType = shape->GetMapType();
-    const bool isForest =
-        mapType == MapForestBorder || mapType == MapForestTriangle || mapType == MapForestSquare;
+    const bool isForest = mapType == MapForestBorder || mapType == MapForestTriangle || mapType == MapForestSquare;
     // §12 partial coverage. `hasProxies` = some level carries interior furniture proxies (drawn
     // by the CPU Object::DrawProxies); `hasComplement` = some visible section is NOT GPU-owned
     // (blend glass / on-surface decal, drawn by the CPU with GSkipGpuOwnedSections set). Either
@@ -2149,17 +2195,17 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
             const uint32_t ncomp = BuildForestCrownComponents(verts, indices, centres, comp);
             if (ncomp > 0)
             {
-                const uint32_t base = wgr_register_crown_centres(
-                    _renderer, WgrSlice<WgrVec4>{centres.data(), U32(centres.size())});
+                const uint32_t base =
+                    wgr_register_crown_centres(_renderer, WgrSlice<WgrVec4>{centres.data(), U32(centres.size())});
                 for (size_t vi = 0; vi < verts.size(); vi++)
                 {
                     verts[vi].conform = base + comp[vi];
                 }
             }
         }
-        const uint64_t mesh = wgr_mesh_create(
-            _renderer, AsMeshVerts(verts),
-            WgrSlice<uint16_t>{reinterpret_cast<const uint16_t*>(indices.data()), U32(ni)});
+        const uint64_t mesh =
+            wgr_mesh_create(_renderer, AsMeshVerts(verts),
+                            WgrSlice<uint16_t>{reinterpret_cast<const uint16_t*>(indices.data()), U32(ni)});
         if (!mesh)
         {
             eligible = false;
@@ -2204,16 +2250,15 @@ uint32_t EngineWgpu::RegisterGpuModel(LODShapeWithShadow* shape)
     uint32_t model = WGR_INVALID_MODEL;
     if (eligible && !lods.empty() && !sections.empty())
     {
-        model = wgr_model_register(_renderer, shape->BoundingSphere(),
-                                   WgrSlice<WgrModelLod>{lods.data(), U32(lods.size())},
-                                   WgrSlice<WgrModelSection>{sections.data(), U32(sections.size())},
-                                   WgrSlice<WgrModelMaterial>{materials.data(), U32(materials.size())});
+        model =
+            wgr_model_register(_renderer, shape->BoundingSphere(), WgrSlice<WgrModelLod>{lods.data(), U32(lods.size())},
+                               WgrSlice<WgrModelSection>{sections.data(), U32(sections.size())},
+                               WgrSlice<WgrModelMaterial>{materials.data(), U32(materials.size())});
     }
     _gpuModels[shape] = model;
     // Cache coverage so SceneObjectCreated can tag each instance and GpuDrivenCoverage can tell
     // the scene loop whether to suppress the whole CPU draw or only the GPU-owned sections.
-    _gpuModelCoverage[shape] =
-        (hasProxies || hasComplement) ? GpuDrawCoverage::Partial : GpuDrawCoverage::Full;
+    _gpuModelCoverage[shape] = (hasProxies || hasComplement) ? GpuDrawCoverage::Partial : GpuDrawCoverage::Full;
     // §12d-full: remember complement-bearing shapes so a proxies-only Partial can be upgraded to
     // Full once its proxies are all GPU-driven, but a complement-bearing one never is.
     if (hasComplement)
@@ -2271,8 +2316,8 @@ bool EngineWgpu::EmitGpuProxies(Object* parent, LODShapeWithShadow* shape)
         // therefore keeps its CPU draw (not eligible for the §12d-full Full-downgrade).
         const uint32_t pmodel = pshape ? RegisterGpuModel(pshape) : WGR_INVALID_MODEL;
         const auto covIt = pshape ? _gpuModelCoverage.find(pshape) : _gpuModelCoverage.end();
-        const bool eligible = pmodel != WGR_INVALID_MODEL && covIt != _gpuModelCoverage.end() &&
-                              covIt->second == GpuDrawCoverage::Full;
+        const bool eligible =
+            pmodel != WGR_INVALID_MODEL && covIt != _gpuModelCoverage.end() && covIt->second == GpuDrawCoverage::Full;
         if (!eligible)
         {
             allEligible = false;
@@ -2506,8 +2551,8 @@ void EngineWgpu::SetCullDebugSettings(const CullDebugSettings& s)
                 const LODShapeWithShadow* shape = obj->GetShape();
                 LOG_INFO(Graphics,
                          "CULLDUMP name={} mode={} dist={} liveY={} storedY={} surf={} above={} stale={} r={}",
-                         shape ? shape->Name() : "?", gi.mode, live.Distance(camPos), live.Y(), gi.pos.Y(),
-                         surf, live.Y() - surf, live.Distance(gi.pos), obj->GetRadius());
+                         shape ? shape->Name() : "?", gi.mode, live.Distance(camPos), live.Y(), gi.pos.Y(), surf,
+                         live.Y() - surf, live.Distance(gi.pos), obj->GetRadius());
             }
             LOG_INFO(Graphics, "CULLDUMP done: {} instances within 60m (cap 48)", logged);
         }
@@ -2672,8 +2717,8 @@ bool EngineWgpu::DumpShadowMap(const char* path)
     for (size_t i = 0; i < gray.size(); i++)
     {
         const float d = depth[i];
-        gray[i] = (d >= 0.999f) ? static_cast<uint8_t>(35)
-                                : static_cast<uint8_t>((0.15f + (1.0f - d) * 0.85f) * 255.0f);
+        gray[i] =
+            (d >= 0.999f) ? static_cast<uint8_t>(35) : static_cast<uint8_t>((0.15f + (1.0f - d) * 0.85f) * 255.0f);
     }
     return PNGWriter::WritePNG(path, static_cast<int>(got), static_cast<int>(got), 1, gray.data());
 }
@@ -2796,32 +2841,32 @@ const char* EngineWgpu::GetWaterGpuTimingName(int region) const
 {
     // Ordered by WgrGpuTimerRegion — the wgr_get_gpu_timings index contract (append only).
     static const char* const kNames[WGR_GPU_TIMER_REGION_COUNT] = {
-        "Spectrum init",         // WGR_GPU_TIMER_SPECTRUM_INIT (spectrum-dirty frames only)
-        "Spectrum evolve",       // WGR_GPU_TIMER_SPECTRUM_EVOLVE
-        "FFT horizontal",        // WGR_GPU_TIMER_FFT_HORIZONTAL
-        "FFT vertical",          // WGR_GPU_TIMER_FFT_VERTICAL
-        "FFT compose",           // WGR_GPU_TIMER_FFT_COMPOSE
+        "Spectrum init",                  // WGR_GPU_TIMER_SPECTRUM_INIT (spectrum-dirty frames only)
+        "Spectrum evolve",                // WGR_GPU_TIMER_SPECTRUM_EVOLVE
+        "FFT horizontal",                 // WGR_GPU_TIMER_FFT_HORIZONTAL
+        "FFT vertical",                   // WGR_GPU_TIMER_FFT_VERTICAL
+        "FFT compose",                    // WGR_GPU_TIMER_FFT_COMPOSE
         "Interaction (inject+propagate)", // WGR_GPU_TIMER_INTERACTION (one fused kernel today)
-        "Foam update",           // WGR_GPU_TIMER_FOAM
-        "Whitewater",            // WGR_GPU_TIMER_WHITEWATER (reserved — no pass yet)
-        "Planar: sky",           // WGR_GPU_TIMER_PLANAR_SKY
-        "Planar: terrain",       // WGR_GPU_TIMER_PLANAR_TERRAIN
-        "Planar: objects",       // WGR_GPU_TIMER_PLANAR_OBJECTS (incl. reflected cull)
-        "Planar: clouds",        // WGR_GPU_TIMER_PLANAR_CLOUDS
-        "Planar: mips",          // WGR_GPU_TIMER_PLANAR_MIPS
-        "Water SSR",             // WGR_GPU_TIMER_WATER_SSR (reserved — in-shader in Water draw)
-        "Water refraction",      // WGR_GPU_TIMER_WATER_REFRACTION (reserved — in-shader in Water draw)
-        "Water draw",            // WGR_GPU_TIMER_WATER_DRAW (incl. SSR + refraction cost)
-        "Underwater froxel",     // WGR_GPU_TIMER_UNDERWATER_FROXEL (reserved — no pass yet)
-        "Underwater composite",  // WGR_GPU_TIMER_UNDERWATER_COMPOSITE (incl. caustics)
-        "Caustics",              // WGR_GPU_TIMER_CAUSTICS (reserved — rides the shaders)
-        "Place near (compute)",  // WGR_GPU_TIMER_GRASS_PLACE_NEAR
-        "Place mid (compute)",   // WGR_GPU_TIMER_GRASS_PLACE_MID
-        "Place far (compute)",   // WGR_GPU_TIMER_GRASS_PLACE_FAR
-        "Grass prepass",         // WGR_GPU_TIMER_GRASS_PREPASS (needs in-pass timestamps)
-        "Grass colour",          // WGR_GPU_TIMER_GRASS_COLOR (needs in-pass timestamps)
-        "Grass shadow",          // WGR_GPU_TIMER_GRASS_SHADOW (needs in-pass timestamps)
-        "GPU frame total",       // WGR_GPU_TIMER_FRAME_TOTAL (all submitted work)
+        "Foam update",                    // WGR_GPU_TIMER_FOAM
+        "Whitewater",                     // WGR_GPU_TIMER_WHITEWATER (reserved — no pass yet)
+        "Planar: sky",                    // WGR_GPU_TIMER_PLANAR_SKY
+        "Planar: terrain",                // WGR_GPU_TIMER_PLANAR_TERRAIN
+        "Planar: objects",                // WGR_GPU_TIMER_PLANAR_OBJECTS (incl. reflected cull)
+        "Planar: clouds",                 // WGR_GPU_TIMER_PLANAR_CLOUDS
+        "Planar: mips",                   // WGR_GPU_TIMER_PLANAR_MIPS
+        "Water SSR",                      // WGR_GPU_TIMER_WATER_SSR (reserved — in-shader in Water draw)
+        "Water refraction",               // WGR_GPU_TIMER_WATER_REFRACTION (reserved — in-shader in Water draw)
+        "Water draw",                     // WGR_GPU_TIMER_WATER_DRAW (incl. SSR + refraction cost)
+        "Underwater froxel",              // WGR_GPU_TIMER_UNDERWATER_FROXEL (reserved — no pass yet)
+        "Underwater composite",           // WGR_GPU_TIMER_UNDERWATER_COMPOSITE (incl. caustics)
+        "Caustics",                       // WGR_GPU_TIMER_CAUSTICS (reserved — rides the shaders)
+        "Place near (compute)",           // WGR_GPU_TIMER_GRASS_PLACE_NEAR
+        "Place mid (compute)",            // WGR_GPU_TIMER_GRASS_PLACE_MID
+        "Place far (compute)",            // WGR_GPU_TIMER_GRASS_PLACE_FAR
+        "Grass prepass",                  // WGR_GPU_TIMER_GRASS_PREPASS (needs in-pass timestamps)
+        "Grass colour",                   // WGR_GPU_TIMER_GRASS_COLOR (needs in-pass timestamps)
+        "Grass shadow",                   // WGR_GPU_TIMER_GRASS_SHADOW (needs in-pass timestamps)
+        "GPU frame total",                // WGR_GPU_TIMER_FRAME_TOTAL (all submitted work)
     };
     return (region >= 0 && region < (int)WGR_GPU_TIMER_REGION_COUNT) ? kNames[region] : "";
 }
@@ -2930,10 +2975,9 @@ uint32_t EngineWgpu::GetRuntimeCapabilityFlags() const
     // is absent.
     using GetRuntimeCapabilitiesFn = uint32_t (*)(WgrRenderer*);
     const HMODULE module = GetModuleHandleA("wgpu_renderer.dll");
-    const auto getCapabilities = module
-                                     ? reinterpret_cast<GetRuntimeCapabilitiesFn>(
-                                           GetProcAddress(module, "wgr_get_runtime_capabilities"))
-                                     : nullptr;
+    const auto getCapabilities =
+        module ? reinterpret_cast<GetRuntimeCapabilitiesFn>(GetProcAddress(module, "wgr_get_runtime_capabilities"))
+               : nullptr;
     return getCapabilities ? getCapabilities(_renderer) : 0;
 #else
     return 0;
@@ -2980,37 +3024,72 @@ void EngineWgpu::SetWaterSettings(const WaterSettings& s)
 
 void EngineWgpu::SyncWaterLookProfile()
 {
-    if (!GLandscape) return;
+    if (!GLandscape)
+        return;
     const std::string map = GLandscape->GetName();
-    if (map.empty()) return;
-    auto pathFor = [](const std::string& name) {
+    if (map.empty())
+        return;
+    auto pathFor = [](const std::string& name)
+    {
         std::string safe;
-        for (char c : name) safe += (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
+        for (char c : name)
+            safe += (std::isalnum(static_cast<unsigned char>(c)) || c == '-' || c == '_') ? c : '_';
         return std::filesystem::path(GamePaths::Instance().UserDir()) / "water-look" / (safe + ".cfg");
     };
-    auto save = [&](const std::string& name) {
-        if (!_waterLookDirty || name.empty()) return;
-        const auto path = pathFor(name); std::error_code ec; std::filesystem::create_directories(path.parent_path(), ec);
-        std::ofstream out(path, std::ios::trunc); if (!out) { LOG_WARN(Graphics, "Water look: cannot write '{}'", path.string()); return; }
+    auto save = [&](const std::string& name)
+    {
+        if (!_waterLookDirty || name.empty())
+            return;
+        const auto path = pathFor(name);
+        std::error_code ec;
+        std::filesystem::create_directories(path.parent_path(), ec);
+        std::ofstream out(path, std::ios::trunc);
+        if (!out)
+        {
+            LOG_WARN(Graphics, "Water look: cannot write '{}'", path.string());
+            return;
+        }
         const auto& s = _waterLook;
         out << "v 1\nwave " << s.waveAmp << ' ' << s.waveChoppy << ' ' << s.waveSpeed << ' ' << s.waveScale << '\n';
-        out << "colour " << s.shallowColor[0] << ' ' << s.shallowColor[1] << ' ' << s.shallowColor[2] << ' ' << s.deepColor[0] << ' ' << s.deepColor[1] << ' ' << s.deepColor[2] << '\n';
-        out << "coast " << s.colorExt << ' ' << s.coastFade << ' ' << s.foamWidth << ' ' << s.foamIntensity << ' ' << s.swashAmp << ' ' << s.swashSpeed << ' ' << s.wetHeight << ' ' << s.wetDarken << '\n';
+        out << "colour " << s.shallowColor[0] << ' ' << s.shallowColor[1] << ' ' << s.shallowColor[2] << ' '
+            << s.deepColor[0] << ' ' << s.deepColor[1] << ' ' << s.deepColor[2] << '\n';
+        out << "coast " << s.colorExt << ' ' << s.coastFade << ' ' << s.foamWidth << ' ' << s.foamIntensity << ' '
+            << s.swashAmp << ' ' << s.swashSpeed << ' ' << s.wetHeight << ' ' << s.wetDarken << '\n';
         out << "surface " << s.glitterGain << ' ' << s.sssGain << ' ' << s.reflectionGain << '\n';
-        if (out.good()) _waterLookDirty = false;
+        if (out.good())
+            _waterLookDirty = false;
     };
-    if (map == _waterLookMap) { save(map); return; }
-    save(_waterLookMap); _waterLook = WaterSettings{};
-    std::ifstream in(pathFor(map)); std::string key;
-    while (in >> key) {
-        if (key == "v") { int v; in >> v; }
-        else if (key == "wave") in >> _waterLook.waveAmp >> _waterLook.waveChoppy >> _waterLook.waveSpeed >> _waterLook.waveScale;
-        else if (key == "colour") in >> _waterLook.shallowColor[0] >> _waterLook.shallowColor[1] >> _waterLook.shallowColor[2] >> _waterLook.deepColor[0] >> _waterLook.deepColor[1] >> _waterLook.deepColor[2];
-        else if (key == "coast") in >> _waterLook.colorExt >> _waterLook.coastFade >> _waterLook.foamWidth >> _waterLook.foamIntensity >> _waterLook.swashAmp >> _waterLook.swashSpeed >> _waterLook.wetHeight >> _waterLook.wetDarken;
-        else if (key == "surface") in >> _waterLook.glitterGain >> _waterLook.sssGain >> _waterLook.reflectionGain;
-        else in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    if (map == _waterLookMap)
+    {
+        save(map);
+        return;
     }
-    _waterLookMap = map; _waterLookDirty = false;
+    save(_waterLookMap);
+    _waterLook = WaterSettings{};
+    std::ifstream in(pathFor(map));
+    std::string key;
+    while (in >> key)
+    {
+        if (key == "v")
+        {
+            int v;
+            in >> v;
+        }
+        else if (key == "wave")
+            in >> _waterLook.waveAmp >> _waterLook.waveChoppy >> _waterLook.waveSpeed >> _waterLook.waveScale;
+        else if (key == "colour")
+            in >> _waterLook.shallowColor[0] >> _waterLook.shallowColor[1] >> _waterLook.shallowColor[2] >>
+                _waterLook.deepColor[0] >> _waterLook.deepColor[1] >> _waterLook.deepColor[2];
+        else if (key == "coast")
+            in >> _waterLook.colorExt >> _waterLook.coastFade >> _waterLook.foamWidth >> _waterLook.foamIntensity >>
+                _waterLook.swashAmp >> _waterLook.swashSpeed >> _waterLook.wetHeight >> _waterLook.wetDarken;
+        else if (key == "surface")
+            in >> _waterLook.glitterGain >> _waterLook.sssGain >> _waterLook.reflectionGain;
+        else
+            in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    }
+    _waterLookMap = map;
+    _waterLookDirty = false;
 }
 
 void EngineWgpu::AddGrassImpact(Vector3Par position, float radius)
@@ -3032,163 +3111,173 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
     {
         return;
     }
-      const float dt = std::clamp(static_cast<float>(GetLastFrameDuration()) * 0.001f, 0.001f, 0.100f);
-      for (WgrGrassTrack& track : _grassTracks)
-      {
-          // Keep impressions for a full minute. They still recover, but a
-          // player can now look back over a meaningful walking trail instead
-          // of watching it vanish after a few seconds.
-          track.age = std::min(track.age + dt, 60.0f);
-      }
+    const float dt = std::clamp(static_cast<float>(GetLastFrameDuration()) * 0.001f, 0.001f, 0.100f);
+    for (WgrGrassTrack& track : _grassTracks)
+    {
+        // Keep impressions for a full minute. They still recover, but a
+        // player can now look back over a meaningful walking trail instead
+        // of watching it vanish after a few seconds.
+        track.age = std::min(track.age + dt, 60.0f);
+    }
 
-      WgrGrassParams params{};
-      params.density = std::clamp(settings.density, 0.0f, 1.0f);
-      const float densityBoost = std::clamp(settings.densityBoost, 1.0f, 4.0f);
-      params.spacing = std::clamp(settings.spacing / std::sqrt(densityBoost), 0.10f, 0.75f);
-      // The dense 512x512 grid covers the inner ring. The coarse LOD uses the
-      // requested full radius (up to 5 km) with adaptive spacing.
-      params.near_radius = std::min(std::clamp(settings.radius, 8.0f, 5000.0f), params.spacing * 255.0f);
-      params.enabled = settings.enabled ? 1.0f : 0.0f;
-      params.blade_height = std::clamp(settings.height, 0.10f, 3.00f);
-      params.wind_strength = std::clamp(settings.windStrength, 0.0f, 3.0f);
-      params.wind_direction = settings.windDirection;
-      // Match the simulation's actual weather vector (the same one used by
-      // smoke, cloth and parachutes). The developer strength is deliberately
-      // retained as a gain so artists can test gust visibility without
-      // changing mission weather, and becomes the complete manual control
-      // when live wind is turned off in the Grass panel.
-      if (settings.useLiveWind && GLandscape)
-      {
-          const Vector3 liveWind = GLandscape->GetWind();
-          const float windXZ = std::sqrt(liveWind.X() * liveWind.X() + liveWind.Z() * liveWind.Z());
-          if (windXZ > 0.001f)
-          {
-              params.wind_direction = std::atan2(liveWind.Z(), liveWind.X()) * (180.0f / 3.14159265358979323846f);
-              params.wind_strength = std::clamp(windXZ * 0.20f * settings.windStrength, 0.0f, 3.0f);
-          }
-      }
-      // The far ring must start beyond the mid ring, whose reach the shader
-      // derives from `near_radius` (capped at ~64 m by the mid placement grid).
-      // Clamping the far radius to `settings.radius` -- as this did while both
-      // came from one slider -- made the far accept band empty for every
-      // radius below ~65 m, including the 60 m default: the outer LOD ran its
-      // full candidate dispatch every frame and emitted nothing.
-      // 0 disables the outer ring entirely (and skips its dispatch); any other
-      // value is floored past the mid ring so it can never land in the dead band.
-      const float midReach = std::min(160.0f, std::max(params.near_radius + 10.0f, params.near_radius * 2.5f));
-      params.far_radius = settings.farRadius <= 0.0f
-                              ? 0.0f
-                              : std::clamp(settings.farRadius, midReach + 8.0f, 5000.0f);
-      params.density_noise_scale = std::clamp(settings.densityNoiseScale, 0.002f, 0.5f);
-      params.density_noise_strength = std::clamp(settings.densityNoiseStrength, 0.0f, 1.0f);
-      params.use_photo_tuft = settings.midPhotoTuft ? 1.0f : 0.0f;
-      params.blade_width_scale = std::clamp(settings.bladeWidth, 0.25f, 6.0f);
-      params.saturation = std::clamp(settings.saturation, 0.0f, 2.0f);
-      params.dry_patches = std::clamp(settings.dryPatches, 0.0f, 1.0f);
-      params.dry_patch_scale = std::clamp(settings.dryPatchScale, 0.002f, 0.3f);
-      params.weed_percent = std::clamp(settings.weedPercent, 0.0f, 1.0f);
-      params.flower_percent = std::clamp(settings.flowerPercent, 0.0f, 1.0f - params.weed_percent);
-      // Everon/Eden's legacy geography marks normal terrain as excluded. The
-      // terrain renderer identifies it from the actual uploaded WRP, so grass
-      // works without requiring the user to discover a diagnostic checkbox.
-      params.debug_ignore_geography_exclusions =
-          (settings.ignoreGeographyExclusions || (_terrain && _terrain->GrassNeedsCompatibilityOverride())) ? 1.0f : 0.0f;
-      params.clumping = std::clamp(settings.clumping, 0.0f, 1.0f);
-      params.color_variation = std::clamp(settings.colorVariation, 0.0f, 1.0f);
-      params.transmission = std::clamp(settings.transmission, 0.0f, 1.0f);
-      params.cast_shadows = settings.castShadows ? 1.0f : 0.0f;
-      params.apply_fog = settings.applyFog ? 1.0f : 0.0f;
-      // CameraOn is the controlled entity in normal first/third-person play:
-      // the player on foot, or their occupied car/tank. Its visible size gives
-      // vehicles a wider flattened footprint without special vehicle classes.
-      if (GWorld && GWorld->CameraOn())
-      {
-          const Object* interactor = GWorld->CameraOn();
-          const Vector3 pos = interactor->Position();
-          params.interactor_x = pos.X();
-          params.interactor_z = pos.Z();
-          params.interactor_radius = std::clamp(interactor->VisibleSize() * 0.55f, 1.1f, 8.0f);
-          params.interactor_strength = 1.0f;
-          // CameraOn is the occupied vehicle in normal play. Give a powered
-          // player helicopter an explicit, large crush field here rather than
-          // depending solely on the broader world-vehicle query below. This
-          // also covers the first few frames of takeoff before the helicopter
-          // has settled into the distributed vehicle list.
-          // CameraOn is normally a Soldier, not a helicopter. dyn_cast is an
-          // asserting checked cast in this codebase, so use RTTI's nullable
-          // form for this optional rotor-wash branch.
-          if (const Helicopter* helicopter = dynamic_cast<const Helicopter*>(interactor);
-              helicopter && helicopter->RotorSpeed() > 0.02f)
-          {
-              _lastGrassRotor = const_cast<Helicopter*>(helicopter);
-              const float rotorSpeed = std::clamp(helicopter->RotorSpeed(), 0.0f, 1.0f);
-              // Values in (1, 1.5] are a renderer-local rotor-wash marker.
-              // The shader decodes the fractional part as actual RPM, making
-              // both bending and flutter rise smoothly as the rotor spools up.
-              params.interactor_radius = 8.0f + 17.0f * rotorSpeed;
-              params.interactor_strength = 1.0f + 0.5f * rotorSpeed;
-          }
-          _grassTrackSampleTime += dt;
-          // Wider stamp spacing uses the existing soft-radius falloff to keep
-          // a continuous trail while preserving substantially more history in
-          // the fixed GPU record budget.
-          const float trackSpacing = std::max(0.75f, params.interactor_radius * 0.50f);
-          const float moved2 = _haveGrassTrackPos ? (pos - _lastGrassTrackPos).SquareSizeXZ() : 1e9f;
-          if (!_haveGrassTrackPos || moved2 >= trackSpacing * trackSpacing || _grassTrackSampleTime >= 0.22f)
-          {
-              _grassTracks[_nextGrassTrack] = WgrGrassTrack{pos.X(), pos.Z(), params.interactor_radius, 0.0f};
-              _nextGrassTrack = (_nextGrassTrack + 1) % _grassTracks.size();
-              _lastGrassTrackPos = pos;
-              _grassTrackSampleTime = 0.0f;
-              _haveGrassTrackPos = true;
-          }
-      }
-      // Rotor wash is intentionally transient. Keep the four closest powered
-      // helicopters whose downwash can reach the camera's grass region. Checking
-      // the rotor state rather than Airborne() makes the effect begin while the
-      // skids are still touching the ground, where takeoff is most noticeable.
-      if (GWorld && GLandscape)
-      {
-          struct Candidate { float distance2; WgrGrassDownwash wash; };
-          std::array<Candidate, WGR_GRASS_DOWNWASH_COUNT> nearest{};
-          for (Candidate& entry : nearest) entry.distance2 = std::numeric_limits<float>::infinity();
-          const Vector3 cameraPos = GWorld->CameraOn() ? GWorld->CameraOn()->Position() : VZero;
-          auto addDownwash = [&](const Helicopter* helicopter)
-          {
-              if (!helicopter) return;
-              const float rotorSpeed = std::clamp(helicopter->RotorSpeed(), 0.0f, 1.0f);
-              // Rotor inertia survives leaving the aircraft and engine shutoff,
-              // so retain the transient wash until the blades actually stop.
-              if (rotorSpeed <= 0.02f) return;
-              const Vector3 pos = helicopter->Position();
-              const float height = std::max(0.0f, pos.Y() - GLandscape->SurfaceY(pos.X(), pos.Z()));
-              if (height > 65.0f) return;
-              const float radius = (10.0f + height * 0.40f) * (0.45f + 0.55f * rotorSpeed);
-              // Keep enough force at the upper edge of the range to visibly
-              // press the blades flat rather than merely sway their tips.
-              const float strength = std::clamp(1.10f - height / 260.0f, 0.85f, 1.0f) * rotorSpeed * rotorSpeed;
-              const float distance2 = (pos - cameraPos).SquareSizeXZ();
-              int slot = 0;
-              for (int j = 1; j < WGR_GRASS_DOWNWASH_COUNT; ++j)
-                  if (nearest[j].distance2 > nearest[slot].distance2) slot = j;
-              if (distance2 < nearest[slot].distance2)
-                  nearest[slot] = Candidate{distance2, {pos.X(), pos.Z(), radius, strength}};
-          };
-          bool lastRotorWasListed = false;
-          for (int i = 0; i < GWorld->NVehicles(); ++i)
-          {
-              const Helicopter* helicopter = dynamic_cast<const Helicopter*>(GWorld->GetVehicle(i));
-              if (helicopter == _lastGrassRotor) lastRotorWasListed = true;
-              addDownwash(helicopter);
-          }
-          // A helicopter that the player has just left can momentarily be
-          // absent from the distributed list. Keep using its live rotor RPM
-          // through the weak link during that handoff.
-          if (!lastRotorWasListed) addDownwash(_lastGrassRotor);
-          for (int i = 0; i < WGR_GRASS_DOWNWASH_COUNT; ++i) params.downwash[i] = nearest[i].wash;
-      }
-      std::copy(_grassTracks.begin(), _grassTracks.end(), params.tracks);
-      wgr_grass_set_params(_renderer, &params);
+    WgrGrassParams params{};
+    params.density = std::clamp(settings.density, 0.0f, 1.0f);
+    const float densityBoost = std::clamp(settings.densityBoost, 1.0f, 4.0f);
+    params.spacing = std::clamp(settings.spacing / std::sqrt(densityBoost), 0.10f, 0.75f);
+    // The dense 512x512 grid covers the inner ring. The coarse LOD uses the
+    // requested full radius (up to 5 km) with adaptive spacing.
+    params.near_radius = std::min(std::clamp(settings.radius, 8.0f, 5000.0f), params.spacing * 255.0f);
+    params.enabled = settings.enabled ? 1.0f : 0.0f;
+    params.blade_height = std::clamp(settings.height, 0.10f, 3.00f);
+    params.wind_strength = std::clamp(settings.windStrength, 0.0f, 3.0f);
+    params.wind_direction = settings.windDirection;
+    // Match the simulation's actual weather vector (the same one used by
+    // smoke, cloth and parachutes). The developer strength is deliberately
+    // retained as a gain so artists can test gust visibility without
+    // changing mission weather, and becomes the complete manual control
+    // when live wind is turned off in the Grass panel.
+    if (settings.useLiveWind && GLandscape)
+    {
+        const Vector3 liveWind = GLandscape->GetWind();
+        const float windXZ = std::sqrt(liveWind.X() * liveWind.X() + liveWind.Z() * liveWind.Z());
+        if (windXZ > 0.001f)
+        {
+            params.wind_direction = std::atan2(liveWind.Z(), liveWind.X()) * (180.0f / 3.14159265358979323846f);
+            params.wind_strength = std::clamp(windXZ * 0.20f * settings.windStrength, 0.0f, 3.0f);
+        }
+    }
+    // The far ring must start beyond the mid ring, whose reach the shader
+    // derives from `near_radius` (capped at ~64 m by the mid placement grid).
+    // Clamping the far radius to `settings.radius` -- as this did while both
+    // came from one slider -- made the far accept band empty for every
+    // radius below ~65 m, including the 60 m default: the outer LOD ran its
+    // full candidate dispatch every frame and emitted nothing.
+    // 0 disables the outer ring entirely (and skips its dispatch); any other
+    // value is floored past the mid ring so it can never land in the dead band.
+    const float midReach = std::min(160.0f, std::max(params.near_radius + 10.0f, params.near_radius * 2.5f));
+    params.far_radius = settings.farRadius <= 0.0f ? 0.0f : std::clamp(settings.farRadius, midReach + 8.0f, 5000.0f);
+    params.density_noise_scale = std::clamp(settings.densityNoiseScale, 0.002f, 0.5f);
+    params.density_noise_strength = std::clamp(settings.densityNoiseStrength, 0.0f, 1.0f);
+    params.use_photo_tuft = settings.midPhotoTuft ? 1.0f : 0.0f;
+    params.blade_width_scale = std::clamp(settings.bladeWidth, 0.25f, 6.0f);
+    params.saturation = std::clamp(settings.saturation, 0.0f, 2.0f);
+    params.dry_patches = std::clamp(settings.dryPatches, 0.0f, 1.0f);
+    params.dry_patch_scale = std::clamp(settings.dryPatchScale, 0.002f, 0.3f);
+    params.weed_percent = std::clamp(settings.weedPercent, 0.0f, 1.0f);
+    params.flower_percent = std::clamp(settings.flowerPercent, 0.0f, 1.0f - params.weed_percent);
+    // Everon/Eden's legacy geography marks normal terrain as excluded. The
+    // terrain renderer identifies it from the actual uploaded WRP, so grass
+    // works without requiring the user to discover a diagnostic checkbox.
+    params.debug_ignore_geography_exclusions =
+        (settings.ignoreGeographyExclusions || (_terrain && _terrain->GrassNeedsCompatibilityOverride())) ? 1.0f : 0.0f;
+    params.clumping = std::clamp(settings.clumping, 0.0f, 1.0f);
+    params.color_variation = std::clamp(settings.colorVariation, 0.0f, 1.0f);
+    params.transmission = std::clamp(settings.transmission, 0.0f, 1.0f);
+    params.cast_shadows = settings.castShadows ? 1.0f : 0.0f;
+    params.apply_fog = settings.applyFog ? 1.0f : 0.0f;
+    // CameraOn is the controlled entity in normal first/third-person play:
+    // the player on foot, or their occupied car/tank. Its visible size gives
+    // vehicles a wider flattened footprint without special vehicle classes.
+    if (GWorld && GWorld->CameraOn())
+    {
+        const Object* interactor = GWorld->CameraOn();
+        const Vector3 pos = interactor->Position();
+        params.interactor_x = pos.X();
+        params.interactor_z = pos.Z();
+        params.interactor_radius = std::clamp(interactor->VisibleSize() * 0.55f, 1.1f, 8.0f);
+        params.interactor_strength = 1.0f;
+        // CameraOn is the occupied vehicle in normal play. Give a powered
+        // player helicopter an explicit, large crush field here rather than
+        // depending solely on the broader world-vehicle query below. This
+        // also covers the first few frames of takeoff before the helicopter
+        // has settled into the distributed vehicle list.
+        // CameraOn is normally a Soldier, not a helicopter. dyn_cast is an
+        // asserting checked cast in this codebase, so use RTTI's nullable
+        // form for this optional rotor-wash branch.
+        if (const Helicopter* helicopter = dynamic_cast<const Helicopter*>(interactor);
+            helicopter && helicopter->RotorSpeed() > 0.02f)
+        {
+            _lastGrassRotor = const_cast<Helicopter*>(helicopter);
+            const float rotorSpeed = std::clamp(helicopter->RotorSpeed(), 0.0f, 1.0f);
+            // Values in (1, 1.5] are a renderer-local rotor-wash marker.
+            // The shader decodes the fractional part as actual RPM, making
+            // both bending and flutter rise smoothly as the rotor spools up.
+            params.interactor_radius = 8.0f + 17.0f * rotorSpeed;
+            params.interactor_strength = 1.0f + 0.5f * rotorSpeed;
+        }
+        _grassTrackSampleTime += dt;
+        // Wider stamp spacing uses the existing soft-radius falloff to keep
+        // a continuous trail while preserving substantially more history in
+        // the fixed GPU record budget.
+        const float trackSpacing = std::max(0.75f, params.interactor_radius * 0.50f);
+        const float moved2 = _haveGrassTrackPos ? (pos - _lastGrassTrackPos).SquareSizeXZ() : 1e9f;
+        if (!_haveGrassTrackPos || moved2 >= trackSpacing * trackSpacing || _grassTrackSampleTime >= 0.22f)
+        {
+            _grassTracks[_nextGrassTrack] = WgrGrassTrack{pos.X(), pos.Z(), params.interactor_radius, 0.0f};
+            _nextGrassTrack = (_nextGrassTrack + 1) % _grassTracks.size();
+            _lastGrassTrackPos = pos;
+            _grassTrackSampleTime = 0.0f;
+            _haveGrassTrackPos = true;
+        }
+    }
+    // Rotor wash is intentionally transient. Keep the four closest powered
+    // helicopters whose downwash can reach the camera's grass region. Checking
+    // the rotor state rather than Airborne() makes the effect begin while the
+    // skids are still touching the ground, where takeoff is most noticeable.
+    if (GWorld && GLandscape)
+    {
+        struct Candidate
+        {
+            float distance2;
+            WgrGrassDownwash wash;
+        };
+        std::array<Candidate, WGR_GRASS_DOWNWASH_COUNT> nearest{};
+        for (Candidate& entry : nearest)
+            entry.distance2 = std::numeric_limits<float>::infinity();
+        const Vector3 cameraPos = GWorld->CameraOn() ? GWorld->CameraOn()->Position() : VZero;
+        auto addDownwash = [&](const Helicopter* helicopter)
+        {
+            if (!helicopter)
+                return;
+            const float rotorSpeed = std::clamp(helicopter->RotorSpeed(), 0.0f, 1.0f);
+            // Rotor inertia survives leaving the aircraft and engine shutoff,
+            // so retain the transient wash until the blades actually stop.
+            if (rotorSpeed <= 0.02f)
+                return;
+            const Vector3 pos = helicopter->Position();
+            const float height = std::max(0.0f, pos.Y() - GLandscape->SurfaceY(pos.X(), pos.Z()));
+            if (height > 65.0f)
+                return;
+            const float radius = (10.0f + height * 0.40f) * (0.45f + 0.55f * rotorSpeed);
+            // Keep enough force at the upper edge of the range to visibly
+            // press the blades flat rather than merely sway their tips.
+            const float strength = std::clamp(1.10f - height / 260.0f, 0.85f, 1.0f) * rotorSpeed * rotorSpeed;
+            const float distance2 = (pos - cameraPos).SquareSizeXZ();
+            int slot = 0;
+            for (int j = 1; j < WGR_GRASS_DOWNWASH_COUNT; ++j)
+                if (nearest[j].distance2 > nearest[slot].distance2)
+                    slot = j;
+            if (distance2 < nearest[slot].distance2)
+                nearest[slot] = Candidate{distance2, {pos.X(), pos.Z(), radius, strength}};
+        };
+        bool lastRotorWasListed = false;
+        for (int i = 0; i < GWorld->NVehicles(); ++i)
+        {
+            const Helicopter* helicopter = dynamic_cast<const Helicopter*>(GWorld->GetVehicle(i));
+            if (helicopter == _lastGrassRotor)
+                lastRotorWasListed = true;
+            addDownwash(helicopter);
+        }
+        // A helicopter that the player has just left can momentarily be
+        // absent from the distributed list. Keep using its live rotor RPM
+        // through the weak link during that handoff.
+        if (!lastRotorWasListed)
+            addDownwash(_lastGrassRotor);
+        for (int i = 0; i < WGR_GRASS_DOWNWASH_COUNT; ++i)
+            params.downwash[i] = nearest[i].wash;
+    }
+    std::copy(_grassTracks.begin(), _grassTracks.end(), params.tracks);
+    wgr_grass_set_params(_renderer, &params);
 }
 
 const Helicopter* EngineWgpu::LastGrassRotor() const
@@ -3337,18 +3426,9 @@ void EngineWgpu::PushRenderParams()
 
     // Foliage lighting (emulated leaf SSS for alpha-tested vegetation); rides the Frame UBO.
     p.foliage = {
-        _foliage.transScale,
-        _foliage.distortion,
-        _foliage.transPower,
-        _foliage.wrap,
-        _foliage.ambientBoost,
-        _foliage.normalBend,
-        _foliage.crownYOffset,
-        _foliage.fillFadeEnd,
-        _foliage.giStrength,
-        _foliage.treeBend,
-        _foliage.treeCrownY,
-        0.0f,
+        _foliage.transScale,   _foliage.distortion, _foliage.transPower,   _foliage.wrap,
+        _foliage.ambientBoost, _foliage.normalBend, _foliage.crownYOffset, _foliage.fillFadeEnd,
+        _foliage.giStrength,   _foliage.treeBend,   _foliage.treeCrownY,   0.0f,
     };
 
     wgr_set_render_params(_renderer, &p);
@@ -3429,8 +3509,8 @@ void EngineWgpu::PushSkyRuntime()
     // formula is otherwise driven by Glob.time, which freezes in lockstep via the freezeTime bit).
     constexpr double kWindWrap = 100000.0; // m
     const double cloudT = (_waterLook.freeze.freezeClouds || _waterLook.freeze.freezeTime)
-                             ? static_cast<double>(_waterLook.freeze.fixedTime)
-                             : static_cast<double>(Glob.time.toFloat());
+                              ? static_cast<double>(_waterLook.freeze.fixedTime)
+                              : static_cast<double>(Glob.time.toFloat());
     double windX = std::fmod(static_cast<double>(_sky.cloudWind[0]) * cloudT, kWindWrap);
     double windZ = std::fmod(static_cast<double>(_sky.cloudWind[1]) * cloudT, kWindWrap);
     rt.misc = {_skyNight, camAlt, static_cast<float>(windX), static_cast<float>(windZ)};

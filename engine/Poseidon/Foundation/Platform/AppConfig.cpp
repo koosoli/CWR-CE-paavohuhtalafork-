@@ -310,8 +310,8 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
         displayGroup->add_flag("--menu-scene,!--no-menu-scene", showMenuScene, "Show 3D background scene in menu");
 
         showOption(
-            displayGroup->add_option("--render", _renderBackend,
-                                     "Graphics backend: dummy, gl33, wgpu, auto (default: gl33)")
+            displayGroup
+                ->add_option("--render", _renderBackend, "Graphics backend: dummy, gl33, wgpu, auto (default: gl33)")
                 ->check(CLI::IsMember({"dummy", "gl33", "wgpu", "auto"})),
             CliHelpVisibility::Full);
 

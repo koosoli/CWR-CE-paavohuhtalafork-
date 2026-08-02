@@ -768,11 +768,15 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
                 const float seaLevel = GLandscape->GetSeaLevel();
 
                 // Check if bullet segment crossed the sea surface or hit sea geometry
-                const bool segmentCrossedSea = (lPos.Y() > seaLevel && position.Y() <= seaLevel) || (lPos.Y() <= seaLevel && position.Y() > seaLevel);
+                const bool segmentCrossedSea = (lPos.Y() > seaLevel && position.Y() <= seaLevel) ||
+                                               (lPos.Y() <= seaLevel && position.Y() > seaLevel);
                 if (hitSea || segmentCrossedSea || (t <= maxDist && isect.Y() <= seaLevel + 0.3f))
                 {
                     _waterImpactDone = true;
-                    const Vector3 waterPoint = (hitSea || segmentCrossedSea) ? Vector3(lPos.X() + lDirNorm.X() * t, seaLevel, lPos.Z() + lDirNorm.Z() * t) : isect;
+                    const Vector3 waterPoint =
+                        (hitSea || segmentCrossedSea)
+                            ? Vector3(lPos.X() + lDirNorm.X() * t, seaLevel, lPos.Z() + lDirNorm.Z() * t)
+                            : isect;
                     HydroWaterInteractionEvent event{};
                     event.positionRadius[0] = waterPoint.X();
                     event.positionRadius[1] = waterPoint.Z();
@@ -781,7 +785,8 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
                     event.velocityKind[0] = lDirNorm.X() * 15.0f;
                     event.velocityKind[1] = lDirNorm.Z() * 15.0f;
                     event.velocityKind[2] = -25.0f; // Downward entry velocity
-                    event.velocityKind[3] = Type()->explosive ? HydroWaterInteractionExplosion : HydroWaterInteractionBullet;
+                    event.velocityKind[3] =
+                        Type()->explosive ? HydroWaterInteractionExplosion : HydroWaterInteractionBullet;
                     event.timeLifeFoamMass[1] = 1.8f;
                     event.timeLifeFoamMass[2] = 1.0f; // Foam density
                     event.directionDepthFlags[0] = lDirNorm.X();
@@ -802,11 +807,12 @@ void ShotShell::Simulate(float deltaT, SimulationImportance prec)
                         const int numDroplets = explosiveImpact ? 24 : 2;
                         for (int i = 0; i < numDroplets; ++i)
                         {
-                            float angle = static_cast<float>(i) * (2.0f * 3.14159265f / static_cast<float>(numDroplets));
+                            float angle =
+                                static_cast<float>(i) * (2.0f * 3.14159265f / static_cast<float>(numDroplets));
                             float spreadSpeed = explosiveImpact ? 1.5f + GRandGen.RandomValue() * 2.5f
                                                                 : 0.15f + GRandGen.RandomValue() * 0.25f;
                             float upSpeed = explosiveImpact ? 4.5f + GRandGen.RandomValue() * 5.5f
-                                                           : 0.55f + GRandGen.RandomValue() * 0.70f;
+                                                            : 0.55f + GRandGen.RandomValue() * 0.70f;
                             Vector3 vel(std::cos(angle) * spreadSpeed, upSpeed, std::sin(angle) * spreadSpeed);
                             Cloudlet* droplet = waterSplash.Drop(waterPoint, vel);
                             if (droplet)

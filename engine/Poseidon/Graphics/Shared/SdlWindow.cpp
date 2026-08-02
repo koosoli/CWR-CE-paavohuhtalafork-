@@ -33,8 +33,7 @@ SdlGameWindow CreateGameWindow(const SdlGameWindowDesc& desc)
     // display config and the target display's desktop mode.  `useWindow`
     // (the --window override) wins over the saved displayMode either way.
     DisplayPlacementInput displayCfg;
-    displayCfg.displayMode =
-        desc.displayMode.empty() ? (desc.useWindow ? "windowed" : "borderless") : desc.displayMode;
+    displayCfg.displayMode = desc.displayMode.empty() ? (desc.useWindow ? "windowed" : "borderless") : desc.displayMode;
     if (desc.useWindow && displayCfg.displayMode != "windowed")
     {
         displayCfg.displayMode = "windowed";
@@ -55,8 +54,12 @@ SdlGameWindow CreateGameWindow(const SdlGameWindowDesc& desc)
     switch (placement.mode)
     {
         case WindowMode::Fullscreen:
-        case WindowMode::Borderless: flags |= SDL_WINDOW_BORDERLESS; break;
-        case WindowMode::Windowed: flags |= SDL_WINDOW_RESIZABLE; break;
+        case WindowMode::Borderless:
+            flags |= SDL_WINDOW_BORDERLESS;
+            break;
+        case WindowMode::Windowed:
+            flags |= SDL_WINDOW_RESIZABLE;
+            break;
     }
 
     SDL_Window* window = SDL_CreateWindow(desc.title, placement.width, placement.height, flags);

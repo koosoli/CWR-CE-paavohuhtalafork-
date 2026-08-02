@@ -197,7 +197,8 @@ void TextureWgpu::InitDynamic(int w, int h, const void* rgba, uint32_t size)
 
 void TextureWgpu::UpdateDynamic(const void* rgba, uint32_t size)
 {
-    if (!_gpuHandle) {
+    if (!_gpuHandle)
+    {
         return;
     }
 
@@ -281,8 +282,7 @@ uint64_t TextureWgpu::EnsureUploaded()
         const IFileBuffer* fb = stream.GetBuffer();
         if (fb && !fb->GetError() && fb->GetSize() > 0)
         {
-            DecodedImage img =
-                DecodePAABuffer(fb->GetData(), static_cast<size_t>(fb->GetSize()), IsPaaName(Name()));
+            DecodedImage img = DecodePAABuffer(fb->GetData(), static_cast<size_t>(fb->GetSize()), IsPaaName(Name()));
             if (img.valid())
             {
                 _gpuHandle = wgr_texture_create(r, static_cast<uint32_t>(img.width), static_cast<uint32_t>(img.height),

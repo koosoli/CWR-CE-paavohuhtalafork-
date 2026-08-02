@@ -78,8 +78,7 @@ WaterSurfaceSample QueryWaterSurface(float worldX, float worldZ, float time, flo
         const float amplitude = wave.amplitude * amplitudeScale;
         const float waveNumber = Pi2 / length;
         // Deep-water dispersion, nudged by the stable renderer wind-speed default.
-        const float angularSpeed =
-            std::sqrt(Gravity * waveNumber) * (0.75f + WindSpeed * 0.12f) * speedScale;
+        const float angularSpeed = std::sqrt(Gravity * waveNumber) * (0.75f + WindSpeed * 0.12f) * speedScale;
         const float phase = waveNumber * (wave.directionX * worldX + wave.directionZ * worldZ) - angularSpeed * time +
                             SpectrumSeed * wave.seedPhase;
         const float sine = std::sin(phase);

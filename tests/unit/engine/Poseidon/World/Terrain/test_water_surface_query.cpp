@@ -21,8 +21,8 @@ TEST_CASE("Water surface query is deterministic and sea-level relative", "[World
 TEST_CASE("Water surface query returns a normalized finite surface frame", "[World][Terrain][Water]")
 {
     const WaterSurfaceSample sample = QueryWaterSurface(-918.0f, 361.0f, 27.5f, 0.0f);
-    const float normalLength = std::sqrt(sample.normalX * sample.normalX + sample.normalY * sample.normalY +
-                                         sample.normalZ * sample.normalZ);
+    const float normalLength =
+        std::sqrt(sample.normalX * sample.normalX + sample.normalY * sample.normalY + sample.normalZ * sample.normalZ);
 
     REQUIRE(std::isfinite(sample.height));
     REQUIRE(std::isfinite(sample.velocityX));

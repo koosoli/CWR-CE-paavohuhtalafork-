@@ -65,9 +65,8 @@ static bool IsGrassTexture(const Texture* texture)
     // CWR/OFP terrain assets are mostly named in English or Czech.  Keep this
     // strict: an unclassified texture must not grow procedural grass over desert,
     // dirt, concrete, or rock.
-    return ContainsNoCase(name, "grass") || ContainsNoCase(name, "trava") ||
-           ContainsNoCase(name, "louka") || ContainsNoCase(name, "meadow") ||
-           ContainsNoCase(name, "pasture");
+    return ContainsNoCase(name, "grass") || ContainsNoCase(name, "trava") || ContainsNoCase(name, "louka") ||
+           ContainsNoCase(name, "meadow") || ContainsNoCase(name, "pasture");
 }
 
 static float EnvFloat(const char* name, float fallback)
@@ -119,8 +118,8 @@ void TerrainWgpu::BuildQuadtree(const Landscape& land)
             }
         }
     };
-    BuildCdlodTree(rootTexels, originTexel, originTexel, grid, TerrainGridN, leafBounds, _tree, _rootIndex,
-                   _numLevels, _leafSize);
+    BuildCdlodTree(rootTexels, originTexel, originTexel, grid, TerrainGridN, leafBounds, _tree, _rootIndex, _numLevels,
+                   _leafSize);
     if (_rootIndex < 0)
     {
         return;
@@ -207,8 +206,8 @@ void TerrainWgpu::UploadIndexMap(const Landscape& land)
     }
     // Cells must never index past the bound ground layers (the binding_array
     // carries at most WGR_TERRAIN_MAX_GROUND_LAYERS views).
-    const int maxLayer = std::min(std::max(1, land.GetNTextures()),
-                                  static_cast<int>(WGR_TERRAIN_MAX_GROUND_LAYERS)) - 1;
+    const int maxLayer =
+        std::min(std::max(1, land.GetNTextures()), static_cast<int>(WGR_TERRAIN_MAX_GROUND_LAYERS)) - 1;
     std::vector<uint16_t> indices(static_cast<size_t>(n) * n);
     for (int z = 0; z < n; z++)
     {
@@ -278,7 +277,8 @@ void TerrainWgpu::UploadGeography(const Landscape& land)
         if (noNamedGrass && layerCount > 0)
         {
             std::fill(_grassSurfaceEnabled.begin(), _grassSurfaceEnabled.end(), true);
-            LOG_INFO(Graphics, "Wgpu grass: no named grass textures on this legacy world; enabling all {} terrain layers",
+            LOG_INFO(Graphics,
+                     "Wgpu grass: no named grass textures on this legacy world; enabling all {} terrain layers",
                      layerCount);
         }
     }
@@ -346,7 +346,8 @@ void TerrainWgpu::UploadGeography(const Landscape& land)
             if ((cell & GrassTextureCell) != 0 && (cell & 0x00000c7bu) == 0)
                 ++grassRenderableCellCount;
         }
-        LOG_WARN(Graphics, "Wgpu grass: legacy geography had no usable grass cells; relaxed blanket forest flags -> {} cells",
+        LOG_WARN(Graphics,
+                 "Wgpu grass: legacy geography had no usable grass cells; relaxed blanket forest flags -> {} cells",
                  grassRenderableCellCount);
     }
     // A handful of old WRP files also store hard-object density across entire
@@ -361,8 +362,10 @@ void TerrainWgpu::UploadGeography(const Landscape& land)
             if ((cell & GrassTextureCell) != 0 && (cell & 0x00000c7bu) == 0)
                 ++grassRenderableCellCount;
         }
-        LOG_WARN(Graphics, "Wgpu grass: legacy geography still had no usable cells; relaxed blanket hard-object flags -> {} cells",
-                 grassRenderableCellCount);
+        LOG_WARN(
+            Graphics,
+            "Wgpu grass: legacy geography still had no usable cells; relaxed blanket hard-object flags -> {} cells",
+            grassRenderableCellCount);
     }
     // What the shader will ACTUALLY place. grass.wgsl splits the mask: hard
     // exclusions (water/road/track/hard objects) always apply, forest only when
@@ -442,14 +445,10 @@ void TerrainWgpu::UploadGrassBladeAtlas()
         return;
     }
     constexpr std::array<const char*, 8> BladePaths = {
-        "assets/grass/meadow-grass-blade-0.png",
-        "assets/grass/meadow-grass-blade-1.png",
-        "assets/grass/meadow-grass-blade-2.png",
-        "assets/grass/meadow-grass-blade-3.png",
-        "assets/grass/meadow-grass-blade-4.png",
-        "assets/grass/meadow-grass-blade-5.png",
-        "assets/grass/meadow-grass-blade-6.png",
-        "assets/grass/meadow-grass-blade-7.png",
+        "assets/grass/meadow-grass-blade-0.png", "assets/grass/meadow-grass-blade-1.png",
+        "assets/grass/meadow-grass-blade-2.png", "assets/grass/meadow-grass-blade-3.png",
+        "assets/grass/meadow-grass-blade-4.png", "assets/grass/meadow-grass-blade-5.png",
+        "assets/grass/meadow-grass-blade-6.png", "assets/grass/meadow-grass-blade-7.png",
     };
 
     int width = 0;
@@ -464,7 +463,8 @@ void TerrainWgpu::UploadGrassBladeAtlas()
         if (pixels == nullptr || (width != 0 && (w != width || h != height)))
         {
             stbi_image_free(pixels);
-            LOG_INFO(Graphics, "Wgpu grass: no complete near-blade photo atlas; near ring uses procedural surface detail");
+            LOG_INFO(Graphics,
+                     "Wgpu grass: no complete near-blade photo atlas; near ring uses procedural surface detail");
             return;
         }
         if (width == 0)
@@ -636,8 +636,9 @@ void TerrainWgpu::DrawTerrain(Scene& scene, int xBeg, int zBeg, int xEnd, int zE
     // makes deep water opaque, an occlusion prune of fully-submerged off-map terrain
     // can come back as a pure optimization — keep the terrain extent >= the water
     // extent so seabed always underlies the ocean.)
-    SelectVisibleCdlod(_tree, _rootIndex, _numLevels, _ranges, _morphRegion, *camera, rx0, rz0, rx1, rz1,
-                       [](const CdlodNode&) { return true; }, emit);
+    SelectVisibleCdlod(
+        _tree, _rootIndex, _numLevels, _ranges, _morphRegion, *camera, rx0, rz0, rx1, rz1,
+        [](const CdlodNode&) { return true; }, emit);
 
     _engine.SubmitTerrain(_selected);
     // The procedural path must remain available on maps that use the modern GPU

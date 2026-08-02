@@ -441,8 +441,7 @@ bool Object::PublishConformPlane(const Shape* sShape, ConformPlane& saved)
     saved = GCurrentConformPlane;
     // GGpuTerrainConform: wgpu only. !active: don't override an outer plane (ForestPlain
     // publishes its own mode-1 plane). ClipLand hints: only conforming shapes need it.
-    if (!GGpuTerrainConform || GCurrentConformPlane.active ||
-        !(sShape->GetOrHints() & (ClipLandKeep | ClipLandOn)))
+    if (!GGpuTerrainConform || GCurrentConformPlane.active || !(sShape->GetOrHints() & (ClipLandKeep | ClipLandOn)))
     {
         return false;
     }
@@ -478,8 +477,7 @@ void Object::AnimatedMinMax(int level, Vector3* minMax)
     // conform signal; excluding damage/destruction leaves only the static-conform case
     // (re-checked each call, so a tree becoming damaged falls back to the live path). The
     // cache is invalidated on Move.
-    const bool cacheable = IsAnimated(level) && GetTotalDammage() == 0 &&
-                           !(_isDestroyed && _destroyPhase > 0);
+    const bool cacheable = IsAnimated(level) && GetTotalDammage() == 0 && !(_isDestroyed && _destroyPhase > 0);
     if (cacheable && _animBBoxLevel == level)
     {
         minMax[0] = _animBBoxMin;
@@ -676,15 +674,15 @@ void Object::DeanimateLandContact()
 
 void Object::Move(Matrix4Par transform)
 {
-    _animBBoxLevel = -1;         // moved: the cached conform bbox no longer applies
-    _bcSurfaceYValid = false;    // and the cached conform surface height
+    _animBBoxLevel = -1;      // moved: the cached conform bbox no longer applies
+    _bcSurfaceYValid = false; // and the cached conform surface height
     GLOB_LAND->MoveObject(this, transform);
 }
 
 void Object::Move(Vector3Par position)
 {
-    _animBBoxLevel = -1;         // moved: the cached conform bbox no longer applies
-    _bcSurfaceYValid = false;    // and the cached conform surface height
+    _animBBoxLevel = -1;      // moved: the cached conform bbox no longer applies
+    _bcSurfaceYValid = false; // and the cached conform surface height
     GLOB_LAND->MoveObject(this, position);
 }
 
@@ -1034,9 +1032,8 @@ void Object::Draw(int forceLOD, ClipFlags clipFlags, const FrameBase& pos)
         const bool savedVegetation = GCurrentIsVegetation;
         {
             const MapType mt = _shape->GetMapType();
-            GCurrentIsVegetation = mt == MapTree || mt == MapSmallTree || mt == MapBush ||
-                                   mt == MapForestBorder || mt == MapForestTriangle ||
-                                   mt == MapForestSquare;
+            GCurrentIsVegetation = mt == MapTree || mt == MapSmallTree || mt == MapBush || mt == MapForestBorder ||
+                                   mt == MapForestTriangle || mt == MapForestSquare;
         }
 
         // if neccessary, split it
