@@ -224,8 +224,9 @@ def main() -> int:
         candidates = ids(overlay, "next_candidates")
         if set(holds) & set(authorised):
             raise ValueError("named hold appears in authorised tickets")
+        canonical_ticket_ids = set(re.findall(r"^##\s+([A-Z][A-Z0-9-]+)\s+[—-]", roadmap_text, re.MULTILINE))
         for ticket in authorised + holds + candidates:
-            if ticket not in roadmap_text:
+            if ticket not in canonical_ticket_ids:
                 raise ValueError(f"canonical roadmap does not define {ticket}")
         active = []
         for ticket in ledger_ids:
