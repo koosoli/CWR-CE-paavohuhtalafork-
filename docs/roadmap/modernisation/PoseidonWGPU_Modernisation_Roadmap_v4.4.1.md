@@ -960,6 +960,28 @@ Not Quick Wins:
 
 # 6. Renderer stabilisation and ocean closure
 
+> [!WARNING]
+> **`WTR-` identifiers are ambiguous in this repository.** Two independent
+> numbering schemes exist, and six identifiers name different things in each:
+>
+> | ID | This roadmap (**authoritative for tickets**) | `.agents/CWR-CE Water System Master Plan.md` (design phases) |
+> | --- | --- | --- |
+> | `WTR-001` | Close current water integration gaps | Deterministic water debug mode |
+> | `WTR-100` | WaterBody registry and backend expansion | Underwater classification and waterline |
+> | `WTR-110` | Generalise current FFT | Underwater optics |
+> | `WTR-120` | Anti-repetition | Underwater god rays |
+> | `WTR-130` | Persistent foam | Surface-derived caustics |
+> | `WTR-140` | Reflection ownership | Underwater bubbles and local aeration |
+>
+> **`WTR-` tags in source code refer to the Master Plan, not to this roadmap.**
+> Tags such as `WTR-031` and `WTR-085` have no ticket here at all.
+>
+> Always state which document you mean. New water tickets must take identifiers
+> free in **both** schemes — see
+> [`WTR-external-proposal-review-20260802.md`](../decisions/WTR-external-proposal-review-20260802.md),
+> which records how an external proposal landed on occupied identifiers because
+> of this.
+
 ## WTR-001 — Close current water integration gaps — REQUIRED
 
 Agents must re-audit the current branch and update the status ledger.
@@ -1609,15 +1631,14 @@ Potential later work:
 
 Origin: external proposal, reviewed in [`WTR-external-proposal-review-20260802.md`](../decisions/WTR-external-proposal-review-20260802.md). Renumbered from the proposal's `WTR-150`, which names *Optional local volumetric fluid rendering* in the Water Master Plan. **Scope this as a revision**, not greenfield: `WTR-050`/`WTR-100`–`WTR-120` in the Master Plan cover the same ground, and absorption/scattering terms already ship in `water/water.wgsl`.
 
-Define a coherent optical contract for viewing water from above, through the surface, and underwater: how absorption, scattering, depth colour and visibility are represented; how normals, roughness, foam and turbidity affect transmission; how the renderer behaves as the camera crosses the surface; how sun, sky, fog, shoreline depth and underwater objects combine; and the low-end fallback.
+**Trimmed to the novel part.** The proposal's full optical model (absorption, scattering, depth colour, turbidity) largely restates Master Plan `WTR-050`/`WTR-110` and code that already ships. What is genuinely unspecified anywhere is the **surface-crossing transition**: the engine has no defined behaviour for the frames in which the camera passes through the waterline. Restrict this ticket to that, and fold any remaining optical requirement into the Master Plan phases.
 
-- [ ] No abrupt exposure, fog or colour discontinuity when crossing the surface.
-- [ ] Shallow and deep water remain visually distinguishable.
-- [ ] Underwater visibility is bounded and quality-scalable.
-- [ ] Optical effects stay cosmetic and never alter gameplay queries.
-- [ ] Missing optical data falls back safely.
-- [ ] Above-water, waterline and underwater captures exist.
-- [ ] GPU cost measured against a named platform tier.
+- [ ] Exposure, fog and colour are continuous across the crossing. Verifiable form: sample mean luminance over a fixed centre region across a scripted descent, and require frame-to-frame change no worse than the largest change seen in the ten frames before entry.
+- [ ] The transition is symmetric — entering and exiting produce the same sequence reversed, within the same tolerance.
+- [ ] Optical effects stay cosmetic: `WaterQuery` height and depth results are bit-identical with the effect forced on and off.
+- [ ] Missing optical data falls back to the current path rather than failing the frame.
+- [ ] Captures exist above water, at the waterline, and below, from one scripted camera path.
+- [ ] GPU cost measured on the `PERF-001` Tier 1 configuration, since that is the only tier this project has defined.
 
 Volumetric caustics, ray tracing and any one scattering model are explicitly *not* required.
 
@@ -1639,17 +1660,17 @@ Do not build a universal wet-material framework until at least two production co
 
 Origin: same review; renumbered from the proposal's `WTR-170` (*Gameplay, buoyancy and physics* in the Master Plan). **A water interaction system already ships** — `water/interaction.rs`, `water/interaction.wgsl`, `docs/water-interaction-emitters.md`, and Master Plan phases `WTR-060`/`WTR-070`. Treat this as hardening that system into a bounded interface, never as a second implementation.
 
-Give authorised systems a bounded way to submit interactions — wakes, character entry, projectiles, explosions, rotor downwash, falling objects, inflow — without touching renderer simulation state directly. Candidate event fields: stable ID, simulation tick, water-body ID, position and radius, impulse, direction, type, gameplay-authoritative versus cosmetic classification, lifetime, source entity.
+**Trimmed to the novel part.** Emitters, wakes, splashes and the submission path already work; re-specifying them would produce a second implementation of a shipping system. The genuinely absent dimension is **multiplayer semantics** — the existing interaction path is single-machine and cosmetic, with no notion of authority, replay or determinism. Restrict this ticket to giving the shipping system those semantics.
 
-- [ ] Duplicate events are idempotent.
-- [ ] Gameplay-relevant effects are server-authoritative or deterministically reconstructed.
-- [ ] Fine ripples, spray and foam may stay local cosmetic results.
-- [ ] Events outside active water domains degrade safely.
-- [ ] Late join does not replay irrelevant historical ripples.
-- [ ] Debug tools show recent interactions and their ownership.
-- [ ] Event rate and CPU/GPU cost are bounded.
+- [ ] Every event carries a stable ID and simulation tick, so replaying the same event twice leaves water state identical.
+- [ ] Each event is classified gameplay-authoritative or cosmetic, and the classification is enforced: a cosmetic event can never change a `WaterQuery` result.
+- [ ] Authoritative events are server-issued or deterministically reconstructible from the event journal (`NET-003`).
+- [ ] A late-joining client reaches equivalent visible water state without replaying historical ripples.
+- [ ] Events targeting an inactive or unknown water domain are dropped without error.
+- [ ] Debug tools list recent events with source entity and authority classification.
+- [ ] Event throughput is bounded by an explicit cap, with the drop policy recorded rather than left to chance.
 
-Do not build a universal fluid-event system in the first implementation.
+Do not redesign the emitter or solver path, and do not build a universal fluid-event system.
 
 ## WTR-260 — Water temporal, lifecycle and invalidation rules — NON_BLOCKING_VALIDATION, VALIDATE
 
