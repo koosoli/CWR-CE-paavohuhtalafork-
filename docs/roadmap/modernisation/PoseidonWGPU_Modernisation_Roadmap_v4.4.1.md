@@ -17,10 +17,14 @@ gate.
 - [x] Tier-1 WGPU build/startup, explicit-backend proof, ABI refusal, runtime diagnostics, capture/metrics, and initial visual-difference classification are integrated with repository evidence.
 - [x] CI archives the executable, `wgpu_renderer` library, manifest, and available evidence for the matching build.
 - [x] Local WGPU water timing and Zeus debug-tool stability work are archived as implementation commits and retained pending runtime smoke evidence.
-- [ ] Hosted Trident screenshot capture must resolve the GL33 multisample-readback failure before that lane can be accepted.
+- [x] The hosted Trident screenshot failure is diagnosed and fixed in `dacdf77`: each `triScreenshot` emitted one `GL_INVALID_OPERATION` because `glReadPixels` read a default framebuffer that SDL/Xvfb exposes as multisampled, which is what failed the I-20 gate on `flows/demo/credits` (2 errors) and `flows/demo/mission_load` (3 errors) — the counts match each test's screenshot count exactly. GL33 remains fallback-only; this restores capture, it is not parity work.
+- [x] The Trident step bound is sized to the suite (35m step / 45m job). The 15m bound added in `816ec28` SIGTERMed run `91499679288` at exactly 15m with scenarios still queued, so it was cutting healthy runs short rather than catching hangs.
+- [x] Zeus editing positions resolve through one helper against the engine's own in-game cursor (`bcbd74c`), and the pending Zeus executable is built and installed.
+- [x] Zeus runtime side relations, cross-side combat, and death handling are covered by automated scenarios (`tests/integration/ai/`, `537e71c`) instead of manual play.
+- [ ] **BLOCKED — needs Oliver.** Hosted CI has produced no workflow run for any commit since `0c0c319` (2026-08-02T12:56Z), across every branch, although all workflows report `state: active`. Nine pushed commits have triggered nothing, so neither the capture fix nor the raised bound can be confirmed. Re-running the old failed run is not useful: it would re-run `0c0c319`, which predates both fixes. A fresh run on the branch head is required.
+- [ ] Verify the remaining Zeus interactions by hand — cursor ownership in the focused viewport, lasso, copy/paste, group drag, and Page Up/Down elevation. These are interactive mouse judgements and cannot be automated.
 - [ ] Populate independent verification commits, evidence hashes, and reviewers; then move each Preview-0 blocker from `INTEGRATED` to `VALIDATED` only when its state-dependent gate passes.
 - [ ] Perform the reviewed activation/clean-checkout reproducibility pass before authorising `REL-000`.
-- [ ] Build and install the pending Zeus smoke executable after the currently running game releases its output lock; verify cursor ownership, lasso/copy-paste, unit elevation, side relations, combat, and death handling.
 
 ## Version 4.4.1 execution-contract correction
 
