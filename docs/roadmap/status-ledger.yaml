@@ -33,6 +33,7 @@ tickets:
     known_failures: []
     fallback: GL33 remains available when explicitly selected.
     reviewer: null
+    reviewer_method: null
     supersedes: []
     evidence:
       - docs/roadmap/tier1-preview0-validation.md
@@ -69,6 +70,7 @@ tickets:
       - No reviewed activation commit exists; the overlay remains PREPARED.
     fallback: Bootstrap ledger remains valid until all complete-schema and overlay checks pass.
     reviewer: null
+    reviewer_method: null
     supersedes: []
     evidence:
       - scripts/validate_preview0_ledger.py
@@ -131,6 +133,7 @@ tickets:
         as -j6) rather than raising it again.
     fallback: Explicit GL33 selection is retained; explicit WGPU cannot silently select it.
     reviewer: null
+    reviewer_method: null
     supersedes: []
     evidence:
       - cargo test --package wgpu_renderer (64 passed, 1 intentional ignore; 2026-08-01)
@@ -174,6 +177,7 @@ tickets:
     known_failures: []
     fallback: C++ refuses an ABI mismatch before renderer creation.
     reviewer: null
+    reviewer_method: null
     supersedes: []
     evidence:
       - engine/WgpuRenderer/docs/ffi-contract.md
@@ -217,6 +221,7 @@ tickets:
     known_failures: []
     fallback: Unsupported optional capabilities are reported and feature paths remain gated.
     reviewer: null
+    reviewer_method: null
     supersedes: []
     evidence:
       - engine/WgpuRenderer/rust/src/lib.rs
@@ -294,6 +299,7 @@ tickets:
         a keep-it-working fix, not WGPU feature parity work.
     fallback: Runtime log and manifest preserve the available fingerprint evidence.
     reviewer: null
+    reviewer_method: null
     supersedes: []
     evidence:
       - scripts/write_preview0_manifest.py

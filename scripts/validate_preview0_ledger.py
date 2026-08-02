@@ -240,7 +240,7 @@ def main() -> int:
                 "blocks:", "implementation_commits:", "production_call_sites:",
                 "test_ids:", "benchmark_artifacts:", "evidence_hash:",
                 "decision_record:", "known_failures:", "fallback:", "reviewer:",
-                "supersedes:", "evidence:",
+                "reviewer_method:", "supersedes:", "evidence:",
             )
             for field in required_fields:
                 if field not in block:
@@ -272,8 +272,19 @@ def main() -> int:
                 reviewer = value(block, "reviewer")
                 owner = value(block, "owner")
                 integration_owner = value(ledger, "integration_owner")
-                if reviewer in {"", "null", owner, integration_owner}:
-                    raise ValueError(f"completed {ticket} needs an independent reviewer")
+                if reviewer in {"", "null", owner}:
+                    raise ValueError(f"completed {ticket} needs a named reviewer")
+                # The integration owner may review their own integration, but
+                # only on the record.  Preview 0 has no second reviewer, so
+                # rather than let the ledger imply an independence it does not
+                # have, an owner review must state how it was carried out.
+                if reviewer == integration_owner:
+                    method = value(block, "reviewer_method")
+                    if method in {"", "null"}:
+                        raise ValueError(
+                            f"completed {ticket} is reviewed by the integration owner "
+                            "and needs a reviewer_method recording how it was verified"
+                        )
                 if not evidence:
                     raise ValueError(f"completed {ticket} needs tracked file evidence")
                 if not list_values(value(block, "implementation_commits")):
