@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import pathlib
 import re
 import subprocess
@@ -12,6 +13,7 @@ import sys
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 OVERLAY = ROOT / "docs/roadmap/modernisation/PoseidonWGPU_Execution_Overlay_Preview0_v1.2.1.yaml"
 LEDGER = ROOT / "docs/roadmap/status-ledger.yaml"
+MANIFEST = ROOT / "docs/roadmap/evidence/preview0-manifest.json"
 
 
 def text(path: pathlib.Path) -> str:
@@ -60,6 +62,14 @@ def git(*args: str) -> str:
     return result.stdout.strip()
 
 
+def git_bytes(*args: str) -> bytes:
+    result = subprocess.run(("git", *args), cwd=ROOT, capture_output=True)
+    if result.returncode:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(message or f"git {' '.join(args)} failed")
+    return result.stdout
+
+
 def tracked_file(raw_path: str, context: str) -> pathlib.Path:
     path = ROOT / raw_path
     if not path.is_file():
@@ -79,6 +89,53 @@ def evidence_paths(block: str) -> list[str]:
 
 def list_values(raw: str) -> list[str]:
     return [item for item in raw.strip("[]").replace(" ", "").split(",") if item]
+
+
+def verify_clean_manifest() -> None:
+    """Verify the tracked Preview-0 evidence bundle was made from a clean tree."""
+    tracked_file(str(MANIFEST.relative_to(ROOT)), "Preview-0 manifest")
+    try:
+        manifest = json.loads(text(MANIFEST))
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid Preview-0 manifest JSON: {exc}") from exc
+    if manifest.get("git_dirty") is not False:
+        raise ValueError("Preview-0 manifest must record git_dirty: false")
+    commit = manifest.get("git_commit")
+    if not isinstance(commit, str) or not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError("Preview-0 manifest must record a full git commit")
+    git("cat-file", "-e", f"{commit}^{{commit}}")
+
+    for section, required_keys in (
+        ("runtime_check", ("log", "sha256")),
+        ("capture", ("path", "sha256")),
+        ("metrics", ("path", "sha256")),
+    ):
+        entry = manifest.get(section)
+        if not isinstance(entry, dict) or not all(key in entry for key in required_keys):
+            raise ValueError(f"Preview-0 manifest missing {section} evidence")
+        raw_path = entry.get("path", entry.get("log"))
+        digest = entry["sha256"]
+        if not isinstance(raw_path, str) or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError(f"Preview-0 manifest has invalid {section} evidence metadata")
+        evidence_path = tracked_file(raw_path.replace("\\", "/"), f"Preview-0 manifest {section}")
+        if hashlib.sha256(evidence_path.read_bytes()).hexdigest() != digest:
+            raise ValueError(f"Preview-0 manifest {section} evidence hash mismatch")
+
+    shaders = manifest.get("shaders")
+    if not isinstance(shaders, list) or not shaders:
+        raise ValueError("Preview-0 manifest must list shader hashes")
+    for shader in shaders:
+        if not isinstance(shader, dict):
+            raise ValueError("Preview-0 manifest has malformed shader metadata")
+        raw_path, digest = shader.get("path"), shader.get("sha256")
+        if not isinstance(raw_path, str) or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ValueError("Preview-0 manifest has invalid shader hash")
+        shader_path = raw_path.replace("\\", "/")
+        # A clean capture may intentionally describe an earlier, pinned commit;
+        # validate against that commit rather than the mutable checkout HEAD.
+        shader_bytes = git_bytes("show", f"{commit}:{shader_path}")
+        if hashlib.sha256(shader_bytes).hexdigest() != digest:
+            raise ValueError(f"Preview-0 manifest shader hash mismatch: {raw_path}")
 
 
 def main() -> int:
@@ -107,6 +164,7 @@ def main() -> int:
         actual_hash = hashlib.sha256(roadmap.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
             raise ValueError("canonical roadmap hash mismatch")
+        verify_clean_manifest()
         authorised = ids(overlay, "authorised_tickets")
         blockers = ids(overlay, "preview_blockers")
         queue = ids(overlay, "execution_queue")

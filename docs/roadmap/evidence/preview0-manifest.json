@@ -39,8 +39,8 @@
   },
   "metrics": {
     "path": "docs\\roadmap\\evidence\\preview0-wgpu-clean-baseline-20260802-original-training-capture.json",
-    "sha256": "3774265e6f90a785f727318b43d88a47f8ea891646f8b6746b6be06e3dbef2df",
-    "bytes": 2333,
+    "sha256": "1bd277f24abb9db1be954fe4f398628641f12c9516fb3b3b72bebed368c77810",
+    "bytes": 2237,
     "renderer": "WGPU (Rust / wgpu)",
     "runtime": "Wgpu",
     "timed_regions": 26,
