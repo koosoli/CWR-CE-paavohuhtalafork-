@@ -155,6 +155,53 @@ from the code tags and reports, and to keep tagging new water work with its
 phase ID. That is a water-owner decision, not something to infer here — which
 is why this report records the gap rather than inventing statuses.
 
+## Dependency map
+
+RND-030 asks for dependencies between the renderer systems to be recorded.
+These are read off the code, not off the plans.
+
+### Frame pass order
+
+Sequential `push_debug_group` markers inside `Renderer::render_frame`
+(`lib.rs`), which is the encode order:
+
+```
+wgr_shadow_cascades  ->  wgr_sky  ->  wgr_depth_prepass  ->  wgr_water
+                     ->  wgr_cloud_composite  ->  wgr_overlay
+```
+
+`wgr_hdr_resolve` and `wgr_tonemap` are encoded separately in
+`Renderer::run_tonemap`.
+
+### Water is the most heavily coupled system
+
+Its bind group (`water/water.wgsl`, group 1) consumes the output of six other
+subsystems. This is the concrete dependency list RND-030 asks for, and it
+explains why water work reaches so far across the renderer:
+
+| Water binding | Depends on |
+| --- | --- |
+| `scene_depth` | depth prepass |
+| `scene_color` | opaque scene colour (refraction) |
+| `sky_env` | procedural sky |
+| `planar_color` | planar reflection pass |
+| `seabed_heightmap` | terrain |
+| `fft_displacement` / `fft_dynamics` / `fft_auxiliary` | water FFT solver |
+| `interaction_field` | water interaction emitters |
+| `foam_history` | foam accumulation |
+
+Two consequences worth carrying into any future scheduling:
+
+1. **Water sits downstream of depth prepass, sky, terrain and planar
+   reflection.** Changing any of those four can change how water looks without
+   touching a line of water code — so a water visual regression is not
+   automatically a water bug.
+2. **The three plans with no implementation at all** (`forward-plus`,
+   `screen-space-ao`, `gpu-terrain-water-cull`) all sit upstream of, or
+   alongside, this chain. `gpu-terrain-water-cull` in particular names water
+   directly, so it should be scheduled with awareness of the bindings above
+   rather than as an isolated terrain task.
+
 ## Scope note
 
 This inventory verifies that a system *exists* in the branch. It does not
