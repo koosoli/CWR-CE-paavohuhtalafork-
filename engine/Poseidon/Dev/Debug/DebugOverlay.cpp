@@ -554,12 +554,14 @@ bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position, 
     aiInfo._rank = RankPrivate;
     aiInfo._initExperience = aiInfo._experience = AI::ExpForRank(RankPrivate);
     unit->SetAbility(0.5f);
-    AISubgroup* subgroup = group->MainSubgroup();
     group->AddUnit(unit);
     if (GWorld->GetMode() == GModeNetware)
     {
-        if (!subgroup)
-            GetNetworkManager().CreateObject(group->MainSubgroup());
+        // Adding the unit may create the subgroup. Register the actual
+        // resulting object, rather than the pre-add null pointer, so Zeus
+        // units have the same network ownership chain as regular units.
+        if (AISubgroup* subgroup = group->MainSubgroup())
+            GetNetworkManager().CreateObject(subgroup);
         GetNetworkManager().CreateObject(unit);
     }
     if (!group->Leader())
