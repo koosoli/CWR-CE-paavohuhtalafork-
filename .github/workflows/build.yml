@@ -213,6 +213,10 @@ jobs:
   trident-test:
     name: Linux Trident
     runs-on: ubuntu-24.04
+    # Integration failures must publish diagnostics promptly; an unbounded
+    # harness process can otherwise keep the Preview-0 CI gate running for
+    # hours without producing a reviewable result.
+    timeout-minutes: 20
     needs:
       - build-linux
       - trident
@@ -306,7 +310,8 @@ jobs:
           PAPA_BEAR_MASTER_SERVICE: ${{ github.workspace }}/exe/papa-bear-master-service
           TRI_OUTPUT_DIR: ${{ github.workspace }}/trident-output
         run: |
-          xvfb-run -a --server-args="$TRIDENT_XVFB_ARGS" \
+          timeout --preserve-status --kill-after=30s 15m \
+            xvfb-run -a --server-args="$TRIDENT_XVFB_ARGS" \
             bash -c 'openbox & trap "kill $!" EXIT; sleep 1; exec "$@"' bash \
             exe/tri test \
             --output-dir "$TRI_OUTPUT_DIR" \
