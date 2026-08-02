@@ -240,10 +240,11 @@ TEST_CASE("PSConstants: constColor slot and white default", "[Graphics][GL33][su
 
 TEST_CASE("SVertex: correct size for static mesh upload", "[Graphics][GL33]")
 {
-    REQUIRE(sizeof(SVertex) == 32);
+    REQUIRE(sizeof(SVertex) == 36);
     REQUIRE(offsetof(SVertex, pos) == 0);
     REQUIRE(offsetof(SVertex, norm) == 12);
     REQUIRE(offsetof(SVertex, t0) == 24);
+    REQUIRE(offsetof(SVertex, conform) == 32);
 }
 
 // Engine Constants Tests (shared across backends)
@@ -868,9 +869,9 @@ TEST_CASE("SurfaceInfoGL33::CalculateSize: non-square texture", "[Graphics][GL33
 
 // SVertex Layout Tests — must match vsTransform GLSL attribute layout
 
-TEST_CASE("SVertex: size is 32 bytes (pos+norm+uv)", "[GL33][VertexBuffer]")
+TEST_CASE("SVertex: size is 36 bytes (pos+norm+uv+conform)", "[GL33][VertexBuffer]")
 {
-    REQUIRE(sizeof(SVertex) == 32);
+    REQUIRE(sizeof(SVertex) == 36);
 }
 
 TEST_CASE("SVertex: member offsets match VAO attribute pointers", "[GL33][VertexBuffer]")
@@ -881,6 +882,8 @@ TEST_CASE("SVertex: member offsets match VAO attribute pointers", "[GL33][Vertex
     REQUIRE(offsetof(SVertex, norm) == 12);
     // location 2: uv at offset 24 (vec2, 8 bytes)
     REQUIRE(offsetof(SVertex, t0) == 24);
+    // location 3: terrain conform selector at offset 32 (uint32)
+    REQUIRE(offsetof(SVertex, conform) == 32);
 }
 
 TEST_CASE("SVertex: Vector3P members are 12 bytes each", "[GL33][VertexBuffer]")
