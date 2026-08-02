@@ -7,6 +7,14 @@ on:
   pull_request:
   workflow_dispatch:
 
+# A push supersedes the run before it. The Trident suite is long, so without
+# this a burst of commits leaves several full runs competing for the same hosted
+# runners and every one of them finishes later -- including the only one whose
+# result anybody wants. Superseded runs are cancelled; the newest is the answer.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   preview0-ledger:
     name: Preview-0 ledger
