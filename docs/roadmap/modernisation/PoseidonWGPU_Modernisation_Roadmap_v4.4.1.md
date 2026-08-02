@@ -454,7 +454,7 @@ UNSUPPORTED
 - [x] No required field remains `TBD` when the first feature budget is approved.
 - [x] Metal or Linux failures block release only if that configuration is declared release-blocking.
 - [x] Budget changes are versioned and justified.
-- [ ] Every major renderer feature declares its budget share against a named tier.
+- [x] Every major renderer feature declares its budget share against a named tier.
 
 ## CORE-NEG-001 — Reproducible WGPU build and startup — REQUIRED
 
