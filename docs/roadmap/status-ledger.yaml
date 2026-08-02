@@ -102,7 +102,11 @@ tickets:
     evidence_hash: null
     decision_record: null
     known_failures:
-      - CI execution remains outstanding.
+      - >-
+        Hosted Linux Trident run 30743729550 initially lacked libwgpu_renderer.so;
+        after packaging was fixed it still timed out waiting for HARNESS_PORT in
+        the explicit WGPU shadow-map scenario. The headless retry pins WGPU to
+        its GL backend under Xvfb; hosted CI acceptance remains outstanding.
     fallback: Explicit GL33 selection is retained; explicit WGPU cannot silently select it.
     reviewer: null
     supersedes: []
