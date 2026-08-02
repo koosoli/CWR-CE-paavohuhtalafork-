@@ -7,7 +7,7 @@ template: true
 roadmap:
   version: "4.4.1"
   path: docs/roadmap/modernisation/PoseidonWGPU_Modernisation_Roadmap_v4.4.1.md
-  sha256: 37caaba26654f9024a6b367edbe8182e680af91a9121786a3a3b038c5197d871
+  sha256: c3e0f1489ca3fe888eac346cb2bf342976c4567b7be9550c88e7e2c157b8d2aa
   repository_commit: null
 
 ledger:

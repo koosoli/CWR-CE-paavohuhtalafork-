@@ -1140,6 +1140,10 @@ struct WaterSurfaceState {
     compression: f32,
     curvature: f32,
     slope_variance: f32,
+    // Portion of slope_variance the shading normal does not represent.
+    // water_roughness consumes this, not the total -- see the accumulator
+    // in evaluate_water_surface.
+    slope_variance_lost: f32,
     crest_energy: f32,
     breaking_energy: f32,
     interaction_height: f32,
@@ -1158,6 +1162,19 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
     let dist = length(in.world_pos);
     var n = gerstner_normal(in.base_xz, dist);
     var fft_slope_var = 0.0;
+    // Slope variance the shading normal does NOT represent.
+    //
+    // fft_normal_with_weights accumulates each cascade's slope scaled by
+    // normal_weight, so (1 - normal_weight) is exactly the fraction left out of
+    // the normal. water_roughness wants that residual: it already adds the
+    // represented slope separately via micro_slope, and feeding it the total
+    // counted the resolved part twice and made water read rougher than the
+    // spectrum implies.
+    //
+    // Kept as a second accumulator rather than redefining fft_slope_var, which
+    // three other consumers use as a measure of total wave activity
+    // (micro_normal's detail fade, open_ocean_activity, and debug view 4).
+    var fft_slope_var_lost = 0.0;
     var fft_crest = 0.0;
     var fft_comp = 0.0;
     var fft_curv = 0.0;
@@ -1174,6 +1191,8 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
                 let uv = fft_aperiodic_uv(in.base_xz, raw_length, layer, wp.warp_amp);
                 let aux = textureSampleLevel(fft_auxiliary, fft_samp, uv, layer, 0.0);
                 fft_slope_var = fft_slope_var + aux.w;
+                let lost_w = 1.0 - clamp(compute_cascade_weights(layer, dist, view_dir).normal_weight, 0.0, 1.0);
+                fft_slope_var_lost = fft_slope_var_lost + aux.w * lost_w;
                 fft_crest = max(fft_crest, textureSampleLevel(fft_displacement, fft_samp, uv, layer, 0.0).w);
                 fft_comp = max(fft_comp, aux.y);
                 fft_curv = max(fft_curv, aux.z);
@@ -1227,6 +1246,7 @@ fn evaluate_water_surface(in: VsOut) -> WaterSurfaceState {
     state.compression = fft_comp;
     state.curvature = fft_curv;
     state.slope_variance = fft_slope_var;
+    state.slope_variance_lost = fft_slope_var_lost;
     state.crest_energy = fft_crest;
     // Foam history is camera-domain anchored, not world-origin anchored.  Sampling it
     // through the same mapping used by the material path keeps the state/debug data
@@ -1253,7 +1273,7 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let state = evaluate_water_surface(in);
     let n = state.shading_normal;
     let base_normal = state.geometric_normal;
-    let roughness = water_roughness(wp.spec_power, state.slope_variance, base_normal, n);
+    let roughness = water_roughness(wp.spec_power, state.slope_variance_lost, base_normal, n);
     let v = normalize(-in.world_pos);              // surface -> camera
     let l = normalize(-frame.sun_dir_world.xyz);   // surface -> sun
     let world_y = in.world_pos.y + frame.cam_pos.y;
