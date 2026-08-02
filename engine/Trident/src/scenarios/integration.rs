@@ -516,7 +516,30 @@ fn load_test_meta(test_path: &Path) -> TestMeta {
             || format!("{name}.toml"),
             |pos| format!("{}.toml", &name[..pos]),
         );
-        test_path.with_file_name(toml_name)
+        let own = test_path.with_file_name(toml_name);
+
+        // A `.seq/` phase inherits the sequence's sidecar when it has no toml of
+        // its own. Phases are run one file at a time, so without this the whole
+        // `foo.seq.toml` — mission, binary, renderer pin, timeouts — is silently
+        // dropped and every phase boots a default game. That failure is quiet
+        // and looks like a broken test rather than lost configuration: the phase
+        // reaches the main menu instead of the mission and fails on whatever it
+        // asserted first.
+        if own.exists() {
+            own
+        } else {
+            match test_path.parent() {
+                Some(dir)
+                    if dir
+                        .file_name()
+                        .is_some_and(|n| n.to_string_lossy().ends_with(".seq")) =>
+                {
+                    let dir_name = dir.file_name().unwrap_or_default().to_string_lossy();
+                    dir.with_file_name(format!("{dir_name}.toml"))
+                }
+                _ => own,
+            }
+        }
     };
 
     if !toml_path.exists() {

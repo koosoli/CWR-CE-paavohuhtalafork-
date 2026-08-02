@@ -1,0 +1,9 @@
+# Retail island, so full game data rather than packages/Demo: ci-host-blocked.
+# Water observability is WGPU-only, hence the renderer pin.
+binary = "PoseidonGame"
+render = "wgpu"
+mission = "tests/integration/missions/water_alive.abel"
+timeout = 900
+assert_timeout = 120
+connect_timeout = 300
+tags = ["headless", "ci-host-blocked", "wgpu-only"]
