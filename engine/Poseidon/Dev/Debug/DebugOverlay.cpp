@@ -539,6 +539,13 @@ bool SpawnZeusUnit(const char* className, TargetSide side, Vector3Par position, 
     if (!center || center->NGroups() >= MaxGroups)
         return false;
 
+    // A Zeus unit must never be a hostile target to an AI centre of its own
+    // side.  This is normally established by mission loading, but also makes
+    // runtime-spawned units safe when a centre was created after the mission.
+    // Do not alter cross-side relationships: authored mission alliances stay
+    // authoritative.
+    center->SetFriendship(side, 1.0f);
+
     Ref<EntityAI> vehicle = NewVehicle(className);
     Person* soldier = dyn_cast<Person>(vehicle.GetRef());
     if (!soldier)

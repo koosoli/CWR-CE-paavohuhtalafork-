@@ -993,6 +993,39 @@ AICenter::AICenter(TargetSide side, Mode mode) : _radio(CCSide, this, RNRadio)
 
     _side = side;
 
+    // A normal mission replaces these values from ArcadeIntel in BeginArcade,
+    // but centres created while the world is already running do not go through
+    // that path.  Never leave the relationship matrix uninitialised: it is
+    // consulted directly by target selection and can otherwise make same-side
+    // units appear hostile.
+    for (int i = 0; i < TSideUnknown; ++i)
+    {
+        _friends[i] = 0.0f;
+    }
+    if (side >= 0 && side < TSideUnknown)
+    {
+        _friends[side] = 1.0f;
+    }
+    if (side >= 0 && side < TSideUnknown)
+    {
+        _friends[TCivilian] = 1.0f;
+    }
+    if (side == TWest || side == TGuerrila || side == TCivilian)
+    {
+        _friends[TGuerrila] = 1.0f;
+    }
+    if (side == TCivilian)
+    {
+        _friends[TWest] = 1.0f;
+    }
+    if (side == TLogic)
+    {
+        for (int i = 0; i < TSideUnknown; ++i)
+        {
+            _friends[i] = 1.0f;
+        }
+    }
+
     _mode = mode;
 
     _row = 0;
