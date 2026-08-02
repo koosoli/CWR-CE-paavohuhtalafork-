@@ -409,18 +409,27 @@ std::string GraphicsConfigPath()
     return GamePaths::Instance().UserDir() + "graphics.cfg";
 }
 
+void SetRendererEnvironment(const char* name, const char* value)
+{
+#ifdef _WIN32
+    _putenv_s(name, value);
+#else
+    setenv(name, value, 1);
+#endif
+}
+
 void ConfigureWgpuUltraEnvironment()
 {
     // Renderer creation reads these once. Keep the process-level profile explicit
     // while the in-game Graphics page remains unavailable.
-    _putenv_s("WGR_HDR", "1");
-    _putenv_s("WGR_MSAA", "4");
-    _putenv_s("WGR_PREPASS", "1");
-    _putenv_s("WGR_INDIRECT", "1");
-    _putenv_s("WGR_GPU_DRIVEN", "1");
-    _putenv_s("WGR_GPU_WATER", "1");
-    _putenv_s("WGR_WATER_FFT", "1");
-    _putenv_s("WGR_SHADOW_MAPS", "1");
+    SetRendererEnvironment("WGR_HDR", "1");
+    SetRendererEnvironment("WGR_MSAA", "4");
+    SetRendererEnvironment("WGR_PREPASS", "1");
+    SetRendererEnvironment("WGR_INDIRECT", "1");
+    SetRendererEnvironment("WGR_GPU_DRIVEN", "1");
+    SetRendererEnvironment("WGR_GPU_WATER", "1");
+    SetRendererEnvironment("WGR_WATER_FFT", "1");
+    SetRendererEnvironment("WGR_SHADOW_MAPS", "1");
 }
 
 // Eager-write defaults (autodetected) if the file is missing, then
