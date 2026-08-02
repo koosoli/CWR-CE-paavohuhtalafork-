@@ -1,11 +1,11 @@
 {
   "schema_version": 3,
-  "created_utc": "2026-08-01T19:48:08.879650+00:00",
-  "git_commit": "513430ae392f60dfa3375ad1cba600bbbc082a39",
-  "git_dirty": true,
+  "created_utc": "2026-08-02T08:16:48.823259+00:00",
+  "git_commit": "5b136ca4ba93ca9d026eae2dd8e55c629732a744",
+  "git_dirty": false,
   "platform": "Windows-10-10.0.26200-SP0",
   "backend_requested": "wgpu",
-  "adapter": "unknown",
+  "adapter": "NVIDIA GeForce RTX 3070 (Vulkan)",
   "driver": "unknown",
   "toolchain": {
     "cmake": "cmake version 3.29.0",
@@ -14,8 +14,8 @@
     "cxx_compiler": "D:/Program Files/LLVM/bin/clang-cl.exe"
   },
   "runtime_check": {
-    "log": "docs\\roadmap\\evidence\\preview0-wgpu-mission-capture-automation-20260801.log",
-    "sha256": "16a967e2f848e9583ada1613946275bd64443f653cbe9a82e661542e6d2e5a21",
+    "log": "docs\\roadmap\\evidence\\preview0-wgpu-clean-baseline-20260802.log",
+    "sha256": "4235befb77b497a8ec6879ec72f0fcc7b01511b6ca7471277f8c189d27a06753",
     "wgpu_selected": true,
     "initialization_check_completed": true,
     "adapter": "NVIDIA GeForce RTX 3070 (Vulkan, DiscreteGpu)",
@@ -30,38 +30,28 @@
     }
   },
   "capture": {
-    "path": "docs\\roadmap\\evidence\\preview0-wgpu-mission-capture-automation-20260801-original-training-capture.png",
-    "sha256": "d0dcbda3c08545eef21045f34bbb00369c43f78b085f3367ccb9183873afec41",
-    "bytes": 7681559,
+    "path": "docs\\roadmap\\evidence\\preview0-wgpu-clean-baseline-20260802-original-training-capture.png",
+    "sha256": "085a2a39b27a003573d366717d1c540b8cb48ca53c17a5908c5e754a1baae384",
+    "bytes": 7677475,
     "format": "png",
     "width": 3441,
     "height": 1440
   },
   "metrics": {
-    "path": "docs\\roadmap\\evidence\\preview0-wgpu-mission-capture-automation-20260801-original-training-capture.json",
-    "sha256": "36b3ccaf1b34c2a412d77388f36cbd83e4b0c21fde350a2c1d0f21218923530c",
-    "bytes": 2160,
+    "path": "docs\\roadmap\\evidence\\preview0-wgpu-clean-baseline-20260802-original-training-capture.json",
+    "sha256": "3774265e6f90a785f727318b43d88a47f8ea891646f8b6746b6be06e3dbef2df",
+    "bytes": 2333,
     "renderer": "WGPU (Rust / wgpu)",
     "runtime": "Wgpu",
-    "timed_regions": 25,
-    "measured_regions": 19,
+    "timed_regions": 26,
+    "measured_regions": 20,
     "grass_instances": {
       "near": 48591,
       "mid": 14176,
       "far": 1
     }
   },
-  "comparison": {
-    "path": "docs\\roadmap\\evidence\\preview0-gl33-vs-wgpu-original-training-current-build-diff-20260801.json",
-    "sha256": "2093bd53a6862a5df788c392b9b4fb5c0d7b73e9121c16763f720cec2e6611f0",
-    "bytes": 1322,
-    "changed_pixel_ratio": 0.8855425990506636,
-    "mean_absolute_rgb_delta": 44.495722268013054,
-    "mask": {
-      "path": "docs\\roadmap\\evidence\\preview0-gl33-vs-wgpu-original-training-current-build-diff-20260801.png",
-      "sha256": "ee30ab812589346f6423c6df358c1889488ae3c810929c3039b335e76a4e8dda"
-    }
-  },
+  "comparison": null,
   "shaders": [
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\bloom.wgsl",
@@ -93,7 +83,7 @@
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\gpu_driven.wgsl",
-      "sha256": "a8e4f9ed48e42879fe451a0f7ec461eff152c0b1e317560acfdb380cf472a4a2"
+      "sha256": "d2f0da84129403b1865d42936f99e8a36d4425ed55592fa7b6b8f57b4c9ffe24"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\gpu_driven_shadow.wgsl",
@@ -105,7 +95,7 @@
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\shader3d.wgsl",
-      "sha256": "ffc74872599ac4de3e76d3b5d0dad8960caa70ef58e6a0bdc739cc4b22c76886"
+      "sha256": "ece6b8ff99050ea6769b0e6aaf10de764a0da24507574c9dc629a354e9d27876"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\gfx3d\\shadow_depth.wgsl",
@@ -117,15 +107,15 @@
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\grass\\grass.wgsl",
-      "sha256": "a73b07d3cff6e962ecdfe6c1fffcf530d7001c62b249694bc5d85a5d2cc958df"
+      "sha256": "a603355b742a5fc573f0e3fc9de1fcf36d9c64e35c1f044e8db13cbb0c503832"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\grass\\grass_shadow.wgsl",
-      "sha256": "f02bb90145b84feafe80eccdd7b12e6c15160327c2557e32b349382abf8c362c"
+      "sha256": "bdaa9b1044917830c6bafc149e48ceedf8003376f6049ee4f727f168c8da63a6"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\planar_mips.wgsl",
-      "sha256": "13876423b96f1bc6a28054a7103923d9a7c0353b1f5a455854b63cb6ae807e26"
+      "sha256": "28c2053e6860f1c66d5b53b1b632f7377aa625437a4dbe25a141601681a153ad"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\color.wgsl",
@@ -137,7 +127,7 @@
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\frame.wgsl",
-      "sha256": "971b0cf0fd9313f4fba2a1e3205e362c9568a239bf33a5cf162cc5bf26355a7c"
+      "sha256": "d805cddc420aa49e30c78b0d5c2346f2c5f9d811a03a5567fc487f10d533d355"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\shaders\\gbuffer.wgsl",
@@ -173,7 +163,7 @@
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\terrain\\terrain.wgsl",
-      "sha256": "82e87623bf21df7a62915d75dab2c9ec09f78de603a13878395f8a56eaeeb108"
+      "sha256": "312090819914a72cea7b0ab7c47dab396b4e71047072f1ea1ad574f6a274eee1"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\terrain\\terrain_shadow.wgsl",
@@ -185,31 +175,31 @@
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\underwater.wgsl",
-      "sha256": "7e9f09f6cb5431fc7562429b36f7b72f4d18b98c563698d244194b26be379e62"
+      "sha256": "885cb574a56eb9b399ee377100f823c8dc52b43a1faaa05dec49bd72746db3d2"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\underwater_caustics.wgsl",
-      "sha256": "f519e5ca1af2443735d60f15374eff1bf5536d53187032dfcc6f9dc4172ee9c5"
+      "sha256": "c271ccf7f123bb094aac8a2bc7c0bf3a0f2022ed73bf570b1519392a4d6090d4"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\underwater_froxel.wgsl",
-      "sha256": "fb283087446ffb45a10529f5548eba1b3a86a3639db7952cdca4af696c306a4e"
+      "sha256": "1ad7368a19fcc465ff5dc10ef1c0bf497e3c830ac9bcfba7fa6a557a8ed67289"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_compose.wgsl",
-      "sha256": "12df3094e2b4ca3bf36a4fe47ff91b24f446c6712cffe87831869658a725282b"
+      "sha256": "a9a5e63ca554cd8f0b18f4706bebc0a6aefe269bdfdf807744b39dd9e1f7b857"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_row.wgsl",
-      "sha256": "324c8bc2742fd21c3e3efb9ea54e692fea53f38e960493551d9ebe6db379e16b"
+      "sha256": "a8b4371ca8d5b4e559f05f0923021d80da014a2b1ca2f8bb0e8bb1cb85819d90"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_sampling.wgsl",
-      "sha256": "3435dbff5fc86a7305aa1bcc4e93d9c3a6910fb2a171c28039dee3a4f98ba33d"
+      "sha256": "bf7b6352c8ef5669cfd62ccf0022fd95379777a3dd7c77f5d99a6f2f2aa94895"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_spectrum.wgsl",
-      "sha256": "78c277479e638d1922104dcddbd013af4d311898be6a13316c32c2c177b8f0e2"
+      "sha256": "b053cfa6c84e8a75d5d41564959131ebdf2d2324d1fc118f9255c27265d840b1"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\fft_spectrum_init.wgsl",
@@ -221,15 +211,15 @@
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\interaction.wgsl",
-      "sha256": "53ccb2f49160eb70febb5f35c1ac0d926e287be8d27392f0b0cc0d9801c835d2"
+      "sha256": "4805a0801d1a3d13bd52d646f9c227688c9f2657c3ead301c75cc12a5d63a861"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\water.wgsl",
-      "sha256": "c8ab664f7f2975d449ff18421dc7e4cff909c6e9f916071eaa6968246d557f22"
+      "sha256": "5025feab2b42d970441b125f96fe8588d6901db1fa4864f59b6a2f2f429e84ec"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\whitewater.wgsl",
-      "sha256": "909a5994c6890c5c42d7890833e71cc49624fde9a34c1c3962552149c9408f23"
+      "sha256": "3fb9b9e019e2d6ff0aa47c0b7f1ff2b8aeef8f8fd4b6d932ce4ee49172f4dbd7"
     },
     {
       "path": "engine\\WgpuRenderer\\rust\\src\\water\\whitewater_render.wgsl",
@@ -238,14 +228,14 @@
   ],
   "artifacts": [
     {
-      "path": "D:\\SteamLibrary\\steamapps\\common\\ARMA Cold War Assault\\ColdWarAssault.exe",
-      "sha256": "80c03727c7f0cd3ad14d09167a0364862fd0c6e5d191b9e0bee7155a8f5fe039",
-      "bytes": 38631424
+      "path": "build\\win-x64-clang-dbg\\apps\\cwr\\Game\\PoseidonGame.exe",
+      "sha256": "016b8bb409d05b65a2a73e4ccc4d46daf193a75595a9d610f2f6bfb570644a33",
+      "bytes": 38640128
     },
     {
-      "path": "D:\\SteamLibrary\\steamapps\\common\\ARMA Cold War Assault\\wgpu_renderer.dll",
-      "sha256": "726e1b1a657433b432ec261cd0924299e75cc5567a50c4546cb6fec86a02a7ee",
-      "bytes": 23804928
+      "path": "build\\win-x64-clang-dbg\\engine\\WgpuRenderer\\wgpu_renderer.dll",
+      "sha256": "ec97a9f42026fc44a76309b1d5a223a1890db77552db5bb88de8844442b71f6c",
+      "bytes": 23808512
     }
   ]
 }
