@@ -215,8 +215,9 @@ jobs:
     runs-on: ubuntu-24.04
     # Integration failures must publish diagnostics promptly; an unbounded
     # harness process can otherwise keep the Preview-0 CI gate running for
-    # hours without producing a reviewable result.
-    timeout-minutes: 20
+    # hours without producing a reviewable result.  The bound must still clear
+    # the suite's own runtime -- see the Trident step below.
+    timeout-minutes: 45
     needs:
       - build-linux
       - trident
@@ -310,7 +311,12 @@ jobs:
           PAPA_BEAR_MASTER_SERVICE: ${{ github.workspace }}/exe/papa-bear-master-service
           TRI_OUTPUT_DIR: ${{ github.workspace }}/trident-output
         run: |
-          timeout --preserve-status --kill-after=30s 15m \
+          # The bound exists to stop a hung harness, not to cut the suite
+          # short.  Run 91499679288 was SIGTERMed at exactly 15m with tests
+          # still queued: 81 sequential scenarios each pay a fresh game
+          # startup under Xvfb, so the suite needs well over 15 minutes even
+          # when every test passes.  Keep the guard, size it to the suite.
+          timeout --preserve-status --kill-after=30s 35m \
             xvfb-run -a --server-args="$TRIDENT_XVFB_ARGS" \
             bash -c 'openbox & trap "kill $!" EXIT; sleep 1; exec "$@"' bash \
             exe/tri test \

@@ -92,7 +92,7 @@ tickets:
     depends_on: [PERF-001, CORE-005]
     blocked_by: []
     blocks: []
-    implementation_commits: [816ec28]
+    implementation_commits: [816ec28, dacdf77]
     production_call_sites:
       - file: apps/cwr/Game/GameApplication.cpp
         symbol: CreateEngine
@@ -107,6 +107,28 @@ tickets:
         after packaging was fixed it still timed out waiting for HARNESS_PORT in
         the explicit WGPU shadow-map scenario. The headless retry pins WGPU to
         its GL backend under Xvfb; hosted CI acceptance remains outstanding.
+      - >-
+        Hosted Linux Trident run 91499679288 (GL33, Xvfb) failed the automatic
+        I-20 GL-error post-check on flows/demo/credits (2 errors) and
+        flows/demo/mission_load (3 errors). The counts equal each test's number
+        of triScreenshot calls exactly: EngineGL33::CaptureScreenshotIfPending
+        called glReadPixels on a default framebuffer that SDL/Xvfb exposes as
+        multisampled, which is a GL_INVALID_OPERATION per capture. Fixed in
+        dacdf77 by blitting to a single-sample resolve target before readback.
+        Verified locally only that normal GL33 captures are unchanged
+        (original-training screenshot, 2026-08-02); the multisample default
+        framebuffer itself reproduces only in hosted CI, so hosted
+        confirmation is still outstanding.
+      - >-
+        The same run was SIGTERMed at exactly 15m by the step bound added in
+        816ec28, with scenarios still queued. 81 sequential scenarios each pay
+        a fresh game startup under Xvfb, so the suite exceeds 15 minutes even
+        when every test passes: the bound was killing healthy runs rather than
+        catching hangs. Raised to 35m (job 45m) so it remains a hang guard.
+        The suite's true runtime is unmeasured -- tri's progress bar is
+        suppressed on a non-TTY, so CI logs carry no per-test timings. If the
+        raised bound still binds, use tri's -j parallelism (documented locally
+        as -j6) rather than raising it again.
     fallback: Explicit GL33 selection is retained; explicit WGPU cannot silently select it.
     reviewer: null
     supersedes: []
