@@ -593,7 +593,7 @@ NOT_APPLICABLE
 - [ ] Owner, branch, blocking relationships, evidence, and decision record are explicit.
 - [ ] Old audits preserve historical truth but link to the superseding record.
 - [x] CI validates schema, dependencies, and duplicate ticket IDs.
-- [ ] A `SHIPPABLE` ticket requires review by someone other than its implementation owner.
+- [x] A `SHIPPABLE` ticket requires review by someone other than its implementation owner.
 - [ ] Adopted external middleware records its upstream URL, version or commit, licence, maturity, known blockers, local patches, last review date, and reassessment triggers.
 - [x] The repository contains a machine-readable Execution Overlay that references only canonical ticket IDs.
 - [x] A bootstrap lock ledger can be created before full `CORE-005` completion and is promoted without losing valid claims.

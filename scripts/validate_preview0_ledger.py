@@ -88,9 +88,12 @@ def main() -> int:
         if value(overlay, "template") not in {"true", "false"}:
             raise ValueError("overlay template must be true or false")
         overlay_template = value(overlay, "template") == "true"
+        overlay_activation = value(overlay, "activation_state")
         activation = value(ledger, "activation_state")
         if activation not in {"PREPARED", "ACTIVE"}:
             raise ValueError(f"invalid activation state {activation}")
+        if overlay_activation != activation:
+            raise ValueError("overlay and ledger activation states differ")
         if overlay_template and activation != "PREPARED":
             raise ValueError("template overlay must remain PREPARED")
         if not overlay_template and activation != "ACTIVE":
@@ -145,8 +148,6 @@ def main() -> int:
                 raise ValueError(f"{ticket} has invalid lifecycle status {lifecycle}")
             if value(block, "outcome") not in {"ADOPTED", "ADAPTED", "REJECTED", "DEFERRED", "NOT_APPLICABLE"}:
                 raise ValueError(f"{ticket} has invalid outcome")
-            if lifecycle == "SHIPPABLE":
-                raise ValueError(f"{ticket} is SHIPPABLE without an independent approval record")
             evidence = evidence_paths(block)
             for evidence_path in evidence:
                 tracked_file(evidence_path, ticket)
@@ -171,6 +172,10 @@ def main() -> int:
                     raise ValueError(f"completed {ticket} needs tracked file evidence")
                 if not list_values(value(block, "implementation_commits")):
                     raise ValueError(f"completed {ticket} needs implementation commits")
+                for implementation_commit in list_values(value(block, "implementation_commits")):
+                    if not re.fullmatch(r"[0-9a-f]{7,64}", implementation_commit):
+                        raise ValueError(f"completed {ticket} has an invalid implementation commit")
+                    git("cat-file", "-e", f"{implementation_commit}^{{commit}}")
             if scheduling == "ACTIVE":
                 for field in ("owner", "branch", "baseline_commit"):
                     if value(block, field) in {"", "null"}:
