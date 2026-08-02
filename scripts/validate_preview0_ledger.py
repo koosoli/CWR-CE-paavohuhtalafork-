@@ -14,6 +14,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[1]
 OVERLAY = ROOT / "docs/roadmap/modernisation/PoseidonWGPU_Execution_Overlay_Preview0_v1.2.1.yaml"
 LEDGER = ROOT / "docs/roadmap/status-ledger.yaml"
 MANIFEST = ROOT / "docs/roadmap/evidence/preview0-manifest.json"
+CHECKSUMS = ROOT / "docs/roadmap/modernisation/PoseidonWGPU_Roadmap_4.4.1_CHECKSUMS_Overlay_v1.2.1.txt"
 
 
 def text(path: pathlib.Path) -> str:
@@ -167,6 +168,18 @@ def verify_clean_manifest() -> None:
             raise ValueError(f"Preview-0 manifest shader hash mismatch: {raw_path}")
 
 
+def verify_canonical_checksums(roadmap: pathlib.Path, overlay: pathlib.Path) -> None:
+    tracked_file(str(CHECKSUMS.relative_to(ROOT)), "Preview-0 checksum manifest")
+    expected_lines = {
+        f"{hashlib.sha256(roadmap.read_bytes()).hexdigest()}  {roadmap.name}",
+        f"{hashlib.sha256(overlay.read_bytes()).hexdigest()}  {overlay.name}",
+    }
+    recorded_lines = set(text(CHECKSUMS).splitlines())
+    missing = expected_lines - recorded_lines
+    if missing:
+        raise ValueError(f"Preview-0 checksum manifest mismatch: {sorted(missing)[0]}")
+
+
 def main() -> int:
     try:
         overlay = text(OVERLAY)
@@ -193,6 +206,7 @@ def main() -> int:
         actual_hash = hashlib.sha256(roadmap.read_bytes()).hexdigest()
         if actual_hash != expected_hash:
             raise ValueError("canonical roadmap hash mismatch")
+        verify_canonical_checksums(roadmap, OVERLAY)
         verify_clean_manifest()
         authorised = ids(overlay, "authorised_tickets")
         blockers = ids(overlay, "preview_blockers")
