@@ -19,6 +19,23 @@ def digest(path: pathlib.Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def canonical_digest(path: pathlib.Path) -> str:
+    """Hash repository files as Git stores them, independent of checkout EOLs."""
+    try:
+        relative = path.resolve().relative_to(ROOT.resolve()).as_posix()
+        filtered_blob = subprocess.check_output(
+            ["git", "hash-object", "--path", relative, "--filters", "--stdin"],
+            cwd=ROOT,
+            input=path.read_bytes(),
+        ).strip()
+        canonical = subprocess.check_output(
+            ["git", "cat-file", "blob", filtered_blob], cwd=ROOT
+        )
+        return hashlib.sha256(canonical).hexdigest()
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        return digest(path)
+
+
 def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], cwd=ROOT, text=True).strip()
 
@@ -103,7 +120,7 @@ def main() -> None:
         capabilities_match = re.search(r"wgpu capabilities: (.+)", log_text)
         runtime = {
             "log": str(args.runtime_log),
-            "sha256": digest(args.runtime_log),
+            "sha256": canonical_digest(args.runtime_log),
             "wgpu_selected": "Wgpu: creating renderer" in log_text and "wgpu renderer created" in log_text,
             "initialization_check_completed": "Initialization check complete - exiting" in log_text,
             "adapter": adapter_match.group(1).strip() if adapter_match else None,
@@ -126,7 +143,7 @@ def main() -> None:
         width, height = png_dimensions(args.capture)
         capture = {
             "path": str(args.capture),
-            "sha256": digest(args.capture),
+            "sha256": canonical_digest(args.capture),
             "bytes": args.capture.stat().st_size,
             "format": "png",
             "width": width,
@@ -145,7 +162,7 @@ def main() -> None:
             raise SystemExit("metrics sidecar does not prove available GPU timestamps")
         metrics = {
             "path": str(args.metrics),
-            "sha256": digest(args.metrics),
+            "sha256": canonical_digest(args.metrics),
             "bytes": args.metrics.stat().st_size,
             "renderer": metric_data.get("renderer"),
             "runtime": metric_data.get("runtime"),
@@ -170,7 +187,7 @@ def main() -> None:
             raise SystemExit("comparison bundle has an unsupported schema")
         comparison = {
             "path": str(args.comparison),
-            "sha256": digest(args.comparison),
+            "sha256": canonical_digest(args.comparison),
             "bytes": args.comparison.stat().st_size,
             "changed_pixel_ratio": comparison_data["changed_pixel_ratio"],
             "mean_absolute_rgb_delta": comparison_data.get("mean_absolute_rgb_delta"),

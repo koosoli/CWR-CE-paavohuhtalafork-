@@ -147,8 +147,10 @@ def verify_clean_manifest() -> None:
         digest = entry["sha256"]
         if not isinstance(raw_path, str) or not isinstance(digest, str) or not re.fullmatch(r"[0-9a-f]{64}", digest):
             raise ValueError(f"Preview-0 manifest has invalid {section} evidence metadata")
-        evidence_path = tracked_file(raw_path.replace("\\", "/"), f"Preview-0 manifest {section}")
-        if hashlib.sha256(evidence_path.read_bytes()).hexdigest() != digest:
+        repository_path = raw_path.replace("\\", "/")
+        tracked_file(repository_path, f"Preview-0 manifest {section}")
+        evidence_bytes = git_bytes("show", f"{commit}:{repository_path}")
+        if hashlib.sha256(evidence_bytes).hexdigest() != digest:
             raise ValueError(f"Preview-0 manifest {section} evidence hash mismatch")
 
     shaders = manifest.get("shaders")

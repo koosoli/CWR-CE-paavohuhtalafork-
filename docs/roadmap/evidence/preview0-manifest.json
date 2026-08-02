@@ -15,7 +15,7 @@
   },
   "runtime_check": {
     "log": "docs\\roadmap\\evidence\\preview0-wgpu-clean-baseline-20260802.log",
-    "sha256": "4235befb77b497a8ec6879ec72f0fcc7b01511b6ca7471277f8c189d27a06753",
+    "sha256": "450b2d68bd89d099f480b5c93ee0eb290893af5fc60fd83bd656a1aee2b96ceb",
     "wgpu_selected": true,
     "initialization_check_completed": true,
     "adapter": "NVIDIA GeForce RTX 3070 (Vulkan, DiscreteGpu)",
