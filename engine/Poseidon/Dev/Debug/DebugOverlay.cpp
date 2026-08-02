@@ -366,11 +366,11 @@ void StabilizeZeusInfantry(Person* person, Vector3Val direction)
         return;
     if (AIUnit* unit = person->Brain())
     {
-        // Zeus infantry are edited as static placements.  Leaving their
-        // Arcade mission path active while teleporting their animated body
-        // can corrupt Man's move-function queue.
+        // Replan after a Zeus move so the Arcade mission does not retain a
+        // stale move-function queue. Target acquisition remains enabled:
+        // opposing Zeus-spawned sides are expected to detect and engage.
         unit->ForceReplan(true);
-        unit->SetAIDisabled(AIUnit::DAMove | AIUnit::DATarget | AIUnit::DAAutoTarget);
+        unit->SetAIDisabled(AIUnit::DAMove);
         unit->SetWatchDirection(direction);
     }
 }
@@ -4074,14 +4074,7 @@ void ProcessEvent(const SDL_Event& event)
         {
             s_zeusConsumeMouseEvent = true;
             const SDL_Keymod modifiers = SDL_GetModState();
-            if (!s_zeusClickPlacement && (modifiers & SDL_KMOD_CTRL) != 0)
-            {
-                s_zeusLassoDrag = true;
-                s_zeusLassoStartX = s_zeusLassoEndX = event.button.x;
-                s_zeusLassoStartY = s_zeusLassoEndY = event.button.y;
-                s_zeusStatus = "Ctrl+drag to lasso Zeus-spawned objects.";
-            }
-            else if ((modifiers & SDL_KMOD_SHIFT) != 0 && !s_zeusSelection.empty())
+            if ((modifiers & SDL_KMOD_SHIFT) != 0 && !s_zeusSelection.empty())
             {
                 s_zeusRotateDrag = true;
                 s_zeusStatus = "Drag left/right to rotate the selected Zeus object(s).";
@@ -4094,7 +4087,18 @@ void ProcessEvent(const SDL_Event& event)
             else
             {
                 SelectZeusAtCursor(event.button.x, event.button.y);
-                BeginZeusMoveDrag();
+                if (s_zeusSelection.empty())
+                {
+                    // With click placement disabled, an empty left-drag is a
+                    // lasso by default. This keeps ordinary click-selection
+                    // and dragging an existing selection to move it intact.
+                    s_zeusLassoDrag = true;
+                    s_zeusLassoStartX = s_zeusLassoEndX = event.button.x;
+                    s_zeusLassoStartY = s_zeusLassoEndY = event.button.y;
+                    s_zeusStatus = "Drag to lasso Zeus-spawned objects.";
+                }
+                else
+                    BeginZeusMoveDrag();
             }
         }
         else if (event.type == SDL_EVENT_MOUSE_BUTTON_UP && event.button.button == SDL_BUTTON_LEFT &&
