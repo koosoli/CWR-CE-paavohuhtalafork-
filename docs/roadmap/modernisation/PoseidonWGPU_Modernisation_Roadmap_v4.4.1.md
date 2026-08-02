@@ -23,7 +23,7 @@ gate.
 - [x] Zeus runtime side relations, cross-side combat, and death handling are covered by automated scenarios (`tests/integration/ai/`, `537e71c`) instead of manual play.
 - [ ] **BLOCKED — needs Oliver.** Hosted CI has produced no workflow run for any commit since `0c0c319` (2026-08-02T12:56Z), across every branch, although all workflows report `state: active`. Nine pushed commits have triggered nothing, so neither the capture fix nor the raised bound can be confirmed. Re-running the old failed run is not useful: it would re-run `0c0c319`, which predates both fixes. A fresh run on the branch head is required.
 - [ ] Verify the remaining Zeus interactions by hand — cursor ownership in the focused viewport, lasso, copy/paste, group drag, and Page Up/Down elevation. These are interactive mouse judgements and cannot be automated.
-- [ ] Populate independent verification commits, evidence hashes, and reviewers; then move each Preview-0 blocker from `INTEGRATED` to `VALIDATED` only when its state-dependent gate passes.
+- [ ] Populate verification commits, evidence hashes, and reviewers; then move each Preview-0 blocker from `INTEGRATED` to `VALIDATED` only when its state-dependent gate passes. Note the review model: Preview 0 has **no independent reviewer and cannot obtain one** — Oliver Kay is the only human on the project, so review is owner-performed smoke testing recorded per ticket in `reviewer_method`. The authoring AI is deliberately never recorded as a reviewer, since the author cannot also be the independent check. `VALIDATED` here means the owner verified it, not that a second party did.
 - [ ] Perform the reviewed activation/clean-checkout reproducibility pass before authorising `REL-000`.
 
 ## Version 4.4.1 execution-contract correction

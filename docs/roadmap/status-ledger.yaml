@@ -5,6 +5,19 @@ execution:
   baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
   integration_owner: Oliver Kay
   activation_state: PREPARED
+  review_model: OWNER_REVIEW_NO_INDEPENDENT_REVIEWER
+  review_model_note: >-
+    Preview 0 has no independent reviewer and cannot obtain one: Oliver Kay is
+    the only human on the project. Reviews are performed by the integration
+    owner via smoke test, and each reviewed ticket must record reviewer_method
+    describing what was actually exercised.
+
+    The AI assistant that authors the changes is deliberately not recorded as a
+    reviewer. It is the author, so it cannot also be the independent check, and
+    naming it as one would assert a scrutiny that did not happen.
+
+    Read every VALIDATED Preview-0 ticket accordingly: it means the owner
+    verified it, not that a second party did.
 tickets:
   - id: PERF-001
     is_example: false
