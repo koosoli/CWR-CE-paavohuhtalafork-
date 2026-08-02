@@ -628,7 +628,7 @@ A stronger agent may improve the packaging, demonstration, or capability-report 
 
 - [ ] Map renderer entry points and resource ownership.
 - [ ] Map C++/Rust/WGPU FFI and ABI assumptions.
-- [ ] Map terrain, weather, water, grass, smoke, physics, and Zeus ownership.
+- [x] Map terrain, weather, water, grass, smoke, physics, and Zeus ownership.
 - [ ] Map current network authority and replication calls.
 - [ ] Find direct reads bypassing canonical world APIs.
 - [ ] Produce diagrams under `docs/architecture/`.
