@@ -94,6 +94,11 @@ def main() -> None:
         elif policy == "correctness-review":
             classification = profile.get("classification", {})
             review = profile.get("review")
+            allowed_non_blocking = (
+                classification.get("non_blocking", [])
+                if isinstance(classification, dict)
+                else []
+            )
             review_matches_capture = (
                 isinstance(review, dict)
                 and review.get("reference_sha256") == result["reference"]["sha256"]
@@ -103,7 +108,12 @@ def main() -> None:
                 and isinstance(review.get("approved_at"), str)
                 and bool(review["approved_at"].strip())
             )
-            accepted = review_matches_capture
+            review_classification = review.get("classification") if isinstance(review, dict) else None
+            approved_non_blocking = (
+                isinstance(review_classification, str)
+                and review_classification in allowed_non_blocking
+            )
+            accepted = review_matches_capture and approved_non_blocking
             acceptance = {
                 "profile": str(args.acceptance_profile),
                 "policy": policy,
@@ -112,6 +122,7 @@ def main() -> None:
                 "classification": classification,
                 "review": review if isinstance(review, dict) else None,
                 "review_matches_capture": review_matches_capture,
+                "review_classification_allowed": approved_non_blocking,
             }
         else:
             thresholds = profile["thresholds"]
