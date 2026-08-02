@@ -462,7 +462,7 @@ UNSUPPORTED
 - [x] CI builds every Tier 1 C++/Rust configuration.
 - [ ] Tier 2 configurations compile and test where runners are available.
 - [ ] Tier 3 failures are recorded but do not block Preview 0 unless promoted.
-- [ ] Every composed WGSL shader is validated during CI.
+- [x] Every composed WGSL shader is validated during CI.
 - [x] A minimal/headless startup test proves WGPU was actually selected.
 - [x] `--render wgpu` cannot silently fall back to GL33 in tests.
 - [x] Runtime fallback is explicit, logged, and visible.
@@ -2304,7 +2304,7 @@ Ships at the end of Milestone −1.
 
 - [x] An original mission loads with confirmed WGPU.
 - [x] Build fingerprint and adapter/backend report are available.
-- [ ] CI validates composed WGSL and ABI compatibility.
+- [x] CI validates composed WGSL and ABI compatibility.
 - [x] Silent GL33 fallback is impossible in the WGPU startup test.
 - [ ] Missing optional content does not prevent startup.
 - [x] Timings and at least one reproducible capture are produced.
