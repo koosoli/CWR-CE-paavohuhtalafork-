@@ -52,3 +52,14 @@ approval names the exact reference and candidate image hashes. Do not use
 `--require-accepted` as a GL33 visual-identity gate. The
 build/runtime fingerprint is in
 `docs/roadmap/evidence/preview0-manifest.json`.
+
+## Clean-capture owner review (2026-08-02)
+
+Oliver Kay reviewed the clean WGPU capture represented by reference hash
+`4e69db5f6b723c30b548170f4ce37ababa495645d6a0be6f89ae1d0e517f237d`
+and candidate hash
+`085a2a39b27a003573d366717d1c540b8cb48ca53c17a5908c5e754a1baae384`.
+The result is `EXPECTED_DIFFERENCE`: the WGPU scene is visually coherent and
+stable, with no observed correctness blocker. This owner review does not
+replace the separate independent-review requirement for a `VALIDATED` ledger
+status.

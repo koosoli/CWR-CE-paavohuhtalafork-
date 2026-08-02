@@ -7,7 +7,14 @@
     "preview0_blocker": "CORRECTNESS_BUG",
     "non_blocking": ["EXPECTED_DIFFERENCE", "DEFERRED_VISUAL_WORK"]
   },
-  "review": null,
+  "review": {
+    "reference_sha256": "4e69db5f6b723c30b548170f4ce37ababa495645d6a0be6f89ae1d0e517f237d",
+    "candidate_sha256": "085a2a39b27a003573d366717d1c540b8cb48ca53c17a5908c5e754a1baae384",
+    "reviewer": "Oliver Kay",
+    "approved_at": "2026-08-02",
+    "classification": "EXPECTED_DIFFERENCE",
+    "notes": "Manual WGPU smoke review: no missing terrain, objects, grass, water geometry, texture corruption, instability, or crash observed."
+  },
   "reference_backend": "gl33",
   "candidate_backend": "wgpu"
 }

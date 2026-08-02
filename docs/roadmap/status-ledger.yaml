@@ -243,7 +243,7 @@ tickets:
     evidence_hash: null
     decision_record: docs/roadmap/decisions/TEST-002-visual-divergence-20260801.md
     known_failures:
-      - The clean original-training comparison is REVIEW_REQUIRED until an independent reviewer classifies its exact capture hashes. A CORRECTNESS_BUG blocks Preview 0; expected renderer differences do not.
+      - Oliver Kay classified the clean original-training comparison as EXPECTED_DIFFERENCE. An independent evidence reviewer and hosted CI result are still required before the ticket can be VALIDATED.
     fallback: Runtime log and manifest preserve the available fingerprint evidence.
     reviewer: null
     supersedes: []

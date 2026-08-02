@@ -24,7 +24,7 @@
   "acceptance": {
     "profile": "docs\\roadmap\\visual-acceptance-profile.preview0-original-training.json",
     "policy": "correctness-review",
-    "verdict": "REVIEW_REQUIRED",
+    "verdict": "ACCEPTED_EXPECTED_DIFFERENCE",
     "reason": "GL33 is a correctness oracle, not an art-direction target. WGPU HDR/tonemap, lighting, terrain, vegetation, and water differences are expected unless they demonstrate a correctness bug.",
     "classification": {
       "preview0_blocker": "CORRECTNESS_BUG",
@@ -33,7 +33,14 @@
         "DEFERRED_VISUAL_WORK"
       ]
     },
-    "review": null,
-    "review_matches_capture": false
+    "review": {
+      "reference_sha256": "4e69db5f6b723c30b548170f4ce37ababa495645d6a0be6f89ae1d0e517f237d",
+      "candidate_sha256": "085a2a39b27a003573d366717d1c540b8cb48ca53c17a5908c5e754a1baae384",
+      "reviewer": "Oliver Kay",
+      "approved_at": "2026-08-02",
+      "classification": "EXPECTED_DIFFERENCE",
+      "notes": "Manual WGPU smoke review: no missing terrain, objects, grass, water geometry, texture corruption, instability, or crash observed."
+    },
+    "review_matches_capture": true
   }
 }
