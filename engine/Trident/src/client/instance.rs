@@ -87,15 +87,23 @@ impl GameInstance {
 
         let auto_port = port == 0;
 
+        // Auto-port instances used to share one `game_stdout.log`, which is fine
+        // serially but destroys the logs under `-j`: every concurrent game
+        // truncates the same file and interleaves into it, so the run loses its
+        // diagnostics exactly when a parallel failure needs explaining. Number
+        // them instead. The port-pinned branch below is already unique per port.
+        static INSTANCE_SEQ: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let seq = INSTANCE_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
         let stdout_log = output_dir.as_ref().and_then(|d| {
             let _ = std::fs::create_dir_all(d);
-            std::fs::File::create(d.join("game_stdout.log")).ok()
+            std::fs::File::create(d.join(format!("game_stdout_{seq}.log"))).ok()
         });
 
         let (stdout_cfg, stderr_cfg) = if auto_port {
             let stderr = output_dir.as_ref().and_then(|d| {
                 let _ = std::fs::create_dir_all(d);
-                std::fs::File::create(d.join("game_stderr.log")).ok()
+                std::fs::File::create(d.join(format!("game_stderr_{seq}.log"))).ok()
             });
             (Stdio::piped(), stderr.map_or_else(Stdio::null, Stdio::from))
         } else {

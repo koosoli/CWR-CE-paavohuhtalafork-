@@ -346,12 +346,21 @@ jobs:
       - name: Print Trident startup diagnostics
         if: failure()
         run: |
-          for log in trident-output/game_stdout.log trident-output/game_stderr.log; do
-            if [ -f "$log" ]; then
-              echo "--- $log ---"
-              sed -n '1,240p' "$log"
-            fi
+          # Logs are numbered per game instance, because a parallel run has
+          # several alive at once. Print a bounded number of them: with -j4 and
+          # retries a failing run can leave dozens, and dumping all of them
+          # buries the failure instead of showing it.
+          shopt -s nullglob
+          printed=0
+          for log in trident-output/game_stderr_*.log trident-output/game_stdout_*.log; do
+            [ -s "$log" ] || continue
+            echo "--- $log ---"
+            sed -n '1,240p' "$log"
+            printed=$((printed + 1))
+            [ "$printed" -ge 6 ] && { echo "--- (further instance logs omitted; see the uploaded artifact) ---"; break; }
           done
+          [ "$printed" -eq 0 ] && echo "(no non-empty game instance logs)"
+          exit 0
 
       - name: Upload Trident output
         if: failure()
