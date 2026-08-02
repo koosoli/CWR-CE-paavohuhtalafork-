@@ -1012,7 +1012,7 @@ Agents must re-audit the current branch and update the status ledger.
 - [ ] Visual captures verify reflection ownership.
 - [ ] Aerial and pitch tests pass or accepted limitations are recorded.
 - [x] Performance baseline exists. [`docs/roadmap/evidence/water-baseline-20260802.md`](../evidence/water-baseline-20260802.md) — WGPU on an RTX 3070, Malden ground level, steady-state: **~3.2 ms** water GPU total, 28 CDLOD nodes, 516,096 triangles, `lod0=27 lod1=1`. Sample spread is ±0.45 ms, so **sub-15% changes at this viewpoint are not distinguishable from noise**. It is one viewpoint and a regression anchor, not a characterisation of water cost across the game — extend with aerial and coastal before generalising.
-- [ ] Water can be disabled independently.
+- [x] Water can be disabled independently — **it could not be until now**. `Landscape::DrawWater` already falls through to the legacy per-segment mesh when `GetWaterRenderer()` is null, and `EngineWgpu` gates construction on `WGR_GPU_WATER`, but `ConfigureWgpuUltraEnvironment()` overwrote that variable (and `WGR_HDR`, `WGR_MSAA`, `WGR_PREPASS`, `WGR_INDIRECT`, `WGR_GPU_DRIVEN`, `WGR_WATER_FFT`, `WGR_SHADOW_MAPS`) unconditionally at startup, before renderer creation read them. **Every documented `WGR_*` switch was silently ignored**, which also made the dev panel's own hint ("run the wgpu backend with `WGR_GPU_WATER`") impossible to act on. Those are now applied as defaults, so an explicit override wins. Verified all three ways: `0` → no water draws, `1` → water draws, unset → water draws, so the shipped profile is unchanged.
 - [ ] Contradictory status reports are resolved in CORE-005.
 
 ## GL33-010 — Legacy shadow-filter maintenance — OPTIONAL

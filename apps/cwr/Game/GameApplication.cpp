@@ -409,8 +409,22 @@ std::string GraphicsConfigPath()
     return GamePaths::Instance().UserDir() + "graphics.cfg";
 }
 
-void SetRendererEnvironment(const char* name, const char* value)
+// Apply a renderer default without overriding a value the caller already set.
+//
+// This used to overwrite unconditionally, which silently disabled every WGR_*
+// switch the renderer documents: the process set its own profile before renderer
+// creation read the variables, so `WGR_GPU_WATER=0` (and MSAA, HDR, prepass,
+// shadow maps, …) had no effect at all. That is not a hypothetical — it is why
+// water could not be turned off to satisfy WTR-GATE-1's "water can be disabled
+// independently", and it makes the dev panel's own hint
+// ("run the wgpu backend with WGR_GPU_WATER") impossible to act on.
+//
+// Defaults still apply when the caller says nothing, so the shipped profile is
+// unchanged.
+void SetRendererEnvironmentDefault(const char* name, const char* value)
 {
+    if (const char* existing = std::getenv(name); existing && *existing)
+        return;
 #ifdef _WIN32
     _putenv_s(name, value);
 #else
@@ -421,15 +435,16 @@ void SetRendererEnvironment(const char* name, const char* value)
 void ConfigureWgpuUltraEnvironment()
 {
     // Renderer creation reads these once. Keep the process-level profile explicit
-    // while the in-game Graphics page remains unavailable.
-    SetRendererEnvironment("WGR_HDR", "1");
-    SetRendererEnvironment("WGR_MSAA", "4");
-    SetRendererEnvironment("WGR_PREPASS", "1");
-    SetRendererEnvironment("WGR_INDIRECT", "1");
-    SetRendererEnvironment("WGR_GPU_DRIVEN", "1");
-    SetRendererEnvironment("WGR_GPU_WATER", "1");
-    SetRendererEnvironment("WGR_WATER_FFT", "1");
-    SetRendererEnvironment("WGR_SHADOW_MAPS", "1");
+    // while the in-game Graphics page remains unavailable — but as defaults, so an
+    // explicit environment override still wins.
+    SetRendererEnvironmentDefault("WGR_HDR", "1");
+    SetRendererEnvironmentDefault("WGR_MSAA", "4");
+    SetRendererEnvironmentDefault("WGR_PREPASS", "1");
+    SetRendererEnvironmentDefault("WGR_INDIRECT", "1");
+    SetRendererEnvironmentDefault("WGR_GPU_DRIVEN", "1");
+    SetRendererEnvironmentDefault("WGR_GPU_WATER", "1");
+    SetRendererEnvironmentDefault("WGR_WATER_FFT", "1");
+    SetRendererEnvironmentDefault("WGR_SHADOW_MAPS", "1");
 }
 
 // Eager-write defaults (autodetected) if the file is missing, then
