@@ -310,6 +310,23 @@ jobs:
             --game-arg --no-strict \
             tests/integration
 
+      - name: Normalize Trident output permissions
+        if: failure()
+        run: |
+          # The game can create package files with restrictive permissions.  Make
+          # the complete failed-run evidence archiveable before publishing it.
+          chmod -R a+rX trident-output 2>/dev/null || true
+
+      - name: Print Trident startup diagnostics
+        if: failure()
+        run: |
+          for log in trident-output/game_stdout.log trident-output/game_stderr.log; do
+            if [ -f "$log" ]; then
+              echo "--- $log ---"
+              sed -n '1,240p' "$log"
+            fi
+          done
+
       - name: Upload Trident output
         if: failure()
         uses: actions/upload-artifact@v4
