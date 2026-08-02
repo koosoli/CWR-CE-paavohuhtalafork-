@@ -144,6 +144,19 @@ tickets:
         suppressed on a non-TTY, so CI logs carry no per-test timings. If the
         raised bound still binds, use tri's -j parallelism (documented locally
         as -j6) rather than raising it again.
+      - >-
+        The raised bound did still bind. Run 30758908654 (the first hosted run
+        after Actions resumed) was SIGTERMed at 2081s -- exactly the new 35m
+        bound -- with scenarios still queued. Every other job in that run
+        passed: Linux RelWithDebInfo, Windows RelWithDebInfo, SteamRT4 Release,
+        and Rust/Trident. Only the Linux Trident step failed, and it failed by
+        timeout rather than by any test result, so the GL33 capture fix in
+        dacdf77 remains unconfirmed either way.
+        Per the plan recorded above, the suite now runs with -j4 rather than
+        taking a third bound increase. Trident's scheduler supports this
+        directly: `exclusive`-tagged tests reserve the whole pool and run
+        alone, multi-instance tests reserve one slot per game process, and the
+        behaviour is covered by its own unit tests.
     fallback: Explicit GL33 selection is retained; explicit WGPU cannot silently select it.
     reviewer: null
     reviewer_method: null

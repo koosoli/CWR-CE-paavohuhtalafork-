@@ -311,17 +311,24 @@ jobs:
           PAPA_BEAR_MASTER_SERVICE: ${{ github.workspace }}/exe/papa-bear-master-service
           TRI_OUTPUT_DIR: ${{ github.workspace }}/trident-output
         run: |
-          # The bound exists to stop a hung harness, not to cut the suite
-          # short.  Run 91499679288 was SIGTERMed at exactly 15m with tests
-          # still queued: 81 sequential scenarios each pay a fresh game
-          # startup under Xvfb, so the suite needs well over 15 minutes even
-          # when every test passes.  Keep the guard, size it to the suite.
+          # The bound exists to stop a hung harness, not to cut the suite short.
+          # Two runs were SIGTERMed at exactly their bound with tests still
+          # queued -- 91499679288 at 15m, then 30758908654 at 35m -- because 81
+          # scenarios run one at a time, each paying a fresh game startup under
+          # Xvfb.  Raising the bound a third time only buys another slow run, so
+          # the suite now runs in parallel instead.
+          #
+          # -j4 matches the hosted runner's core count.  Trident's scheduler is
+          # built for this: `exclusive` tests reserve the whole pool and run
+          # alone, and multi-instance tests reserve one slot per game process,
+          # so overlap is opt-out where a test needs isolation.
           timeout --preserve-status --kill-after=30s 35m \
             xvfb-run -a --server-args="$TRIDENT_XVFB_ARGS" \
             bash -c 'openbox & trap "kill $!" EXIT; sleep 1; exec "$@"' bash \
             exe/tri test \
             --output-dir "$TRI_OUTPUT_DIR" \
             --render "$TRIDENT_RENDER" \
+            -j4 \
             --retries 2 \
             --skip-tag ci-host-blocked \
             --game-arg --audio \
