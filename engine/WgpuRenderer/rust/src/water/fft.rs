@@ -696,7 +696,11 @@ impl Fft {
                 // and the layouts untouched); this simply stops dispatching the dead one.
                 for pack in 0..FFT_ACTIVE_PACKS {
                     let index = (axis * 3 + pack) as usize;
-                    pass.set_bind_group(0, &self.stage_binds[index], &[axis * self.stage_alignment]);
+                    pass.set_bind_group(
+                        0,
+                        &self.stage_binds[index],
+                        &[axis * self.stage_alignment],
+                    );
                     // One workgroup per line of the transform, per cascade layer. Each
                     // One 256-thread workgroup covers each complete transform line.
                     pass.dispatch_workgroups(self.resolution, layers, 1);
@@ -959,10 +963,7 @@ mod tests {
         assert!(row.contains("let fft_bits = stage_params.data.z"));
         assert!(row.contains("FFT_THREADS: u32 = 256u"));
         assert!(row.contains("workgroup_size(256, 1, 1)"));
-        assert!(row.contains(&format!(
-            "array<vec4<f32>, {}>",
-            super::FFT_MAX_RESOLUTION
-        )));
+        assert!(row.contains(&format!("array<vec4<f32>, {}>", super::FFT_MAX_RESOLUTION)));
         for n in [
             super::FFT_MIN_RESOLUTION,
             super::FFT_RESOLUTION,

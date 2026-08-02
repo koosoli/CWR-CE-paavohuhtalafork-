@@ -5,8 +5,8 @@ use crate::gfx3d::DEPTH_FORMAT;
 mod interaction;
 use interaction::Interaction;
 mod fft;
-use fft::Fft;
 pub use fft::FFT_RESOLUTION;
+use fft::Fft;
 mod foam;
 use crate::ffi::{WgrWaterInteractionEvent, WgrWaterInteractionParams};
 use foam::Foam;
@@ -444,7 +444,9 @@ impl Water {
         queue.write_buffer(
             &conform_params,
             0,
-            bytemuck::bytes_of(&<crate::terrain::TerrainConformParams as bytemuck::Zeroable>::zeroed()),
+            bytemuck::bytes_of(
+                &<crate::terrain::TerrainConformParams as bytemuck::Zeroable>::zeroed(),
+            ),
         );
         let planar_view = device
             .create_texture(&wgpu::TextureDescriptor {
@@ -908,11 +910,7 @@ impl Water {
     pub fn underwater_body(&self) -> Option<([f32; 3], [f32; 3], f32)> {
         self.last_params.map(|p| {
             (
-                [
-                    p.shallow_color[0],
-                    p.shallow_color[1],
-                    p.shallow_color[2],
-                ],
+                [p.shallow_color[0], p.shallow_color[1], p.shallow_color[2]],
                 [p.deep_color[0], p.deep_color[1], p.deep_color[2]],
                 p.color_ext,
             )
@@ -1325,9 +1323,7 @@ mod tests {
     fn shoreline_geometry_uses_world_continuous_height_field_inputs() {
         let shader = include_str!("water.wgsl");
         assert!(shader.contains("let has_seabed = seabed_contains(base_xz)"));
-        assert!(shader.contains(
-            "vertex_shore_factor = 1.0 - smoothstep(2.0, 30.0, local_depth)"
-        ));
+        assert!(shader.contains("vertex_shore_factor = 1.0 - smoothstep(2.0, 30.0, local_depth)"));
         assert!(shader.contains("fft_geometry_disp(base_xz, dist, vertex_shore_factor)"));
         assert!(!shader.contains("fft_geometry_disp(base_xz, dist, shore_factor)"));
         assert!(shader.contains("disp.x * horizontal_keep"));

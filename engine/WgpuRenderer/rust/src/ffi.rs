@@ -67,7 +67,9 @@ pub struct WgrAbiCheck {
 const WGR_ABI_FEATURE_BUILD_ID: u32 = 0x0000_0001;
 const WGR_ABI_FEATURE_SAFE_DIAGNOSTICS: u32 = 0x0000_0002;
 const WGR_ABI_FEATURE_RUNTIME_CAPABILITIES: u32 = 0x0000_0004;
-const WGR_ABI_SUPPORTED_FEATURES: u32 = WGR_ABI_FEATURE_BUILD_ID | WGR_ABI_FEATURE_SAFE_DIAGNOSTICS | WGR_ABI_FEATURE_RUNTIME_CAPABILITIES;
+const WGR_ABI_SUPPORTED_FEATURES: u32 = WGR_ABI_FEATURE_BUILD_ID
+    | WGR_ABI_FEATURE_SAFE_DIAGNOSTICS
+    | WGR_ABI_FEATURE_RUNTIME_CAPABILITIES;
 
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -1098,7 +1100,9 @@ pub unsafe extern "C" fn wgr_screenshot_request(renderer: *mut WgrRenderer) {
     if renderer.is_null() {
         return;
     }
-    let _ = catch_unwind(AssertUnwindSafe(|| unsafe { &mut *renderer }.request_screenshot()));
+    let _ = catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &mut *renderer }.request_screenshot()
+    }));
 }
 
 /// Copy the latest requested capture as tightly packed RGBA8. Call once with
@@ -1111,12 +1115,18 @@ pub unsafe extern "C" fn wgr_screenshot_take(
     width: *mut u32,
     height: *mut u32,
 ) -> u32 {
-    if renderer.is_null() || width.is_null() || height.is_null() || (out.is_null() && out_len != 0) {
+    if renderer.is_null() || width.is_null() || height.is_null() || (out.is_null() && out_len != 0)
+    {
         return 0;
     }
     catch_unwind(AssertUnwindSafe(|| {
-        let out = if out.is_null() { &mut [] } else { unsafe { std::slice::from_raw_parts_mut(out, out_len as usize) } };
-        unsafe { &mut *renderer }.take_screenshot(out, unsafe { &mut *width }, unsafe { &mut *height })
+        let out = if out.is_null() {
+            &mut []
+        } else {
+            unsafe { std::slice::from_raw_parts_mut(out, out_len as usize) }
+        };
+        unsafe { &mut *renderer }
+            .take_screenshot(out, unsafe { &mut *width }, unsafe { &mut *height })
     }))
     .unwrap_or(0)
 }
@@ -1245,8 +1255,10 @@ pub unsafe extern "C" fn wgr_set_present_mode(renderer: *mut WgrRenderer, interv
     if renderer.is_null() {
         return 0;
     }
-    catch_unwind(AssertUnwindSafe(|| unsafe { &mut *renderer }.set_present_mode(interval)))
-        .unwrap_or(false) as i32
+    catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &mut *renderer }.set_present_mode(interval)
+    }))
+    .unwrap_or(false) as i32
 }
 
 /// Flag for wgr_texture_create: generate the rest of the mip chain from level 0
@@ -2012,7 +2024,10 @@ pub unsafe extern "C" fn wgr_get_runtime_capabilities(renderer: *mut WgrRenderer
     if renderer.is_null() {
         return 0;
     }
-    catch_unwind(AssertUnwindSafe(|| unsafe { &*renderer }.runtime_capabilities())).unwrap_or(0)
+    catch_unwind(AssertUnwindSafe(|| {
+        unsafe { &*renderer }.runtime_capabilities()
+    }))
+    .unwrap_or(0)
 }
 
 /// GRS-A — grass instance accounting for the Grass tab, mirroring `WgrGrassStats`

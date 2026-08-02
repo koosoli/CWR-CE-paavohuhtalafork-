@@ -119,7 +119,12 @@ pub struct GpuTimers {
 impl GpuTimers {
     /// `enabled` = the device was created with TIMESTAMP_QUERY + TIMESTAMP_QUERY_INSIDE_ENCODERS.
     /// `inside_passes` = TIMESTAMP_QUERY_INSIDE_PASSES was also available.
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, enabled: bool, inside_passes: bool) -> Self {
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        enabled: bool,
+        inside_passes: bool,
+    ) -> Self {
         if !enabled {
             return Self { inner: None };
         }

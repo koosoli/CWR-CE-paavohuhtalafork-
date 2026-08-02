@@ -51,20 +51,64 @@ struct Species {
 }
 
 const fn foliage(root: [f32; 3], tip: [f32; 3], rib: f32, vein: f32, dryness: f32) -> Species {
-    Species { root, tip, rib, vein, dryness, flower: None, head: 0.0 }
+    Species {
+        root,
+        tip,
+        rib,
+        vein,
+        dryness,
+        flower: None,
+        head: 0.0,
+    }
 }
 
 // Midrib/vein contrast is deliberately strong: the layer is sampled across a
 // ribbon only a few pixels wide, so subtle structure reads as flat colour.
 const SPECIES: [Species; LAYERS as usize] = [
     // --- grass (0..4) ---
-    foliage([0.055, 0.135, 0.030], [0.300, 0.430, 0.110], 0.50, 0.26, 0.05), // fine blade
-    foliage([0.070, 0.160, 0.040], [0.255, 0.400, 0.120], 0.40, 0.18, 0.08), // broad meadow
-    foliage([0.105, 0.115, 0.045], [0.470, 0.400, 0.150], 0.45, 0.24, 0.55), // dry stem
-    foliage([0.045, 0.110, 0.028], [0.190, 0.300, 0.080], 0.34, 0.20, 0.03), // dense low
+    foliage(
+        [0.055, 0.135, 0.030],
+        [0.300, 0.430, 0.110],
+        0.50,
+        0.26,
+        0.05,
+    ), // fine blade
+    foliage(
+        [0.070, 0.160, 0.040],
+        [0.255, 0.400, 0.120],
+        0.40,
+        0.18,
+        0.08,
+    ), // broad meadow
+    foliage(
+        [0.105, 0.115, 0.045],
+        [0.470, 0.400, 0.150],
+        0.45,
+        0.24,
+        0.55,
+    ), // dry stem
+    foliage(
+        [0.045, 0.110, 0.028],
+        [0.190, 0.300, 0.080],
+        0.34,
+        0.20,
+        0.03,
+    ), // dense low
     // --- weed (4..6): broader, flatter leaves with strong veins ---
-    foliage([0.050, 0.140, 0.045], [0.150, 0.320, 0.090], 0.55, 0.38, 0.06), // clover/broadleaf
-    foliage([0.080, 0.120, 0.038], [0.300, 0.330, 0.095], 0.46, 0.42, 0.30), // ragged weed
+    foliage(
+        [0.050, 0.140, 0.045],
+        [0.150, 0.320, 0.090],
+        0.55,
+        0.38,
+        0.06,
+    ), // clover/broadleaf
+    foliage(
+        [0.080, 0.120, 0.038],
+        [0.300, 0.330, 0.095],
+        0.46,
+        0.42,
+        0.30,
+    ), // ragged weed
     // --- flower (6..8): green stem with a coloured head at the tip ---
     Species {
         root: [0.050, 0.120, 0.030],
@@ -103,10 +147,8 @@ impl Rng {
 /// mottling that a pure sine pattern cannot give.
 fn mottle(u: f32, v: f32, freq: f32, seed: u32) -> f32 {
     let hash = |xi: i32, yi: i32| -> f32 {
-        let mut h = (xi as u32)
-            .wrapping_mul(0x9e3779b9)
-            ^ (yi as u32).wrapping_mul(0x85ebca6b)
-            ^ seed;
+        let mut h =
+            (xi as u32).wrapping_mul(0x9e3779b9) ^ (yi as u32).wrapping_mul(0x85ebca6b) ^ seed;
         h ^= h >> 16;
         h = h.wrapping_mul(0x7feb352d);
         h ^= h >> 15;
@@ -309,7 +351,12 @@ fn downsample_cutout(src: &[u8], w: u32, h: u32) -> (Vec<u8>, u32, u32) {
             let taps = [(x0, y0), (x1, y0), (x0, y1), (x1, y1)];
             let texel = |px: u32, py: u32| -> [u32; 4] {
                 let i = ((py * w + px) * 4) as usize;
-                [src[i] as u32, src[i + 1] as u32, src[i + 2] as u32, src[i + 3] as u32]
+                [
+                    src[i] as u32,
+                    src[i + 1] as u32,
+                    src[i + 2] as u32,
+                    src[i + 3] as u32,
+                ]
             };
             let mut rgb = [0u32; 3];
             let mut alpha_sum = 0u32;
@@ -419,7 +466,11 @@ pub fn create(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::TextureView {
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
                     mip_level: mip,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 &data,
@@ -461,7 +512,8 @@ pub fn create_from_images(
     rgba: &[u8],
 ) -> Option<wgpu::TextureView> {
     let layer_bytes = width as usize * height as usize * 4;
-    if width == 0 || height == 0 || layers != LAYERS || rgba.len() != layer_bytes * layers as usize {
+    if width == 0 || height == 0 || layers != LAYERS || rgba.len() != layer_bytes * layers as usize
+    {
         return None;
     }
     let mip_levels = 32 - width.max(height).leading_zeros();
@@ -491,7 +543,11 @@ pub fn create_from_images(
                 wgpu::TexelCopyTextureInfo {
                     texture: &texture,
                     mip_level: mip,
-                    origin: wgpu::Origin3d { x: 0, y: 0, z: layer },
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: layer,
+                    },
                     aspect: wgpu::TextureAspect::All,
                 },
                 &data,
@@ -594,7 +650,11 @@ mod tests {
         // Every texel with any coverage must retain the source colour, not a
         // blend toward black. A plain box filter would give 100 on the seam.
         for p in mip.chunks(4).filter(|p| p[3] > 0) {
-            assert!(p[0] >= 199, "cutout mip darkened to {} (transparent black bled in)", p[0]);
+            assert!(
+                p[0] >= 199,
+                "cutout mip darkened to {} (transparent black bled in)",
+                p[0]
+            );
         }
     }
 
@@ -612,7 +672,10 @@ mod tests {
         let (mut mip, _, _) = downsample_cutout(&data, w, h);
         preserve_coverage(&mut mip, base, 128);
         let after = coverage(&mip, 128);
-        assert!((after - base).abs() < 0.15, "coverage drifted {base} -> {after}");
+        assert!(
+            (after - base).abs() < 0.15,
+            "coverage drifted {base} -> {after}"
+        );
     }
 
     // A flower layer must actually be brighter near the tip than a grass layer,

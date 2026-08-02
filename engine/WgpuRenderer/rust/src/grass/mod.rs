@@ -1,6 +1,9 @@
 mod blade_atlas;
 
-use crate::ffi::{WgrGrassDownwash, WgrGrassParams, WgrGrassTrack, WgrTerrainParams, WGR_GRASS_DOWNWASH_COUNT, WGR_GRASS_TRACK_COUNT};
+use crate::ffi::{
+    WGR_GRASS_DOWNWASH_COUNT, WGR_GRASS_TRACK_COUNT, WgrGrassDownwash, WgrGrassParams,
+    WgrGrassTrack, WgrTerrainParams,
+};
 use crate::gfx3d::{DEPTH_FORMAT, NORMAL_FORMAT};
 use crate::terrain::Terrain;
 
@@ -226,8 +229,18 @@ impl Grass {
             interactor_z: 0.0,
             interactor_radius: 0.0,
             interactor_strength: 0.0,
-            tracks: [WgrGrassTrack { x: 0.0, z: 0.0, radius: 0.0, age: 0.0 }; WGR_GRASS_TRACK_COUNT],
-            downwash: [WgrGrassDownwash { x: 0.0, z: 0.0, radius: 0.0, strength: 0.0 }; WGR_GRASS_DOWNWASH_COUNT],
+            tracks: [WgrGrassTrack {
+                x: 0.0,
+                z: 0.0,
+                radius: 0.0,
+                age: 0.0,
+            }; WGR_GRASS_TRACK_COUNT],
+            downwash: [WgrGrassDownwash {
+                x: 0.0,
+                z: 0.0,
+                radius: 0.0,
+                strength: 0.0,
+            }; WGR_GRASS_DOWNWASH_COUNT],
             debug_ignore_geography_exclusions: 0.0,
             clumping: 0.55,
             color_variation: 0.35,
@@ -569,48 +582,57 @@ impl Grass {
             compilation_options: Default::default(),
             cache: None,
         });
-        let make_pipeline =
-            |label: &str, vertex_entry: &str, entry: &str, target: wgpu::TextureFormat, depth_write: bool| {
-                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                    label: Some(label),
-                    layout: Some(&layout),
-                    vertex: wgpu::VertexState {
-                        module: &shader,
-                        entry_point: Some(vertex_entry),
-                        compilation_options: Default::default(),
-                        buffers: &[],
-                    },
-                    primitive: wgpu::PrimitiveState {
-                        topology: wgpu::PrimitiveTopology::TriangleList,
-                        cull_mode: None,
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(wgpu::DepthStencilState {
-                        format: DEPTH_FORMAT,
-                        depth_write_enabled: Some(depth_write),
-                        depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
-                        stencil: Default::default(),
-                        bias: Default::default(),
-                    }),
-                    multisample: wgpu::MultisampleState {
-                        count: sample_count,
-                        ..Default::default()
-                    },
-                    fragment: Some(wgpu::FragmentState {
-                        module: &shader,
-                        entry_point: Some(entry),
-                        compilation_options: Default::default(),
-                        targets: &[Some(wgpu::ColorTargetState {
-                            format: target,
-                            blend: None,
-                            write_mask: wgpu::ColorWrites::ALL,
-                        })],
-                    }),
-                    multiview_mask: None,
-                    cache: None,
-                })
-            };
-        let color_pipeline = make_pipeline("wgr_grass_color", "vs_grass", "fs_grass", surface_format, true);
+        let make_pipeline = |label: &str,
+                             vertex_entry: &str,
+                             entry: &str,
+                             target: wgpu::TextureFormat,
+                             depth_write: bool| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vertex_entry),
+                    compilation_options: Default::default(),
+                    buffers: &[],
+                },
+                primitive: wgpu::PrimitiveState {
+                    topology: wgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(wgpu::DepthStencilState {
+                    format: DEPTH_FORMAT,
+                    depth_write_enabled: Some(depth_write),
+                    depth_compare: Some(wgpu::CompareFunction::GreaterEqual),
+                    stencil: Default::default(),
+                    bias: Default::default(),
+                }),
+                multisample: wgpu::MultisampleState {
+                    count: sample_count,
+                    ..Default::default()
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    compilation_options: Default::default(),
+                    targets: &[Some(wgpu::ColorTargetState {
+                        format: target,
+                        blend: None,
+                        write_mask: wgpu::ColorWrites::ALL,
+                    })],
+                }),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let color_pipeline = make_pipeline(
+            "wgr_grass_color",
+            "vs_grass",
+            "fs_grass",
+            surface_format,
+            true,
+        );
         let color_no_write_pipeline = make_pipeline(
             "wgr_grass_color_no_write",
             "vs_grass",
@@ -618,12 +640,27 @@ impl Grass {
             surface_format,
             false,
         );
-        let prepass_pipeline =
-            make_pipeline("wgr_grass_prepass", "vs_grass", "fs_grass_prepass", NORMAL_FORMAT, true);
-        let mid_prepass_pipeline =
-            make_pipeline("wgr_grass_mid_prepass", "vs_grass_mid", "fs_grass_prepass", NORMAL_FORMAT, true);
-        let mid_color_pipeline =
-            make_pipeline("wgr_grass_mid_color", "vs_grass_mid", "fs_grass", surface_format, true);
+        let prepass_pipeline = make_pipeline(
+            "wgr_grass_prepass",
+            "vs_grass",
+            "fs_grass_prepass",
+            NORMAL_FORMAT,
+            true,
+        );
+        let mid_prepass_pipeline = make_pipeline(
+            "wgr_grass_mid_prepass",
+            "vs_grass_mid",
+            "fs_grass_prepass",
+            NORMAL_FORMAT,
+            true,
+        );
+        let mid_color_pipeline = make_pipeline(
+            "wgr_grass_mid_color",
+            "vs_grass_mid",
+            "fs_grass",
+            surface_format,
+            true,
+        );
         let mid_color_no_write_pipeline = make_pipeline(
             "wgr_grass_mid_color_no_write",
             "vs_grass_mid",
@@ -654,7 +691,13 @@ impl Grass {
             surface_format,
             false,
         );
-        let far_color_pipeline = make_pipeline("wgr_grass_far_color", "vs_grass_far", "fs_grass_far", surface_format, false);
+        let far_color_pipeline = make_pipeline(
+            "wgr_grass_far_color",
+            "vs_grass_far",
+            "fs_grass_far",
+            surface_format,
+            false,
+        );
         let far_color_no_write_pipeline = make_pipeline(
             "wgr_grass_far_color_no_write",
             "vs_grass_far",
@@ -671,20 +714,37 @@ impl Grass {
         );
         let shadow_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("wgr_grass_shadow_pipeline_layout"),
-            bind_group_layouts: &[Some(shadow_pass_layout), Some(&terrain_layout), Some(&data_layout)],
+            bind_group_layouts: &[
+                Some(shadow_pass_layout),
+                Some(&terrain_layout),
+                Some(&data_layout),
+            ],
             immediate_size: 0,
         });
         let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("wgr_grass_shadow"),
             layout: Some(&shadow_layout),
-            vertex: wgpu::VertexState { module: &shadow_shader, entry_point: Some("vs_grass_shadow"), compilation_options: Default::default(), buffers: &[] },
-            primitive: wgpu::PrimitiveState { topology: wgpu::PrimitiveTopology::TriangleList, cull_mode: None, ..Default::default() },
+            vertex: wgpu::VertexState {
+                module: &shadow_shader,
+                entry_point: Some("vs_grass_shadow"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleList,
+                cull_mode: None,
+                ..Default::default()
+            },
             depth_stencil: Some(wgpu::DepthStencilState {
                 format: wgpu::TextureFormat::Depth32Float,
                 depth_write_enabled: Some(true),
                 depth_compare: Some(wgpu::CompareFunction::LessEqual),
                 stencil: Default::default(),
-                bias: wgpu::DepthBiasState { constant: 4, slope_scale: 2.5, clamp: 0.0 },
+                bias: wgpu::DepthBiasState {
+                    constant: 4,
+                    slope_scale: 2.5,
+                    clamp: 0.0,
+                },
             }),
             multisample: Default::default(),
             fragment: None,
@@ -764,7 +824,14 @@ impl Grass {
 
     /// GRS-E — receive the game's decoded grass-tuft PAA. Rebuilds the three data
     /// bind groups, since a bind group captures the texture view it was made with.
-    pub fn set_tuft(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, width: u32, height: u32, rgba: &[u8]) {
+    pub fn set_tuft(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) {
         let Some(view) = blade_atlas::create_tuft(device, queue, width, height, rgba) else {
             return;
         };
@@ -799,7 +866,9 @@ impl Grass {
         layers: u32,
         rgba: &[u8],
     ) {
-        let Some(view) = blade_atlas::create_from_images(device, queue, width, height, layers, rgba) else {
+        let Some(view) =
+            blade_atlas::create_from_images(device, queue, width, height, layers, rgba)
+        else {
             return;
         };
         self.blade_view = view;
@@ -820,7 +889,6 @@ impl Grass {
         self.mid_data_bind = rebuild(&self.mid_instances, &self.mid_placement_count);
         self.far_data_bind = rebuild(&self.far_instances, &self.far_placement_count);
     }
-
 
     pub fn set_geography(
         &mut self,
@@ -973,18 +1041,18 @@ impl Grass {
         drop(mid_pass);
         timers.end(encoder, Region::GrassPlaceMid);
         if self.far_enabled {
-        timers.begin(encoder, Region::GrassPlaceFar);
-        let mut far_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
-            label: Some("wgr_grass_place_far"),
-            timestamp_writes: None,
-        });
-        far_pass.set_pipeline(&self.far_place_pipeline);
-        far_pass.set_bind_group(0, camera_bind, &[camera_offset]);
-        far_pass.set_bind_group(1, &self.terrain_bind, &[]);
-        far_pass.set_bind_group(2, &self.far_data_bind, &[]);
-        far_pass.dispatch_workgroups(FAR_GRID_DIM / 8, FAR_GRID_DIM / 8, 1);
-        drop(far_pass);
-        timers.end(encoder, Region::GrassPlaceFar);
+            timers.begin(encoder, Region::GrassPlaceFar);
+            let mut far_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+                label: Some("wgr_grass_place_far"),
+                timestamp_writes: None,
+            });
+            far_pass.set_pipeline(&self.far_place_pipeline);
+            far_pass.set_bind_group(0, camera_bind, &[camera_offset]);
+            far_pass.set_bind_group(1, &self.terrain_bind, &[]);
+            far_pass.set_bind_group(2, &self.far_data_bind, &[]);
+            far_pass.dispatch_workgroups(FAR_GRID_DIM / 8, FAR_GRID_DIM / 8, 1);
+            drop(far_pass);
+            timers.end(encoder, Region::GrassPlaceFar);
         }
         // The render pass consumes a dedicated indirect-argument buffer. Keeping the
         // atomic placement counter separate avoids a STORAGE_READ_WRITE/INDIRECT
@@ -1046,7 +1114,8 @@ impl Grass {
         }
         // Vertex counts mirror reset_indirect's per-LOD vertex-per-instance values.
         self.stats.near_vertices = self.stats.near_instances * 60;
-        self.stats.mid_vertices = self.stats.mid_instances * if self.tuft_enabled { 12 } else { 24 };
+        self.stats.mid_vertices =
+            self.stats.mid_instances * if self.tuft_enabled { 12 } else { 24 };
         self.stats.far_vertices = self.stats.far_instances * 6;
     }
 
@@ -1071,9 +1140,17 @@ impl Grass {
         // Mid geometry depends on which path is live: 12 verts for two crossed
         // photographed tuft quads, 24 for the two-segment procedural ribbons.
         let mid_verts: u32 = if self.tuft_enabled { 12 } else { 24 };
-        queue.write_buffer(&self.mid_indirect, 0, bytemuck::cast_slice(&[mid_verts, 0, 0, 0]));
+        queue.write_buffer(
+            &self.mid_indirect,
+            0,
+            bytemuck::cast_slice(&[mid_verts, 0, 0, 0]),
+        );
         // Far LOD is one terrain-conforming coverage quad per compacted cell.
-        queue.write_buffer(&self.far_indirect, 0, bytemuck::cast_slice(&[6u32, 0, 0, 0]));
+        queue.write_buffer(
+            &self.far_indirect,
+            0,
+            bytemuck::cast_slice(&[6u32, 0, 0, 0]),
+        );
     }
 
     pub fn draw(
@@ -1148,7 +1225,9 @@ impl Grass {
         shadow_offset: u32,
         timers: &crate::gpu_timers::GpuTimers,
     ) {
-        if !self.casts_shadows || !self.enabled || !self.have_heightmap { return; }
+        if !self.casts_shadows || !self.enabled || !self.have_heightmap {
+            return;
+        }
         use crate::gpu_timers::Region;
         timers.begin_pass(pass, Region::GrassShadow);
         pass.set_pipeline(&self.shadow_pipeline);
@@ -1159,7 +1238,9 @@ impl Grass {
         timers.end_pass(pass, Region::GrassShadow);
     }
 
-    pub fn casts_shadows(&self) -> bool { self.casts_shadows && self.enabled && self.have_heightmap }
+    pub fn casts_shadows(&self) -> bool {
+        self.casts_shadows && self.enabled && self.have_heightmap
+    }
 }
 
 fn make_geography_texture(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Texture {

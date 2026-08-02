@@ -109,8 +109,14 @@ struct ScreenshotPixels {
 impl RuntimeDiagnostics {
     fn take_messages(&self) -> (Option<String>, Option<String>) {
         (
-            self.device_loss.lock().expect("device diagnostics poisoned").take(),
-            self.uncaptured_error.lock().expect("device diagnostics poisoned").take(),
+            self.device_loss
+                .lock()
+                .expect("device diagnostics poisoned")
+                .take(),
+            self.uncaptured_error
+                .lock()
+                .expect("device diagnostics poisoned")
+                .take(),
         )
     }
 }
@@ -127,7 +133,10 @@ mod runtime_diagnostics_tests {
 
         assert_eq!(
             diagnostics.take_messages(),
-            (Some("device lost (Destroyed)".to_owned()), Some("validation error".to_owned()))
+            (
+                Some("device lost (Destroyed)".to_owned()),
+                Some("validation error".to_owned())
+            )
         );
         // A frame must not keep reporting stale failures after it consumed them.
         assert_eq!(diagnostics.take_messages(), (None, None));
@@ -337,8 +346,10 @@ impl Renderer {
         // GRS-A: grass colour/prepass/shadow are ops inside shared render passes,
         // so isolating them needs in-pass timestamps. Requested separately — its
         // absence only costs the grass draw rows, not the encoder-level regions.
-        let ts_inside_passes =
-            ts_enabled && adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
+        let ts_inside_passes = ts_enabled
+            && adapter
+                .features()
+                .contains(wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES);
         let ts_request = if ts_enabled {
             if ts_inside_passes {
                 ts_features | wgpu::Features::TIMESTAMP_QUERY_INSIDE_PASSES
@@ -404,12 +415,18 @@ impl Renderer {
         let runtime_diagnostics = Arc::new(RuntimeDiagnostics::default());
         let lost_diagnostics = Arc::clone(&runtime_diagnostics);
         device.set_device_lost_callback(move |reason, message| {
-            *lost_diagnostics.device_loss.lock().expect("device diagnostics poisoned") =
+            *lost_diagnostics
+                .device_loss
+                .lock()
+                .expect("device diagnostics poisoned") =
                 Some(format!("wgpu device lost ({reason:?}): {message}"));
         });
         let error_diagnostics = Arc::clone(&runtime_diagnostics);
         device.on_uncaptured_error(Arc::new(move |error| {
-            *error_diagnostics.uncaptured_error.lock().expect("device diagnostics poisoned") =
+            *error_diagnostics
+                .uncaptured_error
+                .lock()
+                .expect("device diagnostics poisoned") =
                 Some(format!("wgpu uncaptured error: {error}"));
         }));
 
@@ -664,15 +681,14 @@ impl Renderer {
             ..Default::default()
         };
 
-        let runtime_capabilities =
-            (if bc_supported { 1 } else { 0 }) |
-            (if partially_bound_enabled { 1 << 1 } else { 0 }) |
-            (if indirect_first_instance { 1 << 2 } else { 0 }) |
-            (if multi_draw_count { 1 << 3 } else { 0 }) |
-            (if ts_enabled { 1 << 4 } else { 0 }) |
-            (if ts_inside_passes { 1 << 5 } else { 0 }) |
-            (if hdr_enabled { 1 << 6 } else { 0 }) |
-            (if sample_count > 1 { 1 << 7 } else { 0 });
+        let runtime_capabilities = (if bc_supported { 1 } else { 0 })
+            | (if partially_bound_enabled { 1 << 1 } else { 0 })
+            | (if indirect_first_instance { 1 << 2 } else { 0 })
+            | (if multi_draw_count { 1 << 3 } else { 0 })
+            | (if ts_enabled { 1 << 4 } else { 0 })
+            | (if ts_inside_passes { 1 << 5 } else { 0 })
+            | (if hdr_enabled { 1 << 6 } else { 0 })
+            | (if sample_count > 1 { 1 << 7 } else { 0 });
 
         Ok(Self {
             log,
@@ -912,13 +928,8 @@ impl Renderer {
             // rides this bracket until a dedicated caustics pass exists.
             self.gpu_timers
                 .begin(encoder, TimerRegion::UnderwaterComposite);
-            self.underwater.render(
-                &self.device,
-                encoder,
-                source,
-                depth,
-                target,
-            );
+            self.underwater
+                .render(&self.device, encoder, source, depth, target);
             self.gpu_timers
                 .end(encoder, TimerRegion::UnderwaterComposite);
             target.clone()
@@ -1024,7 +1035,10 @@ impl Renderer {
             _ => return false,
         };
         if !self.present_modes.contains(&requested) {
-            self.log.log(log_level::WARN, &format!("wgpu present mode {requested:?} is unsupported"));
+            self.log.log(
+                log_level::WARN,
+                &format!("wgpu present mode {requested:?} is unsupported"),
+            );
             return false;
         }
         if self.config.present_mode != requested {
@@ -1282,7 +1296,10 @@ impl Renderer {
         match self.surface.get_current_texture() {
             Cst::Success(t) | Cst::Suboptimal(t) => Ok(Some(t)),
             Cst::Outdated => {
-                self.log.log(log_level::WARN, "wgpu surface outdated; reconfiguring and skipping frame");
+                self.log.log(
+                    log_level::WARN,
+                    "wgpu surface outdated; reconfiguring and skipping frame",
+                );
                 self.surface.configure(&self.device, &self.config);
                 Ok(None)
             }
@@ -1295,11 +1312,15 @@ impl Renderer {
                 Ok(None)
             }
             Cst::Timeout => {
-                self.log.log(log_level::DEBUG, "wgpu surface timeout; skipping frame");
+                self.log
+                    .log(log_level::DEBUG, "wgpu surface timeout; skipping frame");
                 Ok(None)
             }
             Cst::Occluded => {
-                self.log.log(log_level::DEBUG, "wgpu surface occluded/minimized; skipping frame");
+                self.log.log(
+                    log_level::DEBUG,
+                    "wgpu surface occluded/minimized; skipping frame",
+                );
                 Ok(None)
             }
             Cst::Validation => Err("get_current_texture: validation error".to_string()),
@@ -1347,8 +1368,13 @@ impl Renderer {
             .prepare_skin_bake(&self.device, &self.queue, draws3d, shadow_casters, palette);
         // Shadows first: prepare() binds the frame's final shadow target into
         // the camera group.
-        self.gfx3d
-            .prepare_shadows(&self.device, &self.queue, shadow, shadow_casters, &self.grass);
+        self.gfx3d.prepare_shadows(
+            &self.device,
+            &self.queue,
+            shadow,
+            shadow_casters,
+            &self.grass,
+        );
         // The terrain owns the sun-shadow mask; lend its view + world->UV mapping to
         // the shared camera group(0) so lit meshes receive terrain shadow too.
         let shadow_mask_view = self.terrain.shadow_mask_view();
@@ -1459,38 +1485,35 @@ impl Renderer {
         // above the surface. Pixels whose rays never enter water return the untouched scene;
         // downward rays begin extinction only after crossing the local water plane.
         const UNDERWATER_NEAR_SURFACE_BAND: f32 = 1.5;
-        let underwater_state = self.water.underwater_params().and_then(
-            |(sea_level, time, player_submerged)| {
-                // Use the water draw camera, not an unrelated terrain/scene batch. The visual
-                // submersion boundary is the actual camera crossing the gameplay sea plane.
-                cameras.get(water_camera).and_then(|cam| {
-                    let cam_above = cam.cam_pos[1] - sea_level;
-                    let engage = player_submerged || cam_above < UNDERWATER_NEAR_SURFACE_BAND;
-                    engage.then(|| {
-                        // Same separate-inverse-in-f64 treatment the frame UBO uses: the
-                        // reversed-Z infinite-far projection is ill-conditioned in f32 and
-                        // inverting the combined matrix smears its z-row into x/y.
-                        let view = glam::DMat4::from_cols_array(&cam.view.map(f64::from));
-                        let proj = glam::DMat4::from_cols_array(&cam.proj.map(f64::from));
-                        let inv_vp = (view.inverse() * proj.inverse()).as_mat4().to_cols_array();
-                        // A displaced crest can submerge the eye while it is still above the
-                        // flat sea datum. Mark that state just below the local surface instead
-                        // of classifying every horizontal/upward ray as air.
-                        let effective_above = if player_submerged && cam_above > 0.0 {
-                            -0.08
-                        } else {
-                            cam_above
-                        };
-                        (
-                            time,
-                            effective_above,
-                            *cam,
-                            inv_vp,
-                        )
+        let underwater_state =
+            self.water
+                .underwater_params()
+                .and_then(|(sea_level, time, player_submerged)| {
+                    // Use the water draw camera, not an unrelated terrain/scene batch. The visual
+                    // submersion boundary is the actual camera crossing the gameplay sea plane.
+                    cameras.get(water_camera).and_then(|cam| {
+                        let cam_above = cam.cam_pos[1] - sea_level;
+                        let engage = player_submerged || cam_above < UNDERWATER_NEAR_SURFACE_BAND;
+                        engage.then(|| {
+                            // Same separate-inverse-in-f64 treatment the frame UBO uses: the
+                            // reversed-Z infinite-far projection is ill-conditioned in f32 and
+                            // inverting the combined matrix smears its z-row into x/y.
+                            let view = glam::DMat4::from_cols_array(&cam.view.map(f64::from));
+                            let proj = glam::DMat4::from_cols_array(&cam.proj.map(f64::from));
+                            let inv_vp =
+                                (view.inverse() * proj.inverse()).as_mat4().to_cols_array();
+                            // A displaced crest can submerge the eye while it is still above the
+                            // flat sea datum. Mark that state just below the local surface instead
+                            // of classifying every horizontal/upward ray as air.
+                            let effective_above = if player_submerged && cam_above > 0.0 {
+                                -0.08
+                            } else {
+                                cam_above
+                            };
+                            (time, effective_above, *cam, inv_vp)
+                        })
                     })
-                })
-            },
-        );
+                });
         let underwater_time = underwater_state.map(|(time, _, _, _)| time);
         let underwater_body = self
             .water
@@ -1501,10 +1524,7 @@ impl Renderer {
                     [deep[0], deep[1], deep[2], 0.0],
                 )
             })
-            .unwrap_or((
-                [0.070, 0.290, 0.320, 0.16],
-                [0.014, 0.105, 0.240, 0.0],
-            ));
+            .unwrap_or(([0.070, 0.290, 0.320, 0.16], [0.014, 0.105, 0.240, 0.0]));
         let underwater_spectrum = self.water.underwater_spectrum();
         self.underwater_view = underwater_state
             .map(|(_, above, cam, inv_vp)| UnderwaterView {
@@ -1520,11 +1540,7 @@ impl Renderer {
                     -cam.sun_dir_world[1],
                     -cam.sun_dir_world[2],
                 ],
-                sun_radiance: [
-                    cam.sun_diffuse[0],
-                    cam.sun_diffuse[1],
-                    cam.sun_diffuse[2],
-                ],
+                sun_radiance: [cam.sun_diffuse[0], cam.sun_diffuse[1], cam.sun_diffuse[2]],
                 camera_shadow: cam.shadow,
                 cascade_lengths: underwater_spectrum.0,
                 active_layers: underwater_spectrum.1,
@@ -1568,7 +1584,10 @@ impl Renderer {
                     | wgpu::TextureFormat::Bgra8UnormSrgb
             );
             if !rgba_or_bgra || width == 0 || height == 0 {
-                self.log.log(log_level::WARN, "wgpu screenshot unavailable for the current surface format");
+                self.log.log(
+                    log_level::WARN,
+                    "wgpu screenshot unavailable for the current surface format",
+                );
                 self.screenshot_requested = false;
                 None
             } else {
@@ -1583,7 +1602,10 @@ impl Renderer {
                     height,
                     bytes_per_row,
                     padded_bytes_per_row,
-                    matches!(self.config.format, wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb),
+                    matches!(
+                        self.config.format,
+                        wgpu::TextureFormat::Bgra8Unorm | wgpu::TextureFormat::Bgra8UnormSrgb
+                    ),
                 ))
             }
         } else {
@@ -1850,8 +1872,14 @@ impl Renderer {
         // sample the completed map, regardless of submission order. Debug groups
         // (here and below) name each phase in a RenderDoc capture.
         encoder.push_debug_group("wgr_shadow_cascades");
-        self.gfx3d
-            .render_shadow_passes(&mut encoder, &self.textures, shadow, shadow_casters, &self.grass, &self.gpu_timers);
+        self.gfx3d.render_shadow_passes(
+            &mut encoder,
+            &self.textures,
+            shadow,
+            shadow_casters,
+            &self.grass,
+            &self.gpu_timers,
+        );
         encoder.pop_debug_group();
 
         // Amortized terrain sun-shadow sweep (long-range heightfield self-shadow),
@@ -2034,16 +2062,14 @@ impl Renderer {
             );
             self.gpu_timers
                 .end(&mut encoder, TimerRegion::UnderwaterFroxel);
-            self.gpu_timers
-                .begin(&mut encoder, TimerRegion::Caustics);
+            self.gpu_timers.begin(&mut encoder, TimerRegion::Caustics);
             self.underwater.render_caustics(
                 &self.device,
                 &mut encoder,
                 &fft_dynamics,
                 &fft_auxiliary,
             );
-            self.gpu_timers
-                .end(&mut encoder, TimerRegion::Caustics);
+            self.gpu_timers.end(&mut encoder, TimerRegion::Caustics);
         }
 
         // Fog is now applied per-fragment in the forward shaders by sampling the aerial
@@ -2151,7 +2177,9 @@ impl Renderer {
                             } else {
                                 GrassPass::Color
                             };
-                            renderer.grass.draw(pass, cam, off, kind, &renderer.gpu_timers);
+                            renderer
+                                .grass
+                                .draw(pass, cam, off, kind, &renderer.gpu_timers);
                         }
                     }
                     // Water is drawn in a dedicated pass after this sub-pass (it samples the
@@ -2280,8 +2308,13 @@ impl Renderer {
                                 (grass_batches.get(*arg as usize), self.gfx3d.camera_bind())
                             {
                                 let off = (b.camera as u64 * self.gfx3d.camera_stride()) as u32;
-                                self.grass
-                                    .draw(&mut pp, cam, off, GrassPass::Prepass, &self.gpu_timers);
+                                self.grass.draw(
+                                    &mut pp,
+                                    cam,
+                                    off,
+                                    GrassPass::Prepass,
+                                    &self.gpu_timers,
+                                );
                             }
                         }
                         _ => {}
@@ -2608,13 +2641,8 @@ impl Renderer {
                     .expect("underwater depth target");
                 self.gpu_timers
                     .begin(&mut encoder, TimerRegion::UnderwaterComposite);
-                self.underwater.render(
-                    &self.device,
-                    &mut encoder,
-                    &scene_view,
-                    depth,
-                    &color,
-                );
+                self.underwater
+                    .render(&self.device, &mut encoder, &scene_view, depth, &color);
                 self.gpu_timers
                     .end(&mut encoder, TimerRegion::UnderwaterComposite);
                 resolved = true;
@@ -2642,13 +2670,8 @@ impl Renderer {
                 .expect("underwater depth target");
             self.gpu_timers
                 .begin(&mut encoder, TimerRegion::UnderwaterComposite);
-            self.underwater.render(
-                &self.device,
-                &mut encoder,
-                &scene_view,
-                depth,
-                &color,
-            );
+            self.underwater
+                .render(&self.device, &mut encoder, &scene_view, depth, &color);
             self.gpu_timers
                 .end(&mut encoder, TimerRegion::UnderwaterComposite);
         }
@@ -2686,7 +2709,9 @@ impl Renderer {
         // WTR-002 — resolve this frame's timestamp brackets into a readback slot (recorded
         // last so every bracket above is covered), then after submit kick/drain the
         // non-blocking readbacks.
-        if let Some((buffer, width, height, _bytes_per_row, padded_bytes_per_row, _is_bgra)) = &screenshot_staging {
+        if let Some((buffer, width, height, _bytes_per_row, padded_bytes_per_row, _is_bgra)) =
+            &screenshot_staging
+        {
             encoder.copy_texture_to_buffer(
                 wgpu::TexelCopyTextureInfo {
                     texture: &frame.texture,
@@ -2702,34 +2727,56 @@ impl Renderer {
                         rows_per_image: Some(*height),
                     },
                 },
-                wgpu::Extent3d { width: *width, height: *height, depth_or_array_layers: 1 },
+                wgpu::Extent3d {
+                    width: *width,
+                    height: *height,
+                    depth_or_array_layers: 1,
+                },
             );
         }
         self.gpu_timers.end(&mut encoder, TimerRegion::FrameTotal);
         self.gpu_timers.resolve(&mut encoder);
         self.queue.submit(std::iter::once(encoder.finish()));
         frame.present();
-        if let Some((buffer, width, height, bytes_per_row, padded_bytes_per_row, is_bgra)) = screenshot_staging {
+        if let Some((buffer, width, height, bytes_per_row, padded_bytes_per_row, is_bgra)) =
+            screenshot_staging
+        {
             let slice = buffer.slice(..);
             let (tx, rx) = std::sync::mpsc::channel();
-            slice.map_async(wgpu::MapMode::Read, move |result| { let _ = tx.send(result); });
-            if self.device.poll(wgpu::PollType::wait_indefinitely()).is_ok() && matches!(rx.recv(), Ok(Ok(()))) {
+            slice.map_async(wgpu::MapMode::Read, move |result| {
+                let _ = tx.send(result);
+            });
+            if self
+                .device
+                .poll(wgpu::PollType::wait_indefinitely())
+                .is_ok()
+                && matches!(rx.recv(), Ok(Ok(())))
+            {
                 let mapped = slice.get_mapped_range();
                 let mut rgba = vec![0; bytes_per_row as usize * height as usize];
                 for row in 0..height as usize {
-                    let source = &mapped[row * padded_bytes_per_row as usize..][..bytes_per_row as usize];
+                    let source =
+                        &mapped[row * padded_bytes_per_row as usize..][..bytes_per_row as usize];
                     let dest = &mut rgba[row * bytes_per_row as usize..][..bytes_per_row as usize];
                     dest.copy_from_slice(source);
                     if is_bgra {
-                        for pixel in dest.chunks_exact_mut(4) { pixel.swap(0, 2); }
+                        for pixel in dest.chunks_exact_mut(4) {
+                            pixel.swap(0, 2);
+                        }
                     }
                 }
                 drop(mapped);
                 buffer.unmap();
-                self.screenshot_pixels = Some(ScreenshotPixels { width, height, rgba });
-                self.log.log(log_level::INFO, "wgpu screenshot readback completed");
+                self.screenshot_pixels = Some(ScreenshotPixels {
+                    width,
+                    height,
+                    rgba,
+                });
+                self.log
+                    .log(log_level::INFO, "wgpu screenshot readback completed");
             } else {
-                self.log.log(log_level::ERROR, "wgpu screenshot readback failed");
+                self.log
+                    .log(log_level::ERROR, "wgpu screenshot readback failed");
             }
             self.screenshot_requested = false;
         }

@@ -83,8 +83,7 @@ fn underwater_volume_is_shadowed_and_caustics_follow_fft() {
 #[test]
 fn default_absorption_keeps_useful_midrange_visibility() {
     let extinction_scale = (0.16_f32 * 2.5).max(0.12);
-    let transmission =
-        |sigma: f32, distance: f32| (-sigma * extinction_scale * distance).exp();
+    let transmission = |sigma: f32, distance: f32| (-sigma * extinction_scale * distance).exp();
 
     assert!(transmission(0.280, 10.0) > 0.30);
     assert!(transmission(0.065, 10.0) > 0.75);
@@ -287,61 +286,56 @@ impl Underwater {
                 },
                 count: None,
             };
-            let froxel_layout =
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    label: Some("wgr_underwater_froxel_layout"),
-                    entries: &[
-                        uniform(0),
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::StorageTexture {
-                                access: wgpu::StorageTextureAccess::WriteOnly,
-                                format: VOLUME_FORMAT,
-                                view_dimension: wgpu::TextureViewDimension::D3,
-                            },
-                            count: None,
+            let froxel_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("wgr_underwater_froxel_layout"),
+                entries: &[
+                    uniform(0),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture {
+                            access: wgpu::StorageTextureAccess::WriteOnly,
+                            format: VOLUME_FORMAT,
+                            view_dimension: wgpu::TextureViewDimension::D3,
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 2,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                multisampled: false,
-                            },
-                            count: None,
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            multisampled: false,
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 3,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Sampler(
-                                wgpu::SamplerBindingType::Filtering,
-                            ),
-                            count: None,
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 3,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                    uniform(4),
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 5,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Depth,
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
                         },
-                        uniform(4),
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 5,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Texture {
-                                sample_type: wgpu::TextureSampleType::Depth,
-                                view_dimension: wgpu::TextureViewDimension::D2Array,
-                                multisampled: false,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 6,
-                            visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Sampler(
-                                wgpu::SamplerBindingType::Comparison,
-                            ),
-                            count: None,
-                        },
-                        uniform(7),
-                    ],
-                });
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 6,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+                        count: None,
+                    },
+                    uniform(7),
+                ],
+            });
             let froxel_pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("wgr_underwater_froxel_pipeline_layout"),
                 bind_group_layouts: &[Some(&froxel_layout)],
@@ -389,9 +383,7 @@ impl Underwater {
                         wgpu::BindGroupLayoutEntry {
                             binding: 3,
                             visibility: wgpu::ShaderStages::COMPUTE,
-                            ty: wgpu::BindingType::Sampler(
-                                wgpu::SamplerBindingType::Filtering,
-                            ),
+                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                             count: None,
                         },
                         wgpu::BindGroupLayoutEntry {
@@ -441,14 +433,11 @@ impl Underwater {
                 min_filter: wgpu::FilterMode::Linear,
                 ..Default::default()
             });
-            let shadow_mapping =
-                device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                    label: Some("wgr_underwater_shadow_mapping"),
-                    contents: bytemuck::bytes_of(
-                        &crate::terrain::TerrainShadowMap::zeroed(),
-                    ),
-                    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-                });
+            let shadow_mapping = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("wgr_underwater_shadow_mapping"),
+                contents: bytemuck::bytes_of(&crate::terrain::TerrainShadowMap::zeroed()),
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            });
             let camera_shadow = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("wgr_underwater_camera_shadow"),
                 contents: bytemuck::bytes_of(&crate::ffi::WgrCameraShadow::zeroed()),
@@ -512,12 +501,7 @@ impl Underwater {
                     active_layers as f32,
                 ],
                 sun_dir_debug: [sun_dir[0], sun_dir[1], sun_dir[2], debug_view],
-                sun_radiance: [
-                    sun_radiance[0],
-                    sun_radiance[1],
-                    sun_radiance[2],
-                    0.0,
-                ],
+                sun_radiance: [sun_radiance[0], sun_radiance[1], sun_radiance[2], 0.0],
                 inv_view_proj,
                 shallow_color,
                 deep_color,
@@ -531,11 +515,7 @@ impl Underwater {
                 0,
                 bytemuck::bytes_of(shadow_mapping),
             );
-            queue.write_buffer(
-                &volume.camera_shadow,
-                0,
-                bytemuck::bytes_of(camera_shadow),
-            );
+            queue.write_buffer(&volume.camera_shadow, 0, bytemuck::bytes_of(camera_shadow));
         }
     }
 

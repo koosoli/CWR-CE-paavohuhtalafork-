@@ -2679,7 +2679,10 @@ impl Gfx3d {
         // pass UBO must be set up even when there are no CPU casters this frame; only the CPU
         // caster bucketing below is skipped when `casters` is empty.
         let gpu_shadows = self.gpu_driven_enabled;
-        if count == 0 || pass.resolution == 0 || (casters.is_empty() && !gpu_shadows && !grass.casts_shadows()) {
+        if count == 0
+            || pass.resolution == 0
+            || (casters.is_empty() && !gpu_shadows && !grass.casts_shadows())
+        {
             self.shadow_plan.clear();
             return;
         }
