@@ -15,6 +15,10 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          # The clean Preview-0 manifest pins a historical evidence commit;
+          # the ledger validator verifies its canonical shader blobs.
+          fetch-depth: 0
 
       - name: Validate execution ledger and overlay
         run: python3 scripts/validate_preview0_ledger.py
