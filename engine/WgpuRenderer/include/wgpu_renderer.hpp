@@ -515,6 +515,25 @@ struct WgrFoliage
     float _pad2;
 };
 
+/* Screen-space ambient occlusion (GTAO) — see docs/screen-space-ao-plan.md. Computed from the
+ * depth+normal prepass into an R8 buffer, bilateral-denoised, and multiplied into the AMBIENT
+ * term of terrain + objects (never the direct sun). Water is untouched. Default OFF. */
+struct WgrGtao
+{
+    uint32_t enabled;           /* 0 = pass skipped entirely; consumers read AO = 1 */
+    uint32_t debug;             /* 1 = opaque surfaces output the raw AO buffer as greyscale */
+    float    radius_m;          /* occlusion reach in WORLD metres (projected per pixel) */
+    float    strength;          /* exponent on visibility; 1 = physical, >1 deepens */
+    uint32_t slices;            /* azimuthal directions per pixel */
+    uint32_t steps;             /* horizon-march steps per slice, per side */
+    float    max_radius_px;     /* screen-radius clamp (cost bound for near geometry) */
+    float    thickness;         /* falloff past the radius; rejects thin foreground occluders */
+    float    blur_radius;       /* bilateral denoise half-width in taps */
+    float    blur_depth_scale;  /* depth-difference rejection strength */
+    float    blur_normal_power; /* normal-difference rejection exponent */
+    uint32_t _pad;
+};
+
 /* Every imgui-tweakable render parameter that crosses the FFI as a setter, in one block.
  * Append future look knobs here; do not add new FFI setters. */
 struct WgrRenderParams
@@ -525,6 +544,7 @@ struct WgrRenderParams
     WgrTerrainSunShadow terrain_sun_shadow;
     WgrSkyVisibility    sky_visibility;
     WgrFoliage          foliage;
+    WgrGtao             gtao;
 };
 
 /* Frame-global scalars carried in the camera UBO so the 3D shader can read them
@@ -1172,7 +1192,8 @@ static_assert(sizeof(WgrSkyRuntime) == 64, "WgrSkyRuntime layout must match the 
 static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFoliage) == 48, "WgrFoliage layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrRenderParams) == 368, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGtao) == 48, "WgrGtao layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrRenderParams) == 416, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");

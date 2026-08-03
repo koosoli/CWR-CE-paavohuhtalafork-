@@ -211,6 +211,14 @@ class EngineWgpu : public EngineDummy
         _foliage = s;
         PushRenderParams();
     }
+    // Screen-space AO knobs (docs/screen-space-ao-plan.md) — stored here, folded into the
+    // consolidated render-params block by PushRenderParams.
+    AoSettings GetAoSettings() const override { return _ao; }
+    void SetAoSettings(const AoSettings& s) override
+    {
+        _ao = s;
+        PushRenderParams();
+    }
     void SetShadowMapSunFactor(float factor01) override { _smSunFactor = factor01; }
     bool UsesGpuShadowCasters() const override { return true; }
     void SetShadowCascades(const shadow::CascadeSet& cascades, int resolution) override;
@@ -435,6 +443,7 @@ class EngineWgpu : public EngineDummy
     ShadowMapTuning _smTuning;
     // Foliage lighting knobs (docs/foliage-translucency-plan.md), pushed via PushRenderParams.
     FoliageSettings _foliage;
+    AoSettings _ao;
     GrassSettings _grass;
     // A circular history of terrain contacts.  Kept in engine space so foot
     // and vehicle trails persist even though grass placement is camera-relative.

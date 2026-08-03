@@ -895,6 +895,22 @@ impl Renderer {
                 sv.debug != 0,
             );
         }
+        // GTAO. Unconditional (no last_* compare): it only writes a plain struct field, and the
+        // dirty-tracking above exists because those setters can re-run a CPU horizon scan.
+        let g = &p.gtao;
+        self.gfx3d.set_gtao_settings(crate::gfx3d::GtaoSettings {
+            enabled: g.enabled != 0,
+            radius_m: g.radius_m,
+            strength: g.strength,
+            slices: g.slices,
+            steps: g.steps,
+            max_radius_px: g.max_radius_px,
+            thickness: g.thickness,
+            blur_radius: g.blur_radius,
+            blur_depth_scale: g.blur_depth_scale,
+            blur_normal_power: g.blur_normal_power,
+            debug: g.debug != 0,
+        });
     }
 
     // Per-frame sky runtime (wgr_set_sky_runtime): the celestial + camera fields, written into
@@ -2447,6 +2463,14 @@ impl Renderer {
             if prepassed {
                 self.gfx3d.build_hiz(&self.device, &mut encoder);
                 self.gfx3d.cull_dispatch_color(&mut encoder);
+                // Screen-space AO (docs/screen-space-ao-plan.md): the normal resolve, the GTAO
+                // compute and its bilateral denoise, all off the prepass depth+normal. Recorded
+                // here — after the prepass has completed the depth buffer, before the colour
+                // sub-pass below samples the AO through frame @binding(11). Off by default;
+                // no-op until the gate is on. main_scene_cam is the camera the prepass drew
+                // with, so it is the one whose unprojection matches this depth buffer.
+                self.gfx3d
+                    .render_gtao(&self.queue, &mut encoder, main_scene_cam);
             }
 
             // Depth attachment for this segment's sub-passes. Post-tonemap (resolved) the target is

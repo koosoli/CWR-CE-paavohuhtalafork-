@@ -32,9 +32,12 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusSt
 // view-space octahedral normal, Rg16Float (compact + banding-free for SSAO/GTAO/SSR).
 // Written unconditionally by the prepass; sampled by no consumer yet (Stage 1).
 pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
-// Scalar AO. R8Unorm is enough for a visibility term and keeps the bilateral blur
-// cheap; stage 2's bent normal will need its own wider target.
-pub const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
+// Scalar AO. R8Unorm would be plenty of precision for a visibility term, but it is NOT a
+// core WebGPU storage-texture format: creating the AO target with STORAGE_BINDING silently
+// invalidates the texture AND every bind-group layout that names the format, which surfaces
+// far downstream as "TextureView is invalid" in the shared camera bind group. R32Float is
+// core-guaranteed for write-only storage. Stage 2's bent normal will need its own target.
+pub const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
 
 // Cascade shadow depth maps: one D32 array layer per cascade.
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -441,17 +444,21 @@ struct CameraGroup {
     mask_sampler: wgpu::Sampler,
     mapping_buf: wgpu::Buffer,
     bound_mask_gen: u64,
+    // Generation of the GTAO target bound at @binding(11); see Gfx3d::depth_gen.
+    bound_ao_gen: u64,
 }
 
 impl CameraGroup {
     fn new(device: &wgpu::Device) -> Self {
         // The GPU `Frame` UBO is the WgrCamera bytes plus a Rust-appended `inv_view_proj`
-        // (mat4, 64 B) and the foliage knob block (3×vec4, 48 B = sizeof(WgrFoliage)), written
-        // after each camera in the upload loop — so the bind size is sizeof(WgrCamera) + 64 + 48,
-        // NOT the raw C-ABI size. Keep the three in sync (see prepare's camera upload + frame.wgsl).
+        // (mat4, 64 B), the foliage knob block (3×vec4, 48 B = sizeof(WgrFoliage)), the clip
+        // plane (vec4) and the GTAO knobs (vec4), written after each camera in the upload loop —
+        // so the bind size is NOT the raw C-ABI size. Keep the three in sync (see prepare's
+        // camera upload + frame.wgsl).
         let bind_size = std::mem::size_of::<WgrCamera>() as u64
             + 64
             + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64
+            + 16
             + 16;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_3d_camera_layout"),
@@ -575,6 +582,19 @@ impl CameraGroup {
                     },
                     count: None,
                 },
+                // Screen-space AO, blurred (Gfx3d-owned, R8Unorm, lent by view). Non-filterable:
+                // it is read with textureLoad at the fragment's own pixel, never interpolated —
+                // it is already a per-pixel screen-space quantity, so there is nothing to filter.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 11,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -625,6 +645,7 @@ impl CameraGroup {
             mask_sampler,
             mapping_buf,
             bound_mask_gen: u64::MAX,
+            bound_ao_gen: u64::MAX,
         }
     }
 
@@ -649,6 +670,8 @@ impl CameraGroup {
         froxel_view: &wgpu::TextureView,
         sky_sh_buf: &wgpu::Buffer,
         skyvis_view: &wgpu::TextureView,
+        ao_view: &wgpu::TextureView,
+        ao_gen: u64,
     ) {
         let needed = count as u64 * self.stride;
         let grow = self.cap < needed || self.buf.is_none();
@@ -665,6 +688,9 @@ impl CameraGroup {
         if grow
             || self.bound_shadow_gen != shadow_gen
             || self.bound_mask_gen != mask_gen
+            // The AO target is reallocated on every resize, so the bind group must follow it or
+            // it keeps a view of a destroyed texture.
+            || self.bound_ao_gen != ao_gen
             || self.bind.is_none()
         {
             self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -719,10 +745,15 @@ impl CameraGroup {
                         binding: 10,
                         resource: wgpu::BindingResource::TextureView(skyvis_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 11,
+                        resource: wgpu::BindingResource::TextureView(ao_view),
+                    },
                 ],
             }));
             self.bound_shadow_gen = shadow_gen;
             self.bound_mask_gen = mask_gen;
+            self.bound_ao_gen = ao_gen;
         }
     }
 
@@ -1214,9 +1245,17 @@ fn gtao_validates_and_keeps_its_no_taa_constraints() {
     // spatial blur alone. A frame-varying rotation is the standard GTAO trick and is exactly
     // wrong here: with no history to accumulate into it becomes crawling per-frame noise.
     // Pin the absence, because adding one looks like an improvement.
+    //
+    // Scan CODE only. Scanning the raw source made this assertion fire on the word "Real-Time"
+    // in a paper citation, which is a false positive that teaches you to weaken the test.
+    let code: String = src
+        .lines()
+        .map(|l| l.split("//").next().unwrap_or(""))
+        .collect::<Vec<_>>()
+        .join("\n");
     for temporal in ["frame_index", "frame_count", "time", "jitter"] {
         assert!(
-            !src.contains(temporal),
+            !code.contains(temporal),
             "GTAO must stay spatial-only with no TAA to resolve a temporal term (found {temporal})"
         );
     }
@@ -1230,6 +1269,301 @@ fn gtao_validates_and_keeps_its_no_taa_constraints() {
     assert!(
         src.contains("radius / dist"),
         "GTAO radius must be world-space, projected per pixel"
+    );
+
+    // The slice must be weighted by the PROJECTED normal and its angle carried into the
+    // integral. Scaling the finished slice by n.v instead is the tempting shortcut, and it
+    // silently darkens flat unoccluded ground by cos(view angle) — see the numeric test below.
+    assert!(
+        src.contains("proj_len * (gtao_arc(hn, gamma) + gtao_arc(hp, gamma))"),
+        "GTAO must weight each slice by the projected normal, not by a global n.v"
+    );
+    assert!(
+        !src.contains("n_dot_v"),
+        "GTAO must not scale slice visibility by a global n.v factor"
+    );
+}
+
+#[test]
+fn gtao_resources_are_valid_on_a_real_device() {
+    // The naga-only tests above validate the SHADERS. They cannot see whether the resources
+    // wgpu is asked to build are legal, and that gap shipped a real bug: AO_FORMAT was R8Unorm,
+    // which is not a core storage-texture format, so the AO texture and both bind-group layouts
+    // naming it came back invalid. Nothing failed loudly — the breakage surfaced as
+    // "TextureView is invalid" on the shared camera bind group, one frame graph away from the
+    // cause, and only when the game was launched. Build the real objects here instead.
+    let Some((device, queue)) = crate::gfx3d::cull::tests::headless() else {
+        return;
+    };
+    let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+    // AO_FORMAT must actually be usable as a write-only storage texture, which is the property
+    // R8Unorm silently lacked.
+    assert!(
+        AO_FORMAT
+            .guaranteed_format_features(wgpu::Features::empty())
+            .allowed_usages
+            .contains(wgpu::TextureUsages::STORAGE_BINDING),
+        "AO_FORMAT ({AO_FORMAT:?}) must be a core storage-texture format"
+    );
+
+    let (w, h) = (64u32, 48u32);
+    let depth = device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("gtao_test_depth"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Depth32Float,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default());
+    let normal = device
+        .create_texture(&wgpu::TextureDescriptor {
+            label: Some("gtao_test_normal"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: NORMAL_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+        .create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut gtao = Gtao::new(&device);
+    let mut blur = GtaoBlur::new(&device);
+    let ao = gtao.resize(&device, w, h, &depth, &normal);
+    blur.resize(&device, w, h, &depth, &normal, &ao);
+
+    // And record both dispatches, so a bad workgroup size or an unbound resource fails here too.
+    gtao.upload(
+        &queue,
+        &GtaoParams {
+            inv_view_proj: glam::Mat4::IDENTITY.to_cols_array(),
+            screen: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
+            tuning: [1.5, 1.0, 3.0, 10.0],
+            limits: [96.0, 1.0, 0.0, 1.0],
+        },
+    );
+    blur.upload(&queue, w, h, 6.0, 24.0, 8.0);
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    gtao.dispatch(&mut enc, w, h);
+    blur.dispatch(&mut enc, w, h);
+    queue.submit(std::iter::once(enc.finish()));
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+    let err = pollster::block_on(scope.pop());
+    assert!(err.is_none(), "GTAO resources failed validation: {err:?}");
+}
+
+#[test]
+fn gtao_writes_full_visibility_where_nothing_was_drawn() {
+    // End-to-end through the real compute pass: dispatch over a depth buffer cleared to the
+    // reversed-Z far plane (0 = sky, nothing drawn) and read the AO target back.
+    //
+    // "It launches without validation errors" is NOT evidence the pass produced anything — a
+    // dispatch whose stores never land looks identical from the log. Sky is the one input whose
+    // output is exactly known (1.0, fully unoccluded) without authoring a synthetic scene, so it
+    // is what pins the write path: uniform, storage binding, workgroup coverage and store.
+    let Some((device, queue)) = crate::gfx3d::cull::tests::headless() else {
+        return;
+    };
+    let (w, h) = (64u32, 48u32);
+    let extent = wgpu::Extent3d {
+        width: w,
+        height: h,
+        depth_or_array_layers: 1,
+    };
+    let depth_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("gtao_sky_depth"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Depth32Float,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let depth = depth_tex.create_view(&wgpu::TextureViewDescriptor::default());
+    let normal_tex = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("gtao_sky_normal"),
+        size: extent,
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: NORMAL_FORMAT,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+        view_formats: &[],
+    });
+    let normal = normal_tex.create_view(&wgpu::TextureViewDescriptor::default());
+
+    let mut gtao = Gtao::new(&device);
+    gtao.resize(&device, w, h, &depth, &normal);
+    let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+    // Clear the depth target to the reversed-Z far plane. No draws: the whole frame is sky.
+    drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("gtao_sky_clear"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &normal,
+            depth_slice: None,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view: &depth,
+            depth_ops: Some(wgpu::Operations {
+                load: wgpu::LoadOp::Clear(0.0),
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    }));
+    gtao.dispatch(&mut enc, w, h);
+
+    // Copy the AO target out. R32Float = 4 B/texel; the row stride must be 256-aligned.
+    let row = (w * 4).div_ceil(256) * 256;
+    let readback = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("gtao_sky_readback"),
+        size: (row * h) as u64,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    // Read back the GTAO target ITSELF, not the blur's output. Going through the blur made an
+    // earlier version of this test vacuous: the blur early-outs on sky and stores 1.0 without
+    // consulting its input at all, so it passed with the compute pass contributing nothing.
+    enc.copy_texture_to_buffer(
+        wgpu::TexelCopyTextureInfo {
+            texture: gtao.ao_texture().expect("AO target allocated by resize"),
+            mip_level: 0,
+            origin: wgpu::Origin3d::ZERO,
+            aspect: wgpu::TextureAspect::All,
+        },
+        wgpu::TexelCopyBufferInfo {
+            buffer: &readback,
+            layout: wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(row),
+                rows_per_image: Some(h),
+            },
+        },
+        extent,
+    );
+    queue.submit(std::iter::once(enc.finish()));
+
+    let slice = readback.slice(..);
+    slice.map_async(wgpu::MapMode::Read, |_| {});
+    device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+    let data = slice.get_mapped_range();
+    let mut seen = 0usize;
+    for y in 0..h as usize {
+        for x in 0..w as usize {
+            let o = y * row as usize + x * 4;
+            let v = f32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+            assert!(
+                (v - 1.0).abs() < 1e-3,
+                "sky pixel ({x},{y}) must be fully unoccluded, got {v}"
+            );
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, (w * h) as usize, "every pixel must have been written");
+    drop(data);
+    readback.unmap();
+}
+
+// The GTAO slice integral, transcribed from gtao.wgsl's gtao_arc. Kept in Rust so the
+// normalisation below is checkable without a GPU.
+#[cfg(test)]
+fn gtao_arc(h: f32, g: f32) -> f32 {
+    0.25 * (g.cos() - (2.0 * h - g).cos() + 2.0 * h * g.sin())
+}
+
+#[test]
+fn gtao_slice_integral_leaves_unoccluded_surfaces_fully_lit() {
+    // An unoccluded surface must come out at AO = 1 whatever angle it is viewed from —
+    // otherwise every flat field darkens toward the horizon and the effect reads as fog.
+    // That property is NOT per-slice (a single slice can exceed 1); it emerges only from
+    // weighting each slice by |projected normal| and integrating from that slice's own gamma.
+    // This is what makes the shortcut of scaling by n.v wrong, so measure it rather than
+    // asserting on the source alone.
+    let slices = 256;
+    for tilt_deg in [0.0_f32, 15.0, 30.0, 45.0, 60.0, 75.0] {
+        let a = tilt_deg.to_radians();
+        // View direction is +z; the normal tilts away from it in the xz plane.
+        let (n_x, n_z) = (a.sin(), a.cos());
+        let mut visibility = 0.0_f32;
+        for s in 0..slices {
+            let phi = s as f32 * std::f32::consts::PI / slices as f32;
+            // In-plane basis (v, w); the normal has no y component so n.w is n_x * cos(phi).
+            let n_v = n_z;
+            let n_w = n_x * phi.cos();
+            let proj_len = (n_v * n_v + n_w * n_w).sqrt();
+            let gamma = n_w.atan2(n_v);
+            // Nothing occludes: both horizons sit on the tangent plane after the clamp.
+            let hp = gamma + std::f32::consts::FRAC_PI_2;
+            let hn = gamma - std::f32::consts::FRAC_PI_2;
+            visibility += proj_len * (gtao_arc(hn, gamma) + gtao_arc(hp, gamma));
+        }
+        visibility /= slices as f32;
+        assert!(
+            (visibility - 1.0).abs() < 0.01,
+            "unoccluded AO at {tilt_deg} deg tilt should be 1.0, got {visibility}"
+        );
+    }
+}
+
+#[test]
+fn gtao_slice_integral_darkens_as_horizons_close_in() {
+    // The counterpart: with the horizons pulled in toward the view direction (a surface in a
+    // pit), visibility must fall monotonically.
+    //
+    // Deliberately tested at a NON-ZERO gamma. At gamma = 0 the arc integral is symmetric
+    // (F(-h) == F(h)), so an implementation that mishandles the negative half is
+    // indistinguishable there — a seeded sign error passed a version of this test written at
+    // gamma = 0. Everything sign-sensitive about this function lives off-axis.
+    let gamma = 0.6_f32;
+    let half_open = std::f32::consts::FRAC_PI_2;
+    let mut last = f32::INFINITY;
+    for closed in [0.0_f32, 0.2, 0.4, 0.6, 0.8] {
+        let span = half_open * (1.0 - closed);
+        let v = gtao_arc(gamma - span, gamma) + gtao_arc(gamma + span, gamma);
+        assert!(
+            v < last,
+            "visibility must decrease as horizons close (closed={closed}, v={v}, last={last})"
+        );
+        assert!(v >= 0.0, "visibility must never go negative: {v}");
+        last = v;
+    }
+
+    // Asymmetry check: the normal leans toward +w (gamma > 0), so most of the cosine lobe sits
+    // on that side. Closing the +w horizon must therefore cost MORE visibility than closing the
+    // -w horizon by the same angle. This is what actually distinguishes the two half-arcs, and
+    // it is exactly what a dropped sign or a swapped h_pos/h_neg destroys.
+    let bite = 0.5_f32;
+    let full = gtao_arc(gamma - half_open, gamma) + gtao_arc(gamma + half_open, gamma);
+    let close_pos = gtao_arc(gamma - half_open, gamma) + gtao_arc(gamma + half_open - bite, gamma);
+    let close_neg = gtao_arc(gamma - half_open + bite, gamma) + gtao_arc(gamma + half_open, gamma);
+    assert!(
+        close_pos < close_neg && close_neg < full,
+        "closing the horizon the normal faces must cost more \
+         (full={full}, close_pos={close_pos}, close_neg={close_neg})"
     );
 }
 
@@ -1284,6 +1618,9 @@ pub(crate) struct Gtao {
     pipeline: wgpu::ComputePipeline,
     layout: wgpu::BindGroupLayout,
     params: wgpu::Buffer,
+    // The texture as well as its view: a view alone keeps it alive, but the texture handle is
+    // what a copy_texture_to_buffer needs, which is how the AO buffer gets read back and checked.
+    tex: Option<wgpu::Texture>,
     view: Option<wgpu::TextureView>,
     bind: Option<wgpu::BindGroup>,
 }
@@ -1365,6 +1702,7 @@ impl Gtao {
             pipeline,
             layout,
             params,
+            tex: None,
             view: None,
             bind: None,
         }
@@ -1391,10 +1729,15 @@ impl Gtao {
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
             format: AO_FORMAT,
-            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            // COPY_SRC so the finished AO buffer can be read back — both by the test that pins
+            // the pass actually writes, and by any future frame dump. Costs nothing otherwise.
+            usage: wgpu::TextureUsages::STORAGE_BINDING
+                | wgpu::TextureUsages::TEXTURE_BINDING
+                | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
         let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.tex = Some(tex);
         self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgr_gtao_bind"),
             layout: &self.layout,
@@ -1421,12 +1764,10 @@ impl Gtao {
         view
     }
 
-    #[allow(dead_code)] // uploaded when the pass is dispatched.
     pub(crate) fn upload(&self, queue: &wgpu::Queue, params: &GtaoParams) {
         queue.write_buffer(&self.params, 0, bytemuck::bytes_of(params));
     }
 
-    #[allow(dead_code)] // dispatched when the blur + ambient consumers land.
     pub(crate) fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, w: u32, h: u32) {
         let Some(bind) = self.bind.as_ref() else {
             return;
@@ -1444,9 +1785,13 @@ impl Gtao {
         encoder.pop_debug_group();
     }
 
-    #[allow(dead_code)] // consumed by the bilateral blur, then the ambient term.
     pub(crate) fn ao_view(&self) -> Option<&wgpu::TextureView> {
         self.view.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ao_texture(&self) -> Option<&wgpu::Texture> {
+        self.tex.as_ref()
     }
 }
 
@@ -1628,7 +1973,6 @@ impl GtaoBlur {
         self.scratch = Some(scratch);
     }
 
-    #[allow(dead_code)] // uploaded when the passes are dispatched.
     pub(crate) fn upload(
         &self,
         queue: &wgpu::Queue,
@@ -1662,7 +2006,6 @@ impl GtaoBlur {
         );
     }
 
-    #[allow(dead_code)] // dispatched when the ambient consumers land.
     pub(crate) fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, w: u32, h: u32) {
         let (Some(bh), Some(bv)) = (self.bind_h.as_ref(), self.bind_v.as_ref()) else {
             return;
@@ -1678,6 +2021,46 @@ impl GtaoBlur {
             pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
         }
         encoder.pop_debug_group();
+    }
+}
+
+// Live GTAO knobs. Mirrors the C ABI WgrGtao, but kept as its own type so the renderer's
+// internal defaults don't depend on the FFI struct being pushed (it is, every frame — but the
+// pass has to be correct on frame 0 too, before the first push lands).
+#[derive(Clone, Copy, PartialEq)]
+pub struct GtaoSettings {
+    pub enabled: bool,
+    pub radius_m: f32,
+    pub strength: f32,
+    pub slices: u32,
+    pub steps: u32,
+    pub max_radius_px: f32,
+    pub thickness: f32,
+    pub blur_radius: f32,
+    pub blur_depth_scale: f32,
+    pub blur_normal_power: f32,
+    // 1 = terrain/objects output the raw AO buffer as greyscale instead of shading with it.
+    pub debug: bool,
+}
+
+impl Default for GtaoSettings {
+    fn default() -> Self {
+        // Default OFF: this is a look change over every opaque surface, so it ships behind the
+        // flag until it has been seen on a real island. The tuning values are the plan's §3/§4
+        // starting points (S=3, N=10, 6-px bilateral), not measured ones.
+        Self {
+            enabled: false,
+            radius_m: 1.5,
+            strength: 1.0,
+            slices: 3,
+            steps: 10,
+            max_radius_px: 96.0,
+            thickness: 1.0,
+            blur_radius: 6.0,
+            blur_depth_scale: 24.0,
+            blur_normal_power: 8.0,
+            debug: false,
+        }
     }
 }
 
@@ -1783,7 +2166,6 @@ impl NormalResolve {
 
     // Record the resolve (MSAA normal -> single-sample). Must run after the prepass has
     // written the normal target and before GTAO reads it.
-    #[allow(dead_code)] // wired when the GTAO pass lands; see the struct comment.
     pub(crate) fn resolve(&self, encoder: &mut wgpu::CommandEncoder) {
         let (Some(view), Some(bind)) = (self.view.as_ref(), self.bind.as_ref()) else {
             return;
@@ -1880,6 +2262,14 @@ pub struct Gfx3d {
     // GTAO. Allocated at both 1x and MSAA — its inputs are single-sample either way.
     gtao: Gtao,
     gtao_blur: GtaoBlur,
+    // Live GTAO tuning (ImGui / WgrRenderParams). `enabled` gates the whole pass: when off the
+    // AO target keeps whatever it last held, which is why the consumers read it through the same
+    // `strength` gate rather than sampling unconditionally.
+    gtao_settings: GtaoSettings,
+    // inv(view)*inv(proj) per camera, cached from `prepare` so the GTAO dispatch can unproject
+    // with the SAME matrix the prepass rasterised with. Recomputing it at dispatch time from a
+    // separately-chosen camera is how AO ends up subtly offset from the depth it is reading.
+    cam_inv_vp: Vec<([f32; 16], f32)>,
     // Single-sample depth-stencil for the post-tonemap UI phase (Some only when sample_count > 1).
     // That phase composites display-referred 2D to the 1x swapchain, so it can't share the MSAA
     // scene depth (mismatched sample counts). Cleared per use; world occlusion isn't carried into
@@ -1913,6 +2303,8 @@ pub struct Gfx3d {
     shadow_gen: u64,
     // 1x1 stand-in bound while no shadow map exists (the layout always binds).
     dummy_shadow_view: wgpu::TextureView,
+    // 1x1 stand-in for the GTAO target before the first ensure_depth (see its creation).
+    dummy_ao_view: wgpu::TextureView,
 
     // Compute skin bake (docs/compute-skin-bake-plan.md). WGR_SKIN_BAKE=0 disables it and
     // falls back to per-pass VS skinning (the skinned pipelines above); default on.
@@ -2211,6 +2603,25 @@ impl Gfx3d {
             ..Default::default()
         });
 
+        // Stand-in for frame @binding(11) before the first ensure_depth. Content is irrelevant —
+        // the consumers gate on frame.gtao.x, which is 0 until the pass is enabled AND has run —
+        // but the binding must exist from the first frame or every 3D pipeline fails validation.
+        let dummy_ao = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_gtao_dummy"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: AO_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dummy_ao_view = dummy_ao.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Compute skin bake (docs/compute-skin-bake-plan.md). group(0) = the four
         // storage buffers (source verts / skin data / palette / baked output), all
         // whole-buffer so min_binding_size is left open; group(1) = BakeParams.
@@ -2382,6 +2793,8 @@ impl Gfx3d {
             normal_sample_view: None,
             gtao,
             gtao_blur,
+            gtao_settings: GtaoSettings::default(),
+            cam_inv_vp: Vec::new(),
             ui_depth: None,
             hiz: hiz::HiZ::new(device),
             // GPU Hi-Z occlusion: default on when GPU-driven is on (the point of this feature),
@@ -2402,6 +2815,7 @@ impl Gfx3d {
             shadow_target: None,
             shadow_gen: 0,
             dummy_shadow_view,
+            dummy_ao_view,
             skin_bake_enabled,
             skin_bake_pipeline,
             skin_bake_layout,
@@ -3216,13 +3630,6 @@ impl Gfx3d {
         self.normal.as_ref().map(|(_, v)| v)
     }
 
-    // Single-sample normal for GTAO. None at 1x, where normal_view() is already
-    // single-sample and should be used directly (screen-space-ao-plan §2).
-    #[allow(dead_code)] // consumed when the GTAO pass lands.
-    pub fn normal_sample_view(&self) -> Option<&wgpu::TextureView> {
-        self.normal_sample_view.as_ref()
-    }
-
     // The cascade shadow depth map as a D2Array view (or the 1x1 dummy when no shadows),
     // lent to the froxel fill so it can occlude the fog by objects + terrain (god rays).
     pub fn shadow_sample_view(&self) -> &wgpu::TextureView {
@@ -3880,6 +4287,8 @@ impl Gfx3d {
                 froxel_view,
                 sky_sh_buf,
                 skyvis_view,
+                self.gtao.ao_view().unwrap_or(&self.dummy_ao_view),
+                self.depth_gen,
             );
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {
@@ -3898,6 +4307,13 @@ impl Gfx3d {
                     base + std::mem::size_of::<WgrCamera>() as u64,
                     bytemuck::cast_slice(&inv_vp),
                 );
+                // Same matrix, kept CPU-side for the GTAO uniform (see cam_inv_vp), paired with
+                // proj[1][1] — GTAO needs the vertical projection scale to size its world radius
+                // in pixels, and it is not recoverable from inv_vp without another inversion.
+                if self.cam_inv_vp.len() <= i {
+                    self.cam_inv_vp.resize(i + 1, ([0.0; 16], 1.0));
+                }
+                self.cam_inv_vp[i] = (inv_vp, c.proj[5]);
                 // Foliage knobs (frame.foliage / frame.foliageb) after inv_view_proj — same
                 // append pattern; 32 B, matching the +32 in CameraGroup::new's bind_size.
                 queue.write_buffer(
@@ -3915,6 +4331,25 @@ impl Gfx3d {
                         + 64
                         + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64,
                     bytemuck::cast_slice(&clip),
+                );
+                // GTAO gate + debug (frame.gtao). The gate is here rather than left implicit in
+                // the AO texture because that texture keeps its last contents when the pass is
+                // skipped — an ungated consumer would shade with a frozen AO buffer, which is far
+                // harder to recognise than no AO at all.
+                let g = &self.gtao_settings;
+                let gtao = [
+                    if g.enabled { 1.0f32 } else { 0.0 },
+                    if g.enabled && g.debug { 1.0 } else { 0.0 },
+                    0.0,
+                    0.0,
+                ];
+                queue.write_buffer(
+                    buf,
+                    base + std::mem::size_of::<WgrCamera>() as u64
+                        + 64
+                        + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64
+                        + 16,
+                    bytemuck::cast_slice(&gtao),
                 );
             }
         }
@@ -5028,10 +5463,89 @@ impl Gfx3d {
         // MSAA: depth_sample_view is the resolved single-sample target, which is stale until the
         // resolve pass fills it from this frame's freshly-completed prepass depth. No-op at 1x
         // (depth_sample_view is the depth target's own aspect, already current).
+        self.resolve_depth_sample(encoder);
+        self.hiz.build(device, encoder, depth);
+    }
+
+    // MSAA depth -> single-sample nearest (depth_sample_view). No-op at 1x, where
+    // depth_sample_view is the depth target's own aspect and is already current. Both Hi-Z and
+    // GTAO need this, and only one of them may be active, so it is its own call.
+    fn resolve_depth_sample(&self, encoder: &mut wgpu::CommandEncoder) {
         if let Some(dr) = self.depth_resolve.as_ref() {
             dr.resolve(encoder);
         }
-        self.hiz.build(device, encoder, depth);
+    }
+
+    pub fn set_gtao_settings(&mut self, s: GtaoSettings) {
+        self.gtao_settings = s;
+    }
+
+    // GTAO + its bilateral denoise (screen-space-ao-plan §3/§4), recorded after the depth+normal
+    // prepass and before the forward colour pass. Reads the resolved single-sample depth/normal;
+    // writes the AO target the ambient terms sample.
+    //
+    // `camera` selects which camera's unprojection to use and MUST be the one the prepass
+    // rasterised with — the depth buffer this reads is that camera's.
+    pub fn render_gtao(
+        &mut self,
+        queue: &wgpu::Queue,
+        encoder: &mut wgpu::CommandEncoder,
+        camera: usize,
+    ) {
+        let s = self.gtao_settings;
+        if !s.enabled {
+            return;
+        }
+        let Some(&(inv_view_proj, proj_yy)) = self.cam_inv_vp.get(camera) else {
+            return;
+        };
+        let (w, h) = self.depth_size;
+        // Hi-Z may have resolved the depth already this frame, but it only runs when occlusion
+        // culling is on. Recording it twice would be redundant GPU work, not a correctness bug;
+        // skipping it when occlusion is off would make GTAO read a stale depth buffer, which is
+        // the far worse failure and would look like AO lagging the camera by a frame.
+        if !self.occlusion_active() {
+            self.resolve_depth_sample(encoder);
+        }
+        // MSAA only: reduce the prepass normal to single-sample (sample 0). No-op at 1x, where
+        // GTAO was bound to the prepass normal target directly.
+        if let Some(nr) = self.normal_resolve.as_ref() {
+            nr.resolve(encoder);
+        }
+        self.gtao.upload(
+            queue,
+            &GtaoParams {
+                inv_view_proj,
+                screen: [
+                    w as f32,
+                    h as f32,
+                    1.0 / w.max(1) as f32,
+                    1.0 / h.max(1) as f32,
+                ],
+                tuning: [
+                    s.radius_m.max(0.01),
+                    s.strength.max(0.0),
+                    s.slices.max(1) as f32,
+                    s.steps.max(1) as f32,
+                ],
+                limits: [
+                    s.max_radius_px.max(2.0),
+                    s.thickness.max(0.01),
+                    0.0,
+                    proj_yy,
+                ],
+            },
+        );
+        self.gtao_blur.upload(
+            queue,
+            w,
+            h,
+            s.blur_radius,
+            s.blur_depth_scale,
+            s.blur_normal_power,
+        );
+        self.gtao.dispatch(encoder, w, h);
+        self.gtao_blur.dispatch(encoder, w, h);
     }
 
     // Record the color-pass occlusion cull (main_occlude), reading this frame's Hi-Z. Recorded

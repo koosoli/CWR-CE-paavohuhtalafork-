@@ -581,6 +581,48 @@ impl Default for WgrFoliage {
     }
 }
 
+// Screen-space ambient occlusion (GTAO), docs/screen-space-ao-plan.md. Rides the WgrRenderParams
+// block rather than getting its own setter: that block is the project's answer to positional-arg
+// ABI bugs (the sky-visibility feature ate two), and a struct in a struct keeps that property.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct WgrGtao {
+    pub enabled: u32, // 0 = the whole pass is skipped and consumers read AO = 1
+    pub debug: u32,   // 1 = opaque surfaces output the raw AO buffer as greyscale
+    pub radius_m: f32,
+    pub strength: f32,
+    pub slices: u32,
+    pub steps: u32,
+    pub max_radius_px: f32,
+    pub thickness: f32,
+    pub blur_radius: f32,
+    pub blur_depth_scale: f32,
+    pub blur_normal_power: f32,
+    pub _pad: u32,
+}
+
+impl Default for WgrGtao {
+    fn default() -> Self {
+        // Kept in sync with gfx3d::GtaoSettings::default (the renderer's own frame-0 values) and
+        // with C++ Engine::AoSettings (the runtime source of truth, pushed every frame).
+        let d = crate::gfx3d::GtaoSettings::default();
+        Self {
+            enabled: d.enabled as u32,
+            debug: d.debug as u32,
+            radius_m: d.radius_m,
+            strength: d.strength,
+            slices: d.slices,
+            steps: d.steps,
+            max_radius_px: d.max_radius_px,
+            thickness: d.thickness,
+            blur_radius: d.blur_radius,
+            blur_depth_scale: d.blur_depth_scale,
+            blur_normal_power: d.blur_normal_power,
+            _pad: 0,
+        }
+    }
+}
+
 // Every imgui-tweakable render parameter that crosses the FFI as a setter, pushed as one block.
 // Passed by pointer only (never uploaded whole), so #[repr(C)] but not Pod. Append future look
 // knobs here; do not add new FFI setters.
@@ -593,6 +635,7 @@ pub struct WgrRenderParams {
     pub terrain_sun_shadow: WgrTerrainSunShadow,
     pub sky_visibility: WgrSkyVisibility,
     pub foliage: WgrFoliage,
+    pub gtao: WgrGtao,
 }
 
 pub const NO_PALETTE: u32 = 0xFFFF_FFFF;
@@ -1034,7 +1077,8 @@ const _: () = assert!(std::mem::size_of::<WgrSkyRuntime>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrFoliage>() == 48);
-const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 368);
+const _: () = assert!(std::mem::size_of::<WgrGtao>() == 48);
+const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 416);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);

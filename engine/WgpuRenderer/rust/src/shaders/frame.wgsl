@@ -54,6 +54,11 @@ struct Frame {
     // xyz = plane normal, w = offset; zero normal disables clipping. This is appended
     // by Rust, keeping WgrCamera's C++ ABI unchanged.
     clip_plane: vec4<f32>,
+    // Screen-space AO gate (docs/screen-space-ao-plan.md), appended after clip_plane.
+    //   x = 1 when the GTAO pass ran this frame and its buffer may be read (0 = off)
+    //   y = 1 for the raw AO debug view
+    //   zw = unused
+    gtao: vec4<f32>,
 };
 
 // One frame-global point or spot light. Positions are ABSOLUTE world space so a
@@ -123,6 +128,13 @@ struct SkySh {
 // the CPU horizon scan (terrain/skyvis.rs); sampled with the terrain-shadow sampler (binding 5) and
 // mapping (binding 6). See terrain_sky_visibility / sky_vis_ao below.
 @group(0) @binding(10) var terrain_skyvis_mask: texture_2d<f32>;
+
+// Screen-space ambient occlusion (GTAO + bilateral blur, gfx3d/gtao*.wgsl): R8Unorm at render
+// resolution, 1 = unoccluded. Gfx3d-owned, produced from the depth+normal prepass each frame
+// before the colour pass. Read with textureLoad at the fragment's OWN pixel — it is already a
+// per-pixel screen-space quantity, and under MSAA every covered sample of a pixel legitimately
+// shares one AO value (plan §5). See gtao_ao below.
+@group(0) @binding(11) var gtao_tex: texture_2d<f32>;
 
 // Diffuse sky irradiance for a world-space surface normal, from the SH-9 sky projection
 // (Ramamoorthi, "An Efficient Representation for Irradiance Environment Maps"), divided by PI so
@@ -238,6 +250,28 @@ fn sky_vis_ao(world_xz: vec2<f32>) -> f32 {
     let occ = 1.0 - pow(v, terrain_shadow_map.sky_vis_contrast);
     let ao = 1.0 - terrain_shadow_map.sky_vis_strength * occ;
     return max(ao, terrain_shadow_map.sky_vis_floor);
+}
+
+// Screen-space AO multiplier at this fragment [0,1], 1 = unoccluded. Returns 1 when the pass did
+// not run: the AO texture RETAINS its last contents when GTAO is disabled or skipped, so an
+// ungated read would shade the world with a frozen AO buffer — a failure that looks like a
+// lighting bug rather than a missing pass. Multiply into the AMBIENT term only (plan §6): AO on
+// direct sun is the classic over-darkening artifact, and direct occlusion is the shadow maps' job.
+fn gtao_ao(frag_coord: vec2<f32>) -> f32 {
+    if (frame.gtao.x < 0.5) {
+        return 1.0;
+    }
+    let px = vec2<i32>(frag_coord);
+    let dims = vec2<i32>(textureDimensions(gtao_tex));
+    let q = clamp(px, vec2<i32>(0), dims - vec2<i32>(1));
+    return clamp(textureLoad(gtao_tex, q, 0).r, 0.0, 1.0);
+}
+
+// 1 when the raw AO debug view is on (surfaces output the AO buffer as greyscale instead of
+// shading). Shipped WITH the effect, not after it: judging AO through a full lighting pipeline —
+// sun, SH ambient, fog, tonemap — is much harder than looking at the buffer itself.
+fn gtao_debug_on() -> f32 {
+    return frame.gtao.y;
 }
 
 // 1 when the sky-visibility debug view is on (terrain shows the factor as greyscale). A helper

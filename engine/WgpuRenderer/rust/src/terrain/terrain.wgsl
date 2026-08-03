@@ -7,7 +7,7 @@
 // Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
 // pipeline via the frame module, so terrain receives the same CSM shadows and
 // sun lighting.
-#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -315,10 +315,12 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     if (sky_lit) {
         sun_ambient = sky_irradiance(n) * frame.sun_ambient.w;
     }
-    // Sky-visibility AO: scale the ambient (directional SH or legacy flat) by the fraction of sky
-    // this column sees, so valleys/gorges/cliff-bases settle darker than open ground. Orthogonal to
-    // `shadow`, which removes the DIRECT sun. Off (returns 1) when sky_vis_strength = 0.
-    sun_ambient *= sky_vis_ao(in.world_xz);
+    // Ambient occlusion: scale the ambient (directional SH or legacy flat) by how much sky this
+    // point can see. Orthogonal to `shadow`, which removes the DIRECT sun. The two terms MULTIPLY
+    // because they occlude independently and at disjoint scales (plan §6): sky-visibility is the
+    // baked km-scale column factor that darkens valleys and cliff-bases, GTAO the screen-space
+    // near/mid term that resolves local folds and object contact. Each returns 1 when off.
+    sun_ambient *= sky_vis_ao(in.world_xz) * gtao_ao(in.clip.xy);
     let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) + sun_ambient;
     // HDR keeps radiance uncapped into the float target; LDR saturates like GL33.
     let sun = select(min(sun_raw, vec3<f32>(1.0)), sun_raw, linear > 0.5);
@@ -330,6 +332,12 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     // mask — responds to radius/azimuths/downsample/contrast.
     if (sky_vis_debug_on() > 0.5) {
         return vec4<f32>(vec3<f32>(sky_vis_debug_value(in.world_xz)), 1.0);
+    }
+
+    // Debug: the raw screen-space AO buffer as greyscale (unfogged), for tuning radius/strength/
+    // slices/steps/blur against the buffer itself rather than through the lit result.
+    if (gtao_debug_on() > 0.5) {
+        return vec4<f32>(vec3<f32>(gtao_ao(in.clip.xy)), 1.0);
     }
 
     // fog_enabled: 2 = aerial perspective via the froxel volume (per-fragment); 1 =

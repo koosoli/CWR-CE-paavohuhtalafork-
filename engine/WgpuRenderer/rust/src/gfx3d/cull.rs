@@ -1822,7 +1822,7 @@ fn upload_slice<T: bytemuck::Pod>(
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     #[test]
@@ -1974,7 +1974,7 @@ mod tests {
 
     // Best-effort headless device; returns None (test skips) when no adapter is available
     // (e.g. CI without a GPU).
-    fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
+    pub(crate) fn headless() -> Option<(wgpu::Device, wgpu::Queue)> {
         let instance =
             wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle_from_env());
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {

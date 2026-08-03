@@ -259,7 +259,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let veg_cutout = material.sun_ambient.w > 0.5 && alpha_ref > 0.0;
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
-        veg_cutout, translucent > 0.5, veg_cutout,
+        veg_cutout, translucent > 0.5, veg_cutout, in.clip.xy,
     );
     return vec4<f32>(rgb, out_a);
 }

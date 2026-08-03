@@ -8,7 +8,7 @@
 
 #define_import_path shading
 
-#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao}
+#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao, gtao_ao, gtao_debug_on}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -53,6 +53,10 @@ fn shade(
     // cards don't split into a lit/near-black pair at harsh sun angles. Knobs ride in
     // frame.foliage / frame.foliageb / frame.foliagec. See docs/foliage-translucency-plan.md.
     is_foliage: bool,
+    // @builtin(position).xy of the calling fragment — the screen pixel this shade() is for.
+    // Only the screen-space AO needs it; it is passed rather than derived because shade() is
+    // shared by the per-draw and GPU-driven fragment shaders and neither has a global to read.
+    frag_coord: vec2<f32>,
 ) -> vec3<f32> {
     var albedo = albedo_in;
     var m_emissive = mat.emissive;
@@ -96,9 +100,11 @@ fn shade(
     let terrain_s = terrain_sun_shadow(world_abs.xz, world_abs.y);
     let sun_occ = select(terrain_s, max(terrain_s, csm_s), sky_lit);
     let sun_vis = 1.0 - sun_occ;
-    // Sky-visibility AO on the ambient term (both paths), keyed on the object's terrain column.
-    // Orthogonal to sun_occ (direct sun). Off (1.0) when sky_vis_strength = 0.
-    let amb_ao = sky_vis_ao(world_abs.xz);
+    // Ambient occlusion on the ambient term (both paths), orthogonal to sun_occ (direct sun).
+    // Two independent occluders, so they MULTIPLY (plan §6): sky-visibility is the baked far /
+    // km-scale term keyed on the object's terrain column, GTAO the screen-space near/mid term
+    // that actually sits objects on the ground. Each returns 1 when its feature is off.
+    let amb_ao = sky_vis_ao(world_abs.xz) * gtao_ao(frag_coord);
     var sun: vec3<f32>;
     if (sky_lit) {
         // Sky-based lighting: frame-global atmosphere sun + DIRECTIONAL sky-irradiance ambient
@@ -184,6 +190,12 @@ fn shade(
     // direct sun in shadow above, so it must not double-darken here.
     if (!sky_lit) {
         rgb *= mix(1.0, frame.shadow.ctlb.y, csm_s);
+    }
+    // Debug: the raw AO buffer as greyscale, BEFORE fog — shipped alongside the effect because
+    // judging AO through sun + SH ambient + fog + tonemap is far harder than looking at the
+    // buffer. Terrain does the same, so the whole opaque scene switches together.
+    if (gtao_debug_on() > 0.5) {
+        return vec3<f32>(gtao_ao(frag_coord));
     }
     var fog_color = frame.fog_color.rgb;
     if (linear > 0.5) {

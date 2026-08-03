@@ -28,7 +28,7 @@ struct BlurParams {
 @group(0) @binding(1) var normal_tex: texture_2d<f32>;
 @group(0) @binding(2) var ao_in: texture_2d<f32>;
 @group(0) @binding(3) var<uniform> params: BlurParams;
-@group(0) @binding(4) var ao_out: texture_storage_2d<r8unorm, write>;
+@group(0) @binding(4) var ao_out: texture_storage_2d<r32float, write>;
 
 // Must match shaders/gbuffer.wgsl's oct_encode. Duplicated for the same reason gtao.wgsl
 // duplicates it: include_str! module, no naga_oil composer.

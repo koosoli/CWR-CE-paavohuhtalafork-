@@ -270,7 +270,7 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     let veg_cutout = in.is_veg != 0u && sm.alpha_ref > 0.0;
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
-        veg_cutout, false, veg_cutout,
+        veg_cutout, false, veg_cutout, in.clip.xy,
     );
     return vec4<f32>(rgb, out_a);
 }

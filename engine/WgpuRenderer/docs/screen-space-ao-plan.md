@@ -186,10 +186,39 @@ normal where GTAO has coverage and the geometric normal elsewhere — GTAO's is 
 > principled than the correct code, which is exactly why it is worth a test: oct codes wrap, so
 > averaging two samples across the fold points nowhere near either normal.
 
-1. **Scalar GTAO + bilateral blur, composited × sky-vis onto ambient.** MSAA normal resolve (sample-0),
-   compute pass, spatial denoise, `@binding(11)` AO, multiply into the ambient of terrain + objects.
-   Debug view (raw AO greyscale, like sky-vis). ImGui: enable, radius, strength, slice/step counts,
-   blur width. **This is the bulk of the visible win.**
+1. **Scalar GTAO + bilateral blur, composited × sky-vis onto ambient.** — **LANDED 2026-08-03.**
+   MSAA normal resolve (sample-0), compute pass, spatial denoise, `@binding(11)` AO, multiply into
+   the ambient of terrain + objects. Debug view (raw AO greyscale, like sky-vis). ImGui: enable,
+   radius, strength, slice/step counts, blur width. **This is the bulk of the visible win.**
+
+   > Wired in the order §1a demands: dispatches first, then `@binding(11)`, then the consumers.
+   > `Gfx3d::render_gtao` records the (nearest) depth resolve, the normal resolve, the GTAO
+   > compute and both blur dispatches, between the prepass and the forward colour pass. Gated by
+   > `Engine::AoSettings` → `WgrGtao` inside the existing `WgrRenderParams` block — the plan asked
+   > for a `wgr_set_gtao` setter, but that block already IS the struct-based answer to positional
+   > args and its own comment forbids new setters, so the knobs ride it instead. Default OFF;
+   > `WGR_GTAO=1` / `WGR_GTAO_DEBUG=1` boot it on, and the gate is echoed as
+   > `Wgpu: gtao gate:` at startup. Shadows tab hosts the controls, directly under sky-vis.
+   >
+   > **Two corrections to what was already committed**, both found by building the consumers:
+   >
+   > - The per-slice integral multiplied by a global `n·v`. That is not GTAO's normalisation, and
+   >   it darkens *unoccluded* ground by the cosine of the view angle — flat terrain would have
+   >   faded out toward the horizon and read as fog. Replaced with the real thing: project the
+   >   normal into each slice plane, weight by `|n_proj|`, integrate from that slice's own gamma.
+   >   Pinned by a numeric test asserting the unoccluded result is 1.0 at six view angles.
+   > - `AO_FORMAT` was `R8Unorm`, which is **not a core storage-texture format**. The AO texture
+   >   and both bind-group layouts naming it came back invalid, and the symptom surfaced a frame
+   >   graph away as `TextureView is invalid` on the shared camera bind group. Now `R32Float`.
+   >   The naga-only shader tests could not see this; a headless-device test now builds the real
+   >   resources and reads the AO buffer back, which is what catches this whole class.
+   >
+   > Grass is deliberately NOT a consumer yet. It writes prepass depth/normals so its AO exists,
+   > but thin blades are the case most likely to look wrong, and the plan scopes Stage 1 to
+   > terrain + objects. Water stays untouched as specified.
+   >
+   > **Needs eyes:** the raw AO debug view on a real island. Nothing below is worth tuning until
+   > someone has confirmed the buffer looks like ambient occlusion.
 2. **Bent normal → directional SH ambient.** Add the bent-normal output + `sky_irradiance(bent_n)`
    path. Proper oct-normal resolve if sample-0 shimmers.
 3. **Polish:** multi-bounce curve, half-res + bilateral upsample perf path, thickness-heuristic tuning,

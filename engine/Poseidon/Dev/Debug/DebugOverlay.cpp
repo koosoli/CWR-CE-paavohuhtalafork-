@@ -2974,6 +2974,42 @@ void DrawShadowsTab()
     changed |= ImGui::Checkbox("SkyVis debug (greyscale factor)", &t.terrainSkyVisDebug);
     ImGui::TextDisabled("  terrain shows the contrast-shaped sky-view factor for tuning");
 
+    // Screen-space AO lives on this tab, directly under sky-visibility, because the two are one
+    // decision: they cover complementary ranges of the SAME ambient occlusion and multiply
+    // together. Tuning either without the other in view is how you end up double-darkening coves.
+    ImGui::Separator();
+    ImGui::TextDisabled("Screen-space AO / GTAO (wgpu) — short-range: local folds + object contact");
+    Engine::AoSettings ao = GEngine->GetAoSettings();
+    bool aoChanged = false;
+    aoChanged |= ImGui::Checkbox("Enabled (screen-space AO)", &ao.enabled);
+    aoChanged |= ImGui::SliderFloat("AO radius (m)", &ao.radius, 0.1f, 10.0f, "%.2f");
+    ImGui::TextDisabled("  world-space reach; ~1-2 m = contact shadow, larger = soft shading");
+    aoChanged |= ImGui::SliderFloat("AO strength", &ao.strength, 0.1f, 4.0f, "%.2f");
+    ImGui::TextDisabled("  exponent on visibility; 1 = physical, higher = deeper");
+    aoChanged |= ImGui::SliderInt("AO slices", &ao.slices, 1, 8);
+    ImGui::TextDisabled("  azimuthal directions per pixel; no TAA here, so this is the whole budget");
+    aoChanged |= ImGui::SliderInt("AO steps", &ao.steps, 2, 24);
+    ImGui::TextDisabled("  horizon march steps per slice; raise this BEFORE widening the blur");
+    aoChanged |= ImGui::SliderFloat("AO max radius (px)", &ao.maxRadiusPixels, 8.0f, 256.0f, "%.0f");
+    ImGui::TextDisabled("  screen-radius cost clamp for geometry close to the camera");
+    aoChanged |= ImGui::SliderFloat("AO thickness", &ao.thickness, 0.05f, 8.0f, "%.2f");
+    ImGui::TextDisabled("  falloff past the radius; too low and thin poles shadow the sky behind them");
+    aoChanged |= ImGui::SliderFloat("AO blur radius", &ao.blurRadius, 0.0f, 16.0f, "%.1f");
+    ImGui::TextDisabled("  bilateral denoise width; too wide washes out the contact darkening");
+    aoChanged |= ImGui::SliderFloat("AO blur depth reject", &ao.blurDepthScale, 1.0f, 128.0f, "%.0f");
+    ImGui::TextDisabled("  higher = blur stops harder at depth discontinuities (silhouettes)");
+    aoChanged |= ImGui::SliderFloat("AO blur normal reject", &ao.blurNormalPower, 1.0f, 32.0f, "%.0f");
+    ImGui::TextDisabled("  higher = blur stops harder at creases (keeps wall/floor contact)");
+    aoChanged |= ImGui::Checkbox("AO debug (raw greyscale buffer)", &ao.debug);
+    ImGui::TextDisabled("  opaque surfaces show the AO buffer itself; tune against this, not the lit scene");
+    if (ImGui::Button("Reset AO to defaults"))
+    {
+        ao = Engine::AoSettings{};
+        aoChanged = true;
+    }
+    if (aoChanged)
+        GEngine->SetAoSettings(ao);
+
     ImGui::Separator();
     if (ImGui::Button("Reset knobs to defaults"))
     {

@@ -619,6 +619,25 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
         _water = std::make_unique<WaterWgpu>(*this, _renderer);
     }
 
+    // Screen-space AO (GTAO). Default OFF; WGR_GTAO=1 enables it at startup and
+    // WGR_GTAO_DEBUG=1 additionally boots straight into the raw greyscale AO view.
+    //
+    // This override has to live HERE, on the C++ side, not as a default in the Rust renderer:
+    // PushRenderParams sends _ao every frame, so whatever the renderer defaults to is
+    // overwritten immediately. The layer furthest from the renderer wins — a Rust-side env
+    // gate would read as working and do nothing. Treat any value but "0" as on, matching the
+    // other WGR_* gates.
+    if (const char* ao = std::getenv("WGR_GTAO"))
+    {
+        _ao.enabled = std::strcmp(ao, "0") != 0;
+    }
+    if (const char* aod = std::getenv("WGR_GTAO_DEBUG"))
+    {
+        _ao.debug = std::strcmp(aod, "0") != 0;
+    }
+    LOG_INFO(Graphics, "Wgpu: gtao gate: enabled={} debug={} radius={} slices={} steps={}", _ao.enabled, _ao.debug,
+             _ao.radius, _ao.slices, _ao.steps);
+
     // WGR_SHADOW_MAPS=1 enables cascaded shadow maps at startup (dev panel /
     // tri verbs can still toggle at runtime).
     if (const char* sm = std::getenv("WGR_SHADOW_MAPS"))
@@ -3483,6 +3502,23 @@ void EngineWgpu::PushRenderParams()
         _foliage.transScale,   _foliage.distortion, _foliage.transPower,   _foliage.wrap,
         _foliage.ambientBoost, _foliage.normalBend, _foliage.crownYOffset, _foliage.fillFadeEnd,
         _foliage.giStrength,   _foliage.treeBend,   _foliage.treeCrownY,   0.0f,
+    };
+
+    // Screen-space AO (GTAO). `enabled` gates the whole pass renderer-side; the debug view is
+    // additionally gated on it here so leaving debug on with the effect off can't blank the world.
+    p.gtao = {
+        _ao.enabled ? 1u : 0u,
+        (_ao.enabled && _ao.debug) ? 1u : 0u,
+        _ao.radius,
+        _ao.strength,
+        _ao.slices < 1 ? 1u : uint32_t(_ao.slices),
+        _ao.steps < 1 ? 1u : uint32_t(_ao.steps),
+        _ao.maxRadiusPixels,
+        _ao.thickness,
+        _ao.blurRadius,
+        _ao.blurDepthScale,
+        _ao.blurNormalPower,
+        0u,
     };
 
     wgr_set_render_params(_renderer, &p);

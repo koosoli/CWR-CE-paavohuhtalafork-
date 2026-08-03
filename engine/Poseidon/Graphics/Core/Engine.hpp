@@ -922,6 +922,49 @@ class Engine : public IGraphicsEngine
     virtual FoliageSettings GetFoliageSettings() const { return {}; }
     virtual void SetFoliageSettings(const FoliageSettings& /*s*/) {}
 
+    /// Screen-space ambient occlusion (GTAO) — the SHORT-RANGE complement to the terrain
+    /// sky-visibility AO above. Sky-vis is baked, positional and km-scale: it darkens gorges and
+    /// cliff-bases and structurally cannot see a rock, a wheel or a doorway. GTAO works from the
+    /// depth+normal prepass, so it resolves exactly that band — local folds and the contact
+    /// between objects and the ground. The two occlude independently and are multiplied.
+    ///
+    /// Applied to the AMBIENT term only, on terrain + opaque objects; water is untouched.
+    /// wgpu path only. Default OFF pending look validation. See docs/screen-space-ao-plan.md.
+    struct AoSettings
+    {
+        bool enabled = false;
+        // Occlusion reach in WORLD metres, projected to pixels per fragment (so AO does not
+        // swell as you walk toward a wall). ~1-2 m reads as contact shadow; larger reads as
+        // soft global shading.
+        float radius = 1.5f;
+        // Exponent on visibility: 1 = the physical result, >1 deepens without crushing to black.
+        float strength = 1.0f;
+        // Per-frame sample budget. There is NO temporal accumulation in this engine (no TAA),
+        // so these have to be enough on their own; the bilateral blur below is the only denoise.
+        // Raise steps before widening the blur — a too-wide blur washes out the contact
+        // darkening that is the whole point.
+        int slices = 3;
+        int steps = 10;
+        // Cost bound: screen radius clamp in pixels, for geometry very close to the camera.
+        float maxRadiusPixels = 96.0f;
+        // Falloff past the radius. Rejects thin foreground occluders, which otherwise shadow
+        // everything behind them out to infinity (GTAO's classic "sky behind a pole goes black").
+        float thickness = 1.0f;
+        // Bilateral denoise: half-width in taps, plus the depth / normal rejection strengths that
+        // stop AO bleeding across silhouettes and creases.
+        float blurRadius = 6.0f;
+        float blurDepthScale = 24.0f;
+        float blurNormalPower = 8.0f;
+        // Show the raw AO buffer as greyscale on opaque surfaces. Tune against this rather than
+        // through sun + ambient + fog + tonemap.
+        bool debug = false;
+    };
+
+    /// Read / replace the screen-space AO knobs (see AoSettings). Default base returns an
+    /// all-default set; only the wgpu backend stores + pushes it.
+    virtual AoSettings GetAoSettings() const { return {}; }
+    virtual void SetAoSettings(const AoSettings& /*s*/) {}
+
     /// Procedural terrain grass (wgpu).  Kept separate from foliage: these values control
     /// GPU-generated ground blades, not authored alpha-tested trees or bushes.
     struct GrassSettings
