@@ -622,6 +622,18 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
                                           "Run mission folder or mission.sqm directly and exit"),
                    CliHelpVisibility::Dev);
 
+        // Convenience wrapper over --test-mission so a developer can boot straight into a
+        // scratch map without typing a path. Optional NAME (default "devtest") is resolved
+        // against ./dev-missions/ in the WORKING DIRECTORY, which is the game folder for a
+        // normal launch, so this works from an installed copy and not only from the source
+        // tree. Resolved before the -C chdir below, so the lookup is against the directory
+        // the user launched in.
+        CLI::Option* devMapOpt =
+            debugGroup
+                ->add_option("--dev-map", _devMapName, "Boot a scratch map from ./dev-missions/ (default: devtest)")
+                ->expected(0, 1);
+        showOption(devMapOpt, CliHelpVisibility::Dev);
+
         showOption(
             debugGroup
                 ->add_option("--test-type", _testType, "Test type: autotest (default) or screenshot (capture and exit)")
@@ -752,6 +764,44 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
                 _simulateMode = true;
                 // Make path absolute before any chdir (-C) changes the CWD
                 _testMissionPath = std::filesystem::absolute(_simulateMissionPath).string();
+            }
+
+            // --dev-map NAME feeds the same machinery as --test-mission, so it inherits
+            // the absolute-path handling immediately below. An explicit --test-mission wins:
+            // it is the more specific request.
+            if (devMapOpt->count() > 0 && _testMissionPath.empty())
+            {
+                namespace fs = std::filesystem;
+                const std::string name = _devMapName.empty() ? std::string("devtest") : _devMapName;
+                // A path as given wins, so --dev-map also accepts a full path to a mission
+                // living outside the scratch folder.
+                fs::path candidate(name);
+                std::error_code ec;
+                if (!fs::exists(candidate, ec))
+                {
+                    for (const char* ext : {"", ".abel", ".Demo", ".noe", ".eden", ".cain"})
+                    {
+                        fs::path probe = fs::path("dev-missions") / (name + ext);
+                        if (fs::exists(probe, ec))
+                        {
+                            candidate = probe;
+                            break;
+                        }
+                    }
+                }
+                if (fs::exists(candidate, ec))
+                {
+                    _testMissionPath = candidate.string();
+                }
+                else
+                {
+                    // Name where it looked. Falling through to the main menu in silence reads
+                    // as "the flag does nothing", which is the least useful way to fail.
+                    fprintf(stderr,
+                            "--dev-map: no mission '%s' (tried it as a path and as "
+                            "./dev-missions/%s[.abel|.Demo|...] under '%s')\n",
+                            name.c_str(), name.c_str(), fs::current_path(ec).string().c_str());
+                }
             }
 
             // Make test-mission path absolute before any chdir (-C) changes the CWD

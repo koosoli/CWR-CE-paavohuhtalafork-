@@ -421,6 +421,8 @@ private:
     float _confirmRevertTimeoutSeconds = 0.f; // 0 → engine default (15s)
     float _appTimeoutSeconds = 0.f;
     std::string _testMissionPath;
+    /// --dev-map NAME: scratch map to boot, resolved against ./dev-missions/.
+    std::string _devMapName;
     std::string _testType = "autotest";
     std::string _simulateMissionPath;
     bool _simulateMode = false;
