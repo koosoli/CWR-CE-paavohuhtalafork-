@@ -12,6 +12,7 @@ changes when the evidence changes and a stale or fabricated value is detectable.
 
     python scripts/compute_evidence_hash.py CORE-NEG-001
     python scripts/compute_evidence_hash.py --all
+    python scripts/compute_evidence_hash.py --all --write   # write them back
 
 Content is read through git's filters (as `write_preview0_manifest.py` does), so
 the hash is stable across checkouts with different line-ending settings rather
@@ -84,12 +85,49 @@ def evidence_hash(block: str) -> tuple[str, list[str]]:
     return digest.hexdigest(), paths
 
 
+def rewrite_ledger(updates: dict[str, str]) -> list[str]:
+    """Write recomputed hashes back into the ledger. Returns the tickets changed.
+
+    Exists because doing this by hand is error-prone in a specific way: a `sed`
+    substitution with an empty "old" pattern silently prepends the new digest to
+    EVERY evidence_hash line, corrupting all six tickets while looking like it
+    worked. Splitting on the ticket marker and rewriting one field per block cannot
+    do that.
+    """
+    text = LEDGER.read_text(encoding="utf-8")
+    blocks = text.split("  - id: ")
+    out = [blocks[0]]
+    changed: list[str] = []
+    for block in blocks[1:]:
+        ticket = block.splitlines()[0].strip()
+        wanted = updates.get(ticket)
+        current = re.search(r"    evidence_hash: ([0-9a-f]{64})", block)
+        if wanted and current and current.group(1) != wanted:
+            changed.append(ticket)
+            block = re.sub(
+                r"    evidence_hash: [0-9a-f]{64}",
+                "    evidence_hash: " + wanted,
+                block,
+                count=1,
+            )
+        out.append(block)
+    if changed:
+        LEDGER.write_text("  - id: ".join(out), encoding="utf-8", newline="")
+    return changed
+
+
 def main(argv: list[str]) -> int:
     if not argv or argv[0] in {"-h", "--help"}:
         print(__doc__)
         return 0
+    write = "--write" in argv
+    argv = [a for a in argv if a != "--write"]
+    if not argv:
+        print("--write needs a ticket id or --all", file=sys.stderr)
+        return 1
     blocks = ticket_blocks(LEDGER.read_text(encoding="utf-8"))
     wanted = sorted(blocks) if argv[0] == "--all" else [argv[0]]
+    computed: dict[str, str] = {}
     for ticket in wanted:
         if ticket not in blocks:
             print(f"unknown ticket: {ticket}", file=sys.stderr)
@@ -98,7 +136,11 @@ def main(argv: list[str]) -> int:
         if not paths:
             print(f"{ticket}: no tracked evidence files — nothing to hash", file=sys.stderr)
             return 1
+        computed[ticket] = value
         print(f"{ticket}  {value}  ({len(paths)} file(s))")
+    if write:
+        changed = rewrite_ledger(computed)
+        print(f"ledger updated: {', '.join(changed) if changed else 'no change'}")
     return 0
 
 
