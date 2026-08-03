@@ -851,15 +851,15 @@ void DrawZeusWeatherAndTime(bool worldAvailable)
 
     std::string out;
     bool applyWeather = false;
-    applyWeather |= ImGui::SliderFloat("Overcast", &overcast, 0.0f, 1.0f, "%.2f");
+    applyWeather |= ImGui::SliderFloat("Overcast##zeus", &overcast, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("0 = clear, 1 = fully overcast. Drives cloud cover and the sky's light.");
 
-    applyWeather |= ImGui::SliderFloat("Fog", &fog, 0.0f, 1.0f, "%.2f");
+    applyWeather |= ImGui::SliderFloat("Fog##zeus", &fog, 0.0f, 1.0f, "%.2f");
     editingFog = ImGui::IsItemActive();
     ImGui::SetItemTooltip("0 = clear, 1 = thickest. Independent of overcast — the console 'weather' "
                           "command and triCheatWeather both force this to 0, this slider does not.");
 
-    ImGui::SliderFloat("Transition (s)", &transition, 0.0f, 600.0f, "%.0f");
+    ImGui::SliderFloat("Transition (s)##zeus", &transition, 0.0f, 600.0f, "%.0f");
     ImGui::SetItemTooltip("0 applies the change on the next frame. Anything higher lets the engine "
                           "interpolate, which is what you want while someone is watching.");
 
@@ -881,6 +881,7 @@ void DrawZeusWeatherAndTime(bool worldAvailable)
         {"Clear", 0.0f, 0.0f},  {"Cloudy", 0.5f, 0.05f}, {"Overcast", 0.85f, 0.10f},
         {"Storm", 1.0f, 0.25f}, {"Foggy", 0.3f, 0.8f},
     };
+    ImGui::PushID("zeus_weather_presets");
     for (const auto& preset : presets)
     {
         if (ImGui::SmallButton(preset.label))
@@ -892,13 +893,14 @@ void DrawZeusWeatherAndTime(bool worldAvailable)
         }
         ImGui::SameLine();
     }
+    ImGui::PopID();
     ImGui::NewLine();
 
     ImGui::Spacing();
     // The clock is display-only until released: the engine only offers a
     // relative skip, so applying every frame of a drag would fire dozens of
     // skips and sail past the target.
-    ImGui::SliderFloat("Time of day", &hour, 0.0f, 24.0f, "%05.2f h");
+    ImGui::SliderFloat("Time of day##zeus", &hour, 0.0f, 24.0f, "%05.2f h");
     const bool hourActive = ImGui::IsItemActive();
     const bool hourReleased = editingHour && !hourActive;
     editingHour = hourActive;
@@ -920,6 +922,7 @@ void DrawZeusWeatherAndTime(bool worldAvailable)
     } times[] = {
         {"Dawn", 5.5f}, {"Morning", 9.0f}, {"Noon", 12.0f}, {"Dusk", 19.0f}, {"Night", 23.0f},
     };
+    ImGui::PushID("zeus_time_presets");
     for (const auto& time : times)
     {
         if (ImGui::SmallButton(time.label))
@@ -930,10 +933,11 @@ void DrawZeusWeatherAndTime(bool worldAvailable)
         }
         ImGui::SameLine();
     }
+    ImGui::PopID();
     ImGui::NewLine();
 
     float multiplier = DebugCheats::Cmd_TimeMultiplier::Get();
-    if (ImGui::SliderFloat("Time scale", &multiplier, 0.1f, 60.0f, "%.1fx", ImGuiSliderFlags_Logarithmic))
+    if (ImGui::SliderFloat("Time scale##zeus", &multiplier, 0.1f, 60.0f, "%.1fx", ImGuiSliderFlags_Logarithmic))
     {
         DebugCheats::Cmd_TimeMultiplier::SetValue(multiplier, out);
         s_zeusStatus = out;
