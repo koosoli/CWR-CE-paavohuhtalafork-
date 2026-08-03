@@ -865,6 +865,16 @@ struct WgrWaterParams
      * w: caustic gain, 1.0 = the tuned CAUSTIC_STRENGTH.
      * Appended at the struct end; sizeof moves 240 -> 256 with the Rust side. */
     WgrVec4 underwater_params;
+    /* x: 1 = the underwater effect is enabled, 0 = off. THIS is what switches the compositor.
+     *
+     * It needs its own lane because the effect has two independent triggers and the Water tab
+     * must own both. `fft_control.w` (eye submersion depth) drives the water shader's own
+     * underwater tint, but the fullscreen compositor engages on EITHER that depth or the camera
+     * being within the engage band of sea level — and the band test has no idea whether the
+     * effect is wanted. Gating only the depth left the compositor running with the checkbox off,
+     * because a submerged camera is always inside the band.
+     * yzw reserved. Appended at the struct end; sizeof moves 256 -> 272 with the Rust side. */
+    WgrVec4 underwater_gate;
 };
 
 struct WgrWaterCascadeConfig
@@ -1178,7 +1188,7 @@ static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the 
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassDownwash) == 16, "WgrGrassDownwash layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassParams) == 1712, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrWaterParams) == 256, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterParams) == 272, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 40, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterInteractionEvent) == 64 && alignof(WgrWaterInteractionEvent) == 16, "WgrWaterInteractionEvent must match Rust");

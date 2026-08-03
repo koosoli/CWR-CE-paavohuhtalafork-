@@ -883,6 +883,11 @@ pub struct WgrWaterParams {
     // from the authored deep swatch, 0 = the old neutral curve), w = caustic gain.
     // (sizeof 240 -> 256, matching C++.)
     pub underwater_params: WgrVec4,
+    // x = underwater effect enabled (1) or off (0). Gates the compositor itself; the depth in
+    // fft_control.w only gates the water shader's own tint, so without this lane the pass kept
+    // running with the effect switched off (a submerged camera is always inside the engage
+    // band). yzw reserved. (sizeof 256 -> 272, matching C++.)
+    pub underwater_gate: WgrVec4,
 }
 
 #[repr(C)]
@@ -1046,7 +1051,7 @@ const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassDownwash>() == 16);
 // 1712 = 107 * 16: the look vec4 keeps the UBO 16-byte aligned.
 const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1712);
-const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 256);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 272);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrWaterInteractionEvent>() == 64);

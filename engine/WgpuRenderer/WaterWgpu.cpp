@@ -695,6 +695,11 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     _params.underwater_params = {std::max(look.underwaterEngageBand, 0.0f), std::max(look.underwaterDensity, 0.0f),
                                  std::clamp(look.underwaterColorBias, 0.0f, 1.0f),
                                  std::max(look.underwaterCausticGain, 0.0f)};
+    // The compositor's own switch. fft_control.w below carries submersion DEPTH and is also
+    // gated by this flag, but depth alone cannot turn the pass off: the renderer engages it on
+    // either that depth or the camera being near the surface, and a submerged camera is always
+    // near the surface. That is why the checkbox appeared to do nothing.
+    _params.underwater_gate = {look.underwaterEffect ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
     _params.sea_params = {look.seaStateCoupling ? 1.0f : 0.0f,
                           look.seaStateCoupling ? SeaStateResidualAmplitude(look.waveAmp) : look.waveAmp,
                           look.lowQuality ? 1.0f : 0.0f, look.shoreWaveGain};

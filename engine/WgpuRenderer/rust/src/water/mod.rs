@@ -345,6 +345,8 @@ impl Water {
             sea_params: [1.0, 1.0, 0.0, 1.0],
             // Engage band, density, colour bias, caustic gain — the tuned defaults.
             underwater_params: [1.5, 1.0, 1.0, 1.0],
+            // Off until the Water tab says otherwise, matching WaterSettings' default.
+            underwater_gate: [0.0, 0.0, 0.0, 0.0],
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 
@@ -938,6 +940,14 @@ impl Water {
         )
     }
 
+    /// Whether the Water tab's "Underwater effect" checkbox is on. The compositor must not
+    /// run at all when it is off — the submersion depth alone cannot express this, because
+    /// the compositor also engages on proximity to the surface and a submerged camera is
+    /// always proximate.
+    pub fn underwater_enabled(&self) -> bool {
+        self.last_params.is_some_and(|p| p.underwater_gate[0] > 0.5)
+    }
+
     /// Live underwater tuning from the Water tab: `(engage band m, density, colour bias,
     /// caustic gain)`. The defaults reproduce the tuned look, so a renderer that never
     /// receives water params behaves as it did before these became adjustable.
@@ -1506,7 +1516,7 @@ mod tests {
     #[test]
     fn debug_params_appended_without_shifting_existing_lanes() {
         use crate::ffi::WgrWaterParams;
-        assert_eq!(std::mem::size_of::<WgrWaterParams>(), 256);
+        assert_eq!(std::mem::size_of::<WgrWaterParams>(), 272);
         assert_eq!(
             std::mem::offset_of!(WgrWaterParams, debug_params),
             192,
@@ -1526,6 +1536,11 @@ mod tests {
             std::mem::offset_of!(WgrWaterParams, underwater_params),
             240,
             "underwater_params must be appended after sea_params, not inserted before it"
+        );
+        assert_eq!(
+            std::mem::offset_of!(WgrWaterParams, underwater_gate),
+            256,
+            "underwater_gate must be appended after underwater_params, not inserted before it"
         );
         // flow_direction_speed (the previous last field) must not have moved.
         assert_eq!(

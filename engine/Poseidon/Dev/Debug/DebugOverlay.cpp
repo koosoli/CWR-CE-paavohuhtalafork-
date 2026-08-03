@@ -3591,8 +3591,10 @@ void DrawWaterTab()
                           "world-anchored caustics on nearby seabed geometry. This also gates the "
                           "water shader's own underwater distance fog, so OFF means a submerged "
                           "view has no volume and no fog at all.");
-    if (s.underwaterEffect)
     {
+        // Shown even when the effect is off, greyed rather than hidden. Hiding them made the
+        // section look like it had no settings at all, which is not what "off" should mean.
+        ImGui::BeginDisabled(!s.underwaterEffect);
         ImGui::Indent();
         ImGui::TextDisabled("Thresholds");
         changed |= ImGui::SliderFloat("Enter depth (m)", &s.underwaterEnterDepth, 0.0f, 1.0f, "%.3f");
@@ -3622,6 +3624,7 @@ void DrawWaterTab()
                               "visible where there is geometry to receive it.");
         ImGui::TextDisabled("  Shallow/Deep colour and Extinction above also drive this.");
         ImGui::Unindent();
+        ImGui::EndDisabled();
     }
     changed |= ImGui::Checkbox("Low water quality (performance)", &s.lowQuality);
     ImGui::SetItemTooltip("Drops SSR, planar reflection, bicubic filtering and the two smallest wave "

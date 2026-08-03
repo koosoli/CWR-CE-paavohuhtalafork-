@@ -191,6 +191,10 @@ pub struct Renderer {
     // it as the scene target only on submerged frames, then composites to swapchain.
     underwater_target: Option<(wgpu::Texture, wgpu::TextureView)>,
     underwater_size: (u32, u32),
+    // Last logged underwater-compositor engage state, so the transition is reported once
+    // rather than every frame. The pass has had two independent triggers and a toggle that
+    // did not reach one of them; "is it running right now" needs to be answerable from a log.
+    underwater_engaged_logged: Option<bool>,
     post_source_underwater: bool,
     // Per-frame inputs for the underwater compositor's per-pixel waterline: camera height above the
     // local water surface (negative = submerged) and the unprojection matrix for view-ray
@@ -723,6 +727,7 @@ impl Renderer {
             underwater,
             underwater_target: None,
             underwater_size: (0, 0),
+            underwater_engaged_logged: None,
             post_source_underwater: false,
             underwater_view: UnderwaterView {
                 cam_above: -1.0,
@@ -1499,6 +1504,10 @@ impl Renderer {
         // tuning how the effect behaves around the waterline.
         let underwater_tuning = self.water.underwater_tuning();
         let underwater_near_surface_band = underwater_tuning.0;
+        // The Water tab's checkbox. Without this the pass ran whatever the checkbox said: the
+        // depth lane it used to rely on gates the water shader's tint, but the compositor also
+        // engages on proximity to the surface, and a submerged camera is always proximate.
+        let underwater_enabled = self.water.underwater_enabled();
         let underwater_state =
             self.water
                 .underwater_params()
@@ -1508,7 +1517,8 @@ impl Renderer {
                     // submersion boundary is the actual camera crossing the gameplay sea plane.
                     cameras.get(water_camera).and_then(|cam| {
                         let cam_above = cam.cam_pos[1] - sea_level;
-                        let engage = player_submerged || cam_above < underwater_near_surface_band;
+                        let engage = underwater_enabled
+                            && (player_submerged || cam_above < underwater_near_surface_band);
                         engage.then(|| {
                             // Same separate-inverse-in-f64 treatment the frame UBO uses: the
                             // reversed-Z infinite-far projection is ill-conditioned in f32 and
@@ -1533,6 +1543,18 @@ impl Renderer {
                         })
                     })
                 });
+        let underwater_engaged = underwater_state.is_some();
+        if self.underwater_engaged_logged != Some(underwater_engaged) {
+            self.underwater_engaged_logged = Some(underwater_engaged);
+            // eprintln! rather than self.log, matching the other [wgr] renderer diagnostics —
+            // it is what actually reaches the captured stderr in a harness run.
+            eprintln!(
+                "[wgr] underwater compositor {} (enabled={} band={:.2}m)",
+                if underwater_engaged { "ENGAGED" } else { "off" },
+                underwater_enabled,
+                underwater_near_surface_band,
+            );
+        }
         let underwater_time = underwater_state.map(|(time, _, _, _)| time);
         let underwater_body = self
             .water
