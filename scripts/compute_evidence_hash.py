@@ -34,8 +34,15 @@ def canonical_bytes(rel_path: str) -> bytes:
     """File content as git stores it, independent of checkout line endings."""
     data = (ROOT / rel_path).read_bytes()
     try:
+        # -w writes the filtered blob into the object store. Without it `hash-object`
+        # only reports the id it WOULD have, and the `cat-file` below then fails with
+        # "fatal: bad file" for any evidence file whose current content is not already
+        # committed or staged — which is every hash computed while preparing a commit.
+        # The except-clause below would then silently fall back to unfiltered bytes and
+        # produce a different hash on a CRLF checkout than on an LF one, which is the
+        # exact cross-platform difference this function exists to remove.
         blob = subprocess.check_output(
-            ["git", "hash-object", "--path", rel_path, "--filters", "--stdin"],
+            ["git", "hash-object", "-w", "--path", rel_path, "--filters", "--stdin"],
             cwd=ROOT,
             input=data,
         ).strip()

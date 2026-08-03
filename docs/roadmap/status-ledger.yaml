@@ -25,8 +25,8 @@ tickets:
     class: BUILD_INFRA
     obligation: REQUIRED
     execution_mode: VALIDATE
-    scheduling_state: OPEN
-    status: INTEGRATED
+    scheduling_state: DONE
+    status: VALIDATED
     outcome: ADOPTED
     owner: null
     branch: null
@@ -45,8 +45,9 @@ tickets:
     decision_record: docs/roadmap/decisions/PERF-001-water-draw-scaling-20260801.md
     known_failures: []
     fallback: GL33 remains available when explicitly selected.
-    reviewer: null
-    reviewer_method: null
+    reviewer: Oliver Kay
+    reviewer_method: >-
+      Owner smoke test 2026-08-03 on the deployed WGPU build: launched with --render wgpu --window --dev, loaded a mission, flew the camera, opened the dev panel, and quit cleanly. Confirms the Tier 1 configuration runs interactively. This is NOT a performance measurement -- the ticket's targets rest on the recorded benchmark artifacts listed above, not on this session.
     supersedes: []
     evidence:
       - docs/roadmap/tier1-preview0-validation.md
@@ -61,8 +62,8 @@ tickets:
     class: BUILD_INFRA
     obligation: REQUIRED
     execution_mode: IMPLEMENT
-    scheduling_state: OPEN
-    status: INTEGRATED
+    scheduling_state: DONE
+    status: VALIDATED
     outcome: ADAPTED
     owner: null
     branch: null
@@ -73,21 +74,27 @@ tickets:
     depends_on: []
     blocked_by: []
     blocks: [CORE-NEG-001, CORE-NEG-002, RND-005A, TEST-002]
-    implementation_commits: []
+    implementation_commits: [c8552ae, bb63508, 4699a7e, c3c1a22, 8a0979e, 6e3e7ec]
     production_call_sites: []
     test_ids: [preview0-ledger-validation]
     benchmark_artifacts: []
-    evidence_hash: 13253785e483f3ca6d3a280da9bb01fbc8565f9b238793597db624d5e1522c2a
+    evidence_hash: 2e2ad6a61d15e761ec8be67d2901f21c4b88a60ee71e4d324f72dc8824ae1c8e
     decision_record: null
     known_failures:
       - No reviewed activation commit exists; the overlay remains PREPARED.
     fallback: Bootstrap ledger remains valid until all complete-schema and overlay checks pass.
-    reviewer: null
-    reviewer_method: null
+    reviewer: Oliver Kay
+    reviewer_method: >-
+      Owner accepted 2026-08-03. Deliberately NOT claimed as smoke tested: this ticket is the status ledger itself, which a running game cannot exercise. Its evidence is scripts/validate_preview0_ledger.py passing over the tracked ledger, overlay and checksum manifest, including the recomputed evidence hashes.
     supersedes: []
     evidence:
+      # docs/roadmap/status-ledger.yaml was listed here and has been removed: it is this
+      # file, and evidence_hash lives inside it, so the hash can never be satisfied.
+      # Compute it over ledger state A, write the result back, and the ledger is now
+      # state B whose hash differs. The two remaining entries are what can actually
+      # attest to this ticket from outside itself; the ledger's own integrity is carried
+      # by the validator and by git history, not by a hash it stores about itself.
       - scripts/validate_preview0_ledger.py
-      - docs/roadmap/status-ledger.yaml
       - .github/workflows/lint.yml (Preview-0 ledger job)
   - id: CORE-NEG-001
     is_example: false
@@ -95,8 +102,8 @@ tickets:
     class: BUILD_INFRA
     obligation: REQUIRED
     execution_mode: IMPLEMENT
-    scheduling_state: OPEN
-    status: INTEGRATED
+    scheduling_state: DONE
+    status: VALIDATED
     outcome: ADAPTED
     owner: null
     branch: null
@@ -267,8 +274,9 @@ tickets:
         alone, multi-instance tests reserve one slot per game process, and the
         behaviour is covered by its own unit tests.
     fallback: Explicit GL33 selection is retained; explicit WGPU cannot silently select it.
-    reviewer: null
-    reviewer_method: null
+    reviewer: Oliver Kay
+    reviewer_method: >-
+      Owner smoke test 2026-08-03 on the deployed WGPU build: launched with --render wgpu --window --dev, loaded a mission, flew the camera, opened the dev panel, and quit cleanly. Covers the startup half of this ticket. The build-reproducibility half is not something a smoke test can demonstrate, and this ticket carries a known_failures entry for a staging defect found the same day (fixed in 36a9d29) in which the documented build command shipped a stale cdylib.
     supersedes: []
     evidence:
       - cargo test --package wgpu_renderer (64 passed, 1 intentional ignore; 2026-08-01)
@@ -288,8 +296,8 @@ tickets:
     class: BUILD_INFRA
     obligation: REQUIRED
     execution_mode: IMPLEMENT
-    scheduling_state: OPEN
-    status: INTEGRATED
+    scheduling_state: DONE
+    status: VALIDATED
     outcome: ADAPTED
     owner: null
     branch: null
@@ -300,19 +308,20 @@ tickets:
     depends_on: [CORE-005]
     blocked_by: []
     blocks: []
-    implementation_commits: []
+    implementation_commits: [c8552ae, b3171c6]
     production_call_sites:
       - file: engine/WgpuRenderer/EngineWgpu.cpp
         symbol: EngineWgpu::EngineWgpu
         verified_commit: null
     test_ids: [ffi-abi-layout-refusal, ffi-abi-version-contract, ffi-separately-built-dll-refusal]
     benchmark_artifacts: []
-    evidence_hash: 107a35e886431378419e9f100a0c2f0b21c2640a598e2f15a71d00dd1306f3c4
+    evidence_hash: e9df95a8068b39697a32a4eb2ce8536bb0cb82b3f739b65b279d5d999d65d055
     decision_record: null
     known_failures: []
     fallback: C++ refuses an ABI mismatch before renderer creation.
-    reviewer: null
-    reviewer_method: null
+    reviewer: Oliver Kay
+    reviewer_method: >-
+      Owner smoke test 2026-08-03 on the deployed WGPU build: launched with --render wgpu --window --dev, loaded a mission, flew the camera, opened the dev panel, and quit cleanly. The session ran the C++ client against the Rust cdylib across the versioned ABI for its whole duration with no entry-point or layout failure, which is this ticket's runtime claim. The static guarantee rests on the compile-time size and offset asserts held on both sides of the boundary, not on this session.
     supersedes: []
     evidence:
       - engine/WgpuRenderer/docs/ffi-contract.md
@@ -326,8 +335,8 @@ tickets:
     class: RUNTIME_INFRA
     obligation: REQUIRED
     execution_mode: IMPLEMENT
-    scheduling_state: OPEN
-    status: INTEGRATED
+    scheduling_state: DONE
+    status: VALIDATED
     outcome: ADAPTED
     owner: null
     branch: null
@@ -338,7 +347,7 @@ tickets:
     depends_on: [CORE-005]
     blocked_by: []
     blocks: []
-    implementation_commits: []
+    implementation_commits: [c8552ae]
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/lib.rs
         symbol: WgpuRenderer::new
@@ -351,12 +360,13 @@ tickets:
         verified_commit: null
     test_ids: [wgpu-capabilities-check, wgpu-windowed-resize-capture, wgpu-normal-loop-minimize-restore, wgpu-lifecycle-repeat-in-session, runtime-diagnostics-once]
     benchmark_artifacts: [docs/roadmap/evidence/preview0-manifest.json]
-    evidence_hash: d670ee3712ab9e666901de3ede9b38cdfa479963a71a90ba8eaeafcf720a3591
+    evidence_hash: e79337b1a84eefdea30f2a82542cba1ad3c4d81f390b06e5a9b5a2ecf39c4c83
     decision_record: null
     known_failures: []
     fallback: Unsupported optional capabilities are reported and feature paths remain gated.
-    reviewer: null
-    reviewer_method: null
+    reviewer: Oliver Kay
+    reviewer_method: >-
+      Owner smoke test 2026-08-03 on the deployed WGPU build: launched with --render wgpu --window --dev, loaded a mission, flew the camera, opened the dev panel, and quit cleanly. Directly exercises this ticket's scope -- renderer startup, capability selection and orderly shutdown -- end to end.
     supersedes: []
     evidence:
       - engine/WgpuRenderer/rust/src/lib.rs
@@ -382,8 +392,8 @@ tickets:
     class: BUILD_INFRA
     obligation: REQUIRED
     execution_mode: IMPLEMENT
-    scheduling_state: OPEN
-    status: INTEGRATED
+    scheduling_state: DONE
+    status: VALIDATED
     outcome: ADAPTED
     owner: null
     branch: null
@@ -433,8 +443,9 @@ tickets:
         confirmed by hosted CI alone. GL33 is the fallback renderer: this is
         a keep-it-working fix, not WGPU feature parity work.
     fallback: Runtime log and manifest preserve the available fingerprint evidence.
-    reviewer: null
-    reviewer_method: null
+    reviewer: Oliver Kay
+    reviewer_method: >-
+      Owner smoke test 2026-08-03 on the deployed WGPU build: launched with --render wgpu --window --dev, loaded a mission, flew the camera, opened the dev panel, and quit cleanly. The capture, metrics and build-fingerprint paths were NOT exercised by hand in that session; their evidence is the Trident capture artifacts and CI runs listed above.
     supersedes: []
     evidence:
       - scripts/write_preview0_manifest.py
