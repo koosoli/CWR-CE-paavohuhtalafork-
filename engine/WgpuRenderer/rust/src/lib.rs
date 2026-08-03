@@ -130,6 +130,35 @@ impl RuntimeDiagnostics {
 mod runtime_diagnostics_tests {
     use super::RuntimeDiagnostics;
 
+    /// The startup gate summary is the answer to "is this feature actually on?", a question
+    /// that cost a wrong conclusion in the RND-030 audit because each gate is decided across
+    /// three layers (Rust default, C++ default, and the app setting the env var itself).
+    /// Assert every gate is still named in it, so a rename or a deletion fails here rather
+    /// than silently removing the only reliable answer.
+    #[test]
+    fn effective_gate_summary_names_every_gate() {
+        let source = include_str!("lib.rs");
+        let gates = [
+            "hdr=",
+            "prepass=",
+            "indirect=",
+            "gpu_driven=",
+            "skin_bake=",
+            "msaa=",
+            "multi_draw_count=",
+        ];
+        // Check EVERY line mentioning the marker, not the first: include_str! pulls in this
+        // test too, so the first match is this test's own search string.
+        let found = source
+            .lines()
+            .filter(|l| l.contains("[wgr] effective gates:"))
+            .any(|l| gates.iter().all(|g| l.contains(g)));
+        assert!(
+            found,
+            "no startup gate summary names all of {gates:?} — a gate was renamed or dropped"
+        );
+    }
+
     #[test]
     fn reports_device_loss_and_uncaptured_error_once() {
         let diagnostics = RuntimeDiagnostics::default();
