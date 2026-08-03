@@ -1652,6 +1652,24 @@ Origin: external proposal, reviewed in [`WTR-external-proposal-review-20260802.m
 
 Volumetric caustics, ray tracing and any one scattering model are explicitly *not* required.
 
+**Landed so far** (none of the boxes above are met yet; this is groundwork):
+
+- `2d06adc` — `fft_control.w` carries eye submersion in metres rather than a 0/1 flag, and
+  the compositor ramps by it instead of snapping to a fixed `-0.08`. This removed the pop as
+  a crest passed the eye, which was the most visible discontinuity across the crossing.
+- `6d73940` — the compositor locates the surface by marching each ray against the FFT
+  displacement rather than intersecting a flat plane at `sea_level`. A crest overhead now
+  counts as submersion on every cascade preset, not only the one whose surface the CPU can
+  reproduce; and a straddling view resolves into a real waterline instead of one whole-screen
+  answer. Behaviour is pinned by a Rust mirror of the march over an analytic swell, including
+  a calm-sea case that must still reproduce the plane exactly.
+
+Still open before any box can be ticked: the scripted camera path and its three captures
+(above, at the waterline, below), the luminance-continuity and symmetry measurements, the
+`WaterQuery` bit-identity check, and the `PERF-001` GPU cost. The camera path is the
+blocker — an SQF probe that positioned the camera underwater died with a broken pipe after
+about 59 s, and that is unexplained.
+
 ## WTR-240 — Shoreline contact, wetness and waterline contract — CONDITIONAL_DEPENDENCY, INVESTIGATE
 
 Origin: same review; renumbered from the proposal's `WTR-160` (*Weather and water-body integration* in the Master Plan). `WTR-220` already covers coast **inputs** — shore distance, bathymetry, slope, material. This ticket covers the **rendering and contact** side, which is absent.
