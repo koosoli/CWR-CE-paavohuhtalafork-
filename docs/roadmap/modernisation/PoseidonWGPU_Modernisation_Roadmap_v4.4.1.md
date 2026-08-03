@@ -1075,7 +1075,7 @@ The repository may already contain implementation roadmaps, audits, branches, pr
 - [x] Separate implemented, integrated, validated, superseded, experimental, and documentation-only work.
 - [x] Record dependencies on water, materials, atmosphere, shadows, far-world rendering, and streaming.
 - [x] Mark contradictory or outdated reports as historical rather than silently deleting them.
-- [ ] Reuse strong existing work; do not implement a second system merely because the master roadmap uses different terminology.
+- [x] Reuse strong existing work; do not implement a second system merely because the master roadmap uses different terminology.
 - [ ] A stronger agent may consolidate or replace old plans when the decision record demonstrates lower complexity, better portability, or better measured performance.
 
 **State (2026-08-03).** The inventory, verification and dependency map live in
@@ -1105,10 +1105,21 @@ verification would drift the same way. The distinction it enforces is that a ver
 proves a system **exists**, which is weaker than a plan having landed; per-system `completeness`
 carries that judgement and records which entries were re-audited rather than carried over.
 
-One box stays open:
+**Reuse / consolidation is done** —
+[`RND-030-renderer-consolidation-20260803.md`](../decisions/RND-030-renderer-consolidation-20260803.md),
+written off the completed audit rather than off the plans.
 
-- **Reuse / consolidation.** A judgement call per system, not a sweep, and it wanted the
-  mapping above first.
+Its headline: **one missing piece gates three completed ones.** The C++ retained-scene feed
+(GPU-culling stage 3b-3) is all that stands between the branch and the payoff of the GPU cull
+compute, the compute skin bake, and the foliage canopy normals — three systems that are built,
+validated, and inert in a default run. That is one stall counted three times, and it is a larger
+win than any unbuilt candidate. The recommendation is to build the feed before starting a new
+system.
+
+No duplicated systems were found, which was the specific risk this box guarded against. The
+plans overlap in ambition but not in code — the skin-bake plan explicitly refuses to build a
+draw coalescer because the GPU-culling indirect path already is one, and that refusal is the
+pattern to copy.
 
 The four genuinely unbuilt candidates, if renderer work is picked up next: `forward-plus`,
 `screen-space-ao`, `gpu-terrain-water-cull`, `terrain-fractal-detail`.
