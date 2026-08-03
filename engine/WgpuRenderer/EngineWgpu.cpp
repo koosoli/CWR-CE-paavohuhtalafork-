@@ -3050,12 +3050,31 @@ void EngineWgpu::SyncWaterLookProfile()
             return;
         }
         const auto& s = _waterLook;
-        out << "v 1\nwave " << s.waveAmp << ' ' << s.waveChoppy << ' ' << s.waveSpeed << ' ' << s.waveScale << '\n';
+        // v2 adds the optics/quality/sea/underwater groups. The reader keys off the group
+        // names and ignores unknown ones, so a v1 profile still loads — its missing groups
+        // simply keep the code defaults, which is the behaviour v1 had for them anyway.
+        out << "v 2\nwave " << s.waveAmp << ' ' << s.waveChoppy << ' ' << s.waveSpeed << ' ' << s.waveScale << '\n';
         out << "colour " << s.shallowColor[0] << ' ' << s.shallowColor[1] << ' ' << s.shallowColor[2] << ' '
             << s.deepColor[0] << ' ' << s.deepColor[1] << ' ' << s.deepColor[2] << '\n';
         out << "coast " << s.colorExt << ' ' << s.coastFade << ' ' << s.foamWidth << ' ' << s.foamIntensity << ' '
             << s.swashAmp << ' ' << s.swashSpeed << ' ' << s.wetHeight << ' ' << s.wetDarken << '\n';
         out << "surface " << s.glitterGain << ' ' << s.sssGain << ' ' << s.reflectionGain << '\n';
+        // v2 groups. Everything below was absent from the profile, and because a map change
+        // resets _waterLook to WaterSettings{} before reloading it, "absent" meant "silently
+        // reverts to the code default whenever the map changes". That is why the quality and
+        // underwater controls did not appear to stick.
+        //
+        // If you add a field to WaterSettings that the Water tab exposes, add it here too.
+        // The profile is a hand-maintained subset and gives no warning when it falls behind.
+        out << "optics " << s.alpha << ' ' << s.specPower << ' ' << s.specIntensity << ' ' << s.shadowDim << ' '
+            << s.warpAmp << ' ' << s.fadeStart << ' ' << s.fadeEnd << '\n';
+        out << "quality " << (s.lowQuality ? 1 : 0) << ' ' << s.geometryQuality << ' ' << s.fftResolution << ' '
+            << s.cascadePreset << '\n';
+        out << "sea " << (s.seaStateCoupling ? 1 : 0) << ' ' << s.shoreWaveGain << ' ' << (s.physicalLook ? 1 : 0)
+            << '\n';
+        out << "underwater " << (s.underwaterEffect ? 1 : 0) << ' ' << s.underwaterEnterDepth << ' '
+            << s.underwaterExitDepth << ' ' << s.underwaterEngageBand << ' ' << s.underwaterDensity << ' '
+            << s.underwaterColorBias << ' ' << s.underwaterCausticGain << '\n';
         if (out.good())
             _waterLookDirty = false;
     };
@@ -3085,6 +3104,31 @@ void EngineWgpu::SyncWaterLookProfile()
                 _waterLook.swashAmp >> _waterLook.swashSpeed >> _waterLook.wetHeight >> _waterLook.wetDarken;
         else if (key == "surface")
             in >> _waterLook.glitterGain >> _waterLook.sssGain >> _waterLook.reflectionGain;
+        else if (key == "optics")
+            in >> _waterLook.alpha >> _waterLook.specPower >> _waterLook.specIntensity >> _waterLook.shadowDim >>
+                _waterLook.warpAmp >> _waterLook.fadeStart >> _waterLook.fadeEnd;
+        else if (key == "quality")
+        {
+            int low = 0;
+            in >> low >> _waterLook.geometryQuality >> _waterLook.fftResolution >> _waterLook.cascadePreset;
+            _waterLook.lowQuality = low != 0;
+        }
+        else if (key == "sea")
+        {
+            int coupling = 0;
+            int physical = 0;
+            in >> coupling >> _waterLook.shoreWaveGain >> physical;
+            _waterLook.seaStateCoupling = coupling != 0;
+            _waterLook.physicalLook = physical != 0;
+        }
+        else if (key == "underwater")
+        {
+            int on = 0;
+            in >> on >> _waterLook.underwaterEnterDepth >> _waterLook.underwaterExitDepth >>
+                _waterLook.underwaterEngageBand >> _waterLook.underwaterDensity >> _waterLook.underwaterColorBias >>
+                _waterLook.underwaterCausticGain;
+            _waterLook.underwaterEffect = on != 0;
+        }
         else
             in.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
     }
