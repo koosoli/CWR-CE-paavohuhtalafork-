@@ -378,9 +378,12 @@ void Invoke(std::string_view args, std::string& out)
 } // namespace Cmd_SkipTime
 
 // Cmd_SetWeather — instant overcast change via World::SetWeather.
-// Fog is set to 0 — there is no public getter to preserve the existing
-// fog level, and a deliberate "weather change" cheat that resets fog
-// is less surprising than one that silently keeps it.
+// Fog is set to 0. The original justification given here was that "there is no
+// public getter to preserve the existing fog level"; that is not true —
+// Landscape::GetFog() exists. The behaviour is kept anyway because the console
+// command and triCheatWeather both depend on it, but the reason is now simply
+// that a one-argument overcast cheat has no fog to preserve. InvokeWeather
+// below is the two-axis entry point.
 namespace Cmd_SetWeather
 {
 
@@ -427,7 +430,62 @@ void Invoke(std::string_view args, std::string& out)
     InvokeOvercast(overcast, out);
 }
 
+void InvokeWeather(float overcast, float fog, float transitionSeconds, std::string& out)
+{
+    if (!GWorld)
+    {
+        out = "weather: no active world";
+        return;
+    }
+    overcast = std::clamp(overcast, 0.0f, 1.0f);
+    fog = std::clamp(fog, 0.0f, 1.0f);
+    // Negative would be meaningless to the engine's interpolation; 0 is "now".
+    transitionSeconds = std::max(transitionSeconds, 0.0f);
+    GWorld->SetWeather(overcast, fog, transitionSeconds);
+    char buf[96];
+    snprintf(buf, sizeof(buf), "weather: overcast %.2f, fog %.2f over %.0fs", overcast, fog, transitionSeconds);
+    out = buf;
+    LOG_INFO(Mission, "DebugCheats::SetWeather -> {}", out);
+}
+
 } // namespace Cmd_SetWeather
+
+// Cmd_SetTimeOfDay — absolute clock control built on the relative skip the
+// engine actually provides.
+namespace Cmd_SetTimeOfDay
+{
+
+bool Available()
+{
+    return MissionInfo::IsActive();
+}
+
+void InvokeHour(float hour, std::string& out)
+{
+    if (!GWorld)
+    {
+        out = "settime: no active world";
+        return;
+    }
+    // Wrap rather than clamp: 24.0 is midnight, not "one minute to".
+    hour = std::fmod(hour, 24.0f);
+    if (hour < 0.0f)
+        hour += 24.0f;
+    const float now = Glob.clock.GetTimeOfDay() * 24.0f;
+    // Forward-only. A negative skip is not known to be safe for the day/night
+    // and lighting state, and wrapping forward past midnight still reaches
+    // every hour, so the shortest FORWARD delta is always the right move.
+    float delta = hour - now;
+    if (delta < 0.0f)
+        delta += 24.0f;
+    GWorld->SkipTime(delta * OneHour);
+    char buf[96];
+    snprintf(buf, sizeof(buf), "settime: %05.2f -> %05.2f (+%.2fh)", now, hour, delta);
+    out = buf;
+    LOG_INFO(Mission, "DebugCheats::SetTimeOfDay -> {}", out);
+}
+
+} // namespace Cmd_SetTimeOfDay
 
 // Cmd_TimeMultiplier — write GWorld->_acceleratedTime.  Read-back uses
 // the same getter so a `Cmd_TimeMultiplier::Get()` round-trip reports

@@ -791,6 +791,10 @@ class Landscape: public SerializeClass
 	// control weather	
 	float GetRainDensity() const {return _weather._rainDensity;}
 	float GetOvercast() const {return _weather.GetOvercast();}
+	// Forwarded so a caller holding a Landscape can read fog back the same way it
+	// reads overcast. Weather::GetFog() already existed; only the forwarder was
+	// missing, which is why DebugCheats claimed there was "no public getter".
+	float GetFog() const {return _weather.GetFog();}
 	void SetOvercast( float overcast ) {_weather.SetOvercast(this,overcast);}
 	void SetFog( float fog ) {_weather.SetFog(this,fog);}
 	void SetRain(float density, float time){_weather.SetRain(density,time);}

@@ -812,6 +812,139 @@ void DrawZeusInteractionOverlay()
     }
 }
 
+// Live weather and clock control for the Zeus tab.
+//
+// Everything here goes through DebugCheats rather than touching World or
+// Landscape directly, so the dev panel, the console commands and the tri
+// harness all drive the same code path. The sliders read back from the engine
+// every frame while they are not being dragged, so a value changed by a
+// mission script or by the console shows up here instead of the panel showing
+// a stale local copy.
+void DrawZeusWeatherAndTime(bool worldAvailable)
+{
+    // Engine-authored values, refreshed from the landscape unless the user is
+    // mid-drag on the corresponding widget.
+    static float overcast = 0.0f;
+    static float fog = 0.0f;
+    static float transition = 0.0f;
+    static float hour = 12.0f;
+    static bool editingFog = false;
+    static bool editingHour = false;
+
+    // Fog reads back from the engine so a value changed by a script or the console
+    // shows here. Overcast deliberately does NOT: Landscape::GetOvercast() forwards to
+    // Weather::GetOvercast(), which is declared in the header but has no definition
+    // anywhere in the tree — calling it is a link error, and this panel was the first
+    // caller to find that out. The slider keeps its own value instead.
+    const Landscape* land = GLandscape;
+    if (land != nullptr && !editingFog)
+        fog = land->GetFog();
+    if (!editingHour)
+        hour = Glob.clock.GetTimeOfDay() * 24.0f;
+
+    ImGui::Spacing();
+    ImGui::TextUnformatted("Weather and time");
+    ImGui::Separator();
+
+    const bool available = worldAvailable && DebugCheats::Cmd_SetWeather::Available();
+    ImGui::BeginDisabled(!available);
+
+    std::string out;
+    bool applyWeather = false;
+    applyWeather |= ImGui::SliderFloat("Overcast", &overcast, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("0 = clear, 1 = fully overcast. Drives cloud cover and the sky's light.");
+
+    applyWeather |= ImGui::SliderFloat("Fog", &fog, 0.0f, 1.0f, "%.2f");
+    editingFog = ImGui::IsItemActive();
+    ImGui::SetItemTooltip("0 = clear, 1 = thickest. Independent of overcast — the console 'weather' "
+                          "command and triCheatWeather both force this to 0, this slider does not.");
+
+    ImGui::SliderFloat("Transition (s)", &transition, 0.0f, 600.0f, "%.0f");
+    ImGui::SetItemTooltip("0 applies the change on the next frame. Anything higher lets the engine "
+                          "interpolate, which is what you want while someone is watching.");
+
+    if (applyWeather)
+    {
+        DebugCheats::Cmd_SetWeather::InvokeWeather(overcast, fog, transition, out);
+        s_zeusStatus = out;
+    }
+
+    // Presets are the common case: nobody wants to hunt for 0.75 on a slider.
+    ImGui::TextDisabled("  Presets");
+    ImGui::SameLine();
+    const struct
+    {
+        const char* label;
+        float overcast;
+        float fog;
+    } presets[] = {
+        {"Clear", 0.0f, 0.0f},  {"Cloudy", 0.5f, 0.05f}, {"Overcast", 0.85f, 0.10f},
+        {"Storm", 1.0f, 0.25f}, {"Foggy", 0.3f, 0.8f},
+    };
+    for (const auto& preset : presets)
+    {
+        if (ImGui::SmallButton(preset.label))
+        {
+            overcast = preset.overcast;
+            fog = preset.fog;
+            DebugCheats::Cmd_SetWeather::InvokeWeather(overcast, fog, transition, out);
+            s_zeusStatus = out;
+        }
+        ImGui::SameLine();
+    }
+    ImGui::NewLine();
+
+    ImGui::Spacing();
+    // The clock is display-only until released: the engine only offers a
+    // relative skip, so applying every frame of a drag would fire dozens of
+    // skips and sail past the target.
+    ImGui::SliderFloat("Time of day", &hour, 0.0f, 24.0f, "%05.2f h");
+    const bool hourActive = ImGui::IsItemActive();
+    const bool hourReleased = editingHour && !hourActive;
+    editingHour = hourActive;
+    ImGui::SetItemTooltip("Applied when you release the slider, not while dragging. The engine only "
+                          "offers a relative skip, so the clock moves FORWARD to the requested hour "
+                          "— asking for an earlier time wraps through midnight.");
+    if (hourReleased && DebugCheats::Cmd_SetTimeOfDay::Available())
+    {
+        DebugCheats::Cmd_SetTimeOfDay::InvokeHour(hour, out);
+        s_zeusStatus = out;
+    }
+
+    ImGui::TextDisabled("  Jump to");
+    ImGui::SameLine();
+    const struct
+    {
+        const char* label;
+        float hour;
+    } times[] = {
+        {"Dawn", 5.5f}, {"Morning", 9.0f}, {"Noon", 12.0f}, {"Dusk", 19.0f}, {"Night", 23.0f},
+    };
+    for (const auto& time : times)
+    {
+        if (ImGui::SmallButton(time.label))
+        {
+            hour = time.hour;
+            DebugCheats::Cmd_SetTimeOfDay::InvokeHour(hour, out);
+            s_zeusStatus = out;
+        }
+        ImGui::SameLine();
+    }
+    ImGui::NewLine();
+
+    float multiplier = DebugCheats::Cmd_TimeMultiplier::Get();
+    if (ImGui::SliderFloat("Time scale", &multiplier, 0.1f, 60.0f, "%.1fx", ImGuiSliderFlags_Logarithmic))
+    {
+        DebugCheats::Cmd_TimeMultiplier::SetValue(multiplier, out);
+        s_zeusStatus = out;
+    }
+    ImGui::SetItemTooltip("How fast the world clock runs. The engine clamps this to its own range, "
+                          "and the value shown is read back from the engine, so what you see is what "
+                          "it accepted.");
+
+    ImGui::EndDisabled();
+}
+
 void DrawZeusTab()
 {
     const bool worldAvailable = ZeusWorldAvailable();
@@ -958,6 +1091,8 @@ void DrawZeusTab()
     ImGui::EndDisabled();
     ImGui::EndDisabled();
     ImGui::EndDisabled();
+
+    DrawZeusWeatherAndTime(worldAvailable);
 
     if (!worldAvailable)
         ImGui::TextDisabled("Load a mission or world to use Zeus.");

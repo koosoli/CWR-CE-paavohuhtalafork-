@@ -13,7 +13,8 @@
 #include <string_view>
 #include <vector>
 
-namespace Poseidon::Dev {
+namespace Poseidon::Dev
+{
 namespace DebugCheats
 {
 
@@ -23,9 +24,9 @@ namespace DebugCheats
 // implicit "remember across missions").
 namespace Cmd_God
 {
-bool Available();            // mission running
-bool IsActive();             // current toggle state
-void SetActive(bool active); // typed setter for UI / tri
+bool Available();                                     // mission running
+bool IsActive();                                      // current toggle state
+void SetActive(bool active);                          // typed setter for UI / tri
 void Invoke(std::string_view args, std::string& out); // console form
 } // namespace Cmd_God
 
@@ -100,19 +101,41 @@ void Invoke(std::string_view args, std::string& out);
 namespace Cmd_SkipTime
 {
 bool Available();
-void InvokeHours(float hours, std::string& out); // typed entry point
+void InvokeHours(float hours, std::string& out);      // typed entry point
 void Invoke(std::string_view args, std::string& out); // console form: "<hours>"
 } // namespace Cmd_SkipTime
 
-// Set weather instantly (no transition).  Calls World::SetWeather(
-// overcast, fog, 0).  UI exposes four preset overcast values; the fog
-// value is left at the engine's current to avoid surprising the user.
+// Set weather.  Calls World::SetWeather(overcast, fog, transition).
+//
+// NOTE on InvokeOvercast: the comment here used to claim the fog value was
+// "left at the engine's current to avoid surprising the user". It never was —
+// the implementation passes fog = 0, so setting overcast has always cleared fog
+// too. Behaviour is left as-is because the console command and triCheatWeather
+// both depend on it; InvokeWeather below is the entry point that controls both
+// axes honestly.
 namespace Cmd_SetWeather
 {
 bool Available();
-void InvokeOvercast(float overcast, std::string& out); // typed setter
+void InvokeOvercast(float overcast, std::string& out); // typed setter; fog := 0
+// Both axes, plus a transition length in seconds. 0 is immediate; a non-zero
+// value lets the engine interpolate, which is what makes this usable as a live
+// Zeus control rather than a snap.
+void InvokeWeather(float overcast, float fog, float transitionSeconds, std::string& out);
 void Invoke(std::string_view args, std::string& out); // console: "<overcast>"
 } // namespace Cmd_SetWeather
+
+// Set the clock to an absolute hour in [0, 24).
+//
+// The engine only offers a RELATIVE skip (World::SkipTime), so this computes the
+// shortest forward delta to the requested hour and skips by that. Forward-only
+// is deliberate: skipping backwards is not something the day/night and lighting
+// state is known to handle, and wrapping forward past midnight reaches every
+// hour anyway.
+namespace Cmd_SetTimeOfDay
+{
+bool Available();
+void InvokeHour(float hour, std::string& out);
+} // namespace Cmd_SetTimeOfDay
 
 // Time multiplier — sets World::_acceleratedTime to a selected
 // constant.  UI exposes a fixed list (0.5x / 1x / 2x / 4x) — the
@@ -122,8 +145,8 @@ void Invoke(std::string_view args, std::string& out); // console: "<overcast>"
 namespace Cmd_TimeMultiplier
 {
 bool Available();
-float Get();                       // current GWorld value (1.0 fallback)
-void SetValue(float mult, std::string& out); // typed setter
+float Get();                                          // current GWorld value (1.0 fallback)
+void SetValue(float mult, std::string& out);          // typed setter
 void Invoke(std::string_view args, std::string& out); // console form
 } // namespace Cmd_TimeMultiplier
 
