@@ -1664,11 +1664,26 @@ Volumetric caustics, ray tracing and any one scattering model are explicitly *no
   answer. Behaviour is pinned by a Rust mirror of the march over an analytic swell, including
   a calm-sea case that must still reproduce the plane exactly.
 
+- `d76b787` — the compositor no longer contributes anything from above the surface. Water
+  renders with `depth_write_enabled: Some(false)`, so the depth target this pass samples never
+  contains the water surface; the flat model treated the plane crossing as an entry point and
+  fogged the whole scene behind it, which is why the effect appeared to engage while the camera
+  was clearly in open air. Those pixels belong to the water shader. Absorption hue is also now
+  derived from the authored deep swatch rather than a hardcoded curve, so the volume is the same
+  substance as the surface.
+
+**Parked, effect off by default** (`3b60350`). The owner's judgement is that the look is not
+good enough to ship on, so `WaterSettings::underwaterEffect` now defaults to false and the
+effect is opt-in from the dev overlay's Water tab. This does not retire the ticket — the
+surface-crossing contract is still undefined and still wanted — but nothing here is on the
+critical path while the effect is off, and it should not be treated as blocking.
+
 Still open before any box can be ticked: the scripted camera path and its three captures
 (above, at the waterline, below), the luminance-continuity and symmetry measurements, the
 `WaterQuery` bit-identity check, and the `PERF-001` GPU cost. The camera path is the
 blocker — an SQF probe that positioned the camera underwater died with a broken pipe after
-about 59 s, and that is unexplained.
+about 59 s, and that is unexplained. Note that any future capture run must enable the effect
+explicitly now that the default is off.
 
 ## WTR-240 — Shoreline contact, wetness and waterline contract — CONDITIONAL_DEPENDENCY, INVESTIGATE
 
