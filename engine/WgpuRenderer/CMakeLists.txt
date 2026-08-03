@@ -78,6 +78,9 @@ function(wgpu_renderer_stage_dll APP_TARGET)
     set(_copy_if_exists ${CMAKE_SOURCE_DIR}/cmake/CopyIfExists.cmake)
     add_custom_command(
         OUTPUT ${_stamp}
+        # The app's output directory normally exists because the exe linked into it, but the
+        # staging step no longer depends on the exe (see DEPENDS below), so it can run first.
+        COMMAND ${CMAKE_COMMAND} -E make_directory $<TARGET_FILE_DIR:${APP_TARGET}>
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             $<TARGET_FILE:wgpu_renderer-shared> $<TARGET_FILE_DIR:${APP_TARGET}>
         COMMAND ${CMAKE_COMMAND} -E make_directory ${DIST_DIR}
@@ -86,11 +89,34 @@ function(wgpu_renderer_stage_dll APP_TARGET)
         COMMAND ${CMAKE_COMMAND} -DSRC=${_wgpu_pdb} -DDST=$<TARGET_FILE_DIR:${APP_TARGET}> -P ${_copy_if_exists}
         COMMAND ${CMAKE_COMMAND} -DSRC=${_wgpu_pdb} -DDST=${DIST_DIR} -P ${_copy_if_exists}
         COMMAND ${CMAKE_COMMAND} -E touch ${_stamp}
-        DEPENDS $<TARGET_FILE:wgpu_renderer-shared> wgpu_renderer-shared ${APP_TARGET}
+        # cargo-build_wgpu_renderer must be here. Depending only on the imported target and
+        # its file did NOT re-stage: corrosion's cdylib is produced by a utility target, so
+        # the generator has no rule making that path and the stamp was treated as up to date
+        # even after cargo had rewritten the DLL. Observed on 2026-08-03 with a dist/ copy
+        # from the previous day and a PoseidonGameDemo stamp twelve days stale — every build
+        # reported success while shipping a renderer that predated the source.
+        #
+        # A stale cdylib is close to undetectable at runtime: the C++ side keeps working
+        # because the FFI exports still resolve, and appended WgrWaterParams lanes are simply
+        # ignored by the older DLL, so the symptom is "some settings work and the new ones do
+        # nothing" rather than a crash.
+        #
+        # The cargo utility runs every build, so this makes the copy run every build too. It
+        # is copy_if_different, so an unchanged DLL costs a content compare and no write.
+        #
+        # ${APP_TARGET} is deliberately NOT a dependency: the app now depends on this stamp
+        # (see add_dependencies below) and listing it both ways is a cycle.
+        DEPENDS $<TARGET_FILE:wgpu_renderer-shared> wgpu_renderer-shared cargo-build_wgpu_renderer
         COMMENT "Staging wgpu_renderer cdylib for ${APP_TARGET}"
         VERBATIM
     )
     add_custom_target(${APP_TARGET}_stage_wgpu ALL DEPENDS ${_stamp})
+    # ALL alone is not enough. `cmake --build <dir> --target PoseidonGame` builds that target
+    # and its dependencies, and an ALL target that nothing depends on is not among them — so
+    # the documented way to build the game skipped staging entirely and left whatever DLL was
+    # in dist/ from the last bare `cmake --build`. That shipped a renderer a day older than
+    # the source, with every build reporting success.
+    add_dependencies(${APP_TARGET} ${APP_TARGET}_stage_wgpu)
 
     # The Rust cdylib ships beside each game executable.  Linux's dynamic loader
     # does not search the executable directory by default, so make that packaged
