@@ -10,7 +10,6 @@ namespace Poseidon
 void ProcessMouse_SDL(DWORD timeDelta);
 void ProcessKeyboard_SDL(DWORD sysTime, DWORD timeDelta);
 void ProcessJoystick_SDL();
-void SetSkipKeys_SDL(bool skip);
 
 void ProcessMouse(DWORD timeDelta)
 {
@@ -25,9 +24,4 @@ void ProcessKeyboard(DWORD sysTime, DWORD timeDelta)
 void ProcessJoystick()
 {
     ProcessJoystick_SDL();
-}
-
-void SetSkipKeys(bool skip)
-{
-    SetSkipKeys_SDL(skip);
 }

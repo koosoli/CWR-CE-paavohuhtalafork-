@@ -20,7 +20,6 @@
 #include <Poseidon/Core/Application.hpp>
 
 using namespace Poseidon;
-extern void SetSkipKeys(bool skip);
 
 extern void AppPause(bool f);
 namespace Poseidon

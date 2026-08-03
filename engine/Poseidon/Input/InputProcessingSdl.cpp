@@ -214,8 +214,24 @@ void SDLInput_BufferMouseWheel(float dy)
     GInput.mouse.BufferWheel(dy);
 }
 
+// Frames of input settling after a focus change. Three is enough to swallow the
+// motion burst SDL delivers when the pointer re-enters, and short enough that a
+// player alt-tabbing back mid-firefight does not notice the view is briefly inert.
+static constexpr int kFocusSettleFrames = 3;
+
+void SDLInput_NoteFocusChange()
+{
+    GInput.gameFocusLost = kFocusSettleFrames;
+}
+
 void ProcessMouse_SDL(DWORD timeDelta)
 {
+    // Decay the settle window. Every reader of gameFocusLost tests `> 0`, so this is
+    // the one place that has to tick it down — without it the flag would latch on the
+    // first focus change and suppress aim for the rest of the session.
+    if (GInput.gameFocusLost > 0)
+        --GInput.gameFocusLost;
+
     if (!GWorld->IsUserInputEnabled())
     {
         GInput.mouse.DiscardBuffered();
@@ -651,9 +667,7 @@ void ProcessJoystick_SDL()
     sRumble.Update(sGamepad);
 }
 
-static bool SkipKeys = false;
-
-void SetSkipKeys_SDL(bool skip)
-{
-    SkipKeys = skip;
-}
+// SetSkipKeys_SDL used to write a `SkipKeys` flag that nothing ever read. Removed
+// along with its callers: it looked exactly like the focus-suppression mechanism
+// while doing nothing, which cost real time when the alt-tab input bug was
+// investigated. GInput.gameFocusLost is the flag the input system actually consults.

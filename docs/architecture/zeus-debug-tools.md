@@ -83,10 +83,28 @@ menu items. Not yet reproduced or fixed. Ruled out so far, by reading:
   and `s_zeusConsumeMouseEvent` is reset at the top of every `ProcessEvent`, so it
   cannot latch.
 
-Leading hypothesis, untested: the UI cursor is integrated from *relative* motion
-(`SDL_EVENT_MOUSE_MOTION` `xrel`/`yrel`) while the OS cursor is hidden. Focus loss
-disables relative mouse mode unconditionally; focus gain re-enables it only when
-`_mouseGrab` is set (`SDLEventWindow.hpp`). If the menu runs ungrabbed, the OS
-cursor can end up pinned against a screen edge while away, after which motion in
-that direction yields no deltas and the virtual cursor cannot be steered back.
-Warping the OS cursor to the window centre on focus-gain would test this.
+**Hypothesis rejected (2026-08-03).** The first guess was that the menu ran
+*ungrabbed*, letting the OS cursor pin against a screen edge so motion in that
+direction stopped producing deltas. That is wrong: `_mouseGrab` defaults to `true`
+(`SDLEventWindow.hpp`), so relative mouse mode is active and the OS cursor position
+is irrelevant. Recorded because it is a plausible-sounding theory that a future
+reader would otherwise re-derive.
+
+**What was found and fixed instead.** The engine has a focus-suppression design that
+was never connected at either end:
+
+- `GInput.gameFocusLost` is read in eight places — `MouseState::Update`, the six
+  `InputSubsystem` `QueryKey`/`QueryAxis` guards, and the gamepad look path — and was
+  **written by nothing**. It sat at 0 for the whole session, so every focus guard was
+  inert.
+- `SetSkipKeys(true)` was called on focus gained *and* lost, and the `SkipKeys` flag
+  it wrote was **read by nothing**. Dead code that read exactly like the mechanism.
+
+`gameFocusLost` is now armed on both focus transitions and decays over
+`kFocusSettleFrames` in `ProcessMouse_SDL`; the dead `SkipKeys` path is removed. Note
+what that flag gates: **aim deltas only**. Menu cursor movement and clicks still pass,
+which is why arming it on the way back in is safe.
+
+This restores intended behaviour and removes the red herring, but it is **not proven
+to be the reported bug** — the symptom is about clicks not registering, and this path
+never blocked clicks. Still needs a smoke test.
