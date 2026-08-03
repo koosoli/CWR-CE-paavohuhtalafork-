@@ -163,6 +163,16 @@ class SDLEventWindow
                 // first motion events can carry the accumulated delta from wherever the
                 // pointer went while away; without this they land as a view whip.
                 SDLInput_NoteFocusChange();
+                // Reported 2026-08-03: after alt-tabbing back, in-game input works but
+                // the in-mission menu (Abort / Exit) stops responding to clicks. Two
+                // rounds of static tracing did not settle it, so make the machine say
+                // what its state is at the moment focus returns. Every field here is a
+                // candidate cause, and one line rules most of them out at a glance.
+                LOG_INFO(Input,
+                         "focus gained: appActive={} appPaused={} appIconic={} mouseGrab={} "
+                         "sdlRelative={} keepFocus={}",
+                         GApp->m_appActive, GApp->m_appPaused, GApp->m_appIconic, _mouseGrab,
+                         _sdlWindow ? SDL_GetWindowRelativeMouseMode(_sdlWindow) : false, GApp->m_keepFocus);
                 if (_mouseGrab && _sdlWindow)
                     SDL_SetWindowRelativeMouseMode(_sdlWindow, true);
                 if (::Poseidon::GEngine)
@@ -176,6 +186,7 @@ class SDLEventWindow
                 _focusLost = true;
                 GApp->m_appActive = false;
                 SDLInput_NoteFocusChange();
+                LOG_INFO(Input, "focus lost: mouseGrab={} keepFocus={}", _mouseGrab, GApp->m_keepFocus);
                 if (_sdlWindow)
                     SDL_SetWindowRelativeMouseMode(_sdlWindow, false);
                 if (!GApp->m_keepFocus)

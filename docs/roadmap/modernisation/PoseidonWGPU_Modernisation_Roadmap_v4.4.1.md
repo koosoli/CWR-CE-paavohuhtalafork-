@@ -1753,6 +1753,37 @@ reports live water whatever the camera does. A `triWaterSubmersion` alongside th
 water observability commands is the missing piece. Note also that any capture run must now
 enable the effect explicitly, since the default is off.
 
+## WTR-250 — Precipitation: occluded rain, wet surfaces — REQUESTED, NOT STARTED
+
+Owner request, 2026-08-03, recorded rather than started. The Zeus weather controls
+landed the same day expose overcast and fog and drive `World::SetWeather`; **rain is not
+wired at all**, so a storm preset gives cloud and gloom with a dry sky.
+
+Wanted, in the owner's terms:
+
+- A real **particle rain system**, not a screen overlay.
+- Rain that **does not fall under bridges, buildings or other cover** — i.e. occlusion,
+  not a uniform camera-locked effect.
+- Streets and surfaces that **go visibly wet** while it rains, and presumably dry after.
+
+Notes for whoever picks this up:
+
+- `Landscape::SetRain(density, time)` already exists and `GetRainDensity()` reads back, so
+  the *state* plumbing is present; what is missing is the rendering and the occlusion.
+- The occlusion requirement is the hard part and the reason this is its own ticket rather
+  than a Zeus-tab checkbox. The obvious cheap source is the terrain shadow map / sky
+  visibility already used for ambient (`RSYS-SKY-VIS-AO`), which answers "can this point
+  see the sky" — the same question rain occlusion asks. Reusing it would be squarely in
+  the spirit of `RND-030`'s reuse box; building a second occlusion structure would not.
+- Wet surfaces overlap `WTR-240`'s wet-terrain darkening and shoreline wetness. These two
+  tickets should be designed together or one folded into the other; do not build two
+  wetness systems.
+- The Water tab's existing `wetHeight` / `wetDarken` controls are the shoreline damp band
+  and are a precedent for how a rain wetness term would be exposed and tuned.
+
+Not scoped here: puddles, splash particles, rain audio, windscreen effects, or lightning.
+Those are candidates once the occluded-rain core exists.
+
 ## WTR-240 — Shoreline contact, wetness and waterline contract — CONDITIONAL_DEPENDENCY, INVESTIGATE
 
 Origin: same review; renumbered from the proposal's `WTR-160` (*Weather and water-body integration* in the Master Plan). `WTR-220` already covers coast **inputs** — shore distance, bathymetry, slope, material. This ticket covers the **rendering and contact** side, which is absent.
