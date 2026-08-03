@@ -1159,6 +1159,40 @@ impl DepthResolve {
 // nothing. `resolve` is called by GTAO when it arrives. Same "present, deliberately unwired"
 // shape the compute skin bake uses.
 #[test]
+fn gtao_validates_and_keeps_its_no_taa_constraints() {
+    let src = include_str!("gtao.wgsl");
+    let module = naga::front::wgsl::parse_str(src).expect("gtao.wgsl parse");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("gtao.wgsl validate");
+
+    // This project runs MSAA and no TAA (plan §0), so the noise has to be resolvable by a
+    // spatial blur alone. A frame-varying rotation is the standard GTAO trick and is exactly
+    // wrong here: with no history to accumulate into it becomes crawling per-frame noise.
+    // Pin the absence, because adding one looks like an improvement.
+    for temporal in ["frame_index", "frame_count", "time", "jitter"] {
+        assert!(
+            !src.contains(temporal),
+            "GTAO must stay spatial-only with no TAA to resolve a temporal term (found {temporal})"
+        );
+    }
+    // Sky must be left unoccluded rather than marched: cleared reversed-Z is 0, and
+    // integrating horizons against a surface that was never drawn produces garbage.
+    assert!(
+        src.contains("if (d <= 0.0)"),
+        "GTAO must early-out on cleared depth"
+    );
+    // World-space radius projected per pixel is what makes AO scale-stable.
+    assert!(
+        src.contains("radius / dist"),
+        "GTAO radius must be world-space, projected per pixel"
+    );
+}
+
+#[test]
 fn normal_resolve_takes_a_single_sample_rather_than_averaging() {
     let src = include_str!("normal_resolve.wgsl");
     let module = naga::front::wgsl::parse_str(src).expect("normal_resolve.wgsl parse");
