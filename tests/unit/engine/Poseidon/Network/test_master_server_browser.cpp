@@ -28,6 +28,12 @@ struct FetchOverrideGuard
     ~FetchOverrideGuard() { SetMasterServerBrowserFetchForTest(nullptr); }
 };
 
+// These waits only ever expire on failure, so the timeout costs nothing when the
+// code is correct — but a hosted CI runner executing 3600+ tests under -j2 can
+// stall a worker thread for well over the two seconds this used to allow, which
+// turns a healthy run into a phantom failure.
+constexpr auto GFetchWaitTimeout = std::chrono::seconds(10);
+
 std::mutex GFetchMutex;
 std::condition_variable GFetchCv;
 bool GFetchStarted = false;
@@ -85,7 +91,7 @@ TEST_CASE("MasterServerBrowser destroy joins an in-flight fetch", "[network][mas
 
     {
         std::unique_lock lock(GFetchMutex);
-        REQUIRE(GFetchCv.wait_for(lock, std::chrono::seconds(2), [] { return GFetchStarted; }));
+        REQUIRE(GFetchCv.wait_for(lock, GFetchWaitTimeout, [] { return GFetchStarted; }));
     }
 
     std::atomic<bool> destroyed{false};
@@ -120,18 +126,29 @@ TEST_CASE("MasterServerBrowser clear discards an in-flight fetch result", "[netw
 
     {
         std::unique_lock lock(GFetchMutex);
-        REQUIRE(GFetchCv.wait_for(lock, std::chrono::seconds(2), [] { return GFetchStarted; }));
+        REQUIRE(GFetchCv.wait_for(lock, GFetchWaitTimeout, [] { return GFetchStarted; }));
         GFetchRelease = true;
     }
     GFetchCv.notify_all();
 
     {
         std::unique_lock lock(GFetchMutex);
-        REQUIRE(GFetchCv.wait_for(lock, std::chrono::seconds(2), [] { return GFetchReturned; }));
+        REQUIRE(GFetchCv.wait_for(lock, GFetchWaitTimeout, [] { return GFetchReturned; }));
     }
 
     ClearMasterServerBrowser(browser);
-    ThinkMasterServerBrowser(browser);
+
+    // BlockingFetch signals GFetchReturned from inside the fetch, but the worker
+    // only stores `fetchDone` after the fetch returns. A single Think can land in
+    // that window, hit the !fetchDone early-out, and leave the browser in
+    // ListTransfer — which is what made this test fail on a loaded CI runner.
+    // Pump until it settles instead of assuming one call is enough; the discard
+    // itself is still asserted below, so the loop cannot make this pass vacuously.
+    for (int i = 0; i < 200 && GetMasterServerBrowserState(browser) != MasterServerBrowserState::Idle; ++i)
+    {
+        ThinkMasterServerBrowser(browser);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
 
     REQUIRE(GetMasterServerBrowserState(browser) == MasterServerBrowserState::Idle);
     REQUIRE(GetMasterServerBrowserCount(browser) == 0);
