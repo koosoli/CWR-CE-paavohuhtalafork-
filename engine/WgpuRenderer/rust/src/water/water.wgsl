@@ -1087,13 +1087,18 @@ fn debug_view(view: i32, base_xz: vec2<f32>, world_rel: vec3<f32>, water_depth: 
         case 27: { c = vec3<f32>(refracted.valid); }
         case 28: { c = dbg_heat(min(water_depth, 40.0), 40.0); }
         case 29: { c = transmission * vec3<f32>(1.4); }
-        case 37: { // WTR-012 Surface velocity
-            let speed = length(interaction.xy);
-            c = dbg_heat(speed, 2.0);
+        // The interaction field is (height, velocity, foam, unused) — see the textureStore in
+        // interaction.wgsl. `.x` is HEIGHT, not a velocity component, which is what both of
+        // these views used to get wrong.
+        case 37: { // WTR-012 Interaction velocity
+            c = dbg_heat(abs(interaction.g), 2.0);
         }
-        case 38: { // WTR-012 Previous displacement delta
-            let delta = abs(interaction.y * 0.0333);
-            c = dbg_heat(delta, 0.5);
+        case 38: { // WTR-012 Interaction height
+            // Was |velocity * 0.0333| under the label "previous displacement delta". No
+            // previous displacement is stored anywhere — the field's fourth channel is
+            // written as 0 — so that view was velocity again on a different scale, and the
+            // height channel that drives the actual surface offset had no view at all.
+            c = dbg_heat(abs(interaction.r), 0.5);
         }
         case 39: { // WTR-040 Directional sky
             c = sky_refl;

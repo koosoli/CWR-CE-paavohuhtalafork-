@@ -1012,7 +1012,12 @@ enum WgrWaterDebugView : uint32_t
     WGR_WATER_DEBUG_WHITEWATER_POOL = 35,        // reserved — no whitewater pass yet
     WGR_WATER_DEBUG_PARTICLE_OVERFLOW = 36,      // reserved — no whitewater pass yet
     WGR_WATER_DEBUG_SURFACE_SPEED = 37,          // WTR-012 — |interaction velocity| heatmap
-    WGR_WATER_DEBUG_PREV_DISP_DELTA = 38,        // WTR-012 — previous-displacement delta magnitude
+    /* WTR-012 — |interaction height| heatmap. Named PREV_DISP_DELTA when it was believed to show
+     * a previous-displacement delta; nothing stores one (the interaction field is height,
+     * velocity, foam, unused), so it actually drew the velocity channel again on a second scale
+     * while the height channel had no view. The name is kept for ABI stability — this is a
+     * wire-visible enum — and corrected here and in the overlay label. */
+    WGR_WATER_DEBUG_PREV_DISP_DELTA = 38,
     WGR_WATER_DEBUG_WTR40_DIR_SKY = 39,          // WTR-040 — directional atmosphere only
     WGR_WATER_DEBUG_WTR40_DIR_CLOUDS = 40,       // WTR-040 — directional cloud contribution
     WGR_WATER_DEBUG_WTR40_PLANAR_SKY = 41,       // WTR-040 — planar sky only

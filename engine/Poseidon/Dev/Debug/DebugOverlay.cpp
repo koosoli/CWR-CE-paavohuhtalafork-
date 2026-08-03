@@ -3357,8 +3357,8 @@ static const char* const kWaterDebugViews[] = {
     "Whitewater particle state",   // 34 (reserved)
     "Whitewater pool occupancy",   // 35 (reserved)
     "Particle overflow",           // 36 (reserved)
-    "Surface speed (WTR-012)",     // 37
-    "Prev. displacement delta",    // 38 (WTR-012)
+    "Interaction velocity",        // 37 (WTR-012)
+    "Interaction height",          // 38 (WTR-012)
     "WTR-040: Directional sky",    // 39
     "WTR-040: Directional clouds", // 40
     "WTR-040: Planar sky",         // 41
