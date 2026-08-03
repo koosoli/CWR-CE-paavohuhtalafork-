@@ -828,17 +828,20 @@ void DrawZeusWeatherAndTime(bool worldAvailable)
     static float fog = 0.0f;
     static float transition = 0.0f;
     static float hour = 12.0f;
+    static bool editingOvercast = false;
     static bool editingFog = false;
     static bool editingHour = false;
 
-    // Fog reads back from the engine so a value changed by a script or the console
-    // shows here. Overcast deliberately does NOT: Landscape::GetOvercast() forwards to
-    // Weather::GetOvercast(), which is declared in the header but has no definition
-    // anywhere in the tree — calling it is a link error, and this panel was the first
-    // caller to find that out. The slider keeps its own value instead.
+    // Both read back from the engine, so a value changed by a mission script or the
+    // console shows up here instead of the panel holding a stale local copy.
     const Landscape* land = GLandscape;
-    if (land != nullptr && !editingFog)
-        fog = land->GetFog();
+    if (land != nullptr)
+    {
+        if (!editingOvercast)
+            overcast = land->GetOvercast();
+        if (!editingFog)
+            fog = land->GetFog();
+    }
     if (!editingHour)
         hour = Glob.clock.GetTimeOfDay() * 24.0f;
 
@@ -852,6 +855,7 @@ void DrawZeusWeatherAndTime(bool worldAvailable)
     std::string out;
     bool applyWeather = false;
     applyWeather |= ImGui::SliderFloat("Overcast##zeus", &overcast, 0.0f, 1.0f, "%.2f");
+    editingOvercast = ImGui::IsItemActive();
     ImGui::SetItemTooltip("0 = clear, 1 = fully overcast. Drives cloud cover and the sky's light.");
 
     applyWeather |= ImGui::SliderFloat("Fog##zeus", &fog, 0.0f, 1.0f, "%.2f");

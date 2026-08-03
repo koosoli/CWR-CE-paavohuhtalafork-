@@ -40,6 +40,31 @@ They are disjoint, so they **compose** (multiply visibilities / min), not compet
 normal redirects the existing SH sky-irradiance ambient (`frame::sky_irradiance`), which is the direct
 answer to "shaded slopes look flat."
 
+## 1a. Prerequisite audit (2026-08-03) — verified against the branch
+
+Checked before starting, because this plan's assumptions are older than the branch and
+the neighbouring plans turned out to be wrong in both directions (see
+[`RND-030-renderer-consolidation-20260803.md`](../../../docs/roadmap/decisions/RND-030-renderer-consolidation-20260803.md)).
+
+| Assumption in this plan | Verified state |
+| --- | --- |
+| The depth+normal prepass exists and runs | **True, and unconditional.** `prepass_enabled` defaults `true`; `WGR_PREPASS=0` is a dev A/B only. Its plan claims "Stages 0/2/3 still planned" — Stage 2 is in fact complete. |
+| Single-sample nearest-resolved depth already exists — reuse it | **True.** `depth_sample_view` (`gfx3d/mod.rs:1203`), fed by `DepthResolve` with `reduce_far:false`. At 1× it is the prepass depth aspect directly. Do not add a depth resolve. |
+| The normal target is `Rg16Float`, oct-encoded | **True.** `NORMAL_FORMAT`, written by the object and terrain prepass fragments via `gbuffer::oct_encode`. |
+| The normal target is MSAA and **not** resolved | **True — still the one missing input.** `wgr_3d_normal` is created with `sample_count: self.sample_count` and only `RENDER_ATTACHMENT \| TEXTURE_BINDING`; there is no `normal_resolve` / `NormalResolve` anywhere in the tree. |
+| MSAA is actually on in the shipped client | **Yes, 4×** — confirmed by the renderer's own startup line: `[wgr] effective gates: … msaa=4x`. So the MSAA path is the default path, not the exotic one, and the normal resolve is required work rather than an edge case. |
+| `@binding(10)` sky-vis is the pattern to copy for `@binding(11)` | **True.** `terrain_skyvis_mask` at `frame.wgsl:125`, with the matching layout and bind-builder entries in `gfx3d/mod.rs` (~566 and ~716) — both must be extended, which is the step the plan warns ate two positional-arg ABI bugs. |
+
+**Consequence:** the only prerequisite that does not already exist is the single-sample
+normal. Stage 1 should open with that resolve, and the plan's own advice — take **sample 0**
+rather than averaging oct-encoded normals, since a raw texel average is wrong across the
+oct wrap — stands.
+
+**Do not** start Stage 1 by extending `@binding(11)` first. The frame UBO group is shared by
+every 3D pipeline; a layout change with no producer bound is a validation error in every pass
+at once. Build the resolve, then the GTAO compute writing to a texture nothing samples, then
+wire the binding and the consumers last.
+
 ## 2. Inputs — already produced by the prepass
 
 The unconditional depth+normal prepass ([depth-prepass-plan.md](depth-prepass-plan.md)) was built as

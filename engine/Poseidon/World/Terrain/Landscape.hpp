@@ -318,7 +318,12 @@ class Weather
 
 	void SetOvercast( Landscape *land, float overcast );
 	void SetRain (float density, float time);
-	float GetOvercast() const;
+	// Defined inline alongside GetFog. It was declared here and defined nowhere in the
+	// tree, so calling Landscape::GetOvercast() — which forwards to this — was a link
+	// error waiting for its first caller; the Zeus weather panel found it in 2026-08.
+	// _overcastSetClouds is the right source: SetOvercast saturates its argument to
+	// [0,1] and stores it there, so this returns what was last asked for.
+	float GetOvercast() const {return _overcastSetClouds;}
 
 	void SetFog( Landscape *land, float fog );
 	float GetFog() const {return _fogSet;}
