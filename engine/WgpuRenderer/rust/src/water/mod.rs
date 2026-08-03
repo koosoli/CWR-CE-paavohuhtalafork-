@@ -936,9 +936,22 @@ impl Water {
         )
     }
 
+    /// Vertical FFT displacement, so the underwater compositor can find the wavy
+    /// surface instead of assuming a flat plane at `sea_level`. Same fallback as
+    /// `underwater_fft_views`: a valid zero array on Gerstner-only adapters, which
+    /// degrades the compositor to the flat-plane behaviour rather than breaking it.
+    pub fn underwater_displacement_view(&self) -> wgpu::TextureView {
+        self.fft
+            .as_ref()
+            .map_or(&self.fft_fallback_view, |f| f.displacement_view())
+            .clone()
+    }
+
     /// Spectrum controls needed to map the camera-centred caustic field to the same
-    /// aperiodic world coordinates as the visible water surface.
-    pub fn underwater_spectrum(&self) -> ([f32; 4], u32, f32, f32, f32) {
+    /// aperiodic world coordinates as the visible water surface. `wave_scale` is the
+    /// Water-tab lookup dilation; the compositor needs it for the same reason the
+    /// surface shader does, or its idea of the waterline drifts from the drawn waves.
+    pub fn underwater_spectrum(&self) -> ([f32; 4], u32, f32, f32, f32, f32) {
         self.last_params
             .map(|p| {
                 (
@@ -947,9 +960,10 @@ impl Water {
                     p.warp_amp,
                     p.sea_level,
                     p.debug_params[0],
+                    p.wave_scale,
                 )
             })
-            .unwrap_or(([1.0; 4], 0, 0.0, 0.0, 0.0))
+            .unwrap_or(([1.0; 4], 0, 0.0, 0.0, 0.0, 1.0))
     }
 
     pub fn fft_enabled(&self) -> bool {

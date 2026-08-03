@@ -28,7 +28,7 @@ struct Params {
     shallow_color: [f32; 4],
     deep_color: [f32; 4],
     cascade_lengths: [f32; 4],
-    // x = de-tile warp amplitude, y = sea level, z/w reserved.
+    // x = de-tile warp amplitude, y = sea level, z = wave scale, w reserved.
     water_controls: [f32; 4],
 }
 
@@ -78,6 +78,175 @@ fn underwater_volume_is_shadowed_and_caustics_follow_fft() {
     assert!(caustics.contains("fft_dynamics"));
     assert!(caustics.contains("fft_auxiliary"));
     assert!(caustics.contains("fft_aperiodic_uv"));
+}
+
+/// Mirrors of the WGSL constants of the same name. `underwater_waterline_follows_the_wavy_surface`
+/// asserts the shader still declares these values, so the two cannot drift apart silently.
+#[cfg(test)]
+const WATERLINE_PROBE_M: f32 = 48.0;
+#[cfg(test)]
+const WATERLINE_STEPS: i32 = 12;
+
+#[test]
+fn underwater_waterline_follows_the_wavy_surface() {
+    let shader = include_str!("underwater.wgsl");
+    assert!(shader.contains(&format!(
+        "const WATERLINE_PROBE_M: f32 = {WATERLINE_PROBE_M:.1};"
+    )));
+    assert!(shader.contains(&format!("const WATERLINE_STEPS: i32 = {WATERLINE_STEPS};")));
+    // The compositor must locate the surface itself. If these disappear it has gone back
+    // to the flat plane at sea_level, which is the bug this pass exists to fix.
+    assert!(shader.contains("fn surface_height_at"));
+    assert!(shader.contains("fn ray_above_surface"));
+    assert!(shader.contains("fn wavy_water_path_length"));
+    assert!(shader.contains("fft_displacement"));
+    assert!(shader.contains("let path_m = wavy_water_path_length("));
+    // The stride must stay under the shortest cascade that carries displacement, or a
+    // crest can pass between two samples unseen.
+    assert!(WATERLINE_PROBE_M / WATERLINE_STEPS as f32 <= 20.0);
+    // Detail-only cascades carry no displacement; summing them would lift the compositor's
+    // surface above the drawn one.
+    assert!(shader.contains("if (raw_length < 20.0)"));
+}
+
+/// `water_path_length` from the shader: one flat plane, one answer for the whole screen.
+#[cfg(test)]
+fn flat_path(ray: [f32; 2], target_distance: f32, cam_above: f32) -> f32 {
+    if cam_above >= 0.0 {
+        if ray[1] >= -1e-4 {
+            return 0.0;
+        }
+        let entry = cam_above / (-ray[1]).max(1e-4);
+        return (target_distance - entry).max(0.0);
+    }
+    if ray[1] > 1e-4 {
+        let exit = -cam_above / ray[1];
+        return target_distance.min(exit.max(0.0));
+    }
+    target_distance
+}
+
+/// `wavy_water_path_length` from the shader, over an analytic surface instead of the FFT
+/// texture. Kept in step with the WGSL by the string assertions above; this is what pins
+/// the behaviour, because a string match cannot tell a working waterline from a broken
+/// one. `ray` is (horizontal, vertical) in the XY plane; `surface` is height vs x.
+#[cfg(test)]
+fn wavy_path(
+    eye: [f32; 2],
+    ray: [f32; 2],
+    target_distance: f32,
+    surface: impl Fn(f32) -> f32,
+) -> f32 {
+    let above_at = |t: f32| (eye[1] + ray[1] * t) - surface(eye[0] + ray[0] * t);
+    let probe = target_distance.min(WATERLINE_PROBE_M);
+    let step = probe / WATERLINE_STEPS as f32;
+    let mut prev_t = 0.0_f32;
+    let mut prev_f = above_at(0.0);
+    let start_submerged = prev_f < 0.0;
+    let mut cross_t = -1.0_f32;
+    for i in 1..=WATERLINE_STEPS {
+        let t = i as f32 * step;
+        let f = above_at(t);
+        if (f < 0.0) != start_submerged {
+            let denom = prev_f - f;
+            let safe = if denom.abs() < 1e-5 { 1e-5 } else { denom };
+            cross_t = prev_t + (t - prev_t) * (prev_f / safe).clamp(0.0, 1.0);
+            break;
+        }
+        prev_t = t;
+        prev_f = f;
+    }
+    if cross_t >= 0.0 {
+        if start_submerged {
+            return cross_t;
+        }
+        return (target_distance - cross_t).max(0.0);
+    }
+    let tail = flat_path(ray, (target_distance - probe).max(0.0), prev_f);
+    if start_submerged { probe + tail } else { tail }
+}
+
+#[test]
+fn a_crest_overhead_submerges_an_eye_the_flat_plane_calls_dry() {
+    // 1 m amplitude swell, 20 m wavelength, sea level 0.
+    let amplitude = 1.0_f32;
+    let k = std::f32::consts::TAU / 20.0;
+    let surface = |x: f32| amplitude * (x * k).sin();
+
+    // Oliver's first requirement. The eye is exactly on the flat datum with a crest a
+    // metre overhead, looking up. The flat plane compares 0.0 against 0.0, decides the eye
+    // is dry, and returns no water at all for an upward ray.
+    let crest_x = 5.0; // sin(pi/2) = 1
+    assert!((surface(crest_x) - amplitude).abs() < 1e-3);
+    let up = [0.0, 1.0];
+    assert_eq!(flat_path(up, 120.0, 0.0), 0.0);
+
+    let wet = wavy_path([crest_x, 0.0], up, 120.0, surface);
+    assert!(
+        wet > 0.5,
+        "an eye under a crest must have water in front of it, got {wet} m"
+    );
+
+    // A trough overhead must NOT turn the effect on — otherwise this trades one wrong
+    // answer for another.
+    let trough_x = 15.0; // sin(3pi/2) = -1
+    let dry = wavy_path([trough_x, 0.0], up, 120.0, surface);
+    assert_eq!(
+        dry, 0.0,
+        "an eye above a trough must stay dry looking up, got {dry} m"
+    );
+}
+
+#[test]
+fn a_view_straddling_the_surface_splits_instead_of_answering_once() {
+    let amplitude = 1.0_f32;
+    let k = std::f32::consts::TAU / 20.0;
+    let surface = |x: f32| amplitude * (x * k).sin();
+
+    // Oliver's second requirement. The eye sits 30 cm under the mean surface at a zero
+    // crossing, with a crest to one side and a trough to the other. Both rays leave it at
+    // the same shallow upward angle, so the flat plane puts the surface the same distance
+    // away in every direction: one answer for the whole screen, no waterline possible.
+    let eye = [10.0_f32, -0.3];
+    let toward_crest = [-1.0_f32, 0.02];
+    let toward_trough = [1.0_f32, 0.02];
+    let flat_crest = flat_path(toward_crest, 120.0, eye[1]);
+    let flat_trough = flat_path(toward_trough, 120.0, eye[1]);
+    assert_eq!(flat_crest, flat_trough);
+
+    // Marching the waves, the two directions disagree by most of an order of magnitude —
+    // and that disagreement is the waterline running across the frame.
+    let into_crest = wavy_path(eye, toward_crest, 120.0, surface);
+    let over_trough = wavy_path(eye, toward_trough, 120.0, surface);
+    assert!(
+        into_crest > 4.0 * over_trough,
+        "the ray running under the oncoming crest must stay in water far longer than the \
+         one surfacing through the trough, got {into_crest} m against {over_trough} m \
+         (the flat plane says {flat_crest} m for both)"
+    );
+}
+
+#[test]
+fn a_flat_sea_reproduces_the_plane_answer() {
+    // The march must not invent water where there is none to find: on a dead calm sea it
+    // has to agree with the plane it replaces, or every existing underwater view changes.
+    let calm = |_x: f32| 0.0_f32;
+    for (eye_y, ray) in [
+        (-5.0_f32, [0.0_f32, 1.0_f32]),
+        (-5.0, [0.9, 0.44]),
+        (-5.0, [1.0, 0.0]),
+        (-5.0, [0.0, -1.0]),
+        (2.0, [0.0, -1.0]),
+        (2.0, [0.7, -0.7]),
+        (2.0, [0.0, 1.0]),
+    ] {
+        let wavy = wavy_path([0.0, eye_y], ray, 120.0, calm);
+        let flat = flat_path(ray, 120.0, eye_y);
+        assert!(
+            (wavy - flat).abs() < 0.05,
+            "calm sea disagreement at eye {eye_y} ray {ray:?}: {wavy} vs {flat}"
+        );
+    }
 }
 
 #[test]
@@ -179,6 +348,18 @@ impl Underwater {
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Float { filterable: true },
                         view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                // Vertical FFT displacement: the compositor locates the waterline on the
+                // wavy surface rather than on a flat plane at sea_level.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,
@@ -486,6 +667,7 @@ impl Underwater {
         warp_amp: f32,
         sea_level: f32,
         debug_view: f32,
+        wave_scale: f32,
         shadow_mapping: &crate::terrain::TerrainShadowMap,
         camera_shadow: &crate::ffi::WgrCameraShadow,
     ) {
@@ -506,7 +688,7 @@ impl Underwater {
                 shallow_color,
                 deep_color,
                 cascade_lengths,
-                water_controls: [warp_amp, sea_level, 0.0, 0.0],
+                water_controls: [warp_amp, sea_level, wave_scale, 0.0],
             }),
         );
         if let Some(volume) = &self.volume {
@@ -634,6 +816,7 @@ impl Underwater {
         source: &wgpu::TextureView,
         depth: &wgpu::TextureView,
         destination: &wgpu::TextureView,
+        fft_displacement: &wgpu::TextureView,
     ) {
         let bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgr_underwater_bind"),
@@ -662,6 +845,10 @@ impl Underwater {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(&self.caustic_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(fft_displacement),
                 },
             ],
         });

@@ -73,6 +73,7 @@ struct UnderwaterView {
     warp_amp: f32,
     sea_level: f32,
     debug_view: f32,
+    wave_scale: f32,
 }
 
 // Like env_f32 but keeps a 0 value (env_f32 filters to >0 for scales). Used for the
@@ -733,6 +734,7 @@ impl Renderer {
                 warp_amp: 0.0,
                 sea_level: 0.0,
                 debug_view: 0.0,
+                wave_scale: 1.0,
             },
             bloom,
             exposure,
@@ -928,8 +930,9 @@ impl Renderer {
             // rides this bracket until a dedicated caustics pass exists.
             self.gpu_timers
                 .begin(encoder, TimerRegion::UnderwaterComposite);
+            let displacement = self.water.underwater_displacement_view();
             self.underwater
-                .render(&self.device, encoder, source, depth, target);
+                .render(&self.device, encoder, source, depth, target, &displacement);
             self.gpu_timers
                 .end(encoder, TimerRegion::UnderwaterComposite);
             target.clone()
@@ -1552,6 +1555,7 @@ impl Renderer {
                 warp_amp: underwater_spectrum.2,
                 sea_level: underwater_spectrum.3,
                 debug_view: underwater_spectrum.4,
+                wave_scale: underwater_spectrum.5,
             })
             .unwrap_or(UnderwaterView {
                 cam_above: -1.0,
@@ -1567,6 +1571,7 @@ impl Renderer {
                 warp_amp: underwater_spectrum.2,
                 sea_level: underwater_spectrum.3,
                 debug_view: underwater_spectrum.4,
+                wave_scale: underwater_spectrum.5,
             });
         if underwater_time.is_some() && !self.hdr_enabled {
             self.ensure_underwater_target(self.config.width, self.config.height);
@@ -2053,6 +2058,7 @@ impl Renderer {
                 view.warp_amp,
                 view.sea_level,
                 view.debug_view,
+                view.wave_scale,
                 &shadow_mapping,
                 &view.camera_shadow,
             );
@@ -2646,8 +2652,15 @@ impl Renderer {
                     .expect("underwater depth target");
                 self.gpu_timers
                     .begin(&mut encoder, TimerRegion::UnderwaterComposite);
-                self.underwater
-                    .render(&self.device, &mut encoder, &scene_view, depth, &color);
+                let displacement = self.water.underwater_displacement_view();
+                self.underwater.render(
+                    &self.device,
+                    &mut encoder,
+                    &scene_view,
+                    depth,
+                    &color,
+                    &displacement,
+                );
                 self.gpu_timers
                     .end(&mut encoder, TimerRegion::UnderwaterComposite);
                 resolved = true;
@@ -2675,8 +2688,15 @@ impl Renderer {
                 .expect("underwater depth target");
             self.gpu_timers
                 .begin(&mut encoder, TimerRegion::UnderwaterComposite);
-            self.underwater
-                .render(&self.device, &mut encoder, &scene_view, depth, &color);
+            let displacement = self.water.underwater_displacement_view();
+            self.underwater.render(
+                &self.device,
+                &mut encoder,
+                &scene_view,
+                depth,
+                &color,
+                &displacement,
+            );
             self.gpu_timers
                 .end(&mut encoder, TimerRegion::UnderwaterComposite);
         }

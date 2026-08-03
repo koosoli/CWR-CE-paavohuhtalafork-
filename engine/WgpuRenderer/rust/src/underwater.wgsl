@@ -28,6 +28,127 @@ fn safe_normalize(v: vec3<f32>) -> vec3<f32> {
     return v / max(length(v), 1e-5);
 }
 
+@group(0) @binding(0) var scene_tex: texture_2d<f32>;
+@group(0) @binding(1) var scene_samp: sampler;
+@group(0) @binding(2) var scene_depth: texture_depth_2d;
+@group(0) @binding(3) var<uniform> params: Params;
+@group(0) @binding(4) var underwater_froxel: texture_3d<f32>;
+@group(0) @binding(5) var caustic_tex: texture_2d<f32>;
+@group(0) @binding(6) var fft_displacement: texture_2d_array<f32>;
+
+// --- Wavy surface lookup -------------------------------------------------------------
+// Duplicated from water_fft_sampling, as underwater_caustics.wgsl already duplicates it:
+// this module is built with include_str!, not the naga_oil composer the water shaders use,
+// so it cannot #import. Keep the three functions below byte-identical in behaviour to
+// water/fft_sampling.wgsl or the compositor's waterline will sit somewhere the drawn
+// surface is not.
+fn fft_hash(cell: vec2<i32>) -> f32 {
+    let c = vec2<u32>(cell) & vec2<u32>(0xffffu);
+    var n = c.x * 1597334677u + c.y * 3812015801u;
+    n = (n ^ (n >> 15u)) * 2246822519u;
+    n = n ^ (n >> 13u);
+    return f32(n & 0x00ffffffu) / 16777216.0;
+}
+
+fn fft_value_noise(p: vec2<f32>) -> f32 {
+    let cell = vec2<i32>(floor(p));
+    let f = fract(p);
+    let s = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let a = fft_hash(cell);
+    let b = fft_hash(cell + vec2<i32>(1, 0));
+    let c = fft_hash(cell + vec2<i32>(0, 1));
+    let d = fft_hash(cell + vec2<i32>(1, 1));
+    return mix(mix(a, b, s.x), mix(c, d, s.x), s.y);
+}
+
+fn fft_aperiodic_uv(world_xz: vec2<f32>, tile_length: f32, layer: i32, amplitude: f32) -> vec2<f32> {
+    if (amplitude <= 0.0) {
+        return fract(world_xz / max(tile_length, 1.0));
+    }
+    let l = f32(layer);
+    let broad_p = world_xz * 0.00173 + vec2<f32>(l * 13.7, l * -19.1);
+    let fine_p = world_xz * 0.00891 + vec2<f32>(l * -7.3, l * 11.9);
+    let broad = vec2<f32>(
+        fft_value_noise(broad_p),
+        fft_value_noise(broad_p + vec2<f32>(41.3, 17.9))
+    ) * 2.0 - vec2<f32>(1.0);
+    let fine = vec2<f32>(
+        fft_value_noise(fine_p),
+        fft_value_noise(fine_p + vec2<f32>(23.1, 37.7))
+    ) * 2.0 - vec2<f32>(1.0);
+    let warped = world_xz + (broad * 0.72 + fine * 0.28) * max(amplitude, 0.0) *
+        (1.0 + l * 0.17);
+    let angle = 0.173 * l + 0.071;
+    let ca = cos(angle);
+    let sa = sin(angle);
+    let rotated = vec2<f32>(
+        ca * warped.x - sa * warped.y,
+        sa * warped.x + ca * warped.y
+    );
+    return fract(rotated / max(tile_length, 1.0) + vec2<f32>(0.173 * l, 0.347 * l));
+}
+
+// Vertical wave displacement above `sea_level` at a world XZ, summed over the cascades
+// that actually move geometry.
+//
+// This is the near-field case of water.wgsl's fft_geometry_disp, and deliberately not a
+// copy of it. Two terms of that function are dropped:
+//
+//   * the projected-footprint LOD weights, which are ~1 for every geometry cascade within
+//     a few metres of the eye — and the waterline is by definition at the eye;
+//   * the shoaling redistribution, which is energy preserving, so it moves height between
+//     cascades rather than changing the sum.
+//
+// The `raw_length < 20` test is kept verbatim: those cascades are normal/foam detail and
+// contribute no displacement, so including them would raise the surface above where it
+// is drawn.
+//
+// One approximation remains: the surface is sampled at the world XZ rather than at the
+// material coordinate that horizontal choppiness displaced to it. That shifts the wave
+// pattern laterally by up to the choppy amplitude, which moves the waterline along the
+// surface but not up or down — the eye is still judged against a crest when a crest is
+// overhead.
+fn surface_height_at(world_xz: vec2<f32>) -> f32 {
+    let active_layers = clamp(i32(params.camera_pos_layers.w), 0, 4);
+    if (active_layers <= 0) {
+        return 0.0;
+    }
+    let warp = params.water_controls.x;
+    let scale = max(params.water_controls.z, 0.01);
+    let scaled_xz = world_xz / scale;
+    var height = 0.0;
+    for (var layer = 0; layer < 4; layer = layer + 1) {
+        if (layer >= active_layers) {
+            break;
+        }
+        let raw_length = params.cascade_lengths[layer];
+        if (raw_length < 20.0) {
+            continue;
+        }
+        let length_m = max(raw_length, 1.0);
+        let uv = fft_aperiodic_uv(scaled_xz, length_m, layer, warp);
+        // fft_sample scales the stored displacement by the same factor it dilates the
+        // lookup by, so wave steepness stays constant. Match that here.
+        height = height + textureSampleLevel(fft_displacement, scene_samp, uv, layer, 0.0).y * scale;
+    }
+    return height;
+}
+
+// Signed height of the ray above the wavy surface, `t` metres along it. Negative is
+// underwater.
+fn ray_above_surface(ray_dir: vec3<f32>, t: f32) -> f32 {
+    let p_xz = params.camera_pos_layers.xz + ray_dir.xz * t;
+    let p_y = params.camera_pos_layers.y + ray_dir.y * t;
+    return p_y - (params.water_controls.y + surface_height_at(p_xz));
+}
+
+// How far the near field is searched for a surface crossing, and in how many steps.
+// 48 m at 12 steps is a 4 m stride — comfortably under the shortest cascade that carries
+// displacement (20 m), so a crest cannot hide between two samples. Beyond the probe the
+// flat model takes over, which is what the whole compositor used to do at every distance.
+const WATERLINE_PROBE_M: f32 = 48.0;
+const WATERLINE_STEPS: i32 = 12;
+
 // Length of the target ray that is actually in water. This supports both sides of the
 // surface: an above-water eye starts extinction only after a downward ray enters water;
 // a submerged eye looking upward stops extinction where the ray exits the surface.
@@ -45,12 +166,67 @@ fn water_path_length(ray_dir: vec3<f32>, target_distance: f32, cam_above: f32) -
     }
     return target_distance;
 }
-@group(0) @binding(0) var scene_tex: texture_2d<f32>;
-@group(0) @binding(1) var scene_samp: sampler;
-@group(0) @binding(2) var scene_depth: texture_depth_2d;
-@group(0) @binding(3) var<uniform> params: Params;
-@group(0) @binding(4) var underwater_froxel: texture_3d<f32>;
-@group(0) @binding(5) var caustic_tex: texture_2d<f32>;
+
+// Wave-aware replacement for water_path_length.
+//
+// The flat version asks a single question — is the eye above or below one plane — and
+// answers it identically for every pixel on the screen. Two things follow from that, and
+// both are the bugs this function exists to remove:
+//
+//   * a crest passing over the eye never counts, because the plane sits at the mean level;
+//   * a view straddling the surface is entirely wet or entirely dry, because one whole-
+//     screen answer cannot draw a waterline.
+//
+// Marching the ray fixes both at once. The sign of `ray_above_surface` is evaluated along
+// the ray, and the FIRST place it changes is where this pixel's ray enters or leaves the
+// water. Rays that pass under a crest cross there; neighbouring rays that pass over a
+// trough cross somewhere else or not at all — so the waterline appears as the boundary
+// between them, at whatever shape the waves actually have.
+//
+// Cost is one surface_height_at per step, so it stays behind the compositor's existing
+// underwater-only gate; it is not paid on a dry frame.
+fn wavy_water_path_length(ray_dir: vec3<f32>, target_distance: f32, flat_above: f32) -> f32 {
+    // No FFT cascades means no displacement to sample — the binding is the zero fallback
+    // array. Use the CPU's whole-screen height, which on the Gerstner preset already
+    // carries that preset's analytic wave height; marching a flat field would only find
+    // the same answer more slowly, and would flatten that preset's waves.
+    if (i32(params.camera_pos_layers.w) <= 0) {
+        return water_path_length(ray_dir, target_distance, flat_above);
+    }
+    let probe = min(target_distance, WATERLINE_PROBE_M);
+    let step = probe / f32(WATERLINE_STEPS);
+    var prev_t = 0.0;
+    var prev_f = ray_above_surface(ray_dir, 0.0);
+    let start_submerged = prev_f < 0.0;
+    var cross_t = -1.0;
+    for (var i = 1; i <= WATERLINE_STEPS; i = i + 1) {
+        let t = f32(i) * step;
+        let f = ray_above_surface(ray_dir, t);
+        if ((f < 0.0) != start_submerged) {
+            // Linear root between the bracketing samples. The denominator has the sign of
+            // prev_f in either crossing direction, so the fraction is positive both ways.
+            let denom = prev_f - f;
+            let safe_denom = select(denom, 1e-5, abs(denom) < 1e-5);
+            cross_t = mix(prev_t, t, clamp(prev_f / safe_denom, 0.0, 1.0));
+            break;
+        }
+        prev_t = t;
+        prev_f = f;
+    }
+    if (cross_t >= 0.0) {
+        // Submerged rays are in water up to where they surface; dry rays are in water from
+        // where they dive to wherever the scene stopped them.
+        if (start_submerged) {
+            return cross_t;
+        }
+        return max(target_distance - cross_t, 0.0);
+    }
+    // Nothing crossed inside the probe. Hand the remaining distance to the flat model,
+    // starting from the far end of the probe where prev_f is the ray's height above the
+    // surface — beyond a few tens of metres the wave detail no longer resolves anyway.
+    let tail = water_path_length(ray_dir, max(target_distance - probe, 0.0), prev_f);
+    return select(tail, probe + tail, start_submerged);
+}
 
 struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
 
@@ -106,8 +282,10 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
         ray_dir = safe_normalize(world_rel);
     }
 
+    // time_height_range_ext.y is the CPU's single whole-screen height above the flat
+    // datum; it survives only as the no-FFT fallback inside wavy_water_path_length.
     let cam_above = params.time_height_range_ext.y;
-    let path_m = water_path_length(ray_dir, target_distance, cam_above);
+    let path_m = wavy_water_path_length(ray_dir, target_distance, cam_above);
     if (path_m <= 1e-4) {
         // The compositor runs in a small band above the surface for split waterline views.
         // Rays that never enter water must remain completely untouched, including refraction.
