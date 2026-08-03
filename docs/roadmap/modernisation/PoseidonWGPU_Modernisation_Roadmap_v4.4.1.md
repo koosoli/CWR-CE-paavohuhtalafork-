@@ -1109,12 +1109,16 @@ carries that judgement and records which entries were re-audited rather than car
 [`RND-030-renderer-consolidation-20260803.md`](../decisions/RND-030-renderer-consolidation-20260803.md),
 written off the completed audit rather than off the plans.
 
-Its headline: **one missing piece gates three completed ones.** The C++ retained-scene feed
-(GPU-culling stage 3b-3) is all that stands between the branch and the payoff of the GPU cull
-compute, the compute skin bake, and the foliage canopy normals — three systems that are built,
-validated, and inert in a default run. That is one stall counted three times, and it is a larger
-win than any unbuilt candidate. The recommendation is to build the feed before starting a new
-system.
+Its headline: **there is no consolidation win, because there is nothing to consolidate.** No
+system is implemented twice, and only one built system sits unused — the compute skin bake, off
+deliberately because standalone it is pure overhead, and waiting on GPU-culling stage 6.
+
+The branch is in materially better shape than its own plan documents say, and the drift runs
+*pessimistic*: status blocks under-report what shipped. Anyone planning from the plans alone
+will re-implement things that already run. The record's §2 sets out the trap — "on by default"
+is decided in three layers (the Rust default, the C++ default, and
+`ConfigureWgpuUltraEnvironment` setting the environment variables themselves before the engine
+exists), and the layer furthest from the renderer is the one that decides the shipped game.
 
 No duplicated systems were found, which was the specific risk this box guarded against. The
 plans overlap in ambition but not in code — the skin-bake plan explicitly refuses to build a

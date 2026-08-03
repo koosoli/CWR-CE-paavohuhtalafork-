@@ -2,6 +2,18 @@
 
 **Repo:** `paavohuhtala/CWR-CE`, branch `new-renderer-infrastructure`
 **Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust) + C++ bridge (`EngineWgpu`)
+> **Stage audit (2026-08-03).** The status block below still reports Stage 3 as
+> "Rust DONE (`WGR_GPU_DRIVEN`, inert); ⛔ C++ feed + count-trim remain". **Both have landed.**
+> `wgr_instance_add` is called from a `_gpuDriven`-gated hook in `EngineWgpu`, and count-trim
+> exists as `multi_draw_count_enabled`. Stage 3 is live in a shipped client, because
+> `ConfigureWgpuUltraEnvironment` sets `WGR_GPU_DRIVEN=1` before the engine is created.
+>
+> Stages 5 (multi-view) and 6 (skinned + transparent) remain unstarted. Stage 6 is where
+> `compute-skin-bake` is meant to be re-enabled.
+>
+> This stale line caused a wrong conclusion in the RND-030 consolidation record before it was
+> caught — see [`RND-030-renderer-consolidation-20260803.md`](../../../docs/roadmap/decisions/RND-030-renderer-consolidation-20260803.md) §4.
+
 **Status:** IN PROGRESS (2026-07-09). Stages 1–3 are LIVE and user-verified in-game under
 `WGR_GPU_DRIVEN=1`: static opaque rigid clutter + ForestPlain forests (mode-1 conform) + individual
 ClipLand vegetation/fences (mode-2 conform) are culled, LOD-selected and drawn entirely on the GPU,

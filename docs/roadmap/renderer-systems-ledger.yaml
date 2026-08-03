@@ -34,12 +34,19 @@ verification_note: >-
   on 2026-08-03; an entry reverting to `audited: null` means its claim is carried from
   a report rather than verified, and should be read as "exists, extent unconfirmed".
 
-  That audit changed five of the twelve. Four were recorded as more complete than they
-  are — HDR and foliage were SHIPPED and are PARTIAL, GPU culling's stage 3 is inert,
-  and the shadow plan's Tier 1 is half done. One was recorded as LESS complete than it
-  is: the depth prepass' stage 2 is finished, which both its own plan and the
-  reconciliation report deny. Both directions of error came from reading status lines
-  instead of the branch.
+  That audit changed three of the twelve, and the errors run in BOTH directions — mostly
+  pessimistic, which is the opposite of what was expected.
+
+  Recorded as MORE complete than they are: HDR (SHIPPED -> PARTIAL; stage 4, NVG and
+  night eye, does not exist) and cascaded shadows (Tier 1 is two of four).
+
+  Recorded as LESS complete than they are: the depth prepass, whose stage 2 is finished
+  though both its plan and the reconciliation report deny it, and GPU culling, whose
+  stage 3 is live rather than inert.
+
+  That last one was got wrong INSIDE this audit before being caught — see RSYS-GPU-CULL
+  and the consolidation record. Verifying one side of an FFI boundary and taking a plan's
+  word for the other is not verification.
 
 systems:
   - id: RSYS-SHADOW-CASCADES
@@ -240,11 +247,18 @@ systems:
       the adapter offers INDIRECT_FIRST_INSTANCE (WGR_INDIRECT=0 forces the direct
       path). Stage 4 Hi-Z occlusion — done.
 
-      Stage 3 GPU cull + LOD compute is Rust-side only and INERT: gpu_driven_enabled
-      defaults true, but nothing happens until C++ registers a retained scene, and that
-      feed (stage 3b-3) is not built. The renderer logs "GPU-driven rendering enabled
-      (WGR_GPU_DRIVEN); inert until a scene registers" — so the headline win is not
-      observable yet, whatever the flag says.
+      Stage 3 GPU cull + LOD compute is LIVE in a shipped client. CORRECTED 2026-08-03:
+      an earlier pass in this same audit recorded it as inert, on the strength of the
+      plan's status block ("Rust DONE, inert; C++ feed + count-trim remain") and without
+      checking the C++ half. Both have landed — wgr_instance_add is called from a
+      _gpuDriven-gated hook in EngineWgpu, and count-trim exists as
+      multi_draw_count_enabled.
+
+      What makes this hard to read off the code: ConfigureWgpuUltraEnvironment in
+      GameApplication sets WGR_GPU_DRIVEN=1 BEFORE the engine is created (as a default,
+      so an explicit override still wins), and GameDemoApplication inherits it. Both
+      halves then see "1". The C++ member initialiser is false, so the path stays off in
+      any process that does not call that function — tools and the dedicated server.
 
       Stages 5 (multi-view) and 6 (skinned + transparent) are not started. Stage 6 is
       where RSYS-SKIN-BAKE is meant to be re-enabled; the bake is deliberately off
@@ -290,23 +304,23 @@ systems:
   - id: RSYS-FOLIAGE-TRANS
     title: Foliage translucency
     plan: engine/WgpuRenderer/docs/foliage-translucency-plan.md
-    status: PARTIAL
+    status: SHIPPED
     owner: null
     audited: 2026-08-03
     completeness: >-
-      Was recorded as SHIPPED. All three stages are implemented, but they are not all
-      LIVE, which is the distinction that matters here.
-
-      Stages 1 (leaf SSS, cutout-gated) and 2 (MapType gate, so fences and the player
-      no longer pick up the leaf look) run on the default path.
+      All three stages are implemented and live on the default path. Stages 1 (leaf SSS,
+      cutout-gated) and 2 (MapType gate, so fences and the player no longer pick up the
+      leaf look) run in the per-draw shaders.
 
       Stage 3 (spherical canopy normals for bushes and trees) is implemented inside
-      vs_gpu — the GPU-DRIVEN vertex shader. That path draws only what C++ registers
-      as a retained scene, and the C++ side registers nothing unless WGR_GPU_DRIVEN is
-      set (see RSYS-GPU-CULL: the Rust half is default-on but inert). So the canopy
-      normals are opt-in in practice, and are not what the game shows by default. The
-      plan's "user-verified for bushes" is consistent with that — it was verified with
-      the flag on.
+      vs_gpu, the GPU-DRIVEN vertex shader, and is LIVE — the game enables GPU-driven
+      rendering by default via ConfigureWgpuUltraEnvironment. CORRECTED 2026-08-03: an
+      earlier pass in this same audit recorded it as opt-in, having wrongly concluded
+      the GPU-driven path was inert. See RSYS-GPU-CULL.
+
+      It is still worth knowing this stage rides the GPU-driven path: any process that
+      does not set WGR_GPU_DRIVEN — tools, the dedicated server, or a harness run of a
+      binary that skips ConfigureWgpuUltraEnvironment — shades foliage without it.
     production_call_sites:
       - file: engine/Poseidon/Graphics/Core/Engine.hpp
         symbol: transScale

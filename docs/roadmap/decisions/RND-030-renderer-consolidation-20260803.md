@@ -2,74 +2,92 @@
 
 **Date:** 2026-08-03
 **Input:** [`renderer-systems-ledger.yaml`](../renderer-systems-ledger.yaml), all twelve entries
-audited item by item against `new-renderer-infrastructure` on this date.
+audited against `new-renderer-infrastructure` on this date.
 **Box closed:** *"Reuse strong existing work; do not implement a second system merely because
 the master roadmap uses different terminology."*
 
-## Headline
+> **This record was rewritten the same day it was written.** Its first version claimed that one
+> missing piece — the C++ retained-scene feed — gated three completed systems, and recommended
+> building it before anything else. That was wrong. The feed exists and is live. The error and
+> how it happened are kept in §4, because the mechanism is the most useful thing here.
 
-**One missing piece gates three completed ones.**
+## 1. Headline
 
-The C++ retained-scene feed — Stage 3b-3 of the GPU-culling plan — is the only thing standing
-between the branch and the payoff of three systems that are already built, validated and
-sitting inert. Nothing else found in the audit comes close to that leverage.
+**There is no consolidation win, because there is nothing to consolidate.** No system is
+implemented twice, and only one built system is sitting unused — deliberately, and for a
+documented reason.
 
-## The three that are waiting on it
+The branch is in materially better shape than its own plan documents say. The systematic error
+runs *pessimistic*: plan status blocks under-report what shipped. Anyone planning work from the
+plans alone will re-implement things that already run.
 
-| Built | State | Waiting for |
-| --- | --- | --- |
-| GPU cull + LOD compute (`RSYS-GPU-CULL` stage 3) | Rust done, default-on, **inert** | C++ registering a retained scene |
-| Compute skin bake (`RSYS-SKIN-BAKE`) | Phase 1 done + validated, **off by default** | GPU-driven stage 6, which needs stage 3 first |
-| Foliage canopy normals (`RSYS-FOLIAGE-TRANS` stage 3) | Implemented in `vs_gpu`, **not active by default** | the same feed — `vs_gpu` only draws what the retained scene registers |
+## 2. What is actually live
 
-Each was verified working by whoever built it. None of the three is what the game shows in a
-default run. That is not three separate stalls; it is one stall counted three times.
+The thing that makes this hard to read off the code is that **"on by default" is decided in
+three separate layers**, and you have to consult all three:
 
-The skin bake case is the clearest. It is switched off *on purpose* — standalone it is pure
-overhead, because vertex-shader skinning is near-free for OFP's low-poly characters and shadow
-and prepass times were measured identical with it on and off. Its entire value is that baked
-rigid geometry lets skinned soldiers be culled and indirect-drawn like static props, collapsing
-the per-soldier count-1 draws across cascades, prepass and forward. That value is unreachable
-until the feed lands.
+1. the **Rust** default in `lib.rs` (`std::env::var(...).unwrap_or(...)`),
+2. the **C++** default in `EngineWgpu.cpp` (a member initialiser, only overridden when the
+   variable is set),
+3. the **application** default — `ConfigureWgpuUltraEnvironment()` in
+   `apps/cwr/Game/GameApplication.cpp`, which *sets the environment variables themselves*
+   before the engine is created.
 
-The foliage case is the least visible and the most surprising: the canopy-normal work fixes the
-back-facing-card problem, was user-verified for bushes, and does not run unless someone sets
-`WGR_GPU_DRIVEN`.
+Layer 3 is the one that catches people. It runs before `InitializeGraphicsEngine()`, and sets
+`WGR_HDR`, `WGR_MSAA`, `WGR_PREPASS`, `WGR_INDIRECT`, `WGR_GPU_DRIVEN`, `WGR_GPU_WATER`,
+`WGR_WATER_FFT` and `WGR_SHADOW_MAPS` to `1`. It sets them as *defaults* — an explicit
+environment override still wins — so it is not the clobbering mechanism it has been described
+as elsewhere. `GameDemoApplication` inherits `RunAfterArgumentParsing`, so both clients agree.
 
-## Recommendation
+Consequently, in a shipped client:
 
-**Build the C++ retained-scene feed before starting any new renderer system.**
+- **GPU-driven rendering is LIVE**, not inert. `WGR_GPU_DRIVEN=1` reaches both halves; the C++
+  retained-scene feed exists (`wgr_instance_add` from a `_gpuDriven`-gated hook), and the
+  count-trim is implemented (`multi_draw_count_enabled`). The GPU-culling plan's status block
+  still says "⛔ C++ feed + count-trim remain". Both have landed.
+- **Foliage canopy normals are LIVE**, because they live in `vs_gpu` and the GPU-driven path
+  draws.
+- **The depth prepass is LIVE** and its Stage 2 is complete, which its own plan denies.
 
-This is a reuse decision, not a new feature: it is the smallest change that converts three
-finished, validated systems from inert to live. Starting `screen-space-ao` or `forward-plus`
-first would add a fourth system to a branch that is not yet cashing the three it has.
+## 3. The one genuine built-but-unused system
 
-Two supporting notes for whoever picks it up:
+`RSYS-SKIN-BAKE`. `WGR_SKIN_BAKE` is deliberately **not** in the ultra list, so it stays off.
 
-- The prepass is further along than its plan admits — Stage 2 is complete, so the depth and
-  normal G-buffer is populated (including foliage) and exposed. Anything consuming it starts
-  from a better position than the documents suggest.
-- `WGR_GPU_DRIVEN`'s two halves disagreed on parsing until 2026-08-03: Rust enabled on any
-  value but `"0"`, C++ required exactly `"1"`, so `=true` produced a half-enabled system that
-  logged success. Fixed, but worth knowing when reading older session notes that claim the
-  path was exercised.
+That is correct as it stands, and should not be "fixed" by enabling it. Standalone the bake is
+pure overhead — vertex-shader skinning is near-free for OFP's low-poly characters, and shadow
+and prepass times were measured identical with it on and off. Its value is that baked rigid
+geometry lets skinned soldiers be culled and indirect-drawn like static props, collapsing the
+per-soldier count-1 draws across cascades, prepass and forward. That arrives with GPU-culling
+**Stage 6** (skinned + transparent integration), which is not started.
 
-## Where consolidation does NOT apply
+So the reuse recommendation is narrow: **when Stage 6 is picked up, re-enable the bake as part
+of it rather than building anything new.** The skin-bake plan already refuses to build a
+standalone draw coalescer on the grounds that the GPU-culling indirect path is one — that
+refusal is the pattern worth copying, and it is the clearest example of the box's intent being
+honoured before the box existed.
 
-The audit found no duplicated systems — nothing is implemented twice under different names,
-which was the specific risk `RND-030` was guarding against. The plans overlap in *ambition*
-(the skin-bake plan explicitly refuses to build a Phase 2 draw coalescer because the
-GPU-culling plan's indirect path already is one) but not in code. That refusal is the pattern
-to copy.
+## 4. How the first version of this record got it wrong
+
+Worth keeping, because it is the same failure the audit was created to find.
+
+The GPU-culling plan's status block says Stage 3 is "Rust DONE (`WGR_GPU_DRIVEN`, inert); ⛔ C++
+feed + count-trim remain". I verified the *Rust* side against the branch, found
+`gpu_driven_enabled` defaulting true, read the log string "inert until a scene registers" — and
+then took the plan's word for the C++ half instead of checking it. One `grep` for
+`wgr_instance_add` would have settled it.
+
+Two lessons, both already in the roadmap in other words:
+
+- Verifying one side of a boundary and trusting a document for the other is not verification.
+- A default is not a behaviour. `WGR_GPU_DRIVEN` has three defaults in three layers, and the
+  one that decides the shipped game is the one furthest from the renderer.
+
+## 5. Where consolidation does not apply
+
+No duplicated systems were found, which was the specific risk this box guarded against. The
+plans overlap in ambition but not in code.
 
 The four candidates verified as genuinely unbuilt — `forward-plus`, `screen-space-ao`,
-`gpu-terrain-water-cull`, `terrain-fractal-detail` — remain correct starting points *after* the
-feed, not instead of it.
-
-## Caveat on this analysis
-
-The leverage claim rests on the audit's reading of `vs_gpu`'s call path and the C++ `_gpuDriven`
-gate, not on a measurement. Nobody has run the branch with the feed present, because it does not
-exist. If the feed lands and the three systems do not deliver, this recommendation was wrong
-about the payoff, not about the dependency — the dependency is structural and is visible in the
-code.
+`gpu-terrain-water-cull`, `terrain-fractal-detail` — remain the correct starting points for new
+renderer work. With the prepass' Stage 2 confirmed complete, `screen-space-ao` starts from a
+populated and exposed depth+normal G-buffer, which is a better position than its plan assumes.
