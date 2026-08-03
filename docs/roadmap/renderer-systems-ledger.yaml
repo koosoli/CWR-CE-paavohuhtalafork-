@@ -29,11 +29,17 @@ verification_note: >-
   weaker claim than the plan having landed — exactly the distinction RND-030 got
   wrong for the shadow plan.
 
-  `completeness` is a judgement, not a mechanical check. Entries marked
-  `audited: 2026-08-03` were re-checked item by item against the branch in this pass.
-  Entries marked `audited: null` carry their stage-level claim from the RND-030
-  report and have NOT been re-verified beyond the anchor below. Treat those as
-  "exists, extent unconfirmed".
+  `completeness` is a judgement, not a mechanical check, so each entry carries the
+  date it was last re-checked item by item against the branch. All twelve were audited
+  on 2026-08-03; an entry reverting to `audited: null` means its claim is carried from
+  a report rather than verified, and should be read as "exists, extent unconfirmed".
+
+  That audit changed five of the twelve. Four were recorded as more complete than they
+  are — HDR and foliage were SHIPPED and are PARTIAL, GPU culling's stage 3 is inert,
+  and the shadow plan's Tier 1 is half done. One was recorded as LESS complete than it
+  is: the depth prepass' stage 2 is finished, which both its own plan and the
+  reconciliation report deny. Both directions of error came from reading status lines
+  instead of the branch.
 
 systems:
   - id: RSYS-SHADOW-CASCADES
@@ -59,11 +65,14 @@ systems:
     plan: engine/WgpuRenderer/docs/water-cdlod-geometry-plan.md
     status: SHIPPED
     owner: null
-    audited: null
+    audited: 2026-08-03
     completeness: >-
-      Node selection and range computation are C++ side in WaterWgpu; the instanced
-      grid mesh and morph are in water/mod.rs and water.wgsl. Node and triangle counts
-      are observable at runtime via triWaterNodeCount.
+      Node selection and range computation are C++ side (BuildQuadtree,
+      ComputeCdlodRanges); the instanced grid mesh and vertex morph are in water/mod.rs
+      and water.wgsl, with GRID_N mirrored between them. Live geometry quality switches
+      rebuild only the range array, not the quadtree or any GPU resource. Node and
+      triangle counts are observable from tests via triWaterNodeCount, and the
+      water_alive fixture bounds them. Nothing outstanding against the plan.
     production_call_sites:
       - file: engine/WgpuRenderer/WaterWgpu.cpp
         symbol: BuildQuadtree
@@ -75,11 +84,16 @@ systems:
     plan: engine/WgpuRenderer/docs/water-rendering-plan.md
     status: PARTIAL
     owner: null
-    audited: null
+    audited: 2026-08-03
     completeness: >-
-      Plan is marked REVISED with stage 1 landed and was the most recently maintained
-      of the renderer plans. The underwater compositor is off by default — see
-      WaterSettings::underwaterEffect and WTR-190.
+      Plan is REVISED with stage 1 landed, and was the most recently maintained of the
+      renderer plans. The surface itself — FFT cascades, shoaling, foam, interaction,
+      planar reflection and SSR — is live and is the default look.
+
+      The underwater compositor is OFF by default (WaterSettings::underwaterEffect,
+      2026-08-03): the look was not good enough to ship on. The pass and its per-pixel
+      wavy waterline exist and are opt-in from the Water tab, along with six tuning
+      controls. See WTR-190, which is parked rather than closed.
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/water/mod.rs
         symbol: pub fn draw
@@ -91,10 +105,11 @@ systems:
     plan: engine/WgpuRenderer/docs/render-params-consolidation-plan.md
     status: SHIPPED
     owner: null
-    audited: null
+    audited: 2026-08-03
     completeness: >-
-      Scope was FFI ergonomics only, with no shader or visual change. The layout is
-      held by a compile-time size assert on both sides of the boundary.
+      Scope was FFI ergonomics only, with no shader, UBO or visual change, and it is
+      complete against that scope. The 368-byte layout assert is present in ffi.rs and
+      still holds. Nothing outstanding.
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/ffi.rs
         symbol: WgrRenderParams
@@ -104,8 +119,12 @@ systems:
     plan: engine/WgpuRenderer/docs/sky-visibility-ambient-plan.md
     status: SHIPPED
     owner: null
-    audited: null
-    completeness: Heightfield sky-view factor feeding terrain ambient.
+    audited: 2026-08-03
+    completeness: >-
+      Heightfield sky-view factor feeding terrain ambient, plumbed end to end
+      (WgrSkyVisibility, terrain_set_sky_visibility) with strength, floor, contrast and
+      a debug lane exposed for tuning. The underwater froxel pass consumes the same
+      terrain-shadow uniform. Nothing outstanding against the plan.
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/ffi.rs
         symbol: WgrSkyVisibility
@@ -271,10 +290,23 @@ systems:
   - id: RSYS-FOLIAGE-TRANS
     title: Foliage translucency
     plan: engine/WgpuRenderer/docs/foliage-translucency-plan.md
-    status: SHIPPED
+    status: PARTIAL
     owner: null
-    audited: null
-    completeness: Stages 1-3 plus the section 9 distant-forest work.
+    audited: 2026-08-03
+    completeness: >-
+      Was recorded as SHIPPED. All three stages are implemented, but they are not all
+      LIVE, which is the distinction that matters here.
+
+      Stages 1 (leaf SSS, cutout-gated) and 2 (MapType gate, so fences and the player
+      no longer pick up the leaf look) run on the default path.
+
+      Stage 3 (spherical canopy normals for bushes and trees) is implemented inside
+      vs_gpu — the GPU-DRIVEN vertex shader. That path draws only what C++ registers
+      as a retained scene, and the C++ side registers nothing unless WGR_GPU_DRIVEN is
+      set (see RSYS-GPU-CULL: the Rust half is default-on but inert). So the canopy
+      normals are opt-in in practice, and are not what the game shows by default. The
+      plan's "user-verified for bushes" is consistent with that — it was verified with
+      the flag on.
     production_call_sites:
       - file: engine/Poseidon/Graphics/Core/Engine.hpp
         symbol: transScale
@@ -286,10 +318,15 @@ systems:
     plan: engine/WgpuRenderer/docs/compute-skin-bake-plan.md
     status: SHIPPED_DISABLED
     owner: null
-    audited: null
+    audited: 2026-08-03
     completeness: >-
-      Phase 1 implemented and gated OFF by default behind WGR_SKIN_BAKE, with
-      vertex-shader skinning as the live path.
+      Accurate as recorded. skin_bake_enabled defaults false; WGR_SKIN_BAKE=1 enables.
+      Phase 1 is implemented and validated, and there is deliberately NO standalone
+      Phase 2 — the plan folds its draw coalescing into the GPU-driven indirect path
+      rather than building it twice, so this system's payoff is blocked on
+      RSYS-GPU-CULL stage 6. Off by default because standalone it is pure overhead:
+      vertex-shader skinning is ~free for OFP's low-poly characters, and shadow and
+      prepass times were measured identical with the bake on and off.
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/gfx3d/mod.rs
         symbol: WGR_SKIN_BAKE
