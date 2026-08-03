@@ -1070,7 +1070,7 @@ Depends on an `ADOPTED` or `ADAPTED` outcome from `RND-020`.
 The repository may already contain implementation roadmaps, audits, branches, prototypes, and partial production paths for depth prepass, GPU culling, multi-view rendering, bindless resources, lighting, shadows, HDR, skinning, and related renderer work. Before starting an overlapping system:
 
 - [x] Inventory relevant renderer plans and their baseline commits.
-- [ ] Map their ticket or phase names into the authoritative ledger.
+- [x] Map their ticket or phase names into the authoritative ledger.
 - [x] Verify claimed production call sites in the active integration branch.
 - [x] Separate implemented, integrated, validated, superseded, experimental, and documentation-only work.
 - [x] Record dependencies on water, materials, atmosphere, shadows, far-world rendering, and streaming.
@@ -1089,13 +1089,26 @@ Re-auditing the shadow row while closing that out found the report had overstate
 items. The correction is recorded in the report and in the plan. Read the rest of that matrix
 as "a symbol the plan mentions exists in the branch", not "the plan landed".
 
-Two boxes are deliberately still open, and neither is documentation work:
+**Ledger mapping is done** — [`renderer-systems-ledger.yaml`](../renderer-systems-ledger.yaml)
+registers the twelve renderer systems that ship, each with an id, an owner slot, a plan
+reference and verified production call sites.
 
-- **Ledger mapping.** The status ledger holds the six Preview-0 tickets and nothing else, so
-  the shipped renderer systems have no owner or evidence record. That is the report's
-  recommendation 3 and it gates authorising overlapping renderer work.
-- **Reuse / consolidation.** A judgement call per system, not a sweep, and it wants the ledger
-  mapping first.
+It is a separate file on purpose. `status-ledger.yaml` is the Preview-0 execution ledger and
+its validator requires `authorised_tickets == execution_queue == ledger ids`, so putting these
+entries there would assert they are Preview-0 scope, which they are not.
+
+`scripts/validate_renderer_ledger.py` re-checks every recorded call site against the branch —
+tracked file, symbol still present — and runs in the Preview-0 ledger CI job. That check is the
+point rather than a formality: this report cited `MAX_CASCADES = 4` as proof the shadow plan had
+shipped, when 4 is the value its Tier 1 exists to change, and a register without mechanical
+verification would drift the same way. The distinction it enforces is that a verified call site
+proves a system **exists**, which is weaker than a plan having landed; per-system `completeness`
+carries that judgement and records which entries were re-audited rather than carried over.
+
+One box stays open:
+
+- **Reuse / consolidation.** A judgement call per system, not a sweep, and it wanted the
+  mapping above first.
 
 The four genuinely unbuilt candidates, if renderer work is picked up next: `forward-plus`,
 `screen-space-ao`, `gpu-terrain-water-cull`, `terrain-fractal-detail`.

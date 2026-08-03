@@ -78,7 +78,7 @@ tickets:
     production_call_sites: []
     test_ids: [preview0-ledger-validation]
     benchmark_artifacts: []
-    evidence_hash: 2e2ad6a61d15e761ec8be67d2901f21c4b88a60ee71e4d324f72dc8824ae1c8e
+    evidence_hash: c6ad73aea2c4c10c34a2a908d2dc0595c3404f1f2caf227101d075c9f8665249
     decision_record: null
     known_failures:
       - No reviewed activation commit exists; the overlay remains PREPARED.

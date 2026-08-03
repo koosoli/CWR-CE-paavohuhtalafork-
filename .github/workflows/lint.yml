@@ -31,6 +31,13 @@ jobs:
       - name: Validate execution ledger and overlay
         run: python3 scripts/validate_preview0_ledger.py
 
+      # Re-checks every production call site the shipped-renderer register claims,
+      # against the branch. Without this the register is another hand-maintained
+      # table that goes stale silently, which is the RND-030 failure it exists to
+      # stop repeating.
+      - name: Validate shipped-renderer register
+        run: python3 scripts/validate_renderer_ledger.py
+
       # Cheap, and it guards a failure mode that is invisible when it happens:
       # two tests writing the same screenshot filename is a false pass under a
       # parallel run, not merely an overwritten file.
