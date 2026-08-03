@@ -118,6 +118,23 @@ tickets:
     decision_record: null
     known_failures:
       - >-
+        FOUND AFTER INTEGRATION (2026-08-03, fixed in 36a9d29). The documented
+        build command did not produce a current binary. `cmake --build <dir>
+        --target PoseidonGame` -- the deploy step in CLAUDE.md -- skipped the
+        wgpu cdylib staging target, because it was an ALL custom target that
+        nothing depended on, and `--target X` builds only X and its
+        dependencies. dist/ therefore kept the DLL from the last bare
+        `cmake --build`: one day stale for PoseidonGame, twelve days for
+        PoseidonGameDemo, with every build reporting success. This is a
+        reproducible-build defect and belongs against this ticket rather than
+        only in the commit log: a build that silently ships a stale renderer is
+        not reproducible, whatever the ledger said. It went unnoticed because a
+        stale cdylib does not crash -- the FFI exports still resolve and
+        appended WgrWaterParams lanes are ignored by the older DLL -- so it
+        presents as new settings having no effect. Deployments must be verified
+        by CONTENT; file timestamp and hashing the source against the
+        destination were both green throughout.
+      - >-
         Hosted Linux Trident run 30743729550 initially lacked libwgpu_renderer.so;
         after packaging was fixed it still timed out waiting for HARNESS_PORT in
         the explicit WGPU shadow-map scenario. The headless retry pins WGPU to
