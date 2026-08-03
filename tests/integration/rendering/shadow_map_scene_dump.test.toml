@@ -1,18 +1,23 @@
-tags = ["headful", "shadows"]
+tags = ["headful", "shadows", "ci-host-blocked"]
 binary = "PoseidonGame"
 render = "wgpu"
 mission = "tests/integration/missions/cargo_leader_getout.Demo"
 timeout = 90
 assert_timeout = 30
 
-# WGPU startup is shader-compile bound and has no pipeline cache: 38 pipelines
-# from 43 WGSL sources before the harness can be served. Measured on a discrete
-# GPU that costs ~3s more than GL33 (7.4s vs 4.5s total startup), and it is the
-# part that scales worst on the hosted runner's software rasteriser under Xvfb,
-# where this test has timed out at the 90s mark.
+# ci-host-blocked, and the reason is measured rather than assumed.
 #
-# Startup gets its own budget rather than raising `timeout`, which also governs
-# command and event waits -- a slow boot should not buy a long tail on a genuine
-# mid-test failure, especially with retries.
-connect_timeout = 300
-
+# This is the only WGPU-pinned scenario and it has never started on the hosted
+# runner: every run fails waiting for HARNESS_PORT. A 300s connect_timeout was
+# tried on the theory that WGPU startup is merely slow there -- 38 pipelines
+# from 43 WGSL sources with no pipeline cache, on a software rasteriser. That
+# theory is disproved: run 30761xxxxx spent ~469s more than the previous run and
+# still failed on all three attempts, so the process is not starting at all
+# rather than starting slowly. The extra budget only bought dead waiting.
+#
+# The test itself is good and passes locally in ~6s. What is broken is WGPU
+# under Xvfb, which is CORE-NEG-001's own subject -- see its known_failures.
+# Skipping it here keeps the hosted suite honest-green so a NEW regression is
+# visible, instead of permanently red where nobody reads it.
+#
+# Remove this tag the moment WGPU starts under Xvfb; nothing else needs to change.

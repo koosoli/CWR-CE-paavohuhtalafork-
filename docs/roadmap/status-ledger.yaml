@@ -153,6 +153,25 @@ tickets:
         raised bound still binds, use tri's -j parallelism (documented locally
         as -j6) rather than raising it again.
       - >-
+        DISPROVED (2026-08-03). The connect_timeout theory was wrong. Raising
+        rendering/shadow_map_scene_dump's HARNESS_PORT budget to 300s made the
+        hosted run ~469s slower (1719.4s vs 1250.2s) and it still failed all
+        three attempts. WGPU is therefore not starting slowly under Xvfb -- it is
+        not starting at all, and the extra budget bought only dead waiting.
+        The pipeline-count measurement behind that theory stands (38 pipelines
+        from 43 WGSL sources, no cache, ~3s more than GL33 on a discrete GPU);
+        it simply was not the cause. The per-test connect_timeout knob is kept
+        because it is correct in principle, but this scenario no longer sets it.
+        The scenario is tagged ci-host-blocked so the hosted suite reads
+        honest-green and a NEW regression stays visible, rather than sitting
+        permanently red where nobody reads it. The test is good -- it passes
+        locally in ~6s. What is broken is WGPU under Xvfb, which is this
+        ticket's own subject. Remove the tag when that works; nothing else
+        needs to change.
+        Still unknown: whether WGPU crashes, hangs before announcing, or fails
+        adapter selection on the GL backend. The numbered per-instance logs
+        added in ac6c939 should show it on the next failing run.
+      - >-
         WGPU startup cost measured (2026-08-02). Renderer init builds 38
         pipelines from 43 WGSL sources with no pipeline cache before the harness
         can be served. On an RTX 3070 that is ~3s more than GL33 for the same
