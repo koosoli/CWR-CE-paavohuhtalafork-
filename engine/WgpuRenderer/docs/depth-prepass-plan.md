@@ -7,6 +7,24 @@ build + in-game validation). Stages 0/2/3 still planned. Concrete.
 
 > **RND-030 reconciliation (2026-08-02):** the "uncommitted" caveat above is obsolete. Stage 1 was committed on 2026-07-09 and is present in `gfx3d/cull.rs`, `cull.wgsl` and `hiz.rs`.
 >
+> **Stage audit (2026-08-03).** The status line's "Stages 0/2/3 still planned" is no longer
+> accurate. Checked item by item against the branch:
+>
+> - **Stage 0 — not done.** No overdraw heatmap exists in the tree, and no GPU timer region
+>   brackets the opaque colour segment (the nearest is `GrassPrepass`).
+> - **Stage 1 — done, and on by default.** `prepass_enabled` defaults to `true`;
+>   `WGR_PREPASS=0` is the dev A/B only.
+> - **Stage 2 — done.** Both exit criteria are met: the depth target carries
+>   `TEXTURE_BINDING` with a depth-aspect view, `normal_view()` is exposed, water consumes
+>   `water_depth_view` through `set_depth_view`, and Hi-Z consumes the nearest resolve.
+> - **Stage 3 — one item of three.** Foliage cutout uses alpha-to-coverage in *both* the
+>   colour and prepass pipelines. The indirect-path fold and additional depth segments are
+>   absent.
+>
+> Consequence for SSAO: its prerequisite already exists. The normal G-buffer is populated
+> including foliage and is exposed. "Nothing samples it yet" remains true, but that is a
+> missing consumer rather than a missing producer.
+>
 > The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
 
 > **Stage 1 bring-up notes.** Shipped: shared `shaders/gbuffer.wgsl` (octahedral view-space

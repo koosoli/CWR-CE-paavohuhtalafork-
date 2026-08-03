@@ -151,11 +151,33 @@ systems:
     plan: engine/WgpuRenderer/docs/depth-prepass-plan.md
     status: PARTIAL
     owner: null
-    audited: null
+    audited: 2026-08-03
     completeness: >-
-      Stage 1 committed 2026-07-09. Stages 0, 2 and 3 remain planned per the plan's
-      own status line. SSAO would additionally need a resolve target on the prepass
-      normal attachment; nothing samples it yet.
+      Stage-by-stage against the branch, which does NOT match the plan's status line
+      ("Stages 0/2/3 still planned"):
+
+      Stage 0 — NOT done. No overdraw heatmap anywhere in the tree. GPU timer regions
+      exist but none brackets the opaque colour segment; the nearest is GrassPrepass.
+
+      Stage 1 — DONE and ON by default. prepass_enabled defaults true (lib.rs);
+      WGR_PREPASS=0 is a dev A/B only, and unlike several other WGR_* switches it is
+      not overwritten by ConfigureWgpuUltraEnvironment. shaders/gbuffer.wgsl carries
+      the octahedral encode into NORMAL_FORMAT = Rg16Float.
+
+      Stage 2 — DONE, contrary to the plan. The depth target has TEXTURE_BINDING and
+      a depth-aspect view; normal_view() is exposed and bound; both named consumers
+      landed — water takes water_depth_view via set_depth_view, and Hi-Z takes the
+      nearest resolve.
+
+      Stage 3 — one item of three. Foliage cutout uses alpha-to-coverage in BOTH the
+      colour and prepass pipelines (foliage_a2c drives alpha_to_coverage_enabled at
+      two cull.rs sites), which was the MSAA item. No evidence of the prepass replay
+      being folded into the indirect path, nor of extra depth segments.
+
+      So SSAO's stated prerequisite is already met: the normal G-buffer is populated
+      including foliage and is exposed. The plan's remark that "nothing samples it
+      yet" is still true — no consumer exists — but that is a missing consumer, not a
+      missing producer.
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/gfx3d/hiz.rs
         symbol: pub fn build

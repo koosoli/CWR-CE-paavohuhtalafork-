@@ -49,9 +49,9 @@ pub enum Region {
     WaterSsr = 13,            // reserved — SSR is in-shader inside WaterDraw today
     WaterRefraction = 14,     // reserved — refraction is in-shader inside WaterDraw today
     WaterDraw = 15,           // the water surface pass (includes SSR + refraction cost)
-    UnderwaterFroxel = 16,    // reserved — no underwater froxel pass exists yet
-    UnderwaterComposite = 17, // fullscreen underwater compositor (includes caustics cost)
-    Caustics = 18,            // reserved — caustics ride the underwater/water shaders today
+    UnderwaterFroxel = 16,    // the froxel light-volume compute pass
+    UnderwaterComposite = 17, // fullscreen underwater compositor
+    Caustics = 18,            // the FFT-derived caustic compute pass
     // --- GRS-A: grass. The three placement dispatches are standalone compute
     // passes, so they bracket on the encoder like the water regions above. The
     // draw regions are ops inside the shared main/shadow render passes and can
