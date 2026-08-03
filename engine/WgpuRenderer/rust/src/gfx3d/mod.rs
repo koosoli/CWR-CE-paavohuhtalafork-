@@ -32,6 +32,9 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusSt
 // view-space octahedral normal, Rg16Float (compact + banding-free for SSAO/GTAO/SSR).
 // Written unconditionally by the prepass; sampled by no consumer yet (Stage 1).
 pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
+// Scalar AO. R8Unorm is enough for a visibility term and keeps the bilateral blur
+// cheap; stage 2's bent normal will need its own wider target.
+pub const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R8Unorm;
 
 // Cascade shadow depth maps: one D32 array layer per cascade.
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -1219,6 +1222,196 @@ fn normal_resolve_takes_a_single_sample_rather_than_averaging() {
     }
 }
 
+#[repr(C)]
+#[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
+pub(crate) struct GtaoParams {
+    pub inv_view_proj: [f32; 16],
+    // xy = size in px, zw = 1/size.
+    pub screen: [f32; 4],
+    // x = world radius (m), y = strength, z = slices, w = steps per slice.
+    pub tuning: [f32; 4],
+    // x = max screen radius (px), y = thickness falloff, z = near plane, w unused.
+    pub limits: [f32; 4],
+}
+
+const _: () = assert!(std::mem::size_of::<GtaoParams>() == 112);
+
+// GTAO compute pass (screen-space-ao-plan section 3). Owns its AO target and its own
+// uniform rather than riding the frame group: that group is shared by every 3D pipeline,
+// so extending it is the LAST step of this feature, not the first — a layout change with
+// nothing bound fails validation in every pass at once.
+//
+// Built but not dispatched yet; the bilateral blur and the ambient consumers come next.
+pub(crate) struct Gtao {
+    pipeline: wgpu::ComputePipeline,
+    layout: wgpu::BindGroupLayout,
+    params: wgpu::Buffer,
+    view: Option<wgpu::TextureView>,
+    bind: Option<wgpu::BindGroup>,
+}
+
+impl Gtao {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgr_gtao"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("gtao.wgsl").into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_gtao_layout"),
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    // Non-filterable on purpose: the shader textureLoads exact texels.
+                    // Oct-encoded normals must never be bilinearly sampled — interpolating
+                    // across the octahedral fold gives a direction near neither neighbour.
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: AO_FORMAT,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgr_gtao_pipeline_layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("wgr_gtao_pipeline"),
+            layout: Some(&pl),
+            module: &module,
+            entry_point: Some("cs_gtao"),
+            compilation_options: Default::default(),
+            cache: None,
+        });
+        let params = device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("wgr_gtao_params"),
+            size: std::mem::size_of::<GtaoParams>() as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        Self {
+            pipeline,
+            layout,
+            params,
+            view: None,
+            bind: None,
+        }
+    }
+
+    // (Re)allocate the AO target and bind the prepass inputs. `normal` must be the
+    // SINGLE-SAMPLE normal — normal_sample_view() under MSAA, normal_view() at 1x.
+    pub(crate) fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        w: u32,
+        h: u32,
+        depth: &wgpu::TextureView,
+        normal: &wgpu::TextureView,
+    ) -> wgpu::TextureView {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_gtao_ao"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: AO_FORMAT,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_gtao_bind"),
+            layout: &self.layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(depth),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::TextureView(normal),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 2,
+                    resource: self.params.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&view),
+                },
+            ],
+        }));
+        self.view = Some(view.clone());
+        view
+    }
+
+    #[allow(dead_code)] // uploaded when the pass is dispatched.
+    pub(crate) fn upload(&self, queue: &wgpu::Queue, params: &GtaoParams) {
+        queue.write_buffer(&self.params, 0, bytemuck::bytes_of(params));
+    }
+
+    #[allow(dead_code)] // dispatched when the blur + ambient consumers land.
+    pub(crate) fn dispatch(&self, encoder: &mut wgpu::CommandEncoder, w: u32, h: u32) {
+        let Some(bind) = self.bind.as_ref() else {
+            return;
+        };
+        encoder.push_debug_group("wgr_gtao");
+        let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("wgr_gtao"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, bind, &[]);
+        // Workgroup is 8x8; round up so edge pixels are covered (the shader bounds-checks).
+        pass.dispatch_workgroups(w.div_ceil(8), h.div_ceil(8), 1);
+        drop(pass);
+        encoder.pop_debug_group();
+    }
+
+    #[allow(dead_code)] // consumed by the bilateral blur, then the ambient term.
+    pub(crate) fn ao_view(&self) -> Option<&wgpu::TextureView> {
+        self.view.as_ref()
+    }
+}
+
 pub(crate) struct NormalResolve {
     pipeline: wgpu::RenderPipeline,
     layout: wgpu::BindGroupLayout,
@@ -1415,6 +1608,8 @@ pub struct Gfx3d {
     // recorded per frame until the GTAO pass consumes it.
     normal_resolve: Option<NormalResolve>,
     normal_sample_view: Option<wgpu::TextureView>,
+    // GTAO. Allocated at both 1x and MSAA — its inputs are single-sample either way.
+    gtao: Gtao,
     // Single-sample depth-stencil for the post-tonemap UI phase (Some only when sample_count > 1).
     // That phase composites display-referred 2D to the 1x swapchain, so it can't share the MSAA
     // scene depth (mismatched sample counts). Cleared per use; world occlusion isn't carried into
@@ -1881,6 +2076,7 @@ impl Gfx3d {
             (sample_count > 1).then(|| DepthResolve::new(device, sample_count, true));
         // Same MSAA-only condition: at 1x the prepass normal is already single-sample.
         let normal_resolve = (sample_count > 1).then(|| NormalResolve::new(device));
+        let gtao = Gtao::new(device);
 
         Gfx3d {
             cameras,
@@ -1913,6 +2109,7 @@ impl Gfx3d {
             depth_resolve_far,
             normal_resolve,
             normal_sample_view: None,
+            gtao,
             ui_depth: None,
             hiz: hiz::HiZ::new(device),
             // GPU Hi-Z occlusion: default on when GPU-driven is on (the point of this feature),
@@ -2672,6 +2869,18 @@ impl Gfx3d {
                 .clone();
             nr.resize(device, size.0, size.1, &src)
         });
+        // GTAO reads the SINGLE-SAMPLE normal: the resolve under MSAA, the prepass target
+        // itself at 1x. Depth is the nearest resolve, which is what AO wants (front surface)
+        // and is already built for Hi-Z — the plan is explicit that this must be reused
+        // rather than duplicated.
+        if let (Some(depth), Some(normal)) = (
+            self.depth_sample_view.clone(),
+            self.normal_sample_view
+                .clone()
+                .or_else(|| self.normal.as_ref().map(|(_, v)| v.clone())),
+        ) {
+            self.gtao.resize(device, size.0, size.1, &depth, &normal);
+        }
         // Single-sample UI-phase depth-stencil (MSAA only): the post-tonemap 2D composites to the
         // 1x swapchain and needs a matching-sample depth attachment for its (1x) pipelines.
         self.ui_depth = (self.sample_count > 1).then(|| {
