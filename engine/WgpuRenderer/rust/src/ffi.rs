@@ -877,6 +877,12 @@ pub struct WgrWaterParams {
     // WTR-LOOK — x = physical sea-state coupling on/off, y = residual spectrum amplitude,
     // z = low water quality, w = shore breaker gain. (sizeof 224 -> 240, matching C++.)
     pub sea_params: WgrVec4,
+    // Underwater tuning, live from the Water tab. x = engage band in metres (the compositor
+    // runs while the camera is below sea level + this, so a straddling view can still be
+    // classified), y = absorption density multiplier, z = colour bias 0..1 (1 = absorption hue
+    // from the authored deep swatch, 0 = the old neutral curve), w = caustic gain.
+    // (sizeof 240 -> 256, matching C++.)
+    pub underwater_params: WgrVec4,
 }
 
 #[repr(C)]
@@ -1040,7 +1046,7 @@ const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassDownwash>() == 16);
 // 1712 = 107 * 16: the look vec4 keeps the UBO 16-byte aligned.
 const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1712);
-const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 240);
+const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 256);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrWaterInteractionEvent>() == 64);

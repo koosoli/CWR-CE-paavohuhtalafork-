@@ -8,6 +8,7 @@ struct Params {
     deep_color: vec4<f32>,
     cascade_lengths: vec4<f32>,
     water_controls: vec4<f32>,
+    underwater_tuning: vec4<f32>,
 };
 
 struct TerrainShadowMap {
@@ -138,7 +139,9 @@ fn cs_underwater_froxel(@builtin(global_invocation_id) gid: vec3<u32>) {
     // colour from the extinction it is supposed to balance.
     let absorb = -log(deep);
     let mean_absorb = max((absorb.r + absorb.g + absorb.b) / 3.0, 1e-4);
-    let extinction_rgb = absorb * (0.1216 / mean_absorb) * max(ext * 2.5, 0.12);
+    let bias = clamp(params.underwater_tuning.y, 0.0, 1.0);
+    let extinction_rgb = mix(vec3<f32>(0.280, 0.065, 0.020), absorb * (0.1216 / mean_absorb), bias) *
+        max(ext * 2.5, 0.12) * max(params.underwater_tuning.x, 0.0);
     let shallow_peak = max(max(shallow.r, shallow.g), max(shallow.b, 1e-4));
     let deep_peak = max(max(deep.r, deep.g), max(deep.b, 1e-4));
     let shallow_unit = shallow / shallow_peak;

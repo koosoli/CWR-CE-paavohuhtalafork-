@@ -3591,6 +3591,38 @@ void DrawWaterTab()
                           "world-anchored caustics on nearby seabed geometry. This also gates the "
                           "water shader's own underwater distance fog, so OFF means a submerged "
                           "view has no volume and no fog at all.");
+    if (s.underwaterEffect)
+    {
+        ImGui::Indent();
+        ImGui::TextDisabled("Thresholds");
+        changed |= ImGui::SliderFloat("Enter depth (m)", &s.underwaterEnterDepth, 0.0f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("How far the eye must sink BELOW the local wave-displaced surface "
+                              "before the effect engages.");
+        changed |= ImGui::SliderFloat("Exit depth (m)", &s.underwaterExitDepth, 0.0f, 1.0f, "%.3f");
+        ImGui::SetItemTooltip("How far the eye must rise ABOVE the surface before it releases. Keep "
+                              "this larger than Enter depth — equal values make the effect flicker "
+                              "while the eye rides a moving crest.");
+        changed |= ImGui::SliderFloat("Engage band (m)", &s.underwaterEngageBand, 0.0f, 6.0f, "%.2f");
+        ImGui::SetItemTooltip("How far above sea level the compositor keeps running. It must run a "
+                              "little while dry so a half-submerged view can be classified ray by "
+                              "ray. Past the crest height it only costs the froxel and caustic "
+                              "dispatches for a frame that resolves to no water.");
+        ImGui::TextDisabled("Colour");
+        changed |= ImGui::SliderFloat("Density", &s.underwaterDensity, 0.0f, 4.0f, "%.2f");
+        ImGui::SetItemTooltip("Absorption density multiplier. Lower is clearer water and a longer "
+                              "view; higher closes the view down faster. 1.0 is the tuned default.");
+        changed |= ImGui::SliderFloat("Colour bias", &s.underwaterColorBias, 0.0f, 1.0f, "%.2f");
+        ImGui::SetItemTooltip("1 = absorption hue taken from the Deep colour above, so submerging "
+                              "keeps the same substance you swam into. 0 = the fixed curve the "
+                              "effect used before, which was unrelated to the water's own colour "
+                              "and read as a more turquoise liquid. Drag between the two to "
+                              "compare.");
+        changed |= ImGui::SliderFloat("Caustic gain", &s.underwaterCausticGain, 0.0f, 4.0f, "%.2f");
+        ImGui::SetItemTooltip("Strength of the caustic pattern on nearby seabed geometry. Only "
+                              "visible where there is geometry to receive it.");
+        ImGui::TextDisabled("  Shallow/Deep colour and Extinction above also drive this.");
+        ImGui::Unindent();
+    }
     changed |= ImGui::Checkbox("Low water quality (performance)", &s.lowQuality);
     ImGui::SetItemTooltip("Drops SSR, planar reflection, bicubic filtering and the two smallest wave "
                           "cascades. The reflected camera and its sky, terrain, objects, clouds and mip "

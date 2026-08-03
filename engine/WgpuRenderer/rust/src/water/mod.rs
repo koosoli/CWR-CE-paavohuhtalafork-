@@ -343,6 +343,8 @@ impl Water {
             // WTR-LOOK — x = physical sea-state coupling on, y = residual spectrum amplitude
             // (1.0 because the coupling carries the energy), z = low quality off, w = shore gain.
             sea_params: [1.0, 1.0, 0.0, 1.0],
+            // Engage band, density, colour bias, caustic gain — the tuned defaults.
+            underwater_params: [1.5, 1.0, 1.0, 1.0],
         };
         queue.write_buffer(&params_ubo, 0, bytemuck::bytes_of(&default_params));
 
@@ -936,6 +938,22 @@ impl Water {
         )
     }
 
+    /// Live underwater tuning from the Water tab: `(engage band m, density, colour bias,
+    /// caustic gain)`. The defaults reproduce the tuned look, so a renderer that never
+    /// receives water params behaves as it did before these became adjustable.
+    pub fn underwater_tuning(&self) -> (f32, f32, f32, f32) {
+        self.last_params
+            .map(|p| {
+                (
+                    p.underwater_params[0],
+                    p.underwater_params[1],
+                    p.underwater_params[2],
+                    p.underwater_params[3],
+                )
+            })
+            .unwrap_or((1.5, 1.0, 1.0, 1.0))
+    }
+
     /// Vertical FFT displacement, so the underwater compositor can find the wavy
     /// surface instead of assuming a flat plane at `sea_level`. Same fallback as
     /// `underwater_fft_views`: a valid zero array on Gerstner-only adapters, which
@@ -1483,11 +1501,12 @@ mod tests {
     // surface energy model rides look_params.x, both appended at the struct end so every existing
     // lane keeps its offset. Lock the field offsets (192, 208) and the total size (224) so a
     // reorder on either side of the FFI boundary fails here, not as a silent UBO misread in the
-    // shader.
+    // shader. underwater_params (the Water tab's live underwater tuning) is the newest tail
+    // lane and is locked the same way.
     #[test]
     fn debug_params_appended_without_shifting_existing_lanes() {
         use crate::ffi::WgrWaterParams;
-        assert_eq!(std::mem::size_of::<WgrWaterParams>(), 240);
+        assert_eq!(std::mem::size_of::<WgrWaterParams>(), 256);
         assert_eq!(
             std::mem::offset_of!(WgrWaterParams, debug_params),
             192,
@@ -1502,6 +1521,11 @@ mod tests {
             std::mem::offset_of!(WgrWaterParams, sea_params),
             224,
             "sea_params must be appended after look_params, not inserted before it"
+        );
+        assert_eq!(
+            std::mem::offset_of!(WgrWaterParams, underwater_params),
+            240,
+            "underwater_params must be appended after sea_params, not inserted before it"
         );
         // flow_direction_speed (the previous last field) must not have moved.
         assert_eq!(

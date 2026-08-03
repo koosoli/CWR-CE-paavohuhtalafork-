@@ -852,6 +852,19 @@ struct WgrWaterParams
      *    smallest cascades in the water fragment shader). 0 = full quality.
      * w: shore breaker gain. Appended at the struct end; sizeof moves 224 -> 240 with Rust. */
     WgrVec4 sea_params;
+    /* Underwater tuning, all live from the Water tab's "Underwater effect" section so the look
+     * can be dialled in without a rebuild. These do nothing while the effect is off.
+     * x: engage band in metres. The compositor runs while the camera is below sea level + this,
+     *    so it can still classify a view that straddles the surface. Raising it past the crest
+     *    height engages the pass in open air, which costs the froxel and caustic dispatches for
+     *    a frame that returns no water path.
+     * y: density multiplier on the absorption. 1.0 = the tuned default.
+     * z: colour bias, 0..1. 1 = absorption hue derived entirely from the authored deep swatch,
+     *    so the volume matches the surface; 0 = the neutral (0.280, 0.065, 0.020) curve the
+     *    effect used before, which had no relation to the water you swam into.
+     * w: caustic gain, 1.0 = the tuned CAUSTIC_STRENGTH.
+     * Appended at the struct end; sizeof moves 240 -> 256 with the Rust side. */
+    WgrVec4 underwater_params;
 };
 
 struct WgrWaterCascadeConfig
@@ -1160,7 +1173,7 @@ static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the 
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassDownwash) == 16, "WgrGrassDownwash layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassParams) == 1712, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrWaterParams) == 240, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrWaterParams) == 256, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 40, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterInteractionEvent) == 64 && alignof(WgrWaterInteractionEvent) == 16, "WgrWaterInteractionEvent must match Rust");

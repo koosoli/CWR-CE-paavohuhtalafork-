@@ -30,9 +30,13 @@ struct Params {
     cascade_lengths: [f32; 4],
     // x = de-tile warp amplitude, y = sea level, z = wave scale, w reserved.
     water_controls: [f32; 4],
+    // Live Water-tab underwater tuning: x = absorption density multiplier, y = colour bias
+    // (1 = hue from the authored deep swatch, 0 = the old neutral curve), z = caustic gain,
+    // w reserved.
+    underwater_tuning: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<Params>() == 192);
+const _: () = assert!(std::mem::size_of::<Params>() == 208);
 
 #[test]
 fn underwater_wgsl_validates() {
@@ -68,12 +72,15 @@ fn underwater_refraction_rejects_foreground_depth_leaks() {
     // the curve it replaced and is what keeps the density where it was tuned.
     assert!(shader.contains("let absorb = -log(deep_lin);"));
     assert!(shader.contains("(0.1216 / mean_absorb)"));
-    assert!(!shader.contains("vec3<f32>(0.280, 0.065, 0.020)"));
+    // The old curve survives only as the bias=0 endpoint of the Water tab's "Colour bias"
+    // slider, so the two looks can be compared live. It must never be the extinction on its
+    // own again — that is the state where the volume was a different liquid from the surface.
+    assert!(shader.contains("let extinction_rgb = mix(neutral_hue, water_hue, bias) * density;"));
     // Both underwater passes must derive it the same way or the in-scattering would be a
     // different colour from the extinction it balances.
     let froxel = include_str!("underwater_froxel.wgsl");
     assert!(froxel.contains("(0.1216 / mean_absorb)"));
-    assert!(!froxel.contains("vec3<f32>(0.280, 0.065, 0.020)"));
+    assert!(froxel.contains("params.underwater_tuning.y"));
     assert!(shader.contains("underwater_froxel"));
     assert!(!shader.contains("pow(deep_linear"));
 }
@@ -710,6 +717,9 @@ impl Underwater {
         sea_level: f32,
         debug_view: f32,
         wave_scale: f32,
+        density: f32,
+        color_bias: f32,
+        caustic_gain: f32,
         shadow_mapping: &crate::terrain::TerrainShadowMap,
         camera_shadow: &crate::ffi::WgrCameraShadow,
     ) {
@@ -731,6 +741,7 @@ impl Underwater {
                 deep_color,
                 cascade_lengths,
                 water_controls: [warp_amp, sea_level, wave_scale, 0.0],
+                underwater_tuning: [density, color_bias, caustic_gain, 0.0],
             }),
         );
         if let Some(volume) = &self.volume {

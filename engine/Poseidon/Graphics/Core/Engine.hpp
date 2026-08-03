@@ -1411,6 +1411,28 @@ class Engine : public IGraphicsEngine
         // deliberate: half the effect is not better than none of it.
         bool underwaterEffect = false;
 
+        // Underwater tuning, all live from the Water tab so the look can be dialled in without
+        // a rebuild. Every one of these is inert while underwaterEffect is off.
+        //
+        // The two depth thresholds are the hysteresis band around the local (wave-displaced)
+        // surface: the effect turns ON once the eye is enterDepth below it and stays on until
+        // the eye is exitDepth above it. They are asymmetric on purpose — equal thresholds make
+        // the effect flicker when the eye rides exactly on a moving crest.
+        float underwaterEnterDepth = 0.03f; // m below the surface before the effect engages
+        float underwaterExitDepth = 0.08f;  // m above the surface before it releases
+        // How far above sea level the compositor still runs. It has to run slightly dry so a
+        // view straddling the surface can be classified per ray; well past the crest height it
+        // just pays for froxel and caustic dispatches that produce no water path.
+        float underwaterEngageBand = 1.5f;
+        // Absorption density multiplier. 1.0 is the tuned default; lower is clearer water.
+        float underwaterDensity = 1.0f;
+        // 1 = absorption hue derived from the authored deep colour, so the volume is the same
+        // substance as the surface. 0 = the fixed (0.280, 0.065, 0.020) curve the effect used
+        // before, which had no relation to the water you swam into. Between the two it blends.
+        float underwaterColorBias = 1.0f;
+        // Gain on the caustic pattern cast onto nearby seabed geometry. 1.0 = tuned default.
+        float underwaterCausticGain = 1.0f;
+
         // WTR-036C / WTR-037 — FFT Cascade Preset (0 = Production Non-Harmonic 4-Cascade, 1 = GodotOceanWaves Reference Style, 2 = Legacy Harmonic 4-Cascade).
         // The GodotOceanWaves-derived TMA/JONSWAP setup is the gameplay default.  The
         // non-harmonic production layout remains available for A/B testing, but should

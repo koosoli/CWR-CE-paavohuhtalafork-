@@ -8,6 +8,7 @@ struct Params {
     deep_color: vec4<f32>,
     cascade_lengths: vec4<f32>,
     water_controls: vec4<f32>,
+    underwater_tuning: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> params: Params;

@@ -74,6 +74,10 @@ struct UnderwaterView {
     sea_level: f32,
     debug_view: f32,
     wave_scale: f32,
+    // Water-tab underwater tuning: absorption density multiplier, colour bias 0..1, caustic gain.
+    density: f32,
+    color_bias: f32,
+    caustic_gain: f32,
 }
 
 // Like env_f32 but keeps a 0 value (env_f32 filters to >0 for scales). Used for the
@@ -735,6 +739,9 @@ impl Renderer {
                 sea_level: 0.0,
                 debug_view: 0.0,
                 wave_scale: 1.0,
+                density: 1.0,
+                color_bias: 1.0,
+                caustic_gain: 1.0,
             },
             bloom,
             exposure,
@@ -1487,7 +1494,11 @@ impl Renderer {
         // The compositor resolves a water path per pixel, so it also runs while the eye is just
         // above the surface. Pixels whose rays never enter water return the untouched scene;
         // downward rays begin extinction only after crossing the local water plane.
-        const UNDERWATER_NEAR_SURFACE_BAND: f32 = 1.5;
+        // Live from the Water tab ("Engage band"), no longer a constant — the band decides how
+        // far into open air the pass keeps running, which is exactly the knob you want when
+        // tuning how the effect behaves around the waterline.
+        let underwater_tuning = self.water.underwater_tuning();
+        let underwater_near_surface_band = underwater_tuning.0;
         let underwater_state =
             self.water
                 .underwater_params()
@@ -1497,7 +1508,7 @@ impl Renderer {
                     // submersion boundary is the actual camera crossing the gameplay sea plane.
                     cameras.get(water_camera).and_then(|cam| {
                         let cam_above = cam.cam_pos[1] - sea_level;
-                        let engage = player_submerged || cam_above < UNDERWATER_NEAR_SURFACE_BAND;
+                        let engage = player_submerged || cam_above < underwater_near_surface_band;
                         engage.then(|| {
                             // Same separate-inverse-in-f64 treatment the frame UBO uses: the
                             // reversed-Z infinite-far projection is ill-conditioned in f32 and
@@ -1556,6 +1567,9 @@ impl Renderer {
                 sea_level: underwater_spectrum.3,
                 debug_view: underwater_spectrum.4,
                 wave_scale: underwater_spectrum.5,
+                density: underwater_tuning.1,
+                color_bias: underwater_tuning.2,
+                caustic_gain: underwater_tuning.3,
             })
             .unwrap_or(UnderwaterView {
                 cam_above: -1.0,
@@ -1572,6 +1586,9 @@ impl Renderer {
                 sea_level: underwater_spectrum.3,
                 debug_view: underwater_spectrum.4,
                 wave_scale: underwater_spectrum.5,
+                density: underwater_tuning.1,
+                color_bias: underwater_tuning.2,
+                caustic_gain: underwater_tuning.3,
             });
         if underwater_time.is_some() && !self.hdr_enabled {
             self.ensure_underwater_target(self.config.width, self.config.height);
@@ -2059,6 +2076,9 @@ impl Renderer {
                 view.sea_level,
                 view.debug_view,
                 view.wave_scale,
+                view.density,
+                view.color_bias,
+                view.caustic_gain,
                 &shadow_mapping,
                 &view.camera_shadow,
             );

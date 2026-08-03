@@ -12,6 +12,9 @@ struct Params {
     deep_color: vec4<f32>,
     cascade_lengths: vec4<f32>,
     water_controls: vec4<f32>,
+    // x = absorption density multiplier, y = colour bias (1 = hue from the authored deep
+    // swatch, 0 = the retired neutral curve), z = caustic gain, w reserved.
+    underwater_tuning: vec4<f32>,
 };
 
 // Cleared reversed-Z depth has no finite target. This is far enough for the water volume to
@@ -328,15 +331,20 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // the per-channel absorption to the same MEAN as the curve it replaces keeps the
     // overall density where it was tuned, and moves only the balance between channels.
     let ext = max(params.time_height_range_ext.w, 1e-3);
-    let density = max(ext * 2.5, 0.12);
+    // Water tab "Density". 1.0 reproduces the tuned default.
+    let density = max(ext * 2.5, 0.12) * max(params.underwater_tuning.x, 0.0);
     let deep_lin = srgb_to_linear_v3(clamp(params.deep_color.rgb, vec3<f32>(1e-4), vec3<f32>(1.0)));
     // -log(colour) is the absorption that would produce that colour over unit depth; the
     // darkest channel absorbs most, which is what makes deep water blue.
     let absorb = -log(deep_lin);
     let mean_absorb = max((absorb.r + absorb.g + absorb.b) / 3.0, 1e-4);
     // 0.1216 is the mean of the retired (0.280, 0.065, 0.020) curve, so a neutral swatch
-    // reproduces the previous density exactly.
-    let extinction_rgb = absorb * (0.1216 / mean_absorb) * density;
+    // reproduces the previous density exactly. Water tab "Colour bias" blends between the
+    // water's own hue and that curve, so the two looks can be compared live.
+    let water_hue = absorb * (0.1216 / mean_absorb);
+    let neutral_hue = vec3<f32>(0.280, 0.065, 0.020);
+    let bias = clamp(params.underwater_tuning.y, 0.0, 1.0);
+    let extinction_rgb = mix(neutral_hue, water_hue, bias) * density;
     let transmittance = exp(-extinction_rgb * path_m);
 
     // The frustum-aligned volume carries integrated, terrain/object-shadowed in-scattering.
@@ -360,7 +368,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     ).r;
     let geometry_mask = select(0.0, 1.0, depth > 1e-6);
     let surface_light = exp(-max(-cam_above, 0.0) * 0.12);
-    let caustic = 1.0 + CAUSTIC_STRENGTH * caustic_pattern *
+    let caustic = 1.0 + CAUSTIC_STRENGTH * max(params.underwater_tuning.z, 0.0) * caustic_pattern *
         exp(-path_m * 0.055) * geometry_mask * surface_light;
 
     // Looking up from shallow water retains a soft bright surface veil rather than turning the

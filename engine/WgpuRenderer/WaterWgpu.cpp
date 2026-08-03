@@ -564,13 +564,18 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     }
     // Small asymmetric hysteresis keeps the compositor from flickering when the eye
     // rides exactly on a moving FFT crest.
+    // Both thresholds are live from the Water tab. Clamping exit to at least enter keeps the
+    // band from inverting if they are dragged past each other, which would make the state
+    // oscillate every frame instead of latching.
+    const float enterDepth = std::max(look.underwaterEnterDepth, 0.0f);
+    const float exitDepth = std::max(look.underwaterExitDepth, enterDepth);
     if (_cameraSubmerged)
     {
-        _cameraSubmerged = cameraPos.Y() < localSurface + 0.08f;
+        _cameraSubmerged = cameraPos.Y() < localSurface + exitDepth;
     }
     else
     {
-        _cameraSubmerged = cameraPos.Y() < localSurface - 0.03f;
+        _cameraSubmerged = cameraPos.Y() < localSurface - enterDepth;
     }
     // Gates BOTH the fullscreen underwater compositor and the water shader's own
     // underwater tint. Off unless the Water tab enables it.
@@ -687,6 +692,9 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // WTR-LOOK — sea state / quality / shore lanes. y is the residual spectrum amplitude: 1.0 in
     // coupled mode (the wind speed and cascade lengths above already carry the energy), the raw
     // slider in legacy mode.
+    _params.underwater_params = {std::max(look.underwaterEngageBand, 0.0f), std::max(look.underwaterDensity, 0.0f),
+                                 std::clamp(look.underwaterColorBias, 0.0f, 1.0f),
+                                 std::max(look.underwaterCausticGain, 0.0f)};
     _params.sea_params = {look.seaStateCoupling ? 1.0f : 0.0f,
                           look.seaStateCoupling ? SeaStateResidualAmplitude(look.waveAmp) : look.waveAmp,
                           look.lowQuality ? 1.0f : 0.0f, look.shoreWaveGain};
