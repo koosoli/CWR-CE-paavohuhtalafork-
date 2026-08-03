@@ -1162,6 +1162,44 @@ impl DepthResolve {
 // nothing. `resolve` is called by GTAO when it arrives. Same "present, deliberately unwired"
 // shape the compute skin bake uses.
 #[test]
+fn gtao_blur_is_edge_aware_on_both_depth_and_normal() {
+    let src = include_str!("gtao_blur.wgsl");
+    let module = naga::front::wgsl::parse_str(src).expect("gtao_blur.wgsl parse");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("gtao_blur.wgsl validate");
+
+    // With no TAA this blur IS the denoise. Both rejection terms are required and it is
+    // tempting to drop the normal one as redundant: it is not, because two surfaces meeting
+    // at a crease sit at nearly the same depth, so depth alone smears a wall-floor contact
+    // shadow flat.
+    assert!(
+        src.contains("w_depth"),
+        "blur must reject across depth discontinuities"
+    );
+    assert!(
+        src.contains("w_normal"),
+        "blur must reject across normal discontinuities"
+    );
+
+    // Reversed-Z is non-linear, so the depth test has to be relative. An absolute epsilon
+    // tuned near the camera rejects nothing at distance, where reversed-Z values crowd.
+    assert!(
+        src.contains("/ max(max(dq, d_centre), 1e-6)"),
+        "depth rejection must be relative, not an absolute epsilon"
+    );
+
+    // Sky must not be pulled into a surface's AO, nor filtered itself.
+    assert!(
+        src.contains("if (d_centre <= 0.0)"),
+        "blur must early-out on sky"
+    );
+}
+
+#[test]
 fn gtao_validates_and_keeps_its_no_taa_constraints() {
     let src = include_str!("gtao.wgsl");
     let module = naga::front::wgsl::parse_str(src).expect("gtao.wgsl parse");
