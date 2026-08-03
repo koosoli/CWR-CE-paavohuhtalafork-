@@ -31,7 +31,7 @@ tickets:
     owner: null
     branch: null
     baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
-    verification_commit: null
+    verification_commit: 85b6772
     milestone: -1
     milestone_role: BLOCKING
     depends_on: []
@@ -41,7 +41,7 @@ tickets:
     production_call_sites: []
     test_ids: [tier1-wgpu-check, tier1-gl33-check]
     benchmark_artifacts: []
-    evidence_hash: null
+    evidence_hash: 28da92557d5ef21ae6d6759b1e45554fd3fcfad0d6001b9c1802d08a088b909b
     decision_record: docs/roadmap/decisions/PERF-001-water-draw-scaling-20260801.md
     known_failures: []
     fallback: GL33 remains available when explicitly selected.
@@ -67,7 +67,7 @@ tickets:
     owner: null
     branch: null
     baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
-    verification_commit: null
+    verification_commit: 85b6772
     milestone: -1
     milestone_role: BLOCKING
     depends_on: []
@@ -77,7 +77,7 @@ tickets:
     production_call_sites: []
     test_ids: [preview0-ledger-validation]
     benchmark_artifacts: []
-    evidence_hash: null
+    evidence_hash: 13253785e483f3ca6d3a280da9bb01fbc8565f9b238793597db624d5e1522c2a
     decision_record: null
     known_failures:
       - No reviewed activation commit exists; the overlay remains PREPARED.
@@ -101,7 +101,7 @@ tickets:
     owner: null
     branch: null
     baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
-    verification_commit: null
+    verification_commit: 85b6772
     milestone: -1
     milestone_role: BLOCKING
     depends_on: [PERF-001, CORE-005]
@@ -114,7 +114,7 @@ tickets:
         verified_commit: null
     test_ids: [cargo-wgpu-renderer, wgpu-strict-check, wgpu-no-fallback-check, gl33-explicit-check, perf-water-mission-wgpu, perf-water-mission-gl33, original-training-mission-wgpu]
     benchmark_artifacts: [docs/roadmap/evidence/preview0-manifest.json]
-    evidence_hash: null
+    evidence_hash: 1b098a47d63c608775da8ba18b65b19ac53cb4d79c11d032963d8e3f721e689d
     decision_record: null
     known_failures:
       - >-
@@ -277,7 +277,7 @@ tickets:
     owner: null
     branch: null
     baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
-    verification_commit: null
+    verification_commit: 85b6772
     milestone: -1
     milestone_role: BLOCKING
     depends_on: [CORE-005]
@@ -290,7 +290,7 @@ tickets:
         verified_commit: null
     test_ids: [ffi-abi-layout-refusal, ffi-abi-version-contract, ffi-separately-built-dll-refusal]
     benchmark_artifacts: []
-    evidence_hash: null
+    evidence_hash: 107a35e886431378419e9f100a0c2f0b21c2640a598e2f15a71d00dd1306f3c4
     decision_record: null
     known_failures: []
     fallback: C++ refuses an ABI mismatch before renderer creation.
@@ -315,7 +315,7 @@ tickets:
     owner: null
     branch: null
     baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
-    verification_commit: null
+    verification_commit: 85b6772
     milestone: 0
     milestone_role: BLOCKING
     depends_on: [CORE-005]
@@ -334,7 +334,7 @@ tickets:
         verified_commit: null
     test_ids: [wgpu-capabilities-check, wgpu-windowed-resize-capture, wgpu-normal-loop-minimize-restore, wgpu-lifecycle-repeat-in-session, runtime-diagnostics-once]
     benchmark_artifacts: [docs/roadmap/evidence/preview0-manifest.json]
-    evidence_hash: null
+    evidence_hash: d670ee3712ab9e666901de3ede9b38cdfa479963a71a90ba8eaeafcf720a3591
     decision_record: null
     known_failures: []
     fallback: Unsupported optional capabilities are reported and feature paths remain gated.
@@ -371,7 +371,7 @@ tickets:
     owner: null
     branch: null
     baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
-    verification_commit: null
+    verification_commit: 85b6772
     milestone: 0
     milestone_role: BLOCKING
     depends_on: [CORE-005]
@@ -401,7 +401,7 @@ tickets:
       - docs/roadmap/evidence/preview0-gl33-vs-wgpu-menu-diff-20260801.json
       - docs/roadmap/evidence/preview0-wgpu-mission-capture-automation-20260801-original-training-capture.json
       - docs/roadmap/evidence/preview0-gl33-vs-wgpu-original-training-current-build-diff-20260801.json
-    evidence_hash: null
+    evidence_hash: 1f25244a4d5c31519f5d9db5927f4936a9c2a538e6219643fcf844074a1b2229
     decision_record: docs/roadmap/decisions/TEST-002-visual-divergence-20260801.md
     known_failures:
       - Oliver Kay classified the clean original-training comparison as EXPECTED_DIFFERENCE. An independent evidence reviewer and hosted CI result are still required before the ticket can be VALIDATED.
