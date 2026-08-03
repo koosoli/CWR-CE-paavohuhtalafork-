@@ -189,8 +189,31 @@ systems:
     plan: engine/WgpuRenderer/docs/gpu-culling-and-depth-plan.md
     status: PARTIAL
     owner: null
-    audited: null
-    completeness: Plan is IN PROGRESS with stages 1-3 live.
+    audited: 2026-08-03
+    completeness: >-
+      "Stages 1-3 live" (the RND-030 summary) overstates stage 3. The plan's own status
+      block is the accurate one:
+
+      Stage 1 retained data model — built, folded into CullState rather than as the
+      doc's CPU-draw intermediary. Stage 2 CPU-built indirect — done, default-on where
+      the adapter offers INDIRECT_FIRST_INSTANCE (WGR_INDIRECT=0 forces the direct
+      path). Stage 4 Hi-Z occlusion — done.
+
+      Stage 3 GPU cull + LOD compute is Rust-side only and INERT: gpu_driven_enabled
+      defaults true, but nothing happens until C++ registers a retained scene, and that
+      feed (stage 3b-3) is not built. The renderer logs "GPU-driven rendering enabled
+      (WGR_GPU_DRIVEN); inert until a scene registers" — so the headline win is not
+      observable yet, whatever the flag says.
+
+      Stages 5 (multi-view) and 6 (skinned + transparent) are not started. Stage 6 is
+      where RSYS-SKIN-BAKE is meant to be re-enabled; the bake is deliberately off
+      until then because standalone it is pure overhead.
+
+      Audit note: the C++ and Rust gates disagreed on parsing. Rust enables on any
+      value that is not "0"; C++ required exactly "1", despite a comment asserting they
+      mirrored exactly. WGR_GPU_DRIVEN=true therefore enabled the Rust path and left
+      C++ off, silently inert with an "enabled" log line. Fixed by matching the parse;
+      the differing DEFAULT is intentional and was left alone.
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/gfx3d/cull.rs
         symbol: fn frustum_planes

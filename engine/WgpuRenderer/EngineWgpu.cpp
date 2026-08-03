@@ -626,13 +626,23 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
         _smTuning.enabled = std::strtol(sm, nullptr, 10) != 0;
     }
 
-    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b). Must mirror the
-    // Rust-side WGR_GPU_DRIVEN gate exactly (== "1"): when on, the landscape/world hooks
-    // register shapes + stream retained instances and the CPU colour draw of handed-over
-    // objects is suppressed; when off, every hook is a no-op and the CPU path is unchanged.
+    // GPU-driven rendering (docs/gpu-culling-and-depth-plan.md Stage 3b). When on, the
+    // landscape/world hooks register shapes + stream retained instances and the CPU colour
+    // draw of handed-over objects is suppressed; when off, every hook is a no-op and the CPU
+    // path is unchanged.
+    //
+    // The parse must match the Rust gate for every value the user can actually set, which
+    // `== "1"` did not. Rust enables on anything that is not "0", so WGR_GPU_DRIVEN=true (or
+    // yes, or 2) turned the Rust path on while leaving this side off — the renderer then logs
+    // "GPU-driven rendering enabled" and silently does nothing, because nothing registers a
+    // retained scene. Treat any set value other than "0" as on, as Rust does.
+    //
+    // The DEFAULT deliberately still differs and must not be unified: unset leaves this false
+    // while Rust is true. That is the plan's intended Stage 3 state — the Rust path is built
+    // and inert until the C++ retained-scene feed (Stage 3b-3) lands.
     if (const char* gd = std::getenv("WGR_GPU_DRIVEN"))
     {
-        _gpuDriven = std::strcmp(gd, "1") == 0;
+        _gpuDriven = std::strcmp(gd, "0") != 0;
     }
 
     // Mirror the renderer's WGR_HDR gate so the ImGui Tonemap tab knows the HDR
