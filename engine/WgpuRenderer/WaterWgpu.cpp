@@ -587,6 +587,30 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // changes how strongly.
     const float submersion = localSurface - cameraPos.Y();
     _params.fft_control.w = (_cameraSubmerged && look.underwaterEffect) ? std::max(submersion, 0.001f) : 0.0f;
+    // "The underwater effect kicks in when I am 3-4 metres above the water." Every
+    // explanation for that is a guess until these five numbers are on the table, so log
+    // them whenever the answer changes, plus once a second while the effect is engaged.
+    //
+    // What to read: `submerged=1` with `camY` well above `sea` means localSurface is the
+    // culprit, which on cascadePreset 1 is sea level plus ReferenceSurfaceHeight scaled by
+    // the Water tab's amplitude — crank that and the CPU thinks the eye is under a wave
+    // several metres up. `submerged=0` with the effect still visible means it is not this
+    // gate at all and the compositor's own near-surface band is what engaged.
+    {
+        const float camAbove = cameraPos.Y() - land.GetSeaLevel();
+        const bool stateChanged = _cameraSubmerged != _loggedCameraSubmerged;
+        const bool dueForRepeat = _cameraSubmerged && (_params.time - _lastSubmersionLogTime) >= 1.0f;
+        if (stateChanged || dueForRepeat)
+        {
+            _loggedCameraSubmerged = _cameraSubmerged;
+            _lastSubmersionLogTime = _params.time;
+            LOG_INFO(Graphics,
+                     "Water submersion: submerged={} camY={:.2f} sea={:.2f} localSurface={:.2f} "
+                     "camAbove={:.2f} submersion={:.2f} preset={} waveAmp={:.2f} effect={}",
+                     _cameraSubmerged ? 1 : 0, cameraPos.Y(), land.GetSeaLevel(), localSurface, camAbove, submersion,
+                     look.cascadePreset, look.waveAmp, look.underwaterEffect ? 1 : 0);
+        }
+    }
     // WTR-001 — deterministic FFT seed. The authored default (1337.0, set in BuildQuadtree)
     // already keeps the random field stable across frames; allow the dev tab to override it,
     // so a frozen frame is reproducible regardless of seq-of-edits to the spectrum. Setting a

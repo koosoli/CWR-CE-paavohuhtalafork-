@@ -183,8 +183,15 @@ fn water_path_length(ray_dir: vec3<f32>, target_distance: f32, cam_above: f32) -
 // trough cross somewhere else or not at all — so the waterline appears as the boundary
 // between them, at whatever shape the waves actually have.
 //
+// The march is ONLY for a submerged eye. A dry eye keeps the flat model, because from
+// above the surface you are looking AT the water, not through a volume, and the water
+// shader owns those pixels. Marching a dry eye fogged the entire sea from the beach: a
+// near-horizontal ray always passes under some distant crest, so it found a "crossing"
+// twenty metres out and returned a hundred metres of water path for a camera standing
+// in the open air.
+//
 // Cost is one surface_height_at per step, so it stays behind the compositor's existing
-// underwater-only gate; it is not paid on a dry frame.
+// near-surface gate; it is not paid on a dry frame.
 fn wavy_water_path_length(ray_dir: vec3<f32>, target_distance: f32, flat_above: f32) -> f32 {
     // No FFT cascades means no displacement to sample — the binding is the zero fallback
     // array. Use the CPU's whole-screen height, which on the Gerstner preset already
@@ -193,20 +200,39 @@ fn wavy_water_path_length(ray_dir: vec3<f32>, target_distance: f32, flat_above: 
     if (i32(params.camera_pos_layers.w) <= 0) {
         return water_path_length(ray_dir, target_distance, flat_above);
     }
+    let eye_above = ray_above_surface(ray_dir, 0.0);
+    if (eye_above >= 0.0) {
+        // Dry eye: the compositor contributes NOTHING.
+        //
+        // Water renders with depth_write_enabled=false, so the depth target this pass reads
+        // never contains the water surface — it holds the seabed, the terrain behind it, or
+        // nothing at all. Handing that to the flat model made a camera a metre above the sea
+        // looking slightly downward "enter" the water at its plane crossing and fog every
+        // one of the ninety metres behind it. That is the reported "the underwater effect
+        // kicks in when I am 3-4 metres over the water level", and it is not the march's
+        // doing — the flat model did it too, for any downward ray.
+        //
+        // From above the surface the water shader already owns those pixels: it draws the
+        // body colour, the depth tint and the refracted seabed itself. A second helping of
+        // volume on top is double counting.
+        //
+        // This still fixes the crest case, because eye_above is measured against the WAVY
+        // surface: a crest standing over the eye makes it negative and takes the march
+        // below, where the flat datum would have called the eye dry.
+        return 0.0;
+    }
     let probe = min(target_distance, WATERLINE_PROBE_M);
     let step = probe / f32(WATERLINE_STEPS);
     var prev_t = 0.0;
-    var prev_f = ray_above_surface(ray_dir, 0.0);
-    let start_submerged = prev_f < 0.0;
+    var prev_f = eye_above;
     var cross_t = -1.0;
     for (var i = 1; i <= WATERLINE_STEPS; i = i + 1) {
         let t = f32(i) * step;
         let f = ray_above_surface(ray_dir, t);
-        if ((f < 0.0) != start_submerged) {
-            // Linear root between the bracketing samples. The denominator has the sign of
-            // prev_f in either crossing direction, so the fraction is positive both ways.
+        if (f >= 0.0) {
+            // Linear root between the bracketing samples: this is where the ray surfaces.
             let denom = prev_f - f;
-            let safe_denom = select(denom, 1e-5, abs(denom) < 1e-5);
+            let safe_denom = select(denom, -1e-5, abs(denom) < 1e-5);
             cross_t = mix(prev_t, t, clamp(prev_f / safe_denom, 0.0, 1.0));
             break;
         }
@@ -214,18 +240,15 @@ fn wavy_water_path_length(ray_dir: vec3<f32>, target_distance: f32, flat_above: 
         prev_f = f;
     }
     if (cross_t >= 0.0) {
-        // Submerged rays are in water up to where they surface; dry rays are in water from
-        // where they dive to wherever the scene stopped them.
-        if (start_submerged) {
-            return cross_t;
-        }
-        return max(target_distance - cross_t, 0.0);
+        // In water up to where it surfaces. Rays exiting through a trough get a short path
+        // while their neighbours running under a crest get a long one — that difference is
+        // the waterline across the frame.
+        return cross_t;
     }
-    // Nothing crossed inside the probe. Hand the remaining distance to the flat model,
-    // starting from the far end of the probe where prev_f is the ray's height above the
+    // Still under water at the end of the probe. The whole probe is wet; hand the rest to
+    // the flat model from the probe's far end, where prev_f is the ray's height above the
     // surface — beyond a few tens of metres the wave detail no longer resolves anyway.
-    let tail = water_path_length(ray_dir, max(target_distance - probe, 0.0), prev_f);
-    return select(tail, probe + tail, start_submerged);
+    return probe + water_path_length(ray_dir, max(target_distance - probe, 0.0), prev_f);
 }
 
 struct VsOut { @builtin(position) clip: vec4<f32>, @location(0) uv: vec2<f32> };
@@ -293,11 +316,27 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     }
     let color = textureSampleLevel(scene_tex, scene_samp, sample_uv, 0.0).rgb;
 
-    // Use the same physically plausible RGB absorption curve as the surface shader. The previous
-    // rewrite used pow(deep_colour, path*extinction); the authored deep swatch is very dark, so
-    // that destroyed almost all transmission within a few metres and left only uniform blue haze.
+    // Absorption hue comes from the AUTHORED water colour, so submerging does not change
+    // substance: the Water tab's deep swatch is what tints the surface from above, and it
+    // is now what tints the volume from inside. It used to be a fixed (0.280, 0.065, 0.020)
+    // curve that had no connection to the water you swam into, which is why the underwater
+    // blue read as a different — and more turquoise — liquid than the sea above it.
+    //
+    // Only the hue is taken. Using the swatch directly as a transmittance
+    // (pow(deep, path*ext)) is what an earlier rewrite did, and the authored deep colour is
+    // dark enough that it killed almost all transmission within a few metres. Normalising
+    // the per-channel absorption to the same MEAN as the curve it replaces keeps the
+    // overall density where it was tuned, and moves only the balance between channels.
     let ext = max(params.time_height_range_ext.w, 1e-3);
-    let extinction_rgb = vec3<f32>(0.280, 0.065, 0.020) * max(ext * 2.5, 0.12);
+    let density = max(ext * 2.5, 0.12);
+    let deep_lin = srgb_to_linear_v3(clamp(params.deep_color.rgb, vec3<f32>(1e-4), vec3<f32>(1.0)));
+    // -log(colour) is the absorption that would produce that colour over unit depth; the
+    // darkest channel absorbs most, which is what makes deep water blue.
+    let absorb = -log(deep_lin);
+    let mean_absorb = max((absorb.r + absorb.g + absorb.b) / 3.0, 1e-4);
+    // 0.1216 is the mean of the retired (0.280, 0.065, 0.020) curve, so a neutral swatch
+    // reproduces the previous density exactly.
+    let extinction_rgb = absorb * (0.1216 / mean_absorb) * density;
     let transmittance = exp(-extinction_rgb * path_m);
 
     // The frustum-aligned volume carries integrated, terrain/object-shadowed in-scattering.

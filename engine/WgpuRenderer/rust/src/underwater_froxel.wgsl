@@ -130,9 +130,15 @@ fn cs_underwater_froxel(@builtin(global_invocation_id) gid: vec3<u32>) {
     let max_dist = params.time_height_range_ext.z;
     let cam_above = params.time_height_range_ext.y;
     let ext = max(params.time_height_range_ext.w, 1e-3);
-    let extinction_rgb = vec3<f32>(0.280, 0.065, 0.020) * max(ext * 2.5, 0.12);
     let shallow = srgb_to_linear_v3(clamp(params.shallow_color.xyz, vec3<f32>(1e-4), vec3<f32>(1.0)));
     let deep = srgb_to_linear_v3(clamp(params.deep_color.xyz, vec3<f32>(1e-4), vec3<f32>(1.0)));
+    // Same derivation as the compositor: absorption hue from the authored deep swatch,
+    // normalised to the mean of the retired (0.280, 0.065, 0.020) curve so density is
+    // unchanged. The two passes must agree or the in-scattering would be a different
+    // colour from the extinction it is supposed to balance.
+    let absorb = -log(deep);
+    let mean_absorb = max((absorb.r + absorb.g + absorb.b) / 3.0, 1e-4);
+    let extinction_rgb = absorb * (0.1216 / mean_absorb) * max(ext * 2.5, 0.12);
     let shallow_peak = max(max(shallow.r, shallow.g), max(shallow.b, 1e-4));
     let deep_peak = max(max(deep.r, deep.g), max(deep.b, 1e-4));
     let shallow_unit = shallow / shallow_peak;

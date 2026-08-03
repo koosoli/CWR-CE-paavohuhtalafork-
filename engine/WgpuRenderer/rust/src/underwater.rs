@@ -63,7 +63,17 @@ fn underwater_refraction_rejects_foreground_depth_leaks() {
     assert!(shader.contains("let warp_limit = 3.0 / dims_f"));
     assert!(shader.contains("let use_warp = warped_depth <= base_depth + 0.001"));
     assert!(shader.contains("fn water_path_length"));
-    assert!(shader.contains("let extinction_rgb = vec3<f32>(0.280, 0.065, 0.020)"));
+    // Absorption hue is derived from the authored deep swatch, not a fixed curve, so the
+    // volume is the same substance as the surface. The 0.1216 normaliser is the mean of
+    // the curve it replaced and is what keeps the density where it was tuned.
+    assert!(shader.contains("let absorb = -log(deep_lin);"));
+    assert!(shader.contains("(0.1216 / mean_absorb)"));
+    assert!(!shader.contains("vec3<f32>(0.280, 0.065, 0.020)"));
+    // Both underwater passes must derive it the same way or the in-scattering would be a
+    // different colour from the extinction it balances.
+    let froxel = include_str!("underwater_froxel.wgsl");
+    assert!(froxel.contains("(0.1216 / mean_absorb)"));
+    assert!(!froxel.contains("vec3<f32>(0.280, 0.065, 0.020)"));
     assert!(shader.contains("underwater_froxel"));
     assert!(!shader.contains("pow(deep_linear"));
 }
@@ -138,32 +148,26 @@ fn wavy_path(
     surface: impl Fn(f32) -> f32,
 ) -> f32 {
     let above_at = |t: f32| (eye[1] + ray[1] * t) - surface(eye[0] + ray[0] * t);
+    let eye_above = above_at(0.0);
+    if eye_above >= 0.0 {
+        return 0.0;
+    }
     let probe = target_distance.min(WATERLINE_PROBE_M);
     let step = probe / WATERLINE_STEPS as f32;
     let mut prev_t = 0.0_f32;
-    let mut prev_f = above_at(0.0);
-    let start_submerged = prev_f < 0.0;
-    let mut cross_t = -1.0_f32;
+    let mut prev_f = eye_above;
     for i in 1..=WATERLINE_STEPS {
         let t = i as f32 * step;
         let f = above_at(t);
-        if (f < 0.0) != start_submerged {
+        if f >= 0.0 {
             let denom = prev_f - f;
-            let safe = if denom.abs() < 1e-5 { 1e-5 } else { denom };
-            cross_t = prev_t + (t - prev_t) * (prev_f / safe).clamp(0.0, 1.0);
-            break;
+            let safe = if denom.abs() < 1e-5 { -1e-5 } else { denom };
+            return prev_t + (t - prev_t) * (prev_f / safe).clamp(0.0, 1.0);
         }
         prev_t = t;
         prev_f = f;
     }
-    if cross_t >= 0.0 {
-        if start_submerged {
-            return cross_t;
-        }
-        return (target_distance - cross_t).max(0.0);
-    }
-    let tail = flat_path(ray, (target_distance - probe).max(0.0), prev_f);
-    if start_submerged { probe + tail } else { tail }
+    probe + flat_path(ray, (target_distance - probe).max(0.0), prev_f)
 }
 
 #[test]
@@ -227,26 +231,64 @@ fn a_view_straddling_the_surface_splits_instead_of_answering_once() {
 }
 
 #[test]
-fn a_flat_sea_reproduces_the_plane_answer() {
-    // The march must not invent water where there is none to find: on a dead calm sea it
-    // has to agree with the plane it replaces, or every existing underwater view changes.
-    let calm = |_x: f32| 0.0_f32;
-    for (eye_y, ray) in [
-        (-5.0_f32, [0.0_f32, 1.0_f32]),
-        (-5.0, [0.9, 0.44]),
-        (-5.0, [1.0, 0.0]),
-        (-5.0, [0.0, -1.0]),
-        (2.0, [0.0, -1.0]),
-        (2.0, [0.7, -0.7]),
-        (2.0, [0.0, 1.0]),
+fn an_eye_in_open_air_is_not_fogged_by_distant_crests() {
+    // Reported from the game: "the underwater effect kicks in when I am 3-4 metres over
+    // the water level." The first version of the march caused it. A camera above the sea
+    // looking out is nearly horizontal, and a near-horizontal ray ALWAYS passes under some
+    // crest eventually — so the march found a crossing a few tens of metres out and
+    // returned most of the ray as water, fogging the whole sea and everything behind it.
+    //
+    // Above the surface you are looking AT the water, not through it; the water shader owns
+    // those pixels. The march is now reserved for a submerged eye.
+    let amplitude = 1.0_f32;
+    let k = std::f32::consts::TAU / 20.0;
+    let surface = |x: f32| amplitude * (x * k).sin();
+
+    let eye = [0.0_f32, 1.4]; // inside UNDERWATER_NEAR_SURFACE_BAND, so the pass does run
+    for ray in [
+        [1.0_f32, -0.01_f32],
+        [1.0, 0.0],
+        [1.0, 0.01],
+        [1.0, -0.05],
+        [-1.0, -0.02],
     ] {
-        let wavy = wavy_path([0.0, eye_y], ray, 120.0, calm);
-        let flat = flat_path(ray, 120.0, eye_y);
-        assert!(
-            (wavy - flat).abs() < 0.05,
-            "calm sea disagreement at eye {eye_y} ray {ray:?}: {wavy} vs {flat}"
+        let path = wavy_path(eye, ray, 120.0, surface);
+        assert_eq!(
+            path, 0.0,
+            "a camera {} m above the sea looking along {ray:?} must see no water volume, \
+             got {path} m",
+            eye[1]
         );
     }
+}
+
+#[test]
+fn a_submerged_eye_on_a_calm_sea_reproduces_the_plane_answer() {
+    // The march must not invent or lose water: with the eye under a dead calm sea it has to
+    // agree with the plane it replaces, or every existing underwater view changes.
+    let calm = |_x: f32| 0.0_f32;
+    for ray in [
+        [0.0_f32, 1.0_f32],
+        [0.9, 0.44],
+        [1.0, 0.0],
+        [0.0, -1.0],
+        [0.7, -0.7],
+    ] {
+        let wavy = wavy_path([0.0, -5.0], ray, 120.0, calm);
+        let flat = flat_path(ray, 120.0, -5.0);
+        assert!(
+            (wavy - flat).abs() < 0.05,
+            "calm sea disagreement under water, ray {ray:?}: {wavy} vs {flat}"
+        );
+    }
+
+    // Above the surface the two deliberately DISAGREE. The plane fogs everything past its
+    // own crossing; the compositor no longer contributes above water at all, because the
+    // water shader has already drawn those pixels and the depth target it would fog does
+    // not even contain the surface.
+    let looking_down = [0.7_f32, -0.7_f32];
+    assert!(flat_path(looking_down, 120.0, 2.0) > 100.0);
+    assert_eq!(wavy_path([0.0, 2.0], looking_down, 120.0, calm), 0.0);
 }
 
 #[test]

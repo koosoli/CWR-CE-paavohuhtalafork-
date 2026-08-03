@@ -61,6 +61,9 @@ class WaterWgpu : public IWaterRenderer
     bool _interactionDemo = false;
     int _lastInteractionDemoPulse = -1;
     bool _cameraSubmerged = false;
+    // Throttling state for the submersion diagnostic in Simulate(); see the log site.
+    bool _loggedCameraSubmerged = false;
+    float _lastSubmersionLogTime = -1000.0f;
 
     // A node joins the water tree when its terrain min-height dips to or below this
     // world height (highest possible sea surface + a wave-crest margin).
