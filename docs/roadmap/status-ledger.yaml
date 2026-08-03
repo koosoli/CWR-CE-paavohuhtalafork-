@@ -78,7 +78,7 @@ tickets:
     production_call_sites: []
     test_ids: [preview0-ledger-validation]
     benchmark_artifacts: []
-    evidence_hash: c6ad73aea2c4c10c34a2a908d2dc0595c3404f1f2caf227101d075c9f8665249
+    evidence_hash: 84b464744da4cecc86644c9915f995915f9245207a63865316a26cc999404d75
     decision_record: null
     known_failures:
       - No reviewed activation commit exists; the overlay remains PREPARED.
@@ -360,7 +360,7 @@ tickets:
         verified_commit: null
     test_ids: [wgpu-capabilities-check, wgpu-windowed-resize-capture, wgpu-normal-loop-minimize-restore, wgpu-lifecycle-repeat-in-session, runtime-diagnostics-once]
     benchmark_artifacts: [docs/roadmap/evidence/preview0-manifest.json]
-    evidence_hash: b94a879f19ac5b6a372223b71b42fbfdecd0945635fe4ca577ea16d1aea23180
+    evidence_hash: 67efe6b0b25d8f9966344eafc8374263df35319a81d4df0654ff19ae40319aed
     decision_record: null
     known_failures: []
     fallback: Unsupported optional capabilities are reported and feature paths remain gated.

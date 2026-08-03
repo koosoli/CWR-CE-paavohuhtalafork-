@@ -68,43 +68,35 @@ claimed fog was "left at the engine's current" (it has always been forced to 0),
 and claimed there was "no public getter" for fog (`Weather::GetFog()` exists;
 only the `Landscape` forwarder was missing, and is now added).
 
-## Known issue — cursor after focus loss (reported 2026-08-03, NOT diagnosed)
+## Resolved — "cursor after focus loss" was Zeus free-fly, not a bug (2026-08-03)
 
-Alt-tabbing to another application and back leaves the cursor unable to click game
-menu items. Not yet reproduced or fixed. Ruled out so far, by reading:
+Reported as: alt-tab away and back, and the in-mission menu (Abort / Exit) stops
+taking clicks while everything else works.
 
-- `SkipKeys` — `SetSkipKeys(true)` is called on focus *gained* as well as lost and
-  is never cleared, which looks like the bug but is not: the `SkipKeys` flag in
-  `InputProcessingSdl.cpp` is written and **never read**. It is dead code and
-  should probably be removed.
-- `IGraphicsEngine::Activate()` / `Deactivate()` — empty virtuals, no backend
-  overrides.
-- `DebugOverlay::WantsMouse()` — swallows mouse while the panel is open, by design,
-  and `s_zeusConsumeMouseEvent` is reset at the top of every `ProcessEvent`, so it
-  cannot latch.
+**Not a focus bug.** Zeus free-fly was still active, so the Zeus tab was consuming
+the left click as a lasso-select instead of letting it reach the menu — see
+`DebugOverlay::ProcessEvent`, which sets `s_zeusConsumeMouseEvent` on
+`SDL_EVENT_MOUSE_BUTTON_DOWN` whenever `!s_visible && s_zeusCamera`. Leaving free-fly
+restores menu clicks. The alt-tab was incidental: it was simply when the user next
+tried to use the menu.
 
-**Hypothesis rejected (2026-08-03).** The first guess was that the menu ran
-*ungrabbed*, letting the OS cursor pin against a screen edge so motion in that
-direction stopped producing deltas. That is wrong: `_mouseGrab` defaults to `true`
-(`SDLEventWindow.hpp`), so relative mouse mode is active and the OS cursor position
-is irrelevant. Recorded because it is a plausible-sounding theory that a future
-reader would otherwise re-derive.
+Worth keeping as a design note rather than deleting: Zeus deliberately claims clicks
+so lasso and placement work with the dev panel closed, and it has no notion of "a UI
+display is open, so let this click through". If that becomes annoying, the fix is to
+skip the consume when a modal display owns input — not to change the focus handling.
 
-**What was found and fixed instead.** The engine has a focus-suppression design that
-was never connected at either end:
+Two real defects were found while chasing this, and both were worth fixing on their
+own merits:
 
-- `GInput.gameFocusLost` is read in eight places — `MouseState::Update`, the six
-  `InputSubsystem` `QueryKey`/`QueryAxis` guards, and the gamepad look path — and was
-  **written by nothing**. It sat at 0 for the whole session, so every focus guard was
-  inert.
-- `SetSkipKeys(true)` was called on focus gained *and* lost, and the `SkipKeys` flag
-  it wrote was **read by nothing**. Dead code that read exactly like the mechanism.
+- `GInput.gameFocusLost` was read in eight places across the input system and written
+  by nothing, so every focus guard was inert. Now armed on both focus transitions and
+  decayed in `ProcessMouse_SDL`. It gates **aim deltas only**, so it stops the view
+  whipping when you alt-tab back and never blocks cursor movement.
+- `SetSkipKeys()` was called on every focus change and the flag it wrote was read by
+  nothing. Removed — it read exactly like the mechanism while doing nothing, which is
+  what made this expensive to investigate.
 
-`gameFocusLost` is now armed on both focus transitions and decays over
-`kFocusSettleFrames` in `ProcessMouse_SDL`; the dead `SkipKeys` path is removed. Note
-what that flag gates: **aim deltas only**. Menu cursor movement and clicks still pass,
-which is why arming it on the way back in is safe.
+The focus-state diagnostic added during the investigation is kept: every transition
+logs `appActive`, `appPaused`, `appIconic`, `mouseGrab`, SDL's actual relative-mouse
+state and `keepFocus`. Cheap, and the next report of this shape starts with data.
 
-This restores intended behaviour and removes the red herring, but it is **not proven
-to be the reported bug** — the symptom is about clicks not registering, and this path
-never blocked clicks. Still needs a smoke test.

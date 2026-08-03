@@ -286,7 +286,7 @@ def main() -> int:
                     raise ValueError(
                         f"{ticket} evidence hash does not match its evidence "
                         f"({len(hashed)} file(s)); recompute with "
-                        f"`python scripts/compute_evidence_hash.py {ticket}`"
+                        f"`python scripts/compute_evidence_hash.py --all --write`"
                     )
                 reviewer = value(block, "reviewer")
                 owner = value(block, "owner")
