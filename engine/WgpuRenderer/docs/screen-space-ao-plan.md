@@ -171,6 +171,21 @@ normal where GTAO has coverage and the geometric normal elsewhere — GTAO's is 
 
 ## 7. Stages
 
+> **Stage 1a landed (2026-08-03): the MSAA normal resolve.** `NormalResolve` in `gfx3d/mod.rs`
+> plus `gfx3d/normal_resolve.wgsl`, mirroring `DepthResolve`. Built only when
+> `sample_count > 1`; sized alongside the prepass normal target; exposed as
+> `Gfx3d::normal_sample_view()` (`None` at 1×, where `normal_view()` is already single-sample).
+>
+> It is **deliberately not recorded per frame yet** — nothing samples the resolved normal
+> until the GTAO pass exists, and a fullscreen pass with no consumer is per-frame GPU cost for
+> nothing. `NormalResolve::resolve()` is ready for GTAO to call. Same "present, deliberately
+> unwired" shape the compute skin bake uses.
+>
+> The sample-0 choice is pinned by a test that fails if the shader is changed to average raw
+> texels — verified by making it average and watching the test fail. That mistake looks *more*
+> principled than the correct code, which is exactly why it is worth a test: oct codes wrap, so
+> averaging two samples across the fold points nowhere near either normal.
+
 1. **Scalar GTAO + bilateral blur, composited × sky-vis onto ambient.** MSAA normal resolve (sample-0),
    compute pass, spatial denoise, `@binding(11)` AO, multiply into the ambient of terrain + objects.
    Debug view (raw AO greyscale, like sky-vis). ImGui: enable, radius, strength, slice/step counts,

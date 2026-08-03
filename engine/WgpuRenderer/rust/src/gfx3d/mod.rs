@@ -1150,6 +1150,170 @@ impl DepthResolve {
     }
 }
 
+// Single-sample resolve of the prepass' oct-encoded view-space normal target, the one
+// input GTAO needs that the prepass does not already produce (screen-space-ao-plan §2).
+// MSAA only — at 1x the prepass normal is already single-sample and this is not built.
+//
+// Built but NOT yet recorded per frame: nothing samples the resolved normal until the GTAO
+// pass lands, and adding a fullscreen pass with no consumer would be per-frame GPU cost for
+// nothing. `resolve` is called by GTAO when it arrives. Same "present, deliberately unwired"
+// shape the compute skin bake uses.
+#[test]
+fn normal_resolve_takes_a_single_sample_rather_than_averaging() {
+    let src = include_str!("normal_resolve.wgsl");
+    let module = naga::front::wgsl::parse_str(src).expect("normal_resolve.wgsl parse");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("normal_resolve.wgsl validate");
+
+    // The reduction is the whole correctness question here. Octahedral codes wrap, so a
+    // texel-space average of two samples either side of the fold points nowhere near either
+    // normal. Taking sample 0 is what makes this correct-if-coarse; averaging raw texels
+    // would be quietly wrong, and looks more principled, so pin it.
+    assert!(
+        src.contains("textureLoad(src, p, 0)"),
+        "normal resolve must select a sample, not blend"
+    );
+    for wrong in ["+ textureLoad", "* 0.25", "/ f32(sample_count)"] {
+        assert!(
+            !src.contains(wrong),
+            "normal resolve must not average oct-encoded texels (found {wrong})"
+        );
+    }
+}
+
+pub(crate) struct NormalResolve {
+    pipeline: wgpu::RenderPipeline,
+    layout: wgpu::BindGroupLayout,
+    view: Option<wgpu::TextureView>,
+    bind: Option<wgpu::BindGroup>,
+}
+
+impl NormalResolve {
+    pub(crate) fn new(device: &wgpu::Device) -> Self {
+        let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("wgr_normal_resolve"),
+            source: wgpu::ShaderSource::Wgsl(include_str!("normal_resolve.wgsl").into()),
+        });
+        let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            label: Some("wgr_normal_resolve_layout"),
+            entries: &[wgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: wgpu::ShaderStages::FRAGMENT,
+                ty: wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: true,
+                },
+                count: None,
+            }],
+        });
+        let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("wgr_normal_resolve_pipeline_layout"),
+            bind_group_layouts: &[Some(&layout)],
+            immediate_size: 0,
+        });
+        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("wgr_normal_resolve_pipeline"),
+            layout: Some(&pl),
+            vertex: wgpu::VertexState {
+                module: &module,
+                entry_point: Some("vs_main"),
+                compilation_options: Default::default(),
+                buffers: &[],
+            },
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(),
+            fragment: Some(wgpu::FragmentState {
+                module: &module,
+                entry_point: Some("fs_main"),
+                compilation_options: Default::default(),
+                targets: &[Some(wgpu::ColorTargetState {
+                    format: NORMAL_FORMAT,
+                    blend: None,
+                    write_mask: wgpu::ColorWrites::ALL,
+                })],
+            }),
+            multiview_mask: None,
+            cache: None,
+        });
+        Self {
+            pipeline,
+            layout,
+            view: None,
+            bind: None,
+        }
+    }
+
+    // (Re)allocate the resolved normal target and bind `src` (the MSAA prepass normal view).
+    // Returns a clone of the resolved view for normal_sample_view.
+    pub(crate) fn resize(
+        &mut self,
+        device: &wgpu::Device,
+        w: u32,
+        h: u32,
+        src: &wgpu::TextureView,
+    ) -> wgpu::TextureView {
+        let tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_3d_normal_resolved"),
+            size: wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: NORMAL_FORMAT,
+            usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+        self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("wgr_normal_resolve_bind"),
+            layout: &self.layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: wgpu::BindingResource::TextureView(src),
+            }],
+        }));
+        self.view = Some(view.clone());
+        view
+    }
+
+    // Record the resolve (MSAA normal -> single-sample). Must run after the prepass has
+    // written the normal target and before GTAO reads it.
+    #[allow(dead_code)] // wired when the GTAO pass lands; see the struct comment.
+    pub(crate) fn resolve(&self, encoder: &mut wgpu::CommandEncoder) {
+        let (Some(view), Some(bind)) = (self.view.as_ref(), self.bind.as_ref()) else {
+            return;
+        };
+        let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wgr_normal_resolve"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view,
+                depth_slice: None,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        pass.set_pipeline(&self.pipeline);
+        pass.set_bind_group(0, bind, &[]);
+        pass.draw(0..3, 0..1);
+    }
+}
+
 pub struct Gfx3d {
     cameras: CameraGroup,
     conform: ConformGroup,
@@ -1213,6 +1377,10 @@ pub struct Gfx3d {
     // depth_sample_view); `depth_resolve_far` = farthest (water, feeds water_depth_view).
     depth_resolve: Option<DepthResolve>,
     depth_resolve_far: Option<DepthResolve>,
+    // MSAA-only single-sample normal for GTAO (screen-space-ao-plan §2). Present but not
+    // recorded per frame until the GTAO pass consumes it.
+    normal_resolve: Option<NormalResolve>,
+    normal_sample_view: Option<wgpu::TextureView>,
     // Single-sample depth-stencil for the post-tonemap UI phase (Some only when sample_count > 1).
     // That phase composites display-referred 2D to the 1x swapchain, so it can't share the MSAA
     // scene depth (mismatched sample counts). Cleared per use; world occlusion isn't carried into
@@ -1677,6 +1845,8 @@ impl Gfx3d {
             (sample_count > 1).then(|| DepthResolve::new(device, sample_count, false));
         let depth_resolve_far =
             (sample_count > 1).then(|| DepthResolve::new(device, sample_count, true));
+        // Same MSAA-only condition: at 1x the prepass normal is already single-sample.
+        let normal_resolve = (sample_count > 1).then(|| NormalResolve::new(device));
 
         Gfx3d {
             cameras,
@@ -1707,6 +1877,8 @@ impl Gfx3d {
             depth_gen: 0,
             depth_resolve,
             depth_resolve_far,
+            normal_resolve,
+            normal_sample_view: None,
             ui_depth: None,
             hiz: hiz::HiZ::new(device),
             // GPU Hi-Z occlusion: default on when GPU-driven is on (the point of this feature),
@@ -2455,6 +2627,17 @@ impl Gfx3d {
         });
         let normal_view = normal.create_view(&wgpu::TextureViewDescriptor::default());
         self.normal = Some((normal, normal_view));
+        // Resolve target for GTAO, sized with its source. MSAA only; at 1x the prepass
+        // normal above is already single-sample and normal_sample_view stays None.
+        self.normal_sample_view = self.normal_resolve.as_mut().map(|nr| {
+            let src = self
+                .normal
+                .as_ref()
+                .expect("normal target just created")
+                .1
+                .clone();
+            nr.resize(device, size.0, size.1, &src)
+        });
         // Single-sample UI-phase depth-stencil (MSAA only): the post-tonemap 2D composites to the
         // 1x swapchain and needs a matching-sample depth attachment for its (1x) pipelines.
         self.ui_depth = (self.sample_count > 1).then(|| {
@@ -2514,6 +2697,13 @@ impl Gfx3d {
     // The prepass' view-space normal G-buffer view (the prepass colour attachment).
     pub fn normal_view(&self) -> Option<&wgpu::TextureView> {
         self.normal.as_ref().map(|(_, v)| v)
+    }
+
+    // Single-sample normal for GTAO. None at 1x, where normal_view() is already
+    // single-sample and should be used directly (screen-space-ao-plan §2).
+    #[allow(dead_code)] // consumed when the GTAO pass lands.
+    pub fn normal_sample_view(&self) -> Option<&wgpu::TextureView> {
+        self.normal_sample_view.as_ref()
     }
 
     // The cascade shadow depth map as a D2Array view (or the 1x1 dummy when no shadows),
