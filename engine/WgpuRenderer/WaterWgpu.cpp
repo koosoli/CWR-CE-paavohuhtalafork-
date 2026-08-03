@@ -586,8 +586,7 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // The hysteresis above still decides *whether* the effect is on; this only
     // changes how strongly.
     const float submersion = localSurface - cameraPos.Y();
-    _params.fft_control.w =
-        (_cameraSubmerged && look.underwaterEffect) ? std::max(submersion, 0.001f) : 0.0f;
+    _params.fft_control.w = (_cameraSubmerged && look.underwaterEffect) ? std::max(submersion, 0.001f) : 0.0f;
     // WTR-001 — deterministic FFT seed. The authored default (1337.0, set in BuildQuadtree)
     // already keeps the random field stable across frames; allow the dev tab to override it,
     // so a frozen frame is reproducible regardless of seq-of-edits to the spectrum. Setting a
