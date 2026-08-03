@@ -7,6 +7,27 @@
 **Roadmap slot:** consumes Phase 2 (depth prepass) and Phase 4 (GPU-driven multi-view cull). See
 [implementation-roadmap.md](implementation-roadmap.md). Tier 1 needs neither and can land immediately.
 
+> **RND-030 reconciliation (2026-08-03):** the status line above is out of date, but less so than the
+> other reconciled plans, so this note is per-item rather than a blanket "implemented".
+>
+> A cascaded shadow map system is live in the branch — `wgr_shadow_cascades` (`lib.rs:1884`),
+> `gfx3d/shadow_depth.wgsl`, `gfx3d/gpu_driven_shadow.wgsl` — but most of that predates this plan.
+> Checking **Tier 1** item by item against the branch:
+>
+> | Tier 1 item | State |
+> | --- | --- |
+> | 1. Decouple shadow distance from the 250 m clamp | **Landed.** `shadowDistance` defaults to 400 m (`Engine.hpp:826`) and the dev panel exposes it as "explicit cascade reach, decoupled from the 250 m clamp". |
+> | 2. `MAX_CASCADES` 4 → 8 at 2048² | **Not landed.** Still `const MAX_CASCADES: u32 = 4` (`gfx3d/mod.rs:42`), and the dev panel's Cascades slider is capped at 4. |
+> | 3. Retune `splitCoef` / `distanceCoef` and expose them | **Landed.** Both are sliders in the dev overlay (`DebugOverlay.cpp:2755`, `:2761`). |
+> | 4. Closed-vs-single-sided caster split with front-face culling | **No evidence found** in `gfx3d/mod.rs` or `gfx3d/cull.rs`. |
+>
+> Tiers 2 and 3 were not audited. Note that the reconciliation report cites `MAX_CASCADES = 4` as
+> evidence this plan shipped; that is the value item 2 exists to *change*, so it is evidence of the
+> opposite. The report's row for this plan is corrected there.
+>
+> The status line is left as written rather than rewritten, so the document's own history stays
+> readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+
 > **RND-030 reconciliation (2026-08-02):** the status line above is out of date: cascaded shadow maps are **implemented and live** in this branch. `MAX_CASCADES = 4` (`gfx3d/mod.rs:42`), a `wgr_shadow_cascades` pass (`lib.rs:1874`), `shadow_depth.wgsl` and `gpu_driven_shadow.wgsl`, plus far-cascade caster handling in `gfx3d/cull.rs:1392`.
 >
 > The status line is left as written rather than rewritten, so the document's own history stays readable. See [RND-030-renderer-plan-reconciliation-20260802.md](../../../docs/roadmap/decisions/RND-030-renderer-plan-reconciliation-20260802.md).

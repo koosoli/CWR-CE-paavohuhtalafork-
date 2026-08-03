@@ -1067,14 +1067,36 @@ Depends on an `ADOPTED` or `ADAPTED` outcome from `RND-020`.
 
 The repository may already contain implementation roadmaps, audits, branches, prototypes, and partial production paths for depth prepass, GPU culling, multi-view rendering, bindless resources, lighting, shadows, HDR, skinning, and related renderer work. Before starting an overlapping system:
 
-- [ ] Inventory relevant renderer plans and their baseline commits.
+- [x] Inventory relevant renderer plans and their baseline commits.
 - [ ] Map their ticket or phase names into the authoritative ledger.
-- [ ] Verify claimed production call sites in the active integration branch.
-- [ ] Separate implemented, integrated, validated, superseded, experimental, and documentation-only work.
-- [ ] Record dependencies on water, materials, atmosphere, shadows, far-world rendering, and streaming.
-- [ ] Mark contradictory or outdated reports as historical rather than silently deleting them.
+- [x] Verify claimed production call sites in the active integration branch.
+- [x] Separate implemented, integrated, validated, superseded, experimental, and documentation-only work.
+- [x] Record dependencies on water, materials, atmosphere, shadows, far-world rendering, and streaming.
+- [x] Mark contradictory or outdated reports as historical rather than silently deleting them.
 - [ ] Reuse strong existing work; do not implement a second system merely because the master roadmap uses different terminology.
 - [ ] A stronger agent may consolidate or replace old plans when the decision record demonstrates lower complexity, better portability, or better measured performance.
+
+**State (2026-08-03).** The inventory, verification and dependency map live in
+[`RND-030-renderer-plan-reconciliation-20260802.md`](../decisions/RND-030-renderer-plan-reconciliation-20260802.md).
+All seven plans whose status line disagreed with the branch now carry an in-place reconciliation
+note; none was deleted.
+
+Re-auditing the shadow row while closing that out found the report had overstated it:
+`cascaded-shadow-map-plan` was filed under "actually live" on the strength of
+`MAX_CASCADES = 4`, which is the value its Tier 1 exists to change to 8. Tier 1 is two of four
+items. The correction is recorded in the report and in the plan. Read the rest of that matrix
+as "a symbol the plan mentions exists in the branch", not "the plan landed".
+
+Two boxes are deliberately still open, and neither is documentation work:
+
+- **Ledger mapping.** The status ledger holds the six Preview-0 tickets and nothing else, so
+  the shipped renderer systems have no owner or evidence record. That is the report's
+  recommendation 3 and it gates authorising overlapping renderer work.
+- **Reuse / consolidation.** A judgement call per system, not a sweep, and it wants the ledger
+  mapping first.
+
+The four genuinely unbuilt candidates, if renderer work is picked up next: `forward-plus`,
+`screen-space-ao`, `gpu-terrain-water-cull`, `terrain-fractal-detail`.
 
 ## FRAME-000 — Frame pacing, latency, and simulation/render decoupling — REQUIRED measurement outcome, implementation INVESTIGATE
 

@@ -36,11 +36,33 @@ Verified by locating the implementation in `engine/WgpuRenderer/rust/src` (and
 
 | Plan | Doc claim | Evidence in branch |
 | --- | --- | --- |
-| `cascaded-shadow-map-plan` | `PLANNED` (2026-07-08) | `MAX_CASCADES = 4` (`gfx3d/mod.rs:42`), `wgr_shadow_cascades` pass (`lib.rs:1874`), `shadow_depth.wgsl` + `gpu_driven_shadow.wgsl`, far-cascade caster handling in `gfx3d/cull.rs:1392` |
+| `cascaded-shadow-map-plan` | `PLANNED` (2026-07-08) | ⚠️ **Overstated — corrected 2026-08-03, see below.** `wgr_shadow_cascades` pass (`lib.rs:1884`), `shadow_depth.wgsl` + `gpu_driven_shadow.wgsl`, far-cascade caster handling in `gfx3d/cull.rs:1392` |
 | `water-cdlod-geometry-plan` | `PLANNED` (2026-07-08) | `water/mod.rs` + `water/water.wgsl`; runtime node/triangle counts logged from `WaterWgpu.cpp:979` (observed live: `total=20 lod0=20 tris=368640`) |
 | `render-params-consolidation-plan` | `PLANNED` (rev. 2026-07-12) | `WgrRenderParams` (`ffi.rs:589`) with a locked 368-byte ABI assert (`ffi.rs:1026`) |
 | `sky-visibility-ambient-plan` | `PLAN` (rev. 2026-07-12) | `WgrSkyVisibility` (`ffi.rs:594`), `terrain_set_sky_visibility` (`ffi.rs:1899`) |
 | `hdr-pipeline-plan` | `FINALIZED` — design locked, "implementation staged" | `bloom.rs`, `bloom.wgsl`, `exposure.wgsl`, HDR render targets |
+
+#### Correction (2026-08-03) — the shadow row was too strong
+
+This report is kept as written, per its own recommendation 1, with the correction recorded
+rather than the row rewritten.
+
+`cascaded-shadow-map-plan` does not belong in "documented as unbuilt, actually live" without
+qualification. A cascaded shadow map system is live, but most of it predates the plan, and the
+plan's own **Tier 1** is half done:
+
+| Tier 1 item | State |
+| --- | --- |
+| Decouple shadow distance from the 250 m clamp | Landed (`Engine.hpp:826`, 400 m default) |
+| `MAX_CASCADES` 4 → 8 at 2048² | **Not landed** — still 4 (`gfx3d/mod.rs:42`) |
+| Retune and expose `splitCoef` / `distanceCoef` | Landed (`DebugOverlay.cpp:2755`, `:2761`) |
+| Closed-caster front-face culling | No evidence found |
+
+The original row cited `MAX_CASCADES = 4` as evidence the plan had shipped. That is the value
+Tier 1 item 2 exists to change, so it evidences the opposite. The lesson generalises: "a symbol
+the plan mentions exists in the branch" is not the same claim as "the plan landed", and this
+inventory should be read as the former unless a row says otherwise. Tiers 2 and 3 were not
+audited by either pass.
 
 ### Stale caveat — committed since, wording obsolete
 
