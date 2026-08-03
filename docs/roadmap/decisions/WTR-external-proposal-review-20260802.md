@@ -41,6 +41,36 @@ This is the finding that matters most here. It is exactly the class of defect
 `RND-030` exists to surface, it predates the proposal, and it will keep
 generating collisions until it is resolved.
 
+### Addendum (2026-08-03) — one of the two namespaces is not in the repository
+
+Following this up to write a disambiguation note turned up something the
+original analysis did not state: **`.agents/` is gitignored** (`.gitignore:87`).
+`git ls-files .agents` returns nothing.
+
+So the Water System Master Plan — the namespace the source tags actually
+follow — cannot be read from a clone at all. A reader who checks out this
+repository and hits `WTR-031`, `WTR-052` or `WTR-085` in the shader source has
+no way to resolve any of them, because the only document that defines those
+identifiers is a local file. Twenty-eight distinct `WTR-` identifiers appear in
+`engine/`; the canonical roadmap defines thirteen, and none of the sub-ten
+tags among them.
+
+This also affects `CLAUDE.md`, which opens by requiring every agent to read
+`.agents/README.md` and `.agents/AGENT_BOOTSTRAP_AND_DIAGNOSTICS.md` before
+touching code or shaders. Those files are not in the repository either. The
+instruction is unfollowable from a fresh clone, and silently so — the reader
+sees a missing path, not a policy.
+
+That makes the collision worse than "two schemes disagree". One scheme is
+unresolvable, so a bare `WTR-` reference in source is not merely ambiguous to a
+new reader; it is undefined.
+
+**This needs an owner decision, and it is not one to infer.** Either the
+`.agents/` tree is tracked — in which case the collision is at least
+diagnosable — or the source tags move to identifiers that resolve against the
+canonical roadmap. Committing a directory the project deliberately keeps local
+is not a change to make on someone's behalf, so this records the gap instead.
+
 ## 2. Consequence for the proposal
 
 The proposal's `WTR-150` / `WTR-160` / `WTR-170` / `WTR-180` are **free in the
