@@ -572,9 +572,22 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     {
         _cameraSubmerged = cameraPos.Y() < localSurface - 0.03f;
     }
-    // Gates BOTH the fullscreen underwater compositor (Rust reads this lane as "player submerged")
-    // and the water shader's own underwater tint. Off unless the Water tab enables it.
-    _params.fft_control.w = (_cameraSubmerged && look.underwaterEffect) ? 1.0f : 0.0f;
+    // Gates BOTH the fullscreen underwater compositor and the water shader's own
+    // underwater tint. Off unless the Water tab enables it.
+    //
+    // Carries the eye's submersion DEPTH in metres rather than a 0/1 flag. As a
+    // flag, one centimetre under the surface produced exactly the same
+    // full-strength tint as ten metres down, and the compositor snapped its
+    // camera height to a hard -0.08 the instant the flag tripped — so a passing
+    // crest popped the whole screen to full underwater colour. Depth lets both
+    // consumers ramp instead. Positive means submerged; zero means dry, so the
+    // readers test `> 0` where they used to test `> 0.5`.
+    //
+    // The hysteresis above still decides *whether* the effect is on; this only
+    // changes how strongly.
+    const float submersion = localSurface - cameraPos.Y();
+    _params.fft_control.w =
+        (_cameraSubmerged && look.underwaterEffect) ? std::max(submersion, 0.001f) : 0.0f;
     // WTR-001 — deterministic FFT seed. The authored default (1337.0, set in BuildQuadtree)
     // already keeps the random field stable across frames; allow the dev tab to override it,
     // so a frozen frame is reproducible regardless of seq-of-edits to the spectrum. Setting a

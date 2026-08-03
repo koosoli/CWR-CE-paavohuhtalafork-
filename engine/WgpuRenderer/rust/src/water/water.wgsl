@@ -1453,7 +1453,8 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let reflection_weight = select(legacy_reflection_weight, physical_reflection_weight, physical_look);
     rgb = mix(transmitted, refl, reflection_weight);
 
-    let is_underwater = wp.fft_control.w > 0.5;
+    // fft_control.w carries submersion depth in metres now, not a 0/1 flag.
+    let is_underwater = wp.fft_control.w > 0.0;
     if (is_underwater) {
         let uw_dist = length(in.world_pos);
         let uw_extinction = 1.0 - exp(-uw_dist * vec3<f32>(0.20, 0.08, 0.03));

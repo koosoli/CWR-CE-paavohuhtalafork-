@@ -1488,7 +1488,8 @@ impl Renderer {
         let underwater_state =
             self.water
                 .underwater_params()
-                .and_then(|(sea_level, time, player_submerged)| {
+                .and_then(|(sea_level, time, submersion)| {
+                    let player_submerged = submersion > 0.0;
                     // Use the water draw camera, not an unrelated terrain/scene batch. The visual
                     // submersion boundary is the actual camera crossing the gameplay sea plane.
                     cameras.get(water_camera).and_then(|cam| {
@@ -1503,10 +1504,14 @@ impl Renderer {
                             let inv_vp =
                                 (view.inverse() * proj.inverse()).as_mat4().to_cols_array();
                             // A displaced crest can submerge the eye while it is still above the
-                            // flat sea datum. Mark that state just below the local surface instead
-                            // of classifying every horizontal/upward ray as air.
-                            let effective_above = if player_submerged && cam_above > 0.0 {
-                                -0.08
+                            // flat sea datum, so the flat `cam_above` would call it air. Use the
+                            // measured submersion depth instead.
+                            //
+                            // This used to snap to a fixed -0.08 the moment a boolean tripped,
+                            // which popped the screen to full underwater colour as a crest passed.
+                            // Depth makes it continuous: shallow submersion gives a shallow tint.
+                            let effective_above = if player_submerged {
+                                -submersion
                             } else {
                                 cam_above
                             };
