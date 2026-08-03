@@ -82,6 +82,21 @@ Two lessons, both already in the roadmap in other words:
 - A default is not a behaviour. `WGR_GPU_DRIVEN` has three defaults in three layers, and the
   one that decides the shipped game is the one furthest from the renderer.
 
+## 4a. What was done about it
+
+`[wgr] effective gates:` is now printed unconditionally at renderer startup, listing every
+gate's resolved value. On a default run of the shipped client it reports:
+
+```
+[wgr] effective gates: hdr=true prepass=true indirect=true gpu_driven=true skin_bake=false msaa=4x multi_draw_count=true
+```
+
+That single line is empirical confirmation of everything in §2 and §3 — `gpu_driven=true`
+settles the question this record originally got wrong, and `skin_bake=false` confirms the one
+genuinely unused system — and it is stronger evidence than the code reading that produced the
+error, because it is the running binary reporting itself. It also reaches captured stderr in a
+harness run, so any future test can assert on it.
+
 ## 5. Where consolidation does not apply
 
 No duplicated systems were found, which was the specific risk this box guarded against. The

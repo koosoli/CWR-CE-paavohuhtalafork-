@@ -585,6 +585,27 @@ impl Renderer {
             gpu_driven_enabled,
             gpu_driven_enabled && multi_draw_count,
         );
+        // One line, every renderer gate, always printed — because "is this feature on?"
+        // turned out to be genuinely hard to answer. Each gate is decided in up to three
+        // layers: the Rust default here, a separate C++ default in EngineWgpu, and
+        // ConfigureWgpuUltraEnvironment in GameApplication, which SETS the environment
+        // variables before the engine is created and so overrides both. The layer furthest
+        // from the renderer is the one that decides the shipped game, and neither the code
+        // defaults nor the plan documents tell you what actually runs.
+        //
+        // Reading a status line instead of this produced a wrong conclusion in the RND-030
+        // audit (see docs/roadmap/decisions/RND-030-renderer-consolidation-20260803.md).
+        // eprintln! rather than log.log: it is what reaches captured stderr in a harness run.
+        eprintln!(
+            "[wgr] effective gates: hdr={} prepass={} indirect={} gpu_driven={} skin_bake={} msaa={}x multi_draw_count={}",
+            hdr_enabled,
+            prepass_enabled,
+            indirect_enabled,
+            gpu_driven_enabled,
+            skin_bake_enabled,
+            sample_count,
+            multi_draw_count
+        );
         if gpu_driven_enabled {
             log.log(
                 log_level::INFO,
