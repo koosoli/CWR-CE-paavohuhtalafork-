@@ -11,6 +11,7 @@ import sys
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 OVERLAY = ROOT / "docs/roadmap/modernisation/PoseidonWGPU_Execution_Overlay_Preview0_v1.2.1.yaml"
 LEDGER = ROOT / "docs/roadmap/status-ledger.yaml"
 MANIFEST = ROOT / "docs/roadmap/evidence/preview0-manifest.json"
@@ -269,6 +270,24 @@ def main() -> int:
                 evidence_hash = value(block, "evidence_hash")
                 if not re.fullmatch(r"[0-9a-f]{64}", evidence_hash):
                     raise ValueError(f"completed {ticket} needs a SHA-256 evidence hash")
+                # Recompute it. The format check alone accepted any 64 hex
+                # characters, so the field attested to nothing: a hash could be
+                # invented, or left behind after the evidence it covered was
+                # replaced. Deriving it from the evidence files makes a stale or
+                # fabricated value fail here instead of shipping.
+                try:
+                    import compute_evidence_hash as ceh
+                except ImportError as exc:  # pragma: no cover - packaging guard
+                    raise ValueError(f"cannot verify {ticket} evidence hash: {exc}") from exc
+                expected, hashed = ceh.evidence_hash(block)
+                if not hashed:
+                    raise ValueError(f"completed {ticket} has an evidence hash but no tracked evidence files")
+                if expected != evidence_hash:
+                    raise ValueError(
+                        f"{ticket} evidence hash does not match its evidence "
+                        f"({len(hashed)} file(s)); recompute with "
+                        f"`python scripts/compute_evidence_hash.py {ticket}`"
+                    )
                 reviewer = value(block, "reviewer")
                 owner = value(block, "owner")
                 integration_owner = value(ledger, "integration_owner")
