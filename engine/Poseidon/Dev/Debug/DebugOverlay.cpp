@@ -3584,10 +3584,13 @@ void DrawWaterTab()
     ImGui::SetItemTooltip("Strength of the shoaling swell that runs in toward the beach. The train "
                           "grows (Green's law) and its crests sharpen as the water shallows.");
     changed |= ImGui::Checkbox("Underwater effect", &s.underwaterEffect);
-    ImGui::SetItemTooltip("Metric underwater extinction and in-scattering using the Water tab's "
-                          "shallow/deep colours. Near the surface it classifies each view ray "
-                          "separately, preserving the above-water part of a half-submerged view. "
-                          "World-anchored caustics remain visible on nearby seabed geometry.");
+    ImGui::SetItemTooltip("OFF by default — the look is not good enough to ship on yet. ON: metric "
+                          "underwater extinction and in-scattering using the Water tab's "
+                          "shallow/deep colours, classifying each view ray separately near the "
+                          "surface so a half-submerged view keeps its above-water part, plus "
+                          "world-anchored caustics on nearby seabed geometry. This also gates the "
+                          "water shader's own underwater distance fog, so OFF means a submerged "
+                          "view has no volume and no fog at all.");
     changed |= ImGui::Checkbox("Low water quality (performance)", &s.lowQuality);
     ImGui::SetItemTooltip("Drops SSR, planar reflection, bicubic filtering and the two smallest wave "
                           "cascades. The reflected camera and its sky, terrain, objects, clouds and mip "
