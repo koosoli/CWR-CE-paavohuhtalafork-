@@ -1703,9 +1703,25 @@ critical path while the effect is off, and it should not be treated as blocking.
 Still open before any box can be ticked: the scripted camera path and its three captures
 (above, at the waterline, below), the luminance-continuity and symmetry measurements, the
 `WaterQuery` bit-identity check, and the `PERF-001` GPU cost. The camera path is the
-blocker — an SQF probe that positioned the camera underwater died with a broken pipe after
-about 59 s, and that is unexplained. Note that any future capture run must enable the effect
-explicitly now that the default is off.
+blocker, but it is no longer unexplained.
+
+The "broken pipe after about 59 s" is diagnosed and reproduced — see
+`tests/integration/water/water_underwater_probe.test.sqf`. The camera going underwater is
+not the problem: that probe walks the camera from 6 m over the datum to 6 m under and back
+and the game stays healthy. The trigger was `triCamPos`, which is viewer-mode only and
+returns `FAIL:not_viewer_mode` under `PoseidonGame`. Trident retries a `FAIL:` statement
+until `assert_timeout` while the game-side harness answers "command timed out" after 30 s,
+so a merely-wrong statement surfaces at ~60 s as a transport error naming neither the real
+result nor the log that has it. A plain SQF syntax error presents the same way, because a
+script error aborts the process in test mode.
+
+Practical rule for anything driving this harness: "broken pipe" means read the game log.
+
+What still blocks the captures is narrower than it looked: there is no harness command that
+reports submersion, so a camera sweep cannot assert it actually went under — `triWaterStats`
+reports live water whatever the camera does. A `triWaterSubmersion` alongside the existing
+water observability commands is the missing piece. Note also that any capture run must now
+enable the effect explicitly, since the default is off.
 
 ## WTR-240 — Shoreline contact, wetness and waterline contract — CONDITIONAL_DEPENDENCY, INVESTIGATE
 
