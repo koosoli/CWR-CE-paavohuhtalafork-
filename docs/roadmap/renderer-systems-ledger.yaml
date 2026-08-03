@@ -115,12 +115,30 @@ systems:
   - id: RSYS-HDR
     title: HDR pipeline — linear target, exposure, bloom, tonemap
     plan: engine/WgpuRenderer/docs/hdr-pipeline-plan.md
-    status: SHIPPED
+    status: PARTIAL
     owner: null
-    audited: null
+    audited: 2026-08-03
     completeness: >-
-      The plan's status line still says "implementation staged"; the pipeline is
-      present. Bloom and eye adaptation are separate modules behind the same resolve.
+      Four of the plan's five stages, so PARTIAL rather than the SHIPPED this entry
+      first carried.
+
+      Stage 1 HDR target + tonemap resolve — done, and ON by default
+      (hdr_enabled defaults true). Stage 2 linear conversion — shader path done.
+      Stage 3 per-ToD exposure — done via UpdateAutoTonemap in EngineWgpu.
+      Stage 5 GPU auto-exposure — done in OUTCOME but not in method: the plan
+      specifies a histogram compute pass, and exposure.wgsl implements a
+      downsample-chain luminance meter (fs_lum_first / fs_lum_down) instead. The
+      "no readback" constraint does hold for the render path — the tonemap resolve
+      textureLoads the 1x1 scale directly, and read_scale is a blocking dev-panel
+      debug path only.
+
+      Stage 4 NVG and night-eye display stage — NOT started. No nvg or night_eye
+      symbol exists anywhere in the renderer, so Engine::EnableNightEye has nothing
+      to route to on this backend.
+
+      Doc drift: the plan's dev-toggle section says "WGR_HDR=1 -- enable the HDR
+      path. Default off = LDR-direct A/B ref". The default is ON, and has been for
+      long enough that the LDR path is the fallback rather than the reference.
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/lib.rs
         symbol: fn ensure_hdr
@@ -136,10 +154,14 @@ systems:
     plan: engine/WgpuRenderer/docs/bindless-textures-plan.md
     status: SHIPPED
     owner: null
-    audited: null
+    audited: 2026-08-03
     completeness: >-
       The plan's "uncommitted, pending user build" caveat is obsolete; committed
-      2026-07-09.
+      2026-07-09. SHIPPED is right for the scope the plan claims — it lists its own
+      exclusions rather than leaving them implied, and they still hold: the shadow and
+      2D passes stay single-texture with their own layouts, and overflow past
+      object_texture_cap samples white rather than evicting. Both are deliberate, and
+      neither is a gap against the plan.
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/gfx3d/mod.rs
         symbol: bindless
@@ -225,8 +247,23 @@ systems:
     plan: engine/WgpuRenderer/docs/procedural-sky-plan.md
     status: PARTIAL
     owner: null
-    audited: null
-    completeness: Plan is IN PROGRESS with stages 0 and 1 landed.
+    audited: 2026-08-03
+    completeness: >-
+      Considerably further than "stages 0 and 1 landed" (the RND-030 summary) and
+      further than the plan's own "Stage 2 in progress".
+
+      Stages 0 and 1 (plumbing, clear-sky single scattering, sun disc) — done.
+      Stage 2 (Hillaire LUT model) — present, not merely in progress: LUT machinery
+      appears throughout sky/mod.rs and sky.wgsl. Stage 4 (aerial perspective
+      unified with fog) — done, and it is the live fog path: fog is applied
+      per-fragment in the forward shaders by sampling the aerial-perspective froxel
+      volume, filled per frame from the sky LUTs. Stage 5 (clouds) — a cloud
+      raymarch plus a separate over-scene cloud_composite.wgsl exist.
+
+      Stage 3 (night sky: moon + stars) — NOT done, despite appearances. moon_dir is
+      plumbed into the sky UBO and its own comment says the phase is "unused here";
+      nothing in sky.wgsl renders a moon disc, and there are no stars. Grepping for
+      "star" matches only the word "start".
     production_call_sites:
       - file: engine/WgpuRenderer/rust/src/sky/mod.rs
         symbol: pub fn render
