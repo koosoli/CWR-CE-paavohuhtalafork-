@@ -3518,7 +3518,7 @@ void EngineWgpu::PushRenderParams()
         _ao.blurRadius,
         _ao.blurDepthScale,
         _ao.blurNormalPower,
-        0u,
+        _ao.bentNormal ? 1u : 0u,
     };
 
     wgr_set_render_params(_renderer, &p);

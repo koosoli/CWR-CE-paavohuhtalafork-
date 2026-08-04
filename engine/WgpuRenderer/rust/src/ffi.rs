@@ -598,7 +598,7 @@ pub struct WgrGtao {
     pub blur_radius: f32,
     pub blur_depth_scale: f32,
     pub blur_normal_power: f32,
-    pub _pad: u32,
+    pub bent_normal: u32, // 1 = directional ambient via the bent normal (Stage 2)
 }
 
 impl Default for WgrGtao {
@@ -618,7 +618,7 @@ impl Default for WgrGtao {
             blur_radius: d.blur_radius,
             blur_depth_scale: d.blur_depth_scale,
             blur_normal_power: d.blur_normal_power,
-            _pad: 0,
+            bent_normal: d.bent_normal as u32,
         }
     }
 }

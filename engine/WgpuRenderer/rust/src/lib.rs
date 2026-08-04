@@ -915,6 +915,7 @@ impl Renderer {
             blur_depth_scale: g.blur_depth_scale,
             blur_normal_power: g.blur_normal_power,
             debug: g.debug != 0,
+            bent_normal: g.bent_normal != 0,
         });
     }
 
@@ -2520,7 +2521,7 @@ impl Renderer {
                     }
                 }
                 self.gfx3d
-                    .render_gtao(&self.queue, &mut encoder, main_scene_cam);
+                    .render_gtao(&self.device, &self.queue, &mut encoder, main_scene_cam);
             }
 
             // Depth attachment for this segment's sub-passes. Post-tonemap (resolved) the target is

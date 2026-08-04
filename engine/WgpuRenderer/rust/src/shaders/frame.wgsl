@@ -57,7 +57,8 @@ struct Frame {
     // Screen-space AO gate (docs/screen-space-ao-plan.md), appended after clip_plane.
     //   x = 1 when the GTAO pass ran this frame and its buffer may be read (0 = off)
     //   y = 1 for the raw AO debug view
-    //   zw = unused
+    //   z = 1 to steer sky irradiance by the bent normal (Stage 2 directional ambient)
+    //   w = unused
     gtao: vec4<f32>,
 };
 
@@ -129,11 +130,14 @@ struct SkySh {
 // mapping (binding 6). See terrain_sky_visibility / sky_vis_ao below.
 @group(0) @binding(10) var terrain_skyvis_mask: texture_2d<f32>;
 
-// Screen-space ambient occlusion (GTAO + bilateral blur, gfx3d/gtao*.wgsl): R8Unorm at render
-// resolution, 1 = unoccluded. Gfx3d-owned, produced from the depth+normal prepass each frame
-// before the colour pass. Read with textureLoad at the fragment's OWN pixel — it is already a
-// per-pixel screen-space quantity, and under MSAA every covered sample of a pixel legitimately
-// shares one AO value (plan §5). See gtao_ao below.
+// Screen-space ambient occlusion (GTAO + bilateral blur, gfx3d/gtao*.wgsl) at render resolution:
+//   rgb = bent normal, VIEW space, unit length — the average direction light still reaches this
+//         pixel from (Stage 2)
+//   a   = ambient visibility in [0,1], 1 = unoccluded
+// Gfx3d-owned, produced from the depth+normal prepass each frame before the colour pass. Read
+// with textureLoad at the fragment's OWN pixel — it is already a per-pixel screen-space quantity,
+// and under MSAA every covered sample of a pixel legitimately shares one value (plan §5).
+// See gtao_ao / gtao_bent_normal_world below.
 @group(0) @binding(11) var gtao_tex: texture_2d<f32>;
 
 // Diffuse sky irradiance for a world-space surface normal, from the SH-9 sky projection
@@ -264,7 +268,33 @@ fn gtao_ao(frag_coord: vec2<f32>) -> f32 {
     let px = vec2<i32>(frag_coord);
     let dims = vec2<i32>(textureDimensions(gtao_tex));
     let q = clamp(px, vec2<i32>(0), dims - vec2<i32>(1));
-    return clamp(textureLoad(gtao_tex, q, 0).r, 0.0, 1.0);
+    return clamp(textureLoad(gtao_tex, q, 0).a, 0.0, 1.0);
+}
+
+// The bent normal in WORLD space, or `fallback` (the geometric normal) when GTAO is off or the
+// feature is disabled. This is the Stage-2 payload: sampling sky irradiance along the direction
+// light actually arrives from, rather than along the surface normal, is what gives a shaded
+// surface near an occluder some form instead of a flat wash.
+//
+// GTAO works in VIEW space, so rotate back. frame.view has its translation zeroed and is
+// otherwise a rotation, so its inverse is its transpose — which `v * M` computes in WGSL
+// (row-vector convention), avoiding an explicit inverse.
+//
+// frame.gtao.z gates it separately from gtao.x: the AO term is worth having on its own, and the
+// directional ambient is the part most likely to need backing out if it looks wrong.
+fn gtao_bent_normal_world(frag_coord: vec2<f32>, fallback: vec3<f32>) -> vec3<f32> {
+    if (frame.gtao.x < 0.5 || frame.gtao.z < 0.5) {
+        return fallback;
+    }
+    let px = vec2<i32>(frag_coord);
+    let dims = vec2<i32>(textureDimensions(gtao_tex));
+    let q = clamp(px, vec2<i32>(0), dims - vec2<i32>(1));
+    let bent_view = textureLoad(gtao_tex, q, 0).xyz;
+    if (dot(bent_view, bent_view) < 1e-6) {
+        return fallback;
+    }
+    let bent_world = (vec4<f32>(normalize(bent_view), 0.0) * frame.view).xyz;
+    return normalize(bent_world);
 }
 
 // 1 when the raw AO debug view is on (surfaces output the AO buffer as greyscale instead of

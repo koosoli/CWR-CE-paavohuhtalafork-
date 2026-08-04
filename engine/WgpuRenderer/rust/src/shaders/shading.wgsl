@@ -8,7 +8,7 @@
 
 #define_import_path shading
 
-#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao, gtao_ao, gtao_debug_on}
+#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao, gtao_ao, gtao_debug_on, gtao_bent_normal_world}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -111,7 +111,12 @@ fn shade(
         // (SH-9 projection of the env map, evaluated per normal), scaled by the skyAmbient knob in
         // sun_ambient.w. albedo is the reflectance via `rgb = albedo * lit`. The per-material folded
         // sun (m_sun_*) is deliberately unused here — see the original fs_main note.
-        var ambient = sky_irradiance(nrm) * frame.sun_ambient.w * amb_ao;
+        // Directional ambient (Stage 2): sample the sky along the direction light actually
+        // reaches this pixel from, not along the surface normal. Near an occluder those differ,
+        // and that difference is what stops a shaded surface reading as a flat wash. Falls back
+        // to the geometric normal when GTAO or the bent-normal path is off.
+        let amb_n = gtao_bent_normal_world(frag_coord, nrm);
+        var ambient = sky_irradiance(amb_n) * frame.sun_ambient.w * amb_ao;
         // Glass canopies: keep only a fraction of the sky wash so they read as glazing, not a lit
         // diffuse dome (the direct sun sheen + any glint still sit on top).
         if (is_translucent) {

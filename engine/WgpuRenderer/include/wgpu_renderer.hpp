@@ -531,7 +531,7 @@ struct WgrGtao
     float    blur_radius;       /* bilateral denoise half-width in taps */
     float    blur_depth_scale;  /* depth-difference rejection strength */
     float    blur_normal_power; /* normal-difference rejection exponent */
-    uint32_t _pad;
+    uint32_t bent_normal;       /* 1 = steer sky irradiance by the bent normal (Stage 2) */
 };
 
 /* Every imgui-tweakable render parameter that crosses the FFI as a setter, in one block.

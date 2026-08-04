@@ -7,7 +7,7 @@
 // Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
 // pipeline via the frame module, so terrain receives the same CSM shadows and
 // sun lighting.
-#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on, gtao_bent_normal_world}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -313,7 +313,10 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     // Sky-based lighting: replace the flat ambient with DIRECTIONAL sky irradiance (SH-9 env
     // projection, per surface normal), scaled by the skyAmbient knob in sun_ambient.w.
     if (sky_lit) {
-        sun_ambient = sky_irradiance(n) * frame.sun_ambient.w;
+        // Directional ambient (Stage 2): sky sampled along the bent normal — the average open
+        // direction — rather than the surface normal, so a slope beside an occluder picks up
+        // light from where it can actually see sky. Returns `n` when the path is off.
+        sun_ambient = sky_irradiance(gtao_bent_normal_world(in.clip.xy, n)) * frame.sun_ambient.w;
     }
     // Ambient occlusion: scale the ambient (directional SH or legacy flat) by how much sky this
     // point can see. Orthogonal to `shadow`, which removes the DIRECT sun. The two terms MULTIPLY

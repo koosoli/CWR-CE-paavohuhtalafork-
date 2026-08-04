@@ -959,6 +959,12 @@ class Engine : public IGraphicsEngine
         float blurRadius = 6.0f;
         float blurDepthScale = 24.0f;
         float blurNormalPower = 8.0f;
+        // Stage 2: sample the sky irradiance along the bent normal (the average direction light
+        // still reaches this pixel from) rather than the surface normal. This is what gives a
+        // shaded surface near an occluder some form instead of a flat wash; it changes WHERE
+        // light comes from, not just how much. Separate toggle so it can be backed out without
+        // losing the scalar AO.
+        bool bentNormal = true;
         // Show the raw AO buffer as greyscale on opaque surfaces. Tune against this rather than
         // through sun + ambient + fog + tonemap.
         bool debug = false;

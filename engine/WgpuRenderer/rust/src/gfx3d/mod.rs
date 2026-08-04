@@ -13,6 +13,7 @@ use pool::{GeometryPool, MeshAlloc};
 mod cull;
 
 // Hi-Z depth pyramid for GPU-driven occlusion culling (docs/gpu-culling-and-depth-plan.md §5).
+mod gtao_depth_mips;
 mod hiz;
 
 use crate::ffi::{
@@ -32,12 +33,15 @@ pub const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24PlusSt
 // view-space octahedral normal, Rg16Float (compact + banding-free for SSAO/GTAO/SSR).
 // Written unconditionally by the prepass; sampled by no consumer yet (Stage 1).
 pub const NORMAL_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rg16Float;
-// Scalar AO. R8Unorm would be plenty of precision for a visibility term, but it is NOT a
-// core WebGPU storage-texture format: creating the AO target with STORAGE_BINDING silently
-// invalidates the texture AND every bind-group layout that names the format, which surfaces
-// far downstream as "TextureView is invalid" in the shared camera bind group. R32Float is
-// core-guaranteed for write-only storage. Stage 2's bent normal will need its own target.
-pub const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::R32Float;
+// AO + bent normal in ONE target: rgb = bent normal (view space), a = ambient visibility.
+//
+// R8Unorm would be plenty of precision for a bare visibility term, but it is NOT a core WebGPU
+// storage-texture format: creating the target with STORAGE_BINDING silently invalidates the
+// texture AND every bind-group layout naming the format, which surfaces far downstream as
+// "TextureView is invalid" on the shared camera bind group. Rgba16Float is core-guaranteed for
+// write-only storage, carries the Stage-2 bent normal in the same fetch, and lets the bilateral
+// blur filter direction and visibility with identical weights (see gtao.wgsl).
+pub const AO_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba16Float;
 
 // Cascade shadow depth maps: one D32 array layer per cascade.
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -1262,8 +1266,8 @@ fn gtao_validates_and_keeps_its_no_taa_constraints() {
     // Sky must be left unoccluded rather than marched: cleared reversed-Z is 0, and
     // integrating horizons against a surface that was never drawn produces garbage.
     assert!(
-        src.contains("if (d <= 0.0)"),
-        "GTAO must early-out on cleared depth"
+        src.contains("if (z >= SKY_Z * 0.5)"),
+        "GTAO must early-out where nothing was drawn"
     );
     // World-space radius projected per pixel is what makes AO scale-stable.
     assert!(
@@ -1285,57 +1289,61 @@ fn gtao_validates_and_keeps_its_no_taa_constraints() {
 }
 
 #[test]
-fn gtao_unprojects_the_stored_reversed_z_depth_back_to_the_original_point() {
-    // Round-trip: take a known view-space point, put it through the exact path the geometry
-    // takes (forward projection, then frame::reverse_z's `z = w - z`, then the perspective
-    // divide that lands in the depth buffer), then unproject it the way gtao.wgsl does and
-    // require the original point back.
+fn gtao_round_trips_a_view_point_through_depth_and_back() {
+    // Full round trip across BOTH shaders: take a known view-space point, push it through the
+    // exact path the geometry takes (forward projection -> frame::reverse_z's `z = w - z` ->
+    // perspective divide -> depth buffer), linearise it the way gtao_depth_mips.wgsl does, then
+    // reconstruct the position the way gtao.wgsl does, and require the original point back.
     //
-    // This is the test that was missing. The projection matrix is FORWARD; the reversal happens
-    // in the vertex shader afterwards, so the buffer holds `1 - forward_depth` while inv_proj
-    // still inverts the forward transform. GTAO fed the stored value in raw, which puts near
-    // geometry hundreds of metres away — and the failure is nearly silent, because it does not
-    // corrupt the image, it just makes every horizon sample fall outside the radius so no
-    // occlusion is ever found. AO reads ~1 everywhere and radius/slices/steps stop mattering.
+    // This is the test that was missing when GTAO fed the raw stored depth into an inverse
+    // projection. The projection is FORWARD; the reversal happens afterwards in the vertex
+    // shader, so the buffer holds `1 - forward_depth`. For an infinite-far forward projection
+    // that works out to exactly `near / z`, which is why the linearisation is a divide.
     //
-    // Assert on the RECONSTRUCTED POSITION rather than on shader text, because the whole point
-    // is that the wrong version still runs, still validates, and still produces a plausible
-    // picture.
+    // Assert on the RECONSTRUCTED POSITION, not on shader text: the wrong version still
+    // validates, still runs, and still produces a plausible picture — it just silently puts
+    // every sample outside the search radius so no occlusion is ever found.
     let near = 0.0957_f32;
-    // Forward, infinite far, matching the engine's projection (near->0, far->1).
+    let (proj_xx, proj_yy) = (1.4286_f32, 1.9048_f32);
     let proj = glam::Mat4::from_cols(
-        glam::Vec4::new(1.4286, 0.0, 0.0, 0.0),
-        glam::Vec4::new(0.0, 1.9048, 0.0, 0.0),
+        glam::Vec4::new(proj_xx, 0.0, 0.0, 0.0),
+        glam::Vec4::new(0.0, proj_yy, 0.0, 0.0),
         glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
         glam::Vec4::new(0.0, 0.0, -near, 0.0),
     );
-    let inv_proj = proj.inverse();
 
     for &z in &[0.5_f32, 2.0, 10.0, 95.0] {
         for &(x, y) in &[(0.0_f32, 0.0_f32), (0.4, -0.3)] {
             let p = glam::Vec3::new(x * z, y * z, z);
-            // Vertex path: project, reverse-z (z = w - z), divide.
+            // Vertex path: project, reverse-z, divide.
             let clip = proj * p.extend(1.0);
             let stored = (clip.w - clip.z) / clip.w;
             let ndc = glam::Vec2::new(clip.x / clip.w, clip.y / clip.w);
 
-            // gtao.wgsl's view_pos: undo the reversal, then invert the FORWARD projection.
-            let h = inv_proj * glam::Vec4::new(ndc.x, ndc.y, 1.0 - stored, 1.0);
-            let got = h.truncate() / h.w.abs().max(1e-6) * h.w.signum();
+            // gtao_depth_mips.wgsl cs_linearise.
+            let z_lin = near / stored.max(1e-9);
+            assert!(
+                (z_lin - z).abs() < 1e-3 * z.max(1.0),
+                "linearisation must recover view z: sent {z}, stored {stored:.6}, got {z_lin}"
+            );
 
+            // gtao.wgsl view_pos.
+            let got = glam::Vec3::new(ndc.x / proj_xx, ndc.y / proj_yy, 1.0) * z_lin;
             assert!(
                 (got - p).length() < 0.01 * z.max(1.0),
-                "unprojection must recover the original point: sent {p:?} (stored depth \
-                 {stored:.6}), got {got:?}"
+                "reconstruction must recover the original point: sent {p:?}, got {got:?}"
             );
         }
     }
 
-    // And pin the shader actually doing it, since the round-trip above only proves the maths.
-    let src = include_str!("gtao.wgsl");
+    // And pin both halves in the shaders, since the arithmetic above only proves the maths.
     assert!(
-        src.contains("params.inv_proj * vec4<f32>(ndc, 1.0 - d, 1.0)"),
-        "gtao.wgsl must undo frame::reverse_z before unprojecting with the forward inv(proj)"
+        include_str!("gtao_depth_mips.wgsl").contains("params.proj.x / max(d, 1e-9)"),
+        "the mip chain must linearise stored depth as near / d"
+    );
+    assert!(
+        include_str!("gtao.wgsl").contains("* z;"),
+        "gtao.wgsl must scale the reconstructed ray by linear z"
     );
 }
 
@@ -1366,12 +1374,13 @@ fn gtao_reconstructs_positions_in_the_same_space_the_prepass_normals_are_in() {
         );
     }
     let gtao = include_str!("gtao.wgsl");
+    // View-space positions reconstructed from linear z and the projection's scale terms.
     assert!(
-        gtao.contains("inv_proj: mat4x4<f32>") && gtao.contains("params.inv_proj *"),
-        "GTAO must unproject with inv(proj) alone (-> view space), matching the prepass normals"
+        gtao.contains("vec3<f32>(ndc.x / params.proj.x, ndc.y / params.proj.y, 1.0) * z"),
+        "GTAO must reconstruct VIEW-space positions from linear z, matching the prepass normals"
     );
     assert!(
-        !gtao.contains("params.inv_view_proj"),
+        !gtao.contains("inv_view_proj"),
         "GTAO must NOT use Frame.inv_view_proj: it yields camera-relative WORLD, not view space"
     );
 }
@@ -1433,19 +1442,21 @@ fn gtao_resources_are_valid_on_a_real_device() {
         })
         .create_view(&wgpu::TextureViewDescriptor::default());
 
+    let mut mips = crate::gfx3d::gtao_depth_mips::GtaoDepthMips::new(&device);
+    mips.resize(&device, w, h);
     let mut gtao = Gtao::new(&device);
     let mut blur = GtaoBlur::new(&device);
-    let ao = gtao.resize(&device, w, h, &depth, &normal);
+    let ao = gtao.resize(&device, w, h, mips.view().unwrap(), &normal);
     blur.resize(&device, w, h, &depth, &normal, &ao);
 
     // And record both dispatches, so a bad workgroup size or an unbound resource fails here too.
     gtao.upload(
         &queue,
         &GtaoParams {
-            inv_proj: glam::Mat4::IDENTITY.to_cols_array(),
+            proj: [1.4286, 1.9048, 0.0957, (mips.mips() - 1) as f32],
             screen: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
             tuning: [1.5, 1.0, 3.0, 10.0],
-            limits: [96.0, 1.0, 0.0, 1.0],
+            limits: [512.0, 1.0, 0.0, 0.0],
         },
     );
     blur.upload(&queue, w, h, 6.0, 24.0, 8.0);
@@ -1457,6 +1468,24 @@ fn gtao_resources_are_valid_on_a_real_device() {
 
     let err = pollster::block_on(scope.pop());
     assert!(err.is_none(), "GTAO resources failed validation: {err:?}");
+}
+
+// Minimal IEEE half -> f32 for reading back an Rgba16Float target. Written out rather than
+// pulling in a `half` dependency for one assertion; only finite normals/zero occur here.
+#[cfg(test)]
+fn f16_to_f32(bits: u16) -> f32 {
+    let sign = ((bits >> 15) & 1) as u32;
+    let exp = ((bits >> 10) & 0x1f) as u32;
+    let frac = (bits & 0x3ff) as u32;
+    let out = if exp == 0 {
+        // Zero or subnormal; subnormals are far below anything asserted on, so flush to signed 0.
+        sign << 31
+    } else if exp == 0x1f {
+        (sign << 31) | (0xff << 23) | (frac << 13)
+    } else {
+        (sign << 31) | ((exp + 127 - 15) << 23) | (frac << 13)
+    };
+    f32::from_bits(out)
 }
 
 #[test]
@@ -1500,8 +1529,10 @@ fn gtao_writes_full_visibility_where_nothing_was_drawn() {
     });
     let normal = normal_tex.create_view(&wgpu::TextureViewDescriptor::default());
 
+    let mut mips = crate::gfx3d::gtao_depth_mips::GtaoDepthMips::new(&device);
+    mips.resize(&device, w, h);
     let mut gtao = Gtao::new(&device);
-    gtao.resize(&device, w, h, &depth, &normal);
+    gtao.resize(&device, w, h, mips.view().unwrap(), &normal);
     let mut enc = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
     // Clear the depth target to the reversed-Z far plane. No draws: the whole frame is sky.
     drop(enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1527,10 +1558,12 @@ fn gtao_writes_full_visibility_where_nothing_was_drawn() {
         occlusion_query_set: None,
         multiview_mask: None,
     }));
+    // The chain is the pass' actual input, so build it from the cleared depth first.
+    mips.build(&device, &queue, &mut enc, &depth, 0.0957);
     gtao.dispatch(&mut enc, w, h);
 
-    // Copy the AO target out. R32Float = 4 B/texel; the row stride must be 256-aligned.
-    let row = (w * 4).div_ceil(256) * 256;
+    // Copy the AO target out. Rgba16Float = 8 B/texel; the row stride must be 256-aligned.
+    let row = (w * 8).div_ceil(256) * 256;
     let readback = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("gtao_sky_readback"),
         size: (row * h) as u64,
@@ -1566,8 +1599,9 @@ fn gtao_writes_full_visibility_where_nothing_was_drawn() {
     let mut seen = 0usize;
     for y in 0..h as usize {
         for x in 0..w as usize {
-            let o = y * row as usize + x * 4;
-            let v = f32::from_le_bytes([data[o], data[o + 1], data[o + 2], data[o + 3]]);
+            // rgb = bent normal, a = AO; visibility is the last of four f16 lanes.
+            let o = y * row as usize + x * 8 + 6;
+            let v = f16_to_f32(u16::from_le_bytes([data[o], data[o + 1]]));
             assert!(
                 (v - 1.0).abs() < 1e-3,
                 "sky pixel ({x},{y}) must be fully unoccluded, got {v}"
@@ -1689,18 +1723,19 @@ fn normal_resolve_takes_a_single_sample_rather_than_averaging() {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct GtaoParams {
-    // inv(proj), NOT inv(view)*inv(proj) — see the long note in gtao.wgsl. The prepass normals
-    // are view-space, so GTAO reconstructs view-space positions to match.
-    pub inv_proj: [f32; 16],
+    // x = proj[0][0], y = proj[1][1], z = near plane, w = highest mip index in the depth chain.
+    // No inverse-projection matrix: the chain stores LINEAR view z, so a view position is
+    // (ndc/proj_scale, 1) * z. See gtao.wgsl.
+    pub proj: [f32; 4],
     // xy = size in px, zw = 1/size.
     pub screen: [f32; 4],
     // x = world radius (m), y = strength, z = slices, w = steps per slice.
     pub tuning: [f32; 4],
-    // x = max screen radius (px), y = thickness falloff, z = near plane, w unused.
+    // x = max screen radius (px, a sanity bound), y = thickness falloff, zw unused.
     pub limits: [f32; 4],
 }
 
-const _: () = assert!(std::mem::size_of::<GtaoParams>() == 112);
+const _: () = assert!(std::mem::size_of::<GtaoParams>() == 64);
 
 // GTAO compute pass (screen-space-ao-plan section 3). Owns its AO target and its own
 // uniform rather than riding the frame group: that group is shared by every 3D pipeline,
@@ -1728,11 +1763,12 @@ impl Gtao {
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_gtao_layout"),
             entries: &[
+                // The linear-view-Z mip chain, not the depth target: GTAO marches it by mip.
                 wgpu::BindGroupLayoutEntry {
                     binding: 0,
                     visibility: wgpu::ShaderStages::COMPUTE,
                     ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
+                        sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         view_dimension: wgpu::TextureViewDimension::D2,
                         multisampled: false,
                     },
@@ -2135,6 +2171,10 @@ pub struct GtaoSettings {
     pub blur_normal_power: f32,
     // 1 = terrain/objects output the raw AO buffer as greyscale instead of shading with it.
     pub debug: bool,
+    // Stage 2: steer the SH sky-irradiance lookup by the bent normal instead of the surface
+    // normal. Separate from `enabled` because the scalar AO is worth having on its own and this
+    // is the part most likely to need backing out if it looks wrong.
+    pub bent_normal: bool,
 }
 
 impl Default for GtaoSettings {
@@ -2183,6 +2223,7 @@ impl Default for GtaoSettings {
             blur_depth_scale: 24.0,
             blur_normal_power: 8.0,
             debug: false,
+            bent_normal: true,
         }
     }
 }
@@ -2383,16 +2424,20 @@ pub struct Gfx3d {
     normal_resolve: Option<NormalResolve>,
     normal_sample_view: Option<wgpu::TextureView>,
     // GTAO. Allocated at both 1x and MSAA — its inputs are single-sample either way.
+    // The depth chain is GTAO's own: the Hi-Z pyramid next door reduces the FARTHEST surface
+    // (right for culling, backwards for AO). See gtao_depth_mips.rs.
+    gtao_depth_mips: gtao_depth_mips::GtaoDepthMips,
     gtao: Gtao,
     gtao_blur: GtaoBlur,
     // Live GTAO tuning (ImGui / WgrRenderParams). `enabled` gates the whole pass: when off the
     // AO target keeps whatever it last held, which is why the consumers read it through the same
     // `strength` gate rather than sampling unconditionally.
     gtao_settings: GtaoSettings,
-    // (inv(proj), proj[1][1]) per camera, cached from `prepare` so the GTAO dispatch unprojects
-    // with the SAME projection the prepass rasterised with. Recomputing it at dispatch time from
-    // a separately-chosen camera is how AO ends up subtly offset from the depth it is reading.
-    cam_gtao_proj: Vec<([f32; 16], f32)>,
+    // (proj_xx, proj_yy, near) per camera, cached from `prepare` so the GTAO dispatch uses the
+    // SAME projection the prepass rasterised with. Recomputing it at dispatch time from a
+    // separately-chosen camera is how AO ends up subtly offset from the depth it is reading.
+    // `near` is the whole linearisation: stored reversed-Z depth d gives view z = near / d.
+    cam_gtao_proj: Vec<[f32; 3]>,
     // Single-sample depth-stencil for the post-tonemap UI phase (Some only when sample_count > 1).
     // That phase composites display-referred 2D to the 1x swapchain, so it can't share the MSAA
     // scene depth (mismatched sample counts). Cleared per use; world occlusion isn't carried into
@@ -2914,6 +2959,7 @@ impl Gfx3d {
             depth_resolve_far,
             normal_resolve,
             normal_sample_view: None,
+            gtao_depth_mips: gtao_depth_mips::GtaoDepthMips::new(device),
             gtao,
             gtao_blur,
             gtao_settings: GtaoSettings::default(),
@@ -3682,13 +3728,17 @@ impl Gfx3d {
         // itself at 1x. Depth is the nearest resolve, which is what AO wants (front surface)
         // and is already built for Hi-Z — the plan is explicit that this must be reused
         // rather than duplicated.
-        if let (Some(depth), Some(normal)) = (
+        self.gtao_depth_mips.resize(device, size.0, size.1);
+        if let (Some(depth), Some(normal), Some(mips)) = (
             self.depth_sample_view.clone(),
             self.normal_sample_view
                 .clone()
                 .or_else(|| self.normal.as_ref().map(|(_, v)| v.clone())),
+            self.gtao_depth_mips.view().cloned(),
         ) {
-            let ao = self.gtao.resize(device, size.0, size.1, &depth, &normal);
+            // GTAO marches the mip chain; the blur still rejects on raw depth, which is exact
+            // per-pixel and needs no chain.
+            let ao = self.gtao.resize(device, size.0, size.1, &mips, &normal);
             self.gtao_blur
                 .resize(device, size.0, size.1, &depth, &normal, &ao);
         }
@@ -4433,15 +4483,17 @@ impl Gfx3d {
                     base + std::mem::size_of::<WgrCamera>() as u64,
                     bytemuck::cast_slice(&inv_vp),
                 );
-                // GTAO's own unprojection: inv(proj) alone, so it reconstructs VIEW-space
-                // positions to match the view-space normals the prepass wrote (mixing the two
-                // spaces turns whole faces solid black — see gtao.wgsl). Inverted in f64 for the
-                // same conditioning reason as inv_vp above. Paired with proj[1][1], the vertical
-                // projection scale GTAO needs to size its world radius in pixels.
+                // GTAO's projection terms. It reconstructs VIEW-space positions to match the
+                // view-space normals the prepass wrote (mixing the two spaces turns whole faces
+                // solid black — see gtao.wgsl), and does it from linear z, so it needs only the
+                // two scale terms plus the near plane rather than an inverted matrix.
+                //
+                // near comes out of the projection's z column: this is a forward, infinite-far
+                // projection, so proj[14] = -near.
                 if self.cam_gtao_proj.len() <= i {
-                    self.cam_gtao_proj.resize(i + 1, ([0.0; 16], 1.0));
+                    self.cam_gtao_proj.resize(i + 1, [1.0, 1.0, 0.1]);
                 }
-                self.cam_gtao_proj[i] = (proj.inverse().as_mat4().to_cols_array(), c.proj[5]);
+                self.cam_gtao_proj[i] = [c.proj[0], c.proj[5], -c.proj[14]];
                 // Foliage knobs (frame.foliage / frame.foliageb) after inv_view_proj — same
                 // append pattern; 32 B, matching the +32 in CameraGroup::new's bind_size.
                 queue.write_buffer(
@@ -4478,7 +4530,7 @@ impl Gfx3d {
                 let gtao = [
                     if on { 1.0f32 } else { 0.0 },
                     if on && g.debug { 1.0 } else { 0.0 },
-                    0.0,
+                    if on && g.bent_normal { 1.0 } else { 0.0 },
                     0.0,
                 ];
                 queue.write_buffer(
@@ -5639,6 +5691,7 @@ impl Gfx3d {
     // rasterised with — the depth buffer this reads is that camera's.
     pub fn render_gtao(
         &mut self,
+        device: &wgpu::Device,
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         camera: usize,
@@ -5647,7 +5700,7 @@ impl Gfx3d {
         if !s.enabled {
             return;
         }
-        let Some(&(inv_proj, proj_yy)) = self.cam_gtao_proj.get(camera) else {
+        let Some(&[proj_xx, proj_yy, near]) = self.cam_gtao_proj.get(camera) else {
             return;
         };
         let (w, h) = self.depth_size;
@@ -5663,10 +5716,21 @@ impl Gfx3d {
         if let Some(nr) = self.normal_resolve.as_ref() {
             nr.resolve(encoder);
         }
+        // Linear-view-Z chain from this frame's resolved depth. Must precede the GTAO dispatch;
+        // wgpu barriers the storage writes -> GTAO's textureLoads.
+        if let Some(depth) = self.depth_sample_view.as_ref() {
+            self.gtao_depth_mips
+                .build(device, queue, encoder, depth, near);
+        }
         self.gtao.upload(
             queue,
             &GtaoParams {
-                inv_proj,
+                proj: [
+                    proj_xx,
+                    proj_yy,
+                    near,
+                    self.gtao_depth_mips.mips().saturating_sub(1) as f32,
+                ],
                 screen: [
                     w as f32,
                     h as f32,
@@ -5679,12 +5743,7 @@ impl Gfx3d {
                     s.slices.max(1) as f32,
                     s.steps.max(1) as f32,
                 ],
-                limits: [
-                    s.max_radius_px.max(2.0),
-                    s.thickness.max(0.01),
-                    0.0,
-                    proj_yy,
-                ],
+                limits: [s.max_radius_px.max(2.0), s.thickness.max(0.01), 0.0, 0.0],
             },
         );
         self.gtao_blur.upload(
@@ -5996,4 +6055,72 @@ pub struct Pass3dState {
     conform: bool,              // group-4 conform heightmap currently bound
     vbuf: Option<(usize, u64)>, // vertex buffer at slot 0 (pointer identity + slice byte offset)
     ibuf: Option<usize>,        // index buffer (pointer identity)
+}
+
+#[test]
+fn gtao_depth_chain_reduces_toward_the_nearest_surface() {
+    let src = include_str!("gtao_depth_mips.wgsl");
+    let module = naga::front::wgsl::parse_str(src).expect("gtao_depth_mips.wgsl parse");
+    naga::valid::Validator::new(
+        naga::valid::ValidationFlags::all(),
+        naga::valid::Capabilities::all(),
+    )
+    .validate(&module)
+    .expect("gtao_depth_mips.wgsl validate");
+
+    // The reduction DIRECTION is the whole correctness question, and it is inverted relative to
+    // the Hi-Z pyramid next door. Hi-Z min-reduces REVERSED-Z, which keeps the FARTHEST surface —
+    // correct for occlusion culling, which must never cull something that might be visible. This
+    // chain stores LINEAR z, so the same `min` keeps the NEAREST surface, which is what a horizon
+    // search wants. Reusing Hi-Z here, or storing reversed-Z here, both silently under-occlude,
+    // worse at every coarser mip — it would look like AO fading out with distance rather than
+    // like a bug.
+    assert!(
+        src.contains("m = min(m,"),
+        "the chain must min-reduce (nearest surface, because it stores LINEAR z)"
+    );
+    assert!(
+        src.contains("params.proj.x / max(d, 1e-9)"),
+        "mip0 must store LINEAR view z; a reversed-Z reduction is not a depth in any useful sense"
+    );
+    // Sky must not be able to win the min and invent an occluder at a silhouette.
+    assert!(
+        src.contains("select(SKY_Z, params.proj.x / max(d, 1e-9), d > 0.0)"),
+        "cleared depth must reduce to the far sentinel, not to 0"
+    );
+
+    // And the march must actually climb the chain, otherwise the whole thing is dead weight and
+    // the pixel-radius clamp is back to shortening the world radius.
+    let gtao = include_str!("gtao.wgsl");
+    assert!(
+        gtao.contains("let mip = clamp(i32(floor(log2(max(step_px, 1.0)))) - 1, 0, max_mip);"),
+        "the horizon march must step up a mip with distance"
+    );
+}
+
+#[test]
+fn gtao_bent_normal_reaches_the_ambient_term() {
+    // Stage 2 is only worth anything if the bent normal actually replaces the surface normal in
+    // the sky-irradiance lookup. Every link in that chain is easy to leave half-connected, and a
+    // half-connected version looks exactly like "Stage 2 does not help much".
+    let frame = include_str!("../shaders/frame.wgsl");
+    assert!(
+        frame.contains("fn gtao_bent_normal_world("),
+        "frame.wgsl must expose the bent normal in world space"
+    );
+    // View -> world by the transpose (frame.view is a rotation with translation zeroed).
+    assert!(
+        frame.contains("(vec4<f32>(normalize(bent_view), 0.0) * frame.view).xyz"),
+        "the bent normal must be rotated out of VIEW space before sampling world-space SH"
+    );
+    for (name, src) in [
+        ("shaders/shading.wgsl", include_str!("../shaders/shading.wgsl")),
+        ("terrain/terrain.wgsl", include_str!("../terrain/terrain.wgsl")),
+    ] {
+        assert!(
+            src.contains("sky_irradiance(gtao_bent_normal_world(")
+                || src.contains("let amb_n = gtao_bent_normal_world("),
+            "{name} must sample sky irradiance along the bent normal, not the surface normal"
+        );
+    }
 }

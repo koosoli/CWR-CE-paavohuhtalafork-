@@ -28,7 +28,7 @@ struct BlurParams {
 @group(0) @binding(1) var normal_tex: texture_2d<f32>;
 @group(0) @binding(2) var ao_in: texture_2d<f32>;
 @group(0) @binding(3) var<uniform> params: BlurParams;
-@group(0) @binding(4) var ao_out: texture_storage_2d<r32float, write>;
+@group(0) @binding(4) var ao_out: texture_storage_2d<rgba16float, write>;
 
 // Must match shaders/gbuffer.wgsl's oct_encode. Duplicated for the same reason gtao.wgsl
 // duplicates it: include_str! module, no naga_oil composer.
@@ -53,7 +53,7 @@ fn cs_gtao_blur(@builtin(global_invocation_id) gid: vec3<u32>) {
     // Sky: GTAO already wrote full visibility and there is no surface to filter along.
     // Blurring here would drag occlusion from the silhouette out into the sky.
     if (d_centre <= 0.0) {
-        textureStore(ao_out, px, vec4<f32>(1.0));
+        textureStore(ao_out, px, vec4<f32>(0.0, 0.0, -1.0, 1.0));
         return;
     }
     let n_centre = oct_decode(textureLoad(normal_tex, px, 0).xy);
@@ -63,7 +63,11 @@ fn cs_gtao_blur(@builtin(global_invocation_id) gid: vec3<u32>) {
     let depth_scale = max(params.tuning.z, 1e-4);
     let normal_power = max(params.tuning.w, 1.0);
 
-    var sum = 0.0;
+    // rgb = bent normal, a = AO. Filtered together with identical weights on purpose: a bent
+    // normal denoised differently from the AO it belongs to disagrees with it exactly at the
+    // edges where both matter. Directions are averaged then renormalised, which is valid because
+    // they are stored as real vectors — an oct-encoded pair could not be averaged at all.
+    var sum = vec4<f32>(0.0);
     var weight_sum = 0.0;
     for (var i = -radius; i <= radius; i = i + 1) {
         let q = clamp(px + axis * i, vec2<i32>(0), dims - vec2<i32>(1));
@@ -86,12 +90,14 @@ fn cs_gtao_blur(@builtin(global_invocation_id) gid: vec3<u32>) {
         let w_normal = pow(clamp(dot(nq, n_centre), 0.0, 1.0), normal_power);
 
         let w = w_spatial * w_depth * w_normal;
-        sum = sum + textureLoad(ao_in, q, 0).r * w;
+        sum = sum + textureLoad(ao_in, q, 0) * w;
         weight_sum = weight_sum + w;
     }
 
     // Every neighbour rejected (a one-pixel island between silhouettes) — keep the centre
     // rather than dividing by zero.
-    let ao = select(textureLoad(ao_in, px, 0).r, sum / weight_sum, weight_sum > 1e-5);
-    textureStore(ao_out, px, vec4<f32>(ao));
+    let filtered = select(textureLoad(ao_in, px, 0), sum / weight_sum, weight_sum > 1e-5);
+    let bent_len = length(filtered.xyz);
+    let bent = select(vec3<f32>(0.0, 0.0, -1.0), filtered.xyz / bent_len, bent_len > 1e-5);
+    textureStore(ao_out, px, vec4<f32>(bent, filtered.a));
 }
