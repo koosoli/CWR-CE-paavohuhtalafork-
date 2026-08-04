@@ -965,6 +965,12 @@ class Engine : public IGraphicsEngine
         // light comes from, not just how much. Separate toggle so it can be backed out without
         // losing the scalar AO.
         bool bentNormal = true;
+        // Highest depth mip the horizon march may climb. 0 = every tap at full resolution.
+        // Default 0 because raising it FLICKERS while the camera moves: which surface wins a
+        // coarse min-reduction changes abruptly as geometry enters the block, and there is no
+        // temporal filter here to absorb it. Raising it extends reach close to surfaces at that
+        // cost. Measured, not assumed — both the snapped and the blended variants were worse.
+        int maxMip = 0;
         // Raw buffer view on opaque surfaces: 0 = off, 1 = AO as greyscale, 2 = bent normal as
         // RGB. Tune against this rather than through sun + ambient + fog + tonemap. Mode 2 exists
         // because mode 1 shows only the scalar term, which made the bent normal impossible to
@@ -1272,7 +1278,7 @@ class Engine : public IGraphicsEngine
         // horizon), on the same physical radiance scale as the sky/fog. Off = legacy GL33 sun.
         // A toggle for A/B while the look is re-tuned. See lighting.wgsl / EngineWgpu PushFrame.
         bool skyLighting = true;                           // atmosphere-driven surface sun/ambient
-        float skyAmbient = 0.35f;                          // scale on the DIRECTIONAL SH sky-irradiance ambient (objects/terrain sample the env map per normal). Physical now, so expect to re-tune this in the planned sky/tonemap pass
+        float skyAmbient = 1.35f;                          // scale on the DIRECTIONAL SH sky-irradiance ambient (objects/terrain sample the env map per normal). Physical now, so expect to re-tune this in the planned sky/tonemap pass
         // Drive the atmosphere look (exposure/sunIntensity/rayleigh/mie/ozone/turbidity/
         // sun radius/night intensity) from the per-time-of-day preset table each frame,
         // like the tonemap grade. Off = hold the Sky tab's manually edited values so the

@@ -315,7 +315,7 @@ tickets:
         verified_commit: null
     test_ids: [ffi-abi-layout-refusal, ffi-abi-version-contract, ffi-separately-built-dll-refusal]
     benchmark_artifacts: []
-    evidence_hash: 1be371af2a6b627f6f0f3c2ab7169618fe900dd8e7f083f7555ca4c595f2b4ba
+    evidence_hash: 26dc0e4a7818c333342c128a27e65bdf476293f566f4a1efcfad598a50548f98
     decision_record: null
     known_failures: []
     fallback: C++ refuses an ABI mismatch before renderer creation.
@@ -360,7 +360,7 @@ tickets:
         verified_commit: null
     test_ids: [wgpu-capabilities-check, wgpu-windowed-resize-capture, wgpu-normal-loop-minimize-restore, wgpu-lifecycle-repeat-in-session, runtime-diagnostics-once]
     benchmark_artifacts: [docs/roadmap/evidence/preview0-manifest.json]
-    evidence_hash: 71d249901ce692665f354aa42871f5099213228a862afa426a0ead15ca6f4b6d
+    evidence_hash: 69ab4c0bbc6ae697057998d2dd4dfa524b0ac167f5590c2ae81261b5f59c7fdc
     decision_record: null
     known_failures: []
     fallback: Unsupported optional capabilities are reported and feature paths remain gated.

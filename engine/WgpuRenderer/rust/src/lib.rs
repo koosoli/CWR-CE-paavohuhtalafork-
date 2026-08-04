@@ -916,6 +916,7 @@ impl Renderer {
             blur_normal_power: g.blur_normal_power,
             debug_mode: g.debug,
             bent_normal: g.bent_normal != 0,
+            max_mip: g.max_mip,
         });
     }
 

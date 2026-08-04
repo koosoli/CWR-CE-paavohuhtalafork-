@@ -76,15 +76,25 @@ fn sample_z_mip(px: vec2<i32>, mip: i32) -> f32 {
 
 // Same, but with a CONTINUOUS mip level: the two neighbouring mips blended by the fraction.
 //
-// The mip a tap wants is a function of its screen distance, which scales with camera distance —
-// so a discrete `floor(log2(...))` flips level as the camera moves, the sampled depth jumps, and
-// the AO pops. That reads as a faint flicker while moving and nothing at all while still, which
-// is exactly what got reported after the mip march landed.
+// DEFAULT OFF (params.proj.w = 0 pins every tap to mip 0). Measured against the scene, not
+// reasoned about, and the reasoning was wrong twice:
 //
-// There is no temporal filter here to absorb that (plan §0: MSAA, no TAA), so the discontinuity
-// has to not exist rather than be smoothed away later. Blending costs one extra texture read per
-// tap and buys a level function that is continuous in camera distance. The plan's own rule is
-// that the temporally stable option wins even at some GPU cost; this is that trade.
+//   1. Snapping to floor(log2(...)) flickered, because the level a tap wants scales with camera
+//      distance, so it flipped as the camera moved and the sampled depth jumped.
+//   2. Blending the two levels — the textbook fix — made it MARKEDLY WORSE. A min-reduced coarse
+//      texel and a fine one describe DIFFERENT SURFACES (nearest-in-a-large-block vs this pixel),
+//      so lerping them produces a depth matching no geometry at all, which then slides
+//      continuously as the fraction moves. A continuous wrong answer beats a discontinuous one
+//      only when the endpoints are the same quantity, and here they are not.
+//
+// The underlying problem is that which surface wins a coarse `min` changes abruptly as geometry
+// enters and leaves the block, and with MSAA and no TAA (plan §0) there is nothing to absorb
+// that. So the mip march stays available and off: `WGR_GTAO` users can raise AoSettings::maxMip
+// to trade stability for reach, and the shipped default keeps the stability.
+//
+// Cost of leaving it off: the pixel-radius clamp is back to shortening the world radius up close,
+// so surfaces brighten somewhat as you approach them. That is the milder of the two artifacts —
+// a static bias rather than something that moves — which is why it is the default.
 fn sample_z(px: vec2<i32>, mip_f: f32) -> f32 {
     let lo = i32(floor(mip_f));
     let hi = lo + 1;

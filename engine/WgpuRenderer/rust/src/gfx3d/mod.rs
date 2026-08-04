@@ -2178,6 +2178,9 @@ pub struct GtaoSettings {
     // normal. Separate from `enabled` because the scalar AO is worth having on its own and this
     // is the part most likely to need backing out if it looks wrong.
     pub bent_normal: bool,
+    // Highest mip the horizon march may climb. 0 = every tap at full resolution (the stable
+    // default). Higher trades temporal stability for reach up close — see gtao.wgsl.
+    pub max_mip: u32,
 }
 
 impl Default for GtaoSettings {
@@ -2227,6 +2230,7 @@ impl Default for GtaoSettings {
             blur_normal_power: 8.0,
             debug_mode: 0,
             bent_normal: true,
+            max_mip: 0,
         }
     }
 }
@@ -5732,7 +5736,7 @@ impl Gfx3d {
                     proj_xx,
                     proj_yy,
                     near,
-                    self.gtao_depth_mips.mips().saturating_sub(1) as f32,
+                    s.max_mip.min(self.gtao_depth_mips.mips().saturating_sub(1)) as f32,
                 ],
                 screen: [
                     w as f32,

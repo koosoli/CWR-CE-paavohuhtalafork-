@@ -599,6 +599,7 @@ pub struct WgrGtao {
     pub blur_depth_scale: f32,
     pub blur_normal_power: f32,
     pub bent_normal: u32, // 1 = directional ambient via the bent normal (Stage 2)
+    pub max_mip: u32,     // highest mip the horizon march may use; 0 = full res only
 }
 
 impl Default for WgrGtao {
@@ -619,6 +620,7 @@ impl Default for WgrGtao {
             blur_depth_scale: d.blur_depth_scale,
             blur_normal_power: d.blur_normal_power,
             bent_normal: d.bent_normal as u32,
+            max_mip: d.max_mip,
         }
     }
 }
@@ -1077,8 +1079,8 @@ const _: () = assert!(std::mem::size_of::<WgrSkyRuntime>() == 64);
 const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrFoliage>() == 48);
-const _: () = assert!(std::mem::size_of::<WgrGtao>() == 48);
-const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 416);
+const _: () = assert!(std::mem::size_of::<WgrGtao>() == 52);
+const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 420);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);

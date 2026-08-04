@@ -3053,6 +3053,9 @@ void DrawAmbientOcclusionTab()
     changed |= ImGui::SliderInt("Steps", &ao.steps, 2, 32);
     ImGui::TextDisabled("  horizon march steps per slice. Raise this BEFORE widening the blur;");
     ImGui::TextDisabled("  a wide radius with few steps steps over small occluders");
+    changed |= ImGui::SliderInt("Mip march (0 = off)", &ao.maxMip, 0, 6);
+    ImGui::TextDisabled("  0 = every tap full-res (stable). Higher = more reach close to a");
+    ImGui::TextDisabled("  surface, but FLICKERS while moving — no TAA here to absorb it.");
     changed |= ImGui::SliderFloat("Thickness", &ao.thickness, 0.05f, 8.0f, "%.2f");
     ImGui::TextDisabled("  falloff past the radius; too low and thin poles shadow the sky behind them");
 

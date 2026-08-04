@@ -532,6 +532,7 @@ struct WgrGtao
     float    blur_depth_scale;  /* depth-difference rejection strength */
     float    blur_normal_power; /* normal-difference rejection exponent */
     uint32_t bent_normal;       /* 1 = steer sky irradiance by the bent normal (Stage 2) */
+    uint32_t max_mip;           /* highest mip the horizon march may use; 0 = full res only */
 };
 
 /* Every imgui-tweakable render parameter that crosses the FFI as a setter, in one block.
@@ -1192,8 +1193,8 @@ static_assert(sizeof(WgrSkyRuntime) == 64, "WgrSkyRuntime layout must match the 
 static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFoliage) == 48, "WgrFoliage layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrGtao) == 48, "WgrGtao layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrRenderParams) == 416, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGtao) == 52, "WgrGtao layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrRenderParams) == 420, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");

@@ -3525,6 +3525,7 @@ void EngineWgpu::PushRenderParams()
         _ao.blurDepthScale,
         _ao.blurNormalPower,
         _ao.bentNormal ? 1u : 0u,
+        uint32_t(_ao.maxMip < 0 ? 0 : _ao.maxMip),
     };
 
     wgr_set_render_params(_renderer, &p);
