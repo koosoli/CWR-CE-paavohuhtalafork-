@@ -70,6 +70,37 @@ void SetHWTL(bool val)
     }
 }
 
+// Fetch an options-page toggle label, tolerating a control the loaded config does not declare.
+//
+// These pages address a fixed set of legacy IDCs — including Direct3D-era toggles (hardware T&L,
+// multitexturing, W-buffer) that a config is free not to declare. The original code
+// static_cast'd GetCtrl's result and dereferenced it immediately, with no null check, in ~23
+// places. A single absent control therefore killed the whole page in its CONSTRUCTOR: the
+// display never finished being created, so clicking the menu entry appeared to do nothing at
+// all. No message, no crash dialog — just a button that does not work.
+//
+// Every other block in these constructors already used dynamic_cast + `if (ctrl)`; these did
+// not. The warning names the IDC so a missing control is a one-line log entry instead of an
+// afternoon. See .agents/README.md RULE 5.
+static C3DActiveText* OptionalActiveText(Display* page, int idc, const char* what)
+{
+    C3DActiveText* ctrl = dynamic_cast<C3DActiveText*>(page->GetCtrl(idc));
+    if (!ctrl)
+    {
+        LOG_WARN(UI, "Options/{}: control IDC {} is not declared by the config; skipping it", what, idc);
+    }
+    return ctrl;
+}
+
+// The uniform "ENABLED / DISABLED" toggle label these pages are made of.
+static void SetToggleText(Display* page, int idc, const char* what, bool on)
+{
+    if (C3DActiveText* ctrl = OptionalActiveText(page, idc, what))
+    {
+        ctrl->SetText(LocalizeString(on ? IDS_ENABLED : IDS_DISABLED));
+    }
+}
+
 // Video options display
 
 DisplayOptionsVideo::DisplayOptionsVideo(ControlsContainer* parent, bool enableSimulation) : Display(parent)
@@ -132,76 +163,25 @@ DisplayOptionsVideo::DisplayOptionsVideo(ControlsContainer* parent, bool enableS
         }
     }
     {
-        C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_OBJSHADOWS));
-        if (_oldObjShadows)
-        {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
+        SetToggleText(this, IDC_OPTIONS_OBJSHADOWS, "OBJSHADOWS", _oldObjShadows);
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_VEHSHADOWS));
-        if (_oldVehShadows)
-        {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
+        SetToggleText(this, IDC_OPTIONS_VEHSHADOWS, "VEHSHADOWS", _oldVehShadows);
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_CLOUDLETS));
-        if (_oldSmokes)
-        {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
+        SetToggleText(this, IDC_OPTIONS_CLOUDLETS, "CLOUDLETS", _oldSmokes);
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_BLOOD));
-        if (_oldBlood)
-        {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
+        SetToggleText(this, IDC_OPTIONS_BLOOD, "BLOOD", _oldBlood);
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_HWTL));
-        if (_oldHWTL)
-        {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
+        SetToggleText(this, IDC_OPTIONS_HWTL, "HWTL", _oldHWTL);
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_MULTITEXTURING));
-        if (_oldMultitexturing)
-        {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
+        SetToggleText(this, IDC_OPTIONS_MULTITEXTURING, "MULTITEXTURING", _oldMultitexturing);
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_WBUFFER));
-        if (_oldWBuffer)
+        SetToggleText(this, IDC_OPTIONS_WBUFFER, "WBUFFER", _oldWBuffer);
+        // W-buffering is a fixed-function D3D feature no modern backend offers, so this control
+        // is the likeliest of the lot to be absent from a config.
+        if (C3DActiveText* wbuf = OptionalActiveText(this, IDC_OPTIONS_WBUFFER, "WBUFFER"))
         {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
+            wbuf->EnableCtrl(GEngine->CanWBuffer());
         }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
-        ctrl->EnableCtrl(GEngine->CanWBuffer());
     }
 
     _initializingControls = true;
@@ -408,33 +388,45 @@ void DisplayOptionsVideo::OnButtonClicked(int idc)
             break;
         case IDC_OPTIONS_OBJSHADOWS:
         {
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_OBJSHADOWS));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_OBJSHADOWS, "OBJSHADOWS");
             bool set = !GScene->GetObjectShadows();
             GScene->SetObjectShadows(set);
-            ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+            }
         }
         break;
         case IDC_OPTIONS_VEHSHADOWS:
         {
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_VEHSHADOWS));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_VEHSHADOWS, "VEHSHADOWS");
             bool set = !GScene->GetVehicleShadows();
             GScene->SetVehicleShadows(set);
-            ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+            }
         }
         break;
         case IDC_OPTIONS_CLOUDLETS:
         {
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_CLOUDLETS));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_CLOUDLETS, "CLOUDLETS");
             bool set = !GScene->GetCloudlets();
             GScene->SetCloudlets(set);
-            ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+            }
         }
         break;
         case IDC_OPTIONS_BLOOD:
         {
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_BLOOD));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_BLOOD, "BLOOD");
             ENGINE_CONFIG.blood = !ENGINE_CONFIG.blood;
-            ctrl->SetText(LocalizeString(ENGINE_CONFIG.blood ? IDS_ENABLED : IDS_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(ENGINE_CONFIG.blood ? IDS_ENABLED : IDS_DISABLED));
+            }
         }
         break;
         case IDC_OPTIONS_HWTL:
@@ -447,19 +439,25 @@ void DisplayOptionsVideo::OnButtonClicked(int idc)
         break;
         case IDC_OPTIONS_MULTITEXTURING:
         {
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_MULTITEXTURING));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_MULTITEXTURING, "MULTITEXTURING");
             bool set = !GEngine->IsMultitexturing();
             GEngine->SetMultitexturing(set);
-            ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+            }
         }
         break;
         case IDC_OPTIONS_WBUFFER:
             if (GEngine->CanWBuffer())
             {
-                C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_WBUFFER));
+                C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_WBUFFER, "WBUFFER");
                 bool set = !GEngine->IsWBuffer();
                 GEngine->SetWBuffer(set);
-                ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+                if (ctrl)
+                {
+                    ctrl->SetText(LocalizeString(set ? IDS_ENABLED : IDS_DISABLED));
+                }
             }
             break;
         default:
@@ -666,34 +664,14 @@ DisplayOptionsAudio::DisplayOptionsAudio(ControlsContainer* parent, bool enableS
         }
     }
     {
-        C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_HWACC));
-        if (_oldHWAcc)
-        {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
+        SetToggleText(this, IDC_OPTIONS_HWACC, "HWACC", _oldHWAcc);
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_EAX));
-        if (_oldEAX)
-        {
-            ctrl->SetText(LocalizeString(IDS_ENABLED));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_DISABLED));
-        }
+        SetToggleText(this, IDC_OPTIONS_EAX, "EAX", _oldEAX);
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_SINGLE_VOICE));
-        if (_oldSingleVoice)
+        // Not an ENABLED/DISABLED pair, so it keeps its own labels rather than SetToggleText.
+        if (C3DActiveText* voice = OptionalActiveText(this, IDC_OPTIONS_SINGLE_VOICE, "SINGLE_VOICE"))
         {
-            ctrl->SetText(LocalizeString(IDS_SINGLE_VOICE));
-        }
-        else
-        {
-            ctrl->SetText(LocalizeString(IDS_ALL_VOICES));
+            voice->SetText(LocalizeString(_oldSingleVoice ? IDS_SINGLE_VOICE : IDS_ALL_VOICES));
         }
     }
 }
@@ -792,31 +770,43 @@ void DisplayOptionsAudio::OnButtonClicked(int idc)
             break;
         case IDC_OPTIONS_HWACC:
         {
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_HWACC));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_HWACC, "HWACC");
             bool val = GSoundsys->GetHWAccel();
             val = GSoundsys->EnableHWAccel(!val);
-            ctrl->SetText(LocalizeString(val ? IDS_ENABLED : IDS_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(val ? IDS_ENABLED : IDS_DISABLED));
+            }
         }
         break;
         case IDC_OPTIONS_EAX:
         {
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_EAX));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_EAX, "EAX");
             bool val = GSoundsys->GetEAX();
             val = GSoundsys->EnableEAX(!val);
-            ctrl->SetText(LocalizeString(val ? IDS_ENABLED : IDS_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(val ? IDS_ENABLED : IDS_DISABLED));
+            }
         }
         break;
         case IDC_OPTIONS_SINGLE_VOICE:
         {
             ENGINE_CONFIG.singleVoice = !ENGINE_CONFIG.singleVoice;
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_SINGLE_VOICE));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_SINGLE_VOICE, "SINGLE_VOICE");
             if (ENGINE_CONFIG.singleVoice)
             {
-                ctrl->SetText(LocalizeString(IDS_SINGLE_VOICE));
+                if (ctrl)
+                {
+                    ctrl->SetText(LocalizeString(IDS_SINGLE_VOICE));
+                }
             }
             else
             {
-                ctrl->SetText(LocalizeString(IDS_ALL_VOICES));
+                if (ctrl)
+                {
+                    ctrl->SetText(LocalizeString(IDS_ALL_VOICES));
+                }
             }
         }
         break;
@@ -836,24 +826,36 @@ DisplayDifficulty::DisplayDifficulty(ControlsContainer* parent, bool enableSimul
     _oldRadio = GChatList.Enabled();
 
     {
-        C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_SUBTITLES));
+        C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_SUBTITLES, "SUBTITLES");
         if (USER_CONFIG.showTitles)
         {
-            ctrl->SetText(LocalizeString(IDS_OPT_SUBTITLES_ENABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(IDS_OPT_SUBTITLES_ENABLED));
+            }
         }
         else
         {
-            ctrl->SetText(LocalizeString(IDS_OPT_SUBTITLES_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(IDS_OPT_SUBTITLES_DISABLED));
+            }
         }
 
-        ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_RADIO));
+        ctrl = OptionalActiveText(this, IDC_OPTIONS_RADIO, "RADIO");
         if (GChatList.Enabled())
         {
-            ctrl->SetText(LocalizeString(IDS_OPT_RADIO_ENABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(IDS_OPT_RADIO_ENABLED));
+            }
         }
         else
         {
-            ctrl->SetText(LocalizeString(IDS_OPT_RADIO_DISABLED));
+            if (ctrl)
+            {
+                ctrl->SetText(LocalizeString(IDS_OPT_RADIO_DISABLED));
+            }
         }
     }
 }
@@ -907,28 +909,40 @@ void DisplayDifficulty::OnButtonClicked(int idc)
         case IDC_OPTIONS_SUBTITLES:
         {
             USER_CONFIG.showTitles = !USER_CONFIG.showTitles;
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_SUBTITLES));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_SUBTITLES, "SUBTITLES");
             if (USER_CONFIG.showTitles)
             {
-                ctrl->SetText(LocalizeString(IDS_OPT_SUBTITLES_ENABLED));
+                if (ctrl)
+                {
+                    ctrl->SetText(LocalizeString(IDS_OPT_SUBTITLES_ENABLED));
+                }
             }
             else
             {
-                ctrl->SetText(LocalizeString(IDS_OPT_SUBTITLES_DISABLED));
+                if (ctrl)
+                {
+                    ctrl->SetText(LocalizeString(IDS_OPT_SUBTITLES_DISABLED));
+                }
             }
         }
         break;
         case IDC_OPTIONS_RADIO:
         {
             GChatList.Enable(!GChatList.Enabled());
-            C3DActiveText* ctrl = static_cast<C3DActiveText*>(GetCtrl(IDC_OPTIONS_RADIO));
+            C3DActiveText* ctrl = OptionalActiveText(this, IDC_OPTIONS_RADIO, "RADIO");
             if (GChatList.Enabled())
             {
-                ctrl->SetText(LocalizeString(IDS_OPT_RADIO_ENABLED));
+                if (ctrl)
+                {
+                    ctrl->SetText(LocalizeString(IDS_OPT_RADIO_ENABLED));
+                }
             }
             else
             {
-                ctrl->SetText(LocalizeString(IDS_OPT_RADIO_DISABLED));
+                if (ctrl)
+                {
+                    ctrl->SetText(LocalizeString(IDS_OPT_RADIO_DISABLED));
+                }
             }
         }
         break;
