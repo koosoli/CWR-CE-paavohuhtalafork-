@@ -99,3 +99,30 @@ function(dist_copy TARGET)
         )
     endforeach()
 endfunction()
+
+# Stage the loose runtime asset tree (assets/) next to an app and into dist/.
+#
+# Some renderer features read loose files relative to the WORKING DIRECTORY rather than out of a
+# PBO — the grass system is the first (assets/grass/*.png). A missing asset does NOT fail: the
+# renderer silently falls back to a procedural substitute, so the symptom is "my texture change
+# did nothing", with no error anywhere. That is the same silent-degradation shape as the stale
+# cdylib bug (see wgpu_renderer_stage_dll), and it deserves the same treatment: stage it in the
+# build rather than relying on anyone remembering a manual copy.
+#
+# Until 2026-08-04 nothing staged this. It was documented only as a manual Copy-Item step, so a
+# fresh clone built, installed and launched via the supported scripts ran with no grass textures
+# at all — and looked like it was working.
+function(stage_assets TARGET)
+    set(_assets "${CMAKE_SOURCE_DIR}/assets")
+    if(NOT IS_DIRECTORY "${_assets}")
+        return()
+    endif()
+    add_custom_command(TARGET ${TARGET} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            "${_assets}" "$<TARGET_FILE_DIR:${TARGET}>/assets"
+        COMMAND ${CMAKE_COMMAND} -E copy_directory_if_different
+            "${_assets}" "${DIST_DIR}/assets"
+        COMMENT "Staging assets/ for ${TARGET}"
+        VERBATIM
+    )
+endfunction()

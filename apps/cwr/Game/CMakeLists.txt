@@ -95,3 +95,5 @@ set_target_properties(PoseidonGame PROPERTIES
 
 include(${CMAKE_SOURCE_DIR}/cmake/DistCopy.cmake)
 dist_copy(PoseidonGame)
+# Loose runtime assets (assets/grass/*.png). Absence degrades silently, so stage it.
+stage_assets(PoseidonGame)
