@@ -2085,15 +2085,27 @@ pub struct GtaoSettings {
 impl Default for GtaoSettings {
     fn default() -> Self {
         // Default OFF: this is a look change over every opaque surface, so it ships behind the
-        // flag until it has been seen on a real island. The tuning values are the plan's §3/§4
-        // starting points (S=3, N=10, 6-px bilateral), not measured ones.
+        // flag until it has been seen on a real island.
+        //
+        // max_radius_px is the value that matters and it is MEASURED, not guessed. It is a cost
+        // clamp, but it silently shortens the world radius whenever it bites, and at 800x600 with
+        // proj_yy=1.9 the old 96 px bit for everything nearer than ~10 m:
+        //
+        //   dist  2 m -> 429 px wanted, capped 96 -> effective radius 0.34 m (asked for 1.5)
+        //   dist  3 m -> 286 px wanted, capped 96 -> effective radius 0.50 m
+        //   dist  5 m -> 171 px wanted, capped 96 -> effective radius 0.84 m
+        //
+        // Which is why AO showed up on foliage and fingers but not on a room's walls, floor or
+        // ceiling: indoors the horizon search never reached them. At 256 the same distances give
+        // 0.90 / 1.34 / 1.50 m, i.e. the radius that was actually asked for. Steps go up with it
+        // so the wider span is not undersampled.
         Self {
             enabled: false,
-            radius_m: 1.5,
+            radius_m: 2.0,
             strength: 1.0,
             slices: 3,
-            steps: 10,
-            max_radius_px: 96.0,
+            steps: 12,
+            max_radius_px: 256.0,
             thickness: 1.0,
             blur_radius: 6.0,
             blur_depth_scale: 24.0,

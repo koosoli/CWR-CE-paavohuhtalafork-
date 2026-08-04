@@ -936,7 +936,7 @@ class Engine : public IGraphicsEngine
         // Occlusion reach in WORLD metres, projected to pixels per fragment (so AO does not
         // swell as you walk toward a wall). ~1-2 m reads as contact shadow; larger reads as
         // soft global shading.
-        float radius = 1.5f;
+        float radius = 2.0f;
         // Exponent on visibility: 1 = the physical result, >1 deepens without crushing to black.
         float strength = 1.0f;
         // Per-frame sample budget. There is NO temporal accumulation in this engine (no TAA),
@@ -944,9 +944,11 @@ class Engine : public IGraphicsEngine
         // Raise steps before widening the blur — a too-wide blur washes out the contact
         // darkening that is the whole point.
         int slices = 3;
-        int steps = 10;
-        // Cost bound: screen radius clamp in pixels, for geometry very close to the camera.
-        float maxRadiusPixels = 96.0f;
+        int steps = 12;
+        // Cost bound: screen radius clamp in pixels. NOT a free knob — whenever it bites it
+        // silently shortens `radius` above, so too low a value reads as "AO does nothing" on
+        // everything close to the camera (measured: 96 px gave a 0.5 m radius at 3 m, not 1.5).
+        float maxRadiusPixels = 256.0f;
         // Falloff past the radius. Rejects thin foreground occluders, which otherwise shadow
         // everything behind them out to infinity (GTAO's classic "sky behind a pole goes black").
         float thickness = 1.0f;

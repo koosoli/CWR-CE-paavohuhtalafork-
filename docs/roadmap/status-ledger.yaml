@@ -360,7 +360,7 @@ tickets:
         verified_commit: null
     test_ids: [wgpu-capabilities-check, wgpu-windowed-resize-capture, wgpu-normal-loop-minimize-restore, wgpu-lifecycle-repeat-in-session, runtime-diagnostics-once]
     benchmark_artifacts: [docs/roadmap/evidence/preview0-manifest.json]
-    evidence_hash: a18bacfa983617946303db5cbec70a0e36f27be2e51b44c51da472f085aeb724
+    evidence_hash: 790ea2db359fcd581f2fc09558d349d18697b50c735cc51c6ddf102ce614c56d
     decision_record: null
     known_failures: []
     fallback: Unsupported optional capabilities are reported and feature paths remain gated.

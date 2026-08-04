@@ -2475,8 +2475,11 @@ impl Renderer {
                 // sub-pass below samples the AO through frame @binding(11). Off by default;
                 // no-op until the gate is on. main_scene_cam is the camera the prepass drew
                 // with, so it is the one whose unprojection matches this depth buffer.
+                // The one-shot flag is set only AFTER a successful log, not before the camera
+                // lookup. Burning it on an early frame that has no camera yet is how a
+                // "one-shot" diagnostic silently never fires — which is exactly what the first
+                // version of this did, and it cost a whole launch to notice.
                 if self.gfx3d.gtao_debug_on() && !self.gtao_dbg_logged {
-                    self.gtao_dbg_logged = true;
                     if let Some(cam) = cameras.get(main_scene_cam) {
                         let proj = glam::DMat4::from_cols_array(&cam.proj.map(f64::from));
                         let inv_proj = proj.inverse().as_mat4();
@@ -2502,6 +2505,7 @@ impl Renderer {
                                 cam.proj[5], cam.proj[0]
                             ),
                         );
+                        self.gtao_dbg_logged = true;
                     }
                 }
                 self.gfx3d
