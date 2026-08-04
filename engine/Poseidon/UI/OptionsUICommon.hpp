@@ -241,6 +241,15 @@ class DisplayOptions : public Display
     void OnCtrlClosed(int idc) override;
 };
 
+// True when the data set defines RscOptionsShell (the remaster Options resource, shipped in
+// bin/resource-extra.cpp). False on classic data, which has only RscDisplayOptions.
+bool HasRemasterOptionsResource();
+
+// Build the Options screen the loaded data can actually drive: the remaster shell when its
+// resource exists, else the classic display. Loading a resource class that does not exist yields
+// an EMPTY display rather than an error, so picking the wrong one looks like a broken menu.
+Display* CreateOptionsDisplay(ControlsContainer* parent, bool enableSimulation, bool credits);
+
 // True when CfgCredits defines a usable cutscene; drives whether the Credits
 // button is offered (a package with no credits leaves the cutscene empty).
 bool IsCreditsConfigured();

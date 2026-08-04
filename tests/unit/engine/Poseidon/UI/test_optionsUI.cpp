@@ -100,3 +100,26 @@ TEST_CASE("OptionsPage cycle membership helper only accepts listed IDCs", "[opti
     CHECK_FALSE(page.ContainsCycleIdc(-1, cycle, 3));
     CHECK_FALSE(page.ContainsCycleIdc(1101, nullptr, 3));
 }
+
+// The Options screen is chosen from the DATA, not hardcoded, because loading a resource class
+// that the loaded data set does not define yields an EMPTY display instead of an error.
+//
+// This is not hypothetical: a stock ARMA: Cold War Assault install ships RscDisplayOptions and
+// RscDisplayOptionsVideo in bin/RESOURCE.BIN but NOT RscOptionsShell, which arrives separately in
+// bin/resource-extra.cpp. The shell was constructed unconditionally, so on that data the Options
+// entry opened a screen with no notebook, no buttons and no message — for the whole life of the
+// fork. Pin the probe so the selection cannot quietly become unconditional again.
+TEST_CASE("Options screen selection follows the resource the data set actually defines", "[optionsUI][UI]")
+{
+    ParamFile res;
+    CHECK(res.FindEntry("RscOptionsShell") == nullptr);
+
+    // Classic data: only the original family is present, so the probe must say "no shell".
+    res.AddClass("RscDisplayOptions");
+    CHECK(res.FindEntry("RscOptionsShell") == nullptr);
+    CHECK(res.FindEntry("RscDisplayOptions") != nullptr);
+
+    // Remaster data: resource-extra.cpp has been merged in and the shell is available.
+    res.AddClass("RscOptionsShell");
+    CHECK(res.FindEntry("RscOptionsShell") != nullptr);
+}

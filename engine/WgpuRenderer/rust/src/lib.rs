@@ -257,6 +257,10 @@ pub struct Renderer {
     // catch frame-to-frame camera alternation (the suspected sun/haze stutter cause).
     sky_debug: bool,
     sky_dbg_last: (usize, usize),
+    // One-shot GTAO input dump (WGR_GTAO_DEBUG). AO that comes back uniformly white means the
+    // pass ran and found no horizons, and the arithmetic that decides that is all in these few
+    // numbers — cheaper to print them once than to reason about the shader.
+    gtao_dbg_logged: bool,
     // Depth+normal prepass (docs/depth-prepass-plan.md). Ships unconditionally on wgpu
     // (decision 8); WGR_PREPASS=0 is a TEMPORARY dev A/B for bring-up validation only,
     // not a shipped runtime flag. When on, the first (world) depth segment gets a
@@ -809,6 +813,7 @@ impl Renderer {
             foliage_params: ffi::WgrFoliage::default(),
             sky_debug: std::env::var("WGR_SKY_DEBUG").is_ok(),
             sky_dbg_last: (usize::MAX, usize::MAX),
+            gtao_dbg_logged: false,
             prepass_enabled,
             suppress_world_objects: false,
             cull_debug_draw: false,
@@ -2470,6 +2475,35 @@ impl Renderer {
                 // sub-pass below samples the AO through frame @binding(11). Off by default;
                 // no-op until the gate is on. main_scene_cam is the camera the prepass drew
                 // with, so it is the one whose unprojection matches this depth buffer.
+                if self.gfx3d.gtao_debug_on() && !self.gtao_dbg_logged {
+                    self.gtao_dbg_logged = true;
+                    if let Some(cam) = cameras.get(main_scene_cam) {
+                        let proj = glam::DMat4::from_cols_array(&cam.proj.map(f64::from));
+                        let inv_proj = proj.inverse().as_mat4();
+                        // Reproduce the shader's own arithmetic at the screen centre for a few
+                        // depths, so a bad projection shows up as a nonsense view-space Z or a
+                        // pixel radius pinned to its 2.0 floor (which reads as "no AO anywhere").
+                        let (w, h) = self.gfx3d.render_size();
+                        let mut report = String::new();
+                        for d in [0.999_f32, 0.99, 0.9, 0.5] {
+                            let hp = inv_proj * glam::Vec4::new(0.0, 0.0, d, 1.0);
+                            let p = hp.truncate() / hp.w.abs().max(1e-6) * hp.w.signum();
+                            let dist = p.length().max(1e-3);
+                            let px_r = (1.5 / dist * cam.proj[5] * h as f32 * 0.5).clamp(2.0, 96.0);
+                            report.push_str(&format!(
+                                " | d={d} -> viewZ={:.2} dist={:.2} px_radius={px_r:.1}",
+                                p.z, dist
+                            ));
+                        }
+                        self.log.log(
+                            log_level::INFO,
+                            &format!(
+                                "[wgr] gtao inputs: {w}x{h} proj_yy={:.4} proj_xx={:.4}{report}",
+                                cam.proj[5], cam.proj[0]
+                            ),
+                        );
+                    }
+                }
                 self.gfx3d
                     .render_gtao(&self.queue, &mut encoder, main_scene_cam);
             }

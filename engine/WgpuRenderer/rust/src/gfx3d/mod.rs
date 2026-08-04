@@ -5530,6 +5530,15 @@ impl Gfx3d {
         }
     }
 
+    // Render-target size the GTAO pass works at (== the depth target).
+    pub fn render_size(&self) -> (u32, u32) {
+        self.depth_size
+    }
+
+    pub fn gtao_debug_on(&self) -> bool {
+        self.gtao_settings.enabled && self.gtao_settings.debug
+    }
+
     pub fn set_gtao_settings(&mut self, s: GtaoSettings) {
         self.gtao_settings = s;
     }

@@ -1971,7 +1971,7 @@ void DisplayInterrupt::OnButtonClicked(int idc)
     switch (idc)
     {
         case IDC_INT_OPTIONS:
-            CreateChild(new OptionsShell(this, false, false));
+            CreateChild(CreateOptionsDisplay(this, false, false));
             break;
         default:
             Exit(idc);

@@ -1906,7 +1906,7 @@ void DisplayMain::OnButtonClicked(int idc)
         case IDC_MAIN_OPTIONS:
             // Offer the Credits button only when CfgCredits is configured (the demo
             // ships none, matching the original 2001 demo).
-            CreateChild(new OptionsShell(this, true, IsCreditsConfigured()));
+            CreateChild(CreateOptionsDisplay(this, true, IsCreditsConfigured()));
             break;
         case IDC_MAIN_CUSTOM:
             CreateChild(new DisplayCustomArcade(this));

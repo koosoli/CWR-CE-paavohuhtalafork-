@@ -1932,6 +1932,33 @@ bool DisplaySave::CanDestroy()
     return true;
 }
 
+bool HasRemasterOptionsResource()
+{
+    // The remaster's Options screen is driven by `RscOptionsShell`, which ships in the base
+    // package's bin/resource-extra.cpp (see MergeBaseResourceExtra in ConfigParsers.cpp) — NOT in
+    // the classic RESOURCE.BIN. Data sets that predate it, including a stock ARMA: Cold War
+    // Assault install, define only the original `RscDisplayOptions` family.
+    //
+    // Load() on a class that does not exist does not fail loudly; it produces a display with no
+    // controls. So on that data the Options entry opened an empty screen: no notebook animation,
+    // no buttons, nothing to click, and no error. Indistinguishable from "the menu is broken".
+    //
+    // Probe for the resource and fall back to the classic DisplayOptions, which loads
+    // `RscDisplayOptions` and is present in every data set. This is why that class is still
+    // here: it was left in the tree, unreferenced, when the shell replaced it.
+    return Res.FindEntry("RscOptionsShell") != nullptr;
+}
+
+Display* CreateOptionsDisplay(ControlsContainer* parent, bool enableSimulation, bool credits)
+{
+    if (HasRemasterOptionsResource())
+    {
+        return new OptionsShell(parent, enableSimulation, credits);
+    }
+    LOG_INFO(UI, "Options: RscOptionsShell not in this data set; using the classic RscDisplayOptions screen");
+    return new DisplayOptions(parent, enableSimulation, credits);
+}
+
 bool IsCreditsConfigured()
 {
     // Credits are offered only when CfgCredits defines a usable "<world>.<mission>"
@@ -1982,7 +2009,17 @@ DisplayOptions::DisplayOptions(ControlsContainer* parent, bool enableSimulation,
     Load("RscDisplayOptions");
     if (!credits)
     {
-        GetCtrl(IDC_OPTIONS_CREDITS)->ShowCtrl(false);
+        // Null-checked: this path had not run since the shell replaced it, and a data set whose
+        // RscDisplayOptions omits the Credits button would have taken the whole screen down in
+        // its constructor — the same failure this fallback exists to fix.
+        if (IControl* ctrl = GetCtrl(IDC_OPTIONS_CREDITS))
+        {
+            ctrl->ShowCtrl(false);
+        }
+        else
+        {
+            LOG_WARN(UI, "Options: RscDisplayOptions declares no Credits control (IDC {})", IDC_OPTIONS_CREDITS);
+        }
     }
 }
 
