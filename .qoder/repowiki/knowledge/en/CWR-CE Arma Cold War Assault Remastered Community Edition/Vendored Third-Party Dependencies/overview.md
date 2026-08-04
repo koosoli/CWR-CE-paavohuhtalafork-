@@ -1,1 +1,0 @@
-Vendored headers and source for OpenGL (glad) and RenderDoc debugging API, with additional dependencies managed through vcpkg.

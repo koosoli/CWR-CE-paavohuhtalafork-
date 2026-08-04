@@ -1,5 +1,0 @@
-- Each crate declares `rust-version = "1.87"` and enforces `unsafe_code = "deny"` plus strict clippy lints (`all = deny`, `pedantic/nursery = warn`) in its `Cargo.toml` `[lints]` section.
-- Error handling uses `anyhow::Result` with `.with_context(|| ...)` to attach file paths or operation names to every fallible I/O call.
-- HTTP endpoints are defined as Axum handlers in `http.rs` and registered through `build_router` / `build_router_with_admin_key` functions, with request/response models declared in `model.rs` and validated via serde attributes.
-- Database access goes through the `ServerDirectory` trait in `repository.rs` with concrete `SqliteServerDirectory` and Postgres-backed implementations selected via sqlx's `Any` pool, keeping SQL dialect differences hidden behind parameter placeholders.
-- Tests are written inline with `#[cfg(test)]` modules inside the same crate files, using `tempfile` for isolated SQLite databases and `tower::ServiceExt::oneshot` to exercise Axum routers without a real TCP listener.

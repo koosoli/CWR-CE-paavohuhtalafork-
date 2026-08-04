@@ -1,1 +1,0 @@
-PowerShell helper scripts that configure and build the Poseidon engine via CMake presets, copy missing game data from the Arma: Cold War Assault Demo into the retail install, and launch the built binary against either retail or Demo game data.

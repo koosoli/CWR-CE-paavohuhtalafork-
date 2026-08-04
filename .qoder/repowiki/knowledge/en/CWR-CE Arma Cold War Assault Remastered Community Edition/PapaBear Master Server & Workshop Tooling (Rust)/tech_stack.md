@@ -1,1 +1,0 @@
-Rust 2021 (MSRV 1.87) with Axum 0.7 for the HTTP server, sqlx 0.8 with `runtime-tokio` + `sqlite`/`postgres` drivers behind the `any` feature for cross-database queries, tokio async runtime, serde/serde_json for JSON, ureq with native-tls for the CLI's HTTPS (honours OS trust store), zstd multi-threaded compression for mod artifacts, and utoipa for OpenAPI YAML generation.

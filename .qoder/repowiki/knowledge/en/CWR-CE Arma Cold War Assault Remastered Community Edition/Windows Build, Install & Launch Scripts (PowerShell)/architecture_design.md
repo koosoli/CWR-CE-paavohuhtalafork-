@@ -1,6 +1,0 @@
-Four PowerShell scripts with a shared utility module:
-- `CwaCommon.ps1` is the only library, dot-sourced by the other three; it exposes `Get-CwaInstall`, `Get-CwaRetailDir`, and `Get-CwaDemoDir` which resolve Steam AppId-based installs by probing Windows registry uninstall keys and falling back to a `libraryfolders.vdf`/`appmanifest.acf` scan.
-- `Build.ps1` is the entry point for configuration and compilation: it locates vcpkg (via `VCPKG_ROOT` or a hardcoded fallback), ensures LLVM tools are on PATH, then runs `cmake --preset` followed by `cmake --build` against `build/<preset>`.
-- `Install.ps1` copies specific directories/files (`fonts`, `dtaExt`, `AddOns/cwr_logo.pbo`, `BIN`) from the Demo install into the retail install, skipping existing files unless `-Force` is passed.
-- `Start.ps1` resolves the built executable under `dist\x64-win-<suffix>\Poseidon<App>.exe` based on the preset suffix and launches it with the resolved game data directory, forwarding remaining arguments as engine flags.
-Dependency direction is strictly one-way: `Build.ps1`, `Install.ps1`, and `Start.ps1` all depend on `CwaCommon.ps1`; there are no cross-dependencies between the three operational scripts.

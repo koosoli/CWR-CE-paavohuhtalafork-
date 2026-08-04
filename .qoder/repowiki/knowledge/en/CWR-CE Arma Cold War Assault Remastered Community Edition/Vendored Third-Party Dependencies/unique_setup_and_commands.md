@@ -1,1 +1,0 @@
-The glad headers are pre-generated artifacts (generator version 2.0.8, command-line flags visible in `glad/gl.h`); they do not need regeneration unless the OpenGL spec or extension set changes. Other third-party libraries are fetched automatically by the project's vcpkg integration — no manual setup is required inside this directory.

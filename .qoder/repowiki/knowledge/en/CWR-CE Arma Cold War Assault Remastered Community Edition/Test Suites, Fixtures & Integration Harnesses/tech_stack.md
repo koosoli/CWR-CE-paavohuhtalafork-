@@ -1,1 +1,0 @@
-Catch2 for C++ unit tests, ImGui Test Engine for UI tests, Rust-based Trident framework for SQF-driven integration tests, Pester (PowerShell) for smoke tests, and CTest/CMake as the unified test runner. Tests require a local `.trident.env` pointing to the game binary and Demo data directory.

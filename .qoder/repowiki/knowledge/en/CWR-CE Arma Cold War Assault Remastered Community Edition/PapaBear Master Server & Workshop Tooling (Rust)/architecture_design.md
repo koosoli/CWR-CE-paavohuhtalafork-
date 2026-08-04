@@ -1,7 +1,0 @@
-Four independent Cargo crates under `mserver/`, each with its own `Cargo.toml` and source tree:
-- `Archive` (`papa-bear-archive`) implements OFP/Poseidon PBO read/write with LZSS compression (`lib.rs` re-exports `Pbo`, `PboEntry`, MIME constants; `lzss.rs` and `pbo.rs` are the core).
-- `Client` (`papa-bear-client`) is a pure protocol library exposing `codec`, `framing`, and `query` modules for the UDP session-enum probe used by game clients.
-- `MasterService` (`papa-bear-master-service`) is the Axum HTTP server: `lib.rs` declares public modules (`dev_seed`, `http`, `model`, `mods`, `repository`, `service`), `main.rs` boots the runtime, `http.rs` wires routes, `model.rs` defines request/response structs, `repository.rs` abstracts over SQLite/Postgres via sqlx's `Any` pool, and `service.rs` holds business logic. Static web assets live in `web/`.
-- `CLI` (`papa-bear-cli`) is a binary crate (`src/main.rs`) built on clap subcommands that composes `papa-bear-archive` and `papa-bear-client` plus ureq/native-tls for HTTP.
-
-Dependency direction is one-way: `CLI` depends on `Archive` + `Client`; `MasterService` depends only on `Client` (for shared types); `Archive` and `Client` have no intra-workspace dependencies. All crates target Rust 2021 edition with `rust-version = "1.87"` and enforce `unsafe_code = "deny"` plus strict clippy lints.

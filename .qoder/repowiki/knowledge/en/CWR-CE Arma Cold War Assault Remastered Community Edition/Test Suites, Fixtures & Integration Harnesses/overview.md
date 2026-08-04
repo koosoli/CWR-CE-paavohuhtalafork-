@@ -1,1 +1,0 @@
-Comprehensive test suite for the engine and applications, providing C++ unit tests (Catch2), SQF-driven integration scenarios (Trident), Pester smoke tests, and a large collection of binary/text fixtures used across all layers.

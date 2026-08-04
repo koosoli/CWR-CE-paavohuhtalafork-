@@ -1,1 +1,0 @@
-Windows Resource Compiler (.rc) syntax with embedded .ico bitmap resources; uses the standard APPICON resource type.

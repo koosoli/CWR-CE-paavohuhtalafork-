@@ -1,8 +1,0 @@
-schema_version: 1
-module_path: resources
-title: Windows Application Icon Resources
-scope:
-    - resources/
-source_files: []
-depends_on: []
-related_to: []

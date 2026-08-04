@@ -1,1 +1,0 @@
-Community continuation of the Poseidon engine powering Arma: Cold War Assault, combining a C++20/CMake build for the game and tools with a Rust workspace for the master server, wgpu backend, and Trident test runner.

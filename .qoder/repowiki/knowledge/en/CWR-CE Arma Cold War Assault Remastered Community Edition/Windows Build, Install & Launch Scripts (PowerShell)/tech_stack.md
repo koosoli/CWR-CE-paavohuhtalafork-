@@ -1,1 +1,0 @@
-PowerShell (CmdletBinding + advanced parameters) targeting Windows; integrates with CMake presets, vcpkg toolchain, and Steam's registry/libraryfolders.vdf/appmanifest.acf format for game installation discovery. Presumed targets are Clang-based builds (`win-x64-clang-*` presets) producing binaries under `dist\x64-win-<suffix>`.

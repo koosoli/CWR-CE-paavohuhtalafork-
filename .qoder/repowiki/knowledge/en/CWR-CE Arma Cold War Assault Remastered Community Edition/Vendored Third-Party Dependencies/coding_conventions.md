@@ -1,3 +1,0 @@
-- Third-party code is kept completely unmodified and placed verbatim under its own subdirectory, preserving original licenses and include paths.
-- Headers use standard include guards (`#ifndef GLAD_GL_H_`, `#pragma once`) and `extern "C"` blocks to expose C APIs to C++ consumers.
-- Platform detection is performed via preprocessor macros (`GLAD_PLATFORM_WIN32`, `GLAD_PLATFORM_APPLE`, `RENDERDOC_CC`) rather than runtime checks.

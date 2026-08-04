@@ -1,1 +1,0 @@
-C++20 with CMake + Ninja + Clang as the primary build; Rust workspace (resolver 3, MSRV 1.87) for Trident, wgpu backend, and master server; vcpkg for C++ dependency management; Catch2 for unit tests; Pester for smoke tests; Docker images for SteamRT4 and service packaging.

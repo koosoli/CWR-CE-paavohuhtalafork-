@@ -1,3 +1,0 @@
-- Each application gets a dedicated .rc file named after the executable (e.g., icon-launcher.rc, icon-game.rc) rather than a shared resource file.
-- The .rc files follow a uniform one-line pattern: a comment describing the application followed by `APPICON ICON "<filename>.ico"`.
-- Icon filenames inside .rc files match the .rc filename stem exactly, keeping naming consistent across the pair.

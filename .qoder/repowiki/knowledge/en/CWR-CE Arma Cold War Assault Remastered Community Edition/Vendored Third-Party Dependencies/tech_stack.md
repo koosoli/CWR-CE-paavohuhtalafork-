@@ -1,1 +1,0 @@
-GLAD 2.0.8 generating an OpenGL 4.5 Core loader (622 extensions enabled); RenderDoc in-application API header (MIT license). Additional runtime dependencies are pulled through vcpkg.
