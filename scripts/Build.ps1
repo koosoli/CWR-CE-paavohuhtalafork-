@@ -43,10 +43,47 @@ if (-not ($vcpkgCmake -and (Test-Path $vcpkgCmake)))
 }
 
 # LLVM tools (clang-format / clang-tidy) must be discoverable at configure time.
-$llvmBin = 'C:\Program Files\LLVM\bin'
-if ((Test-Path $llvmBin) -and (($env:Path -split ';') -notcontains $llvmBin))
+# Both drives: a Program Files install is not always on C:.
+foreach ($llvmBin in @('C:\Program Files\LLVM\bin', 'D:\Program Files\LLVM\bin'))
 {
-    $env:Path = "$env:Path;$llvmBin"
+    if ((Test-Path $llvmBin) -and (($env:Path -split ';') -notcontains $llvmBin))
+    {
+        $env:Path = "$env:Path;$llvmBin"
+    }
+}
+
+# Windows SDK tools. CMake's compiler check links a test program through
+# `cmake -E vs_link_exe`, which needs the manifest tool; without it configure dies at
+# "The C++ compiler is not able to compile a simple test program", with the real reason
+# ("CMAKE_MT-NOTFOUND ... no such file or directory") buried in the try-compile output.
+#
+# mt.exe lives in the SDK, not in LLVM, and is NOT on PATH in a normal shell — only in a
+# Developer Command Prompt. So this script's promise to work "from any shell" held only for
+# anyone who happened to already be in a developer shell, which is exactly the person who did
+# not need the script. Found via the Kits registry rather than a hardcoded version, taking the
+# newest SDK that actually ships an x64 mt.exe.
+if (-not (Get-Command mt.exe -ErrorAction SilentlyContinue))
+{
+    $kitsRoot = (Get-ItemProperty -Path 'HKLM:\SOFTWARE\Microsoft\Windows Kits\Installed Roots' `
+                 -Name KitsRoot10 -ErrorAction SilentlyContinue).KitsRoot10
+    if ($kitsRoot)
+    {
+        $sdkBin = Get-ChildItem (Join-Path $kitsRoot 'bin') -Directory -ErrorAction SilentlyContinue |
+                  Where-Object { $_.Name -match '^10\.' -and (Test-Path (Join-Path $_.FullName 'x64\mt.exe')) } |
+                  Sort-Object { [version]$_.Name } -Descending |
+                  Select-Object -First 1
+        if ($sdkBin)
+        {
+            $env:Path = "$env:Path;$(Join-Path $sdkBin.FullName 'x64')"
+            Write-Host "Windows SDK : $($sdkBin.Name)"
+        }
+    }
+    if (-not (Get-Command mt.exe -ErrorAction SilentlyContinue))
+    {
+        Write-Warning ("mt.exe (Windows SDK) not found. Configure will fail with " +
+                       "'C++ compiler is not able to compile a simple test program'. " +
+                       "Install the Windows 10/11 SDK, or run this from a Developer PowerShell.")
+    }
 }
 
 Write-Host "Repo       : $repoRoot"
