@@ -11,9 +11,17 @@
 // enough on its own because a bilateral blur — not history — is what removes the dither.
 
 struct GtaoParams {
-    // inv(view) * inv(proj), matching Frame.inv_view_proj: unprojects an NDC point to a
-    // CAMERA-RELATIVE world position.
-    inv_view_proj: mat4x4<f32>,
+    // inv(proj) ONLY — deliberately NOT Frame.inv_view_proj.
+    //
+    // Every prepass writes the normal in VIEW space (`frame.view * normal`, see
+    // shader3d::fs_prepass / gpu_driven::fs_gpu_prepass / terrain::fs_terrain_prepass), so this
+    // pass has to reconstruct positions in view space to match. Frame.inv_view_proj unprojects to
+    // CAMERA-RELATIVE WORLD, which differs from view space by the camera rotation — mixing the
+    // two makes dot(n, v) a rotated lie. It does not look like noise: the error is constant per
+    // face orientation, so whole walls come out solid black and their neighbours solid white.
+    // View space costs nothing extra here (the camera is still at the origin, and rotation +
+    // translation preserve metres, so the world-space radius stays meaningful).
+    inv_proj: mat4x4<f32>,
     // xy = render target size in pixels, zw = 1/size.
     screen: vec4<f32>,
     // x = world-space radius (m), y = strength, z = slice count, w = steps per slice.
@@ -44,14 +52,15 @@ fn oct_decode(e: vec2<f32>) -> vec3<f32> {
     return normalize(v);
 }
 
-// Camera-relative world position for a pixel centre at the given reversed-Z depth.
-// Takes FLOAT pixel coordinates: the slice-direction reconstruction below offsets by a
-// fractional pixel distance, and rounding that to a texel makes the direction jitter.
+// VIEW-space position for a pixel centre at the given reversed-Z depth (see inv_proj above
+// for why view space and not camera-relative world). Takes FLOAT pixel coordinates: the
+// slice-direction reconstruction below offsets by a fractional pixel distance, and rounding
+// that to a texel makes the direction jitter.
 fn view_pos(px: vec2<f32>, d: f32) -> vec3<f32> {
     let uv = (px + vec2<f32>(0.5)) * params.screen.zw;
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
     // Reversed-Z: the depth value goes straight into the unprojection as written.
-    let h = params.inv_view_proj * vec4<f32>(ndc, d, 1.0);
+    let h = params.inv_proj * vec4<f32>(ndc, d, 1.0);
     return h.xyz / max(abs(h.w), 1e-6) * sign(h.w);
 }
 
@@ -95,7 +104,7 @@ fn cs_gtao(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pxf = vec2<f32>(px);
     let p = view_pos(pxf, d);
     let n = oct_decode(textureLoad(normal_tex, px, 0).xy);
-    // View vector: positions are camera-relative, so the eye is the origin.
+    // View vector: view-space positions put the eye at the origin.
     let v = normalize(-p);
 
     let radius = max(params.tuning.x, 0.01);

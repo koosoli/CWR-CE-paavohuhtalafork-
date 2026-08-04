@@ -1285,6 +1285,43 @@ fn gtao_validates_and_keeps_its_no_taa_constraints() {
 }
 
 #[test]
+fn gtao_reconstructs_positions_in_the_same_space_the_prepass_normals_are_in() {
+    // The single most damaging way to get GTAO wrong, and it is invisible to every other test
+    // here: the normal and the position must live in the SAME space. Every prepass writes
+    // `frame.view * normal`, i.e. VIEW space. This engine's Frame.inv_view_proj unprojects to
+    // CAMERA-RELATIVE WORLD, which differs by the camera rotation, so reaching for the matrix
+    // that is already in the frame UBO — the obvious thing to do — silently rotates the normal
+    // relative to everything it is dotted against.
+    //
+    // It does not read as noise, which is why it needs pinning. The error is constant for a given
+    // face orientation, so it renders as whole walls in flat black next to whole walls in flat
+    // white: structured enough to look like a feature until someone points out that real AO is
+    // smooth and lives in the corners.
+    for (name, src) in [
+        ("shader3d.wgsl", include_str!("shader3d.wgsl")),
+        ("gpu_driven.wgsl", include_str!("gpu_driven.wgsl")),
+        (
+            "../terrain/terrain.wgsl",
+            include_str!("../terrain/terrain.wgsl"),
+        ),
+    ] {
+        assert!(
+            src.contains("frame.view * vec4<f32>("),
+            "{name}'s prepass must write a VIEW-space normal; GTAO's unprojection assumes it"
+        );
+    }
+    let gtao = include_str!("gtao.wgsl");
+    assert!(
+        gtao.contains("inv_proj: mat4x4<f32>") && gtao.contains("params.inv_proj *"),
+        "GTAO must unproject with inv(proj) alone (-> view space), matching the prepass normals"
+    );
+    assert!(
+        !gtao.contains("params.inv_view_proj"),
+        "GTAO must NOT use Frame.inv_view_proj: it yields camera-relative WORLD, not view space"
+    );
+}
+
+#[test]
 fn gtao_resources_are_valid_on_a_real_device() {
     // The naga-only tests above validate the SHADERS. They cannot see whether the resources
     // wgpu is asked to build are legal, and that gap shipped a real bug: AO_FORMAT was R8Unorm,
@@ -1350,7 +1387,7 @@ fn gtao_resources_are_valid_on_a_real_device() {
     gtao.upload(
         &queue,
         &GtaoParams {
-            inv_view_proj: glam::Mat4::IDENTITY.to_cols_array(),
+            inv_proj: glam::Mat4::IDENTITY.to_cols_array(),
             screen: [w as f32, h as f32, 1.0 / w as f32, 1.0 / h as f32],
             tuning: [1.5, 1.0, 3.0, 10.0],
             limits: [96.0, 1.0, 0.0, 1.0],
@@ -1597,7 +1634,9 @@ fn normal_resolve_takes_a_single_sample_rather_than_averaging() {
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub(crate) struct GtaoParams {
-    pub inv_view_proj: [f32; 16],
+    // inv(proj), NOT inv(view)*inv(proj) — see the long note in gtao.wgsl. The prepass normals
+    // are view-space, so GTAO reconstructs view-space positions to match.
+    pub inv_proj: [f32; 16],
     // xy = size in px, zw = 1/size.
     pub screen: [f32; 4],
     // x = world radius (m), y = strength, z = slices, w = steps per slice.
@@ -2266,10 +2305,10 @@ pub struct Gfx3d {
     // AO target keeps whatever it last held, which is why the consumers read it through the same
     // `strength` gate rather than sampling unconditionally.
     gtao_settings: GtaoSettings,
-    // inv(view)*inv(proj) per camera, cached from `prepare` so the GTAO dispatch can unproject
-    // with the SAME matrix the prepass rasterised with. Recomputing it at dispatch time from a
-    // separately-chosen camera is how AO ends up subtly offset from the depth it is reading.
-    cam_inv_vp: Vec<([f32; 16], f32)>,
+    // (inv(proj), proj[1][1]) per camera, cached from `prepare` so the GTAO dispatch unprojects
+    // with the SAME projection the prepass rasterised with. Recomputing it at dispatch time from
+    // a separately-chosen camera is how AO ends up subtly offset from the depth it is reading.
+    cam_gtao_proj: Vec<([f32; 16], f32)>,
     // Single-sample depth-stencil for the post-tonemap UI phase (Some only when sample_count > 1).
     // That phase composites display-referred 2D to the 1x swapchain, so it can't share the MSAA
     // scene depth (mismatched sample counts). Cleared per use; world occlusion isn't carried into
@@ -2794,7 +2833,7 @@ impl Gfx3d {
             gtao,
             gtao_blur,
             gtao_settings: GtaoSettings::default(),
-            cam_inv_vp: Vec::new(),
+            cam_gtao_proj: Vec::new(),
             ui_depth: None,
             hiz: hiz::HiZ::new(device),
             // GPU Hi-Z occlusion: default on when GPU-driven is on (the point of this feature),
@@ -4258,6 +4297,9 @@ impl Gfx3d {
         // (camera index, sea level). Only the reflected camera uses this conservative
         // above-water clip; main cameras retain their existing behaviour.
         reflection_clip: Option<(usize, f32)>,
+        // The camera GTAO is computed for. Only this camera may READ the AO buffer — see the
+        // per-camera gate in the upload loop below.
+        gtao_camera: usize,
     ) {
         // Lend the terrain heightmap + its sampling params to the mesh conform group
         // (group 4) so vs_main can conform ClipLand vegetation to SurfaceY per vertex.
@@ -4307,13 +4349,15 @@ impl Gfx3d {
                     base + std::mem::size_of::<WgrCamera>() as u64,
                     bytemuck::cast_slice(&inv_vp),
                 );
-                // Same matrix, kept CPU-side for the GTAO uniform (see cam_inv_vp), paired with
-                // proj[1][1] — GTAO needs the vertical projection scale to size its world radius
-                // in pixels, and it is not recoverable from inv_vp without another inversion.
-                if self.cam_inv_vp.len() <= i {
-                    self.cam_inv_vp.resize(i + 1, ([0.0; 16], 1.0));
+                // GTAO's own unprojection: inv(proj) alone, so it reconstructs VIEW-space
+                // positions to match the view-space normals the prepass wrote (mixing the two
+                // spaces turns whole faces solid black — see gtao.wgsl). Inverted in f64 for the
+                // same conditioning reason as inv_vp above. Paired with proj[1][1], the vertical
+                // projection scale GTAO needs to size its world radius in pixels.
+                if self.cam_gtao_proj.len() <= i {
+                    self.cam_gtao_proj.resize(i + 1, ([0.0; 16], 1.0));
                 }
-                self.cam_inv_vp[i] = (inv_vp, c.proj[5]);
+                self.cam_gtao_proj[i] = (proj.inverse().as_mat4().to_cols_array(), c.proj[5]);
                 // Foliage knobs (frame.foliage / frame.foliageb) after inv_view_proj — same
                 // append pattern; 32 B, matching the +32 in CameraGroup::new's bind_size.
                 queue.write_buffer(
@@ -4336,10 +4380,20 @@ impl Gfx3d {
                 // the AO texture because that texture keeps its last contents when the pass is
                 // skipped — an ungated consumer would shade with a frozen AO buffer, which is far
                 // harder to recognise than no AO at all.
+                //
+                // Gated PER CAMERA, not just per frame. GTAO is computed once, from the main
+                // scene camera's depth buffer. Any other camera in the frame — the first-person
+                // weapon segment (its own near/far, drawn after a depth clear, with no prepass),
+                // cockpit/optics views, the planar reflection — covers the same pixels with
+                // DIFFERENT geometry, so sampling by screen position there reads the AO of
+                // whatever the main camera had behind it. In the debug view that makes the
+                // weapon vanish into the world behind it; in the lit path it is a quieter wrong
+                // ambient. Neither has a valid AO value available, so they get 1.0.
                 let g = &self.gtao_settings;
+                let on = g.enabled && i == gtao_camera;
                 let gtao = [
-                    if g.enabled { 1.0f32 } else { 0.0 },
-                    if g.enabled && g.debug { 1.0 } else { 0.0 },
+                    if on { 1.0f32 } else { 0.0 },
+                    if on && g.debug { 1.0 } else { 0.0 },
                     0.0,
                     0.0,
                 ];
@@ -5496,7 +5550,7 @@ impl Gfx3d {
         if !s.enabled {
             return;
         }
-        let Some(&(inv_view_proj, proj_yy)) = self.cam_inv_vp.get(camera) else {
+        let Some(&(inv_proj, proj_yy)) = self.cam_gtao_proj.get(camera) else {
             return;
         };
         let (w, h) = self.depth_size;
@@ -5515,7 +5569,7 @@ impl Gfx3d {
         self.gtao.upload(
             queue,
             &GtaoParams {
-                inv_view_proj,
+                inv_proj,
                 screen: [
                     w as f32,
                     h as f32,

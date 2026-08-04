@@ -1545,6 +1545,7 @@ impl Renderer {
             &skyvis_view,
             &self.foliage_params,
             reflected_camera.zip(planar_sea),
+            main_scene_cam,
         );
         self.terrain
             .prepare(&self.device, &self.queue, terrain_nodes);
