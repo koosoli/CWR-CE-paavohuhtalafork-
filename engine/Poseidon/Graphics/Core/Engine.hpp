@@ -1291,6 +1291,20 @@ class Engine : public IGraphicsEngine
         // directional sun / lifts ambient on the CPU side (PushFrame), so overcast reads flat.
         // Off by default (coverage 0) so the clear-sky look is unchanged until authored.
         float cloudCoverage = 0.42f;                       // 0 = clear .. 1 = full overcast
+        // Drive cloudCoverage from the WORLD's overcast (Landscape::GetOvercast) each frame, so
+        // Zeus / the `weather` console command / mission weather all move the sky. Without this
+        // the two are unrelated: Zeus reported an overcast that nothing rendered. When on, the
+        // Coverage slider below is a read-only display of the driven value; turn this off to
+        // author coverage directly.
+        bool cloudCoverageFromWeather = true;
+        float cloudCoverageClear = 0.05f;                  // coverage at overcast 0
+        float cloudCoverageFull = 0.95f;                   // coverage at overcast 1
+        // Cloud EVOLUTION: metres per second of drift through the noise volume, perpendicular to
+        // the wind. Wind alone only translates the field — the same clouds slide past forever.
+        // Drifting the sample position through the third noise axis instead makes them form and
+        // dissolve in place. Deliberately slow: the shape tile is ~9 km, so 8 m/s is a full
+        // turnover in roughly twenty minutes, which reads as weather rather than animation.
+        float cloudEvolve = 8.0f;
         float cloudDensity = 0.06f;                        // extinction (1/m); higher = more opaque
         float cloudBottom = 1200.0f;                       // cloud layer base altitude ASL (m)
         float cloudTop = 3500.0f;                          // cloud layer top altitude ASL (m)

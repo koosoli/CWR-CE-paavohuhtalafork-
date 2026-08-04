@@ -26,6 +26,11 @@ struct Sky {
     cloud1: vec4<f32>,        // x/y = wind WORLD offset (m, CPU-wrapped, runtime), z = shape scale (1/m), w = detail scale (1/m)
     cloud2: vec4<f32>,        // x = HG forward g, y = powder strength, z = ambient scale, w = max march distance (m)
     cloud3: vec4<f32>,        // x = weather scale (1/m), y = weather amount, z = warp scale (1/m), w = warp amount (m)
+    // Evolution offsets (m, runtime, CPU-wrapped): x = shape, y = detail, z = weather drift.
+    // Applied on the noise volume's Y axis, which the horizontal lookups otherwise hold fixed —
+    // so the field MORPHS in place instead of sliding, i.e. clouds form and dissolve rather than
+    // merely translating with the wind.
+    cloud4: vec4<f32>,
     output: vec4<f32>,        // x = linear output (1) vs self-tonemap (0)
     cam_pos: vec4<f32>,       // xyz = ABSOLUTE world camera position (froxel -> terrain-mask lookup)
 };
@@ -415,7 +420,13 @@ fn cloud_world(p: vec3<f32>) -> vec3<f32> {
 // The drift amount is tied to the AVAILABLE HEADROOM (max at coverage 0.5, ZERO at 0 and 1): authored
 // full overcast stays genuinely solid (so the sun is actually blocked) and authored clear stays clear.
 fn cloud_coverage(world_xz: vec2<f32>) -> f32 {
-    let wc = vec3<f32>(world_xz.x * sky.cloud3.x, 0.5, world_xz.y * sky.cloud3.x);
+    // The 0.5 slice is now drifted: where the weather field says "more cloud here" moves slowly,
+    // so banks build in one place and clear in another instead of the pattern being fixed forever.
+    let wc = vec3<f32>(
+        world_xz.x * sky.cloud3.x,
+        0.5 + sky.cloud4.z * sky.cloud3.x,
+        world_xz.y * sky.cloud3.x,
+    );
     let weather = textureSampleLevel(cloud_noise, cloud_samp, wc, 0.0).r;
     let vary = sky.cloud3.y * 2.0 * min(sky.cloud0.x, 1.0 - sky.cloud0.x);
     return clamp(sky.cloud0.x + (weather - 0.5) * 2.0 * vary, 0.0, 1.0);
@@ -448,7 +459,12 @@ fn cloud_density(p: vec3<f32>) -> f32 {
     w.x += (warp_n.r - 0.5) * 2.0 * sky.cloud3.w;
     w.z += (warp_n.g - 0.5) * 2.0 * sky.cloud3.w;
     // Shape (large, incommensurate tile) drives the blobs; overcast floor + coverage remap.
-    let shape = textureSampleLevel(cloud_noise, cloud_samp, w * sky.cloud1.z, 0.0).r;
+    // Shape/detail sampled at a Y drifted by the evolution offset: the volume is 3D and tileable,
+    // so walking the third axis walks through uncorrelated slices — the cheapest honest way to get
+    // formation and dissolution without a second noise fetch or a simulation.
+    var ws = w * sky.cloud1.z;
+    ws.y += sky.cloud4.x * sky.cloud1.z;
+    let shape = textureSampleLevel(cloud_noise, cloud_samp, ws, 0.0).r;
     let n = max(shape, smoothstep(0.55, 1.0, cov));
     let base = clamp((n - (1.0 - cov)) / max(cov, 1e-3), 0.0, 1.0);
     var d = base * grad;
@@ -458,7 +474,9 @@ fn cloud_density(p: vec3<f32>) -> f32 {
     // Detail erosion (small, incommensurate tile), FADED with horizontal distance so far clouds lose
     // high-frequency detail — cuts both the residual step-alias and the exaggerated tiling on the
     // horizon (many tiles visible at once). The true far-field 2D layer is a later phase.
-    let detail = textureSampleLevel(cloud_noise, cloud_samp, w * sky.cloud1.w, 0.0).g;
+    var wd = w * sky.cloud1.w;
+    wd.y += sky.cloud4.y * sky.cloud1.w;
+    let detail = textureSampleLevel(cloud_noise, cloud_samp, wd, 0.0).g;
     let dist_fade = 1.0 - smoothstep(sky.cloud2.w * 0.3, sky.cloud2.w * 0.8, length(p.xz));
     d = clamp(d - (1.0 - d) * detail * 0.4 * dist_fade, 0.0, 1.0);
     return d;

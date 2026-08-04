@@ -186,6 +186,11 @@ struct SkyUniform {
     cloud1: [f32; 4],
     cloud2: [f32; 4],
     cloud3: [f32; 4],
+    // Cloud EVOLUTION offsets (runtime): x = shape, y = detail, z = weather drift, w = pad.
+    // Position matters — sky.wgsl declares cloud4 between cloud3 and output, and a mismatch here
+    // is a silent layout shift, not a compile error. It surfaces as "buffer bound with size N
+    // where the shader expects M" on every 3D draw at once.
+    cloud4: [f32; 4],
     // x = linear output (1 = write linear radiance for the tonemap resolve; 0 =
     // self-tonemap for the LDR-direct path). y/z/w reserved. (The full-vs-cheap cloud
     // split is by entry point — fs_sky vs fs_sky_env — not a runtime flag.)
@@ -1065,6 +1070,7 @@ impl Sky {
             cloud1: sky.cloud1,
             cloud2: sky.cloud2,
             cloud3: sky.cloud3,
+            cloud4: sky.cloud4,
             output: [self.linear, 0.0, 0.0, 0.0],
             cam_pos,
         };
@@ -1357,5 +1363,111 @@ impl Sky {
     // sample it (frame::froxel_fog).
     pub fn froxel_view(&self) -> &wgpu::TextureView {
         &self.froxel_view
+    }
+}
+
+#[cfg(test)]
+mod cloud_evolution_tests {
+    // Cloud EVOLUTION must actually reach the noise lookup, on an axis the horizontal sampling
+    // does not already vary. Wind only translates the field: the same clouds slide past forever,
+    // which is what the sky did before. Drifting the volume's third axis walks through
+    // uncorrelated slices, so banks build and clear in place.
+    //
+    // Pinned in the shader source because the alternative — a uniform lane that is uploaded,
+    // plumbed through three structs, exposed in ImGui, and then never read — looks identical from
+    // every side except the screen.
+    #[test]
+    fn evolution_offsets_drive_the_noise_lookup() {
+        let src = include_str!("sky.wgsl");
+        assert!(
+            src.contains("cloud4: vec4<f32>"),
+            "the sky uniform must carry the evolution offsets"
+        );
+        // Shape and detail drift on Y, which the world-position lookup otherwise holds fixed.
+        assert!(
+            src.contains("ws.y += sky.cloud4.x * sky.cloud1.z"),
+            "cloud SHAPE must be sampled at a drifting slice"
+        );
+        assert!(
+            src.contains("wd.y += sky.cloud4.y * sky.cloud1.w"),
+            "cloud DETAIL must be sampled at a drifting slice"
+        );
+        // And where it is cloudy at all has to move, or coverage patches stay pinned to the world
+        // forever and only the wisps inside them change.
+        assert!(
+            src.contains("0.5 + sky.cloud4.z * sky.cloud3.x"),
+            "the coverage/weather field must drift too"
+        );
+    }
+}
+
+#[cfg(test)]
+mod sky_uniform_layout_tests {
+    // SkyUniform and sky.wgsl's `struct Sky` are the same buffer seen from two languages, and
+    // nothing checks that they agree. Inserting a field in one and not the other is not a compile
+    // error in either — it is a silent layout shift, and it surfaces as
+    //
+    //   "the buffer bound at binding index 0 is bound with size 336 where the shader expects 352"
+    //
+    // on EVERY 3D draw at once, which points at the bind group rather than at the field that
+    // moved. That is exactly what adding cloud4 for cloud evolution did.
+    //
+    // Compare the field ORDER, not just the size: two vec4 fields swapped keeps the size identical
+    // and silently reinterprets both.
+    #[test]
+    fn rust_and_wgsl_sky_structs_declare_the_same_fields_in_the_same_order() {
+        let src = include_str!("sky.wgsl");
+        let body = src
+            .split_once("struct Sky {")
+            .expect("sky.wgsl declares struct Sky")
+            .1
+            .split_once("};")
+            .expect("struct Sky is terminated")
+            .0;
+        let wgsl: Vec<&str> = body
+            .lines()
+            .filter_map(|l| {
+                let t = l.trim();
+                if t.starts_with("//") {
+                    return None;
+                }
+                t.split_once(':').map(|(name, _)| name.trim())
+            })
+            .filter(|n| !n.is_empty() && !n.contains(' '))
+            .collect();
+
+        // The Rust side, in declaration order. Kept as a literal list rather than derived,
+        // because deriving it from the struct would mean the test could only ever agree with
+        // itself — this list is the assertion.
+        let rust = [
+            "inv_view_proj",
+            "sun_dir",
+            "moon_dir",
+            "rayleigh",
+            "mie",
+            "ground_albedo",
+            "params",
+            "control",
+            "fog_color",
+            "night_zenith",
+            "night_horizon",
+            "night_params",
+            "cloud0",
+            "cloud1",
+            "cloud2",
+            "cloud3",
+            "cloud4",
+            "output",
+            "cam_pos",
+        ];
+        assert_eq!(
+            wgsl, rust,
+            "sky.wgsl's Sky and Rust's SkyUniform must declare identical fields in identical order"
+        );
+        // 16 vec4 lanes + one mat4. If this moves, both lists above must have moved with it.
+        assert_eq!(
+            std::mem::size_of::<super::SkyUniform>(),
+            64 + (rust.len() - 1) * 16
+        );
     }
 }

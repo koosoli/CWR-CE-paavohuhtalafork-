@@ -936,6 +936,7 @@ impl Renderer {
         s.night_params[3] = rt.fog_color[3]; // fog far-range
         s.cloud1[0] = rt.misc[2]; // cloud wind world offset x (m, CPU-wrapped)
         s.cloud1[1] = rt.misc[3]; // cloud wind world offset z (m, CPU-wrapped)
+        s.cloud4 = rt.cloud_evolve; // shape / detail / weather drift offsets (m, CPU-wrapped)
     }
 
     // Debug readback of the current auto-exposure scale (blocking; dev panel only).

@@ -394,6 +394,8 @@ pub struct WgrSky {
     pub cloud1: WgrVec4, // x/y = wind world offset (m, RUNTIME, CPU-wrapped), z = shape scale (1/m), w = detail scale (1/m)
     pub cloud2: WgrVec4, // x = HG forward g, y = powder strength, z = ambient scale, w = max march distance (m)
     pub cloud3: WgrVec4, // x = weather scale (1/m), y = weather amount [0,1], z = warp scale (1/m), w = warp amount (m)
+    // Evolution offsets (RUNTIME): x = shape, y = detail, z = weather drift, w = pad.
+    pub cloud4: WgrVec4,
 }
 
 impl Default for WgrSky {
@@ -421,6 +423,8 @@ impl Default for WgrSky {
             cloud2: [0.35, 1.0, 1.0, 60_000.0],
             // weather scale 1/16000, weather amount, warp scale 1/6000, warp amount (m).
             cloud3: [1.0 / 16_000.0, 0.4, 1.0 / 6_000.0, 900.0],
+            // Evolution offsets are runtime; zero until the first sky-runtime push.
+            cloud4: [0.0, 0.0, 0.0, 0.0],
         }
     }
 }
@@ -481,6 +485,10 @@ pub struct WgrSkyRuntime {
     pub moon_dir: WgrVec4,  // xyz = unit dir TO the moon; w = moon phase
     pub fog_color: WgrVec4, // xyz = scene fog colour; w = fog far-range (m)
     pub misc: WgrVec4,      // x = night factor (0..1), y = camera altitude ASL (m), z/w = pad
+    // Cloud evolution offsets (m, CPU-wrapped like the wind offset): x = shape, y = detail,
+    // z = weather/coverage drift, w = pad. Drifting the noise lookup makes clouds form and
+    // dissolve in place rather than merely translating with the wind.
+    pub cloud_evolve: WgrVec4,
 }
 
 // Long-distance terrain sun-shadow sweep (was wgr_terrain_set_sun_shadow's args).
@@ -1073,9 +1081,9 @@ const _: () = assert!(std::mem::size_of::<WgrModelMaterial>() == 80);
 const _: () = assert!(std::mem::size_of::<WgrModelLod>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrInstance>() == 144);
 const _: () = assert!(std::mem::size_of::<WgrTonemap>() == 48);
-const _: () = assert!(std::mem::size_of::<WgrSky>() == 240);
+const _: () = assert!(std::mem::size_of::<WgrSky>() == 256);
 const _: () = assert!(std::mem::size_of::<WgrSkyLook>() == 192);
-const _: () = assert!(std::mem::size_of::<WgrSkyRuntime>() == 64);
+const _: () = assert!(std::mem::size_of::<WgrSkyRuntime>() == 80);
 const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrFoliage>() == 48);

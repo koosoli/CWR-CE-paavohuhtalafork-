@@ -641,8 +641,8 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
             _ao.debugMode = 1;
         }
     }
-    LOG_INFO(Graphics, "Wgpu: gtao gate: enabled={} debugMode={} radius={} slices={} steps={}", _ao.enabled, _ao.debugMode,
-             _ao.radius, _ao.slices, _ao.steps);
+    LOG_INFO(Graphics, "Wgpu: gtao gate: enabled={} debugMode={} radius={} slices={} steps={}", _ao.enabled,
+             _ao.debugMode, _ao.radius, _ao.slices, _ao.steps);
 
     // WGR_SHADOW_MAPS=1 enables cascaded shadow maps at startup (dev panel /
     // tri verbs can still toggle at runtime).
@@ -3476,6 +3476,21 @@ void EngineWgpu::PushRenderParams()
     const float detailScale = 1.0f / (_sky.cloudDetailSize > 1.0f ? _sky.cloudDetailSize : 1.0f);
     const float weatherScale = 1.0f / (_sky.cloudWeatherSize > 1.0f ? _sky.cloudWeatherSize : 1.0f);
     const float warpScale = 1.0f / (_sky.cloudWarpSize > 1.0f ? _sky.cloudWarpSize : 1.0f);
+    // Cloud coverage from the WORLD's overcast, so Zeus, the `weather` console command and
+    // mission weather all actually move the sky. Before this they were unconnected: Zeus reported
+    // an overcast that nothing rendered — the "reads back correctly but doesn't change the sky"
+    // note in the roadmap.
+    //
+    // MUST run before cloud0 is packed below, or the driven value lands a frame late. Writes
+    // _sky.cloudCoverage so the Sky tab's slider displays what is actually in effect; that slider
+    // is disabled while this toggle is on, so nothing fights over the field.
+    if (_sky.cloudCoverageFromWeather && GLandscape)
+    {
+        const float overcast = GLandscape->GetOvercast();
+        const float t = overcast < 0.0f ? 0.0f : (overcast > 1.0f ? 1.0f : overcast);
+        _sky.cloudCoverage = _sky.cloudCoverageClear + (_sky.cloudCoverageFull - _sky.cloudCoverageClear) * t;
+    }
+
     p.sky.cloud0 = {_sky.cloudCoverage, _sky.cloudDensity, _sky.cloudBottom, _sky.cloudTop};
     p.sky.cloud1 = {0.0f, 0.0f, shapeScale, detailScale};
     p.sky.cloud2 = {_sky.cloudHgG, _sky.cloudPowder, _sky.cloudAmbient, _sky.cloudMaxDist};
@@ -3611,6 +3626,18 @@ void EngineWgpu::PushSkyRuntime()
     double windX = std::fmod(static_cast<double>(_sky.cloudWind[0]) * cloudT, kWindWrap);
     double windZ = std::fmod(static_cast<double>(_sky.cloudWind[1]) * cloudT, kWindWrap);
     rt.misc = {_skyNight, camAlt, static_cast<float>(windX), static_cast<float>(windZ)};
+    // Cloud EVOLUTION offsets, on the same clock and the same wrap as the wind above (so they
+    // freeze together under the Water tab's freeze switches). Wind translates the field; these
+    // walk it through the noise volume's third axis, which is what makes clouds form and dissolve
+    // in place. Detail is deliberately faster than shape and the weather drift slower — small
+    // wisps change before the banks do, and where it is cloudy at all changes slowest of the
+    // three, which is the order real weather does it in.
+    const double evo = static_cast<double>(_sky.cloudEvolve);
+    const double evoShape = std::fmod(evo * cloudT, kWindWrap);
+    const double evoDetail = std::fmod(evo * 2.0 * cloudT, kWindWrap);
+    const double evoWeather = std::fmod(evo * 0.5 * cloudT, kWindWrap);
+    rt.cloud_evolve = {static_cast<float>(evoShape), static_cast<float>(evoDetail), static_cast<float>(evoWeather),
+                       0.0f};
     wgr_set_sky_runtime(_renderer, &rt);
 }
 

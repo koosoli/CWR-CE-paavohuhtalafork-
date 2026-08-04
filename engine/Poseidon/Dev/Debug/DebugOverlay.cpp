@@ -3029,8 +3029,7 @@ void DrawAmbientOcclusionTab()
     ImGui::TextDisabled("  Stage 2: light the ambient from the direction that is actually OPEN,");
     ImGui::TextDisabled("  not from the surface normal. Changes where light comes from, not just");
     ImGui::TextDisabled("  how much — this is the one that gives shaded surfaces form.");
-    changed |= ImGui::Combo("Raw buffer view", &ao.debugMode,
-                            "Off (lit scene) AO (greyscale) Bent normal (RGB) ");
+    changed |= ImGui::Combo("Raw buffer view", &ao.debugMode, "Off (lit scene) AO (greyscale) Bent normal (RGB) ");
     ImGui::TextDisabled("  Off        = the normal lit scene in colour, AO folded into ambient");
     ImGui::TextDisabled("  AO         = the visibility buffer; white = open, dark = occluded");
     ImGui::TextDisabled("  Bent normal= the direction light arrives from, as colour. Use this to");
@@ -3411,7 +3410,22 @@ void DrawSkyTab()
     ImGui::Separator();
     ImGui::TextUnformatted("Clouds");
     ImGui::TextDisabled("raymarched cloud shell in the sky (also reflected in water + SH ambient)");
+    changed |= ImGui::Checkbox("Coverage follows weather", &s.cloudCoverageFromWeather);
+    ImGui::SetItemTooltip("On: cloud cover is driven by the world's overcast, so Zeus, the "
+                          "`weather` console command and mission weather all move the sky. "
+                          "Off: the Coverage slider below authors it directly.");
+    ImGui::BeginDisabled(s.cloudCoverageFromWeather);
     changed |= ImGui::SliderFloat("Coverage", &s.cloudCoverage, 0.0f, 1.0f, "%.2f");
+    ImGui::EndDisabled();
+    if (s.cloudCoverageFromWeather)
+    {
+        changed |= ImGui::SliderFloat("  clear cover", &s.cloudCoverageClear, 0.0f, 1.0f, "%.2f");
+        changed |= ImGui::SliderFloat("  overcast cover", &s.cloudCoverageFull, 0.0f, 1.0f, "%.2f");
+        ImGui::TextDisabled("  cover at overcast 0 and 1; the Zeus slider lerps between them");
+    }
+    changed |= ImGui::SliderFloat("Evolve (m/s)", &s.cloudEvolve, 0.0f, 60.0f, "%.1f");
+    ImGui::TextDisabled("  how fast clouds FORM and DISSOLVE (0 = frozen shapes that only drift");
+    ImGui::TextDisabled("  with the wind). Slow on purpose: ~8 turns the field over in ~20 min.");
     ImGui::SetItemTooltip("0 = clear sky; low = isolated cumulus; high = solid overcast deck. Also dims the "
                           "directional sun / lifts ambient as it rises (overcast reads flat).");
     changed |= ImGui::SliderFloat("Density", &s.cloudDensity, 0.005f, 0.3f, "%.3f", ImGuiSliderFlags_Logarithmic);

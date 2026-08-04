@@ -438,6 +438,10 @@ struct WgrSky
     WgrVec4 cloud1; /* x/y = wind world offset (m, RUNTIME, CPU-wrapped), z = shape scale (1/m), w = detail scale (1/m) */
     WgrVec4 cloud2; /* x = HG forward g, y = powder strength, z = ambient scale, w = max march distance (m) */
     WgrVec4 cloud3; /* x = weather scale (1/m), y = weather amount, z = warp scale (1/m), w = warp amount (m) */
+    /* Cloud EVOLUTION offsets (m, RUNTIME, CPU-wrapped): x = shape, y = detail, z = weather drift.
+     * Applied on the noise volume's third axis, so the field morphs in place — clouds form and
+     * dissolve — instead of only translating with the wind. w = pad. */
+    WgrVec4 cloud4;
 };
 
 /* --- Consolidated imgui-tweakable render params (docs/render-params-consolidation-plan.md) ---
@@ -471,7 +475,8 @@ struct WgrSkyRuntime
     WgrVec4 sun_dir;   /* xyz = unit dir TO the sun; w = pad */
     WgrVec4 moon_dir;  /* xyz = unit dir TO the moon; w = moon phase */
     WgrVec4 fog_color; /* xyz = scene fog colour; w = fog far-range (m) */
-    WgrVec4 misc;      /* x = night factor (0..1), y = camera altitude ASL (m), z/w = pad */
+    WgrVec4 misc;      /* x = night factor (0..1), y = camera altitude ASL (m), z/w = wind offset */
+    WgrVec4 cloud_evolve; /* x = shape, y = detail, z = weather drift (m, CPU-wrapped); w = pad */
 };
 
 /* Long-distance terrain sun-shadow sweep (was wgr_terrain_set_sun_shadow's args). */
@@ -1187,9 +1192,9 @@ static_assert(sizeof(WgrDraw3D) == 264, "WgrDraw3D layout must match the Rust #[
 static_assert(sizeof(WgrLight) == 64, "WgrLight layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTonemap) == 48, "WgrTonemap layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrExposure) == 32, "WgrExposure layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrSky) == 240, "WgrSky layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSky) == 256, "WgrSky layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrSkyLook) == 192, "WgrSkyLook layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrSkyRuntime) == 64, "WgrSkyRuntime layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSkyRuntime) == 80, "WgrSkyRuntime layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFoliage) == 48, "WgrFoliage layout must match the Rust #[repr(C)] struct");
