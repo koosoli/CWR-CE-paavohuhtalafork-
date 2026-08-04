@@ -2488,11 +2488,19 @@ impl Renderer {
                         // pixel radius pinned to its 2.0 floor (which reads as "no AO anywhere").
                         let (w, h) = self.gfx3d.render_size();
                         let mut report = String::new();
-                        for d in [0.999_f32, 0.99, 0.9, 0.5] {
-                            let hp = inv_proj * glam::Vec4::new(0.0, 0.0, d, 1.0);
+                        // STORED (reversed-Z) depths: 1 = near, 0 = far/sky. Spread over the
+                        // range so the printed distances span near field to horizon.
+                        for d in [0.5_f32, 0.1, 0.01, 0.001] {
+                            // 1.0 - d, matching view_pos in gtao.wgsl (see its note on why).
+                            let hp = inv_proj * glam::Vec4::new(0.0, 0.0, 1.0 - d, 1.0);
                             let p = hp.truncate() / hp.w.abs().max(1e-6) * hp.w.signum();
                             let dist = p.length().max(1e-3);
-                            let px_r = (1.5 / dist * cam.proj[5] * h as f32 * 0.5).clamp(2.0, 96.0);
+                            // Read the LIVE tuning, not literals: this line exists to show what
+                            // the shader will actually do, and hardcoded values silently go stale
+                            // the moment a default moves (they already did once).
+                            let g = self.gfx3d.gtao_settings();
+                            let px_r = (g.radius_m / dist * cam.proj[5] * h as f32 * 0.5)
+                                .clamp(2.0, g.max_radius_px.max(2.0));
                             report.push_str(&format!(
                                 " | d={d} -> viewZ={:.2} dist={:.2} px_radius={px_r:.1}",
                                 p.z, dist
@@ -2501,8 +2509,11 @@ impl Renderer {
                         self.log.log(
                             log_level::INFO,
                             &format!(
-                                "[wgr] gtao inputs: {w}x{h} proj_yy={:.4} proj_xx={:.4}{report}",
-                                cam.proj[5], cam.proj[0]
+                                "[wgr] gtao inputs: {w}x{h} proj_yy={:.4} proj_xx={:.4} radius={:.2}m cap={:.0}px{report}",
+                                cam.proj[5],
+                                cam.proj[0],
+                                self.gfx3d.gtao_settings().radius_m,
+                                self.gfx3d.gtao_settings().max_radius_px,
                             ),
                         );
                         self.gtao_dbg_logged = true;

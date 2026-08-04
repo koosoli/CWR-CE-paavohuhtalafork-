@@ -1285,6 +1285,61 @@ fn gtao_validates_and_keeps_its_no_taa_constraints() {
 }
 
 #[test]
+fn gtao_unprojects_the_stored_reversed_z_depth_back_to_the_original_point() {
+    // Round-trip: take a known view-space point, put it through the exact path the geometry
+    // takes (forward projection, then frame::reverse_z's `z = w - z`, then the perspective
+    // divide that lands in the depth buffer), then unproject it the way gtao.wgsl does and
+    // require the original point back.
+    //
+    // This is the test that was missing. The projection matrix is FORWARD; the reversal happens
+    // in the vertex shader afterwards, so the buffer holds `1 - forward_depth` while inv_proj
+    // still inverts the forward transform. GTAO fed the stored value in raw, which puts near
+    // geometry hundreds of metres away — and the failure is nearly silent, because it does not
+    // corrupt the image, it just makes every horizon sample fall outside the radius so no
+    // occlusion is ever found. AO reads ~1 everywhere and radius/slices/steps stop mattering.
+    //
+    // Assert on the RECONSTRUCTED POSITION rather than on shader text, because the whole point
+    // is that the wrong version still runs, still validates, and still produces a plausible
+    // picture.
+    let near = 0.0957_f32;
+    // Forward, infinite far, matching the engine's projection (near->0, far->1).
+    let proj = glam::Mat4::from_cols(
+        glam::Vec4::new(1.4286, 0.0, 0.0, 0.0),
+        glam::Vec4::new(0.0, 1.9048, 0.0, 0.0),
+        glam::Vec4::new(0.0, 0.0, 1.0, 1.0),
+        glam::Vec4::new(0.0, 0.0, -near, 0.0),
+    );
+    let inv_proj = proj.inverse();
+
+    for &z in &[0.5_f32, 2.0, 10.0, 95.0] {
+        for &(x, y) in &[(0.0_f32, 0.0_f32), (0.4, -0.3)] {
+            let p = glam::Vec3::new(x * z, y * z, z);
+            // Vertex path: project, reverse-z (z = w - z), divide.
+            let clip = proj * p.extend(1.0);
+            let stored = (clip.w - clip.z) / clip.w;
+            let ndc = glam::Vec2::new(clip.x / clip.w, clip.y / clip.w);
+
+            // gtao.wgsl's view_pos: undo the reversal, then invert the FORWARD projection.
+            let h = inv_proj * glam::Vec4::new(ndc.x, ndc.y, 1.0 - stored, 1.0);
+            let got = h.truncate() / h.w.abs().max(1e-6) * h.w.signum();
+
+            assert!(
+                (got - p).length() < 0.01 * z.max(1.0),
+                "unprojection must recover the original point: sent {p:?} (stored depth \
+                 {stored:.6}), got {got:?}"
+            );
+        }
+    }
+
+    // And pin the shader actually doing it, since the round-trip above only proves the maths.
+    let src = include_str!("gtao.wgsl");
+    assert!(
+        src.contains("params.inv_proj * vec4<f32>(ndc, 1.0 - d, 1.0)"),
+        "gtao.wgsl must undo frame::reverse_z before unprojecting with the forward inv(proj)"
+    );
+}
+
+#[test]
 fn gtao_reconstructs_positions_in_the_same_space_the_prepass_normals_are_in() {
     // The single most damaging way to get GTAO wrong, and it is invisible to every other test
     // here: the normal and the position must live in the SAME space. Every prepass writes
@@ -5545,6 +5600,10 @@ impl Gfx3d {
     // Render-target size the GTAO pass works at (== the depth target).
     pub fn render_size(&self) -> (u32, u32) {
         self.depth_size
+    }
+
+    pub fn gtao_settings(&self) -> &GtaoSettings {
+        &self.gtao_settings
     }
 
     pub fn gtao_debug_on(&self) -> bool {

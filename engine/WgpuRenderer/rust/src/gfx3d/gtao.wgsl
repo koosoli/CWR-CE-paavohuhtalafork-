@@ -59,8 +59,21 @@ fn oct_decode(e: vec2<f32>) -> vec3<f32> {
 fn view_pos(px: vec2<f32>, d: f32) -> vec3<f32> {
     let uv = (px + vec2<f32>(0.5)) * params.screen.zw;
     let ndc = vec2<f32>(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0);
-    // Reversed-Z: the depth value goes straight into the unprojection as written.
-    let h = params.inv_proj * vec4<f32>(ndc, d, 1.0);
+    // `1.0 - d`, NOT d. The projection matrix is FORWARD (near->0, far->1); the reversal is done
+    // afterwards in the vertex shader by frame::reverse_z (z = w - z), so the DEPTH BUFFER holds
+    // 1 - forward_depth while inv_proj still inverts the forward transform. Feeding the stored
+    // value straight in reconstructs a position on the wrong side of the frustum entirely: near
+    // geometry lands hundreds of metres away, every horizon sample's `len` dwarfs the radius, the
+    // thickness fade zeroes it, and NO occlusion is ever found.
+    //
+    // The failure is nearly silent — AO comes out ~1 everywhere, and radius/slices/steps/
+    // thickness all stop mattering because every sample is rejected before they apply. Only
+    // `strength` still appears to do anything, because it exponentiates the residue.
+    //
+    // Every other depth consumer in this tree already does this: water.wgsl seabed + opaque
+    // reconstruction, underwater.wgsl. frame.wgsl states the convention outright on
+    // inv_view_proj: "Unprojects a forward-NDC point vec4(ndc.xy, 1 - stored_depth, 1)".
+    let h = params.inv_proj * vec4<f32>(ndc, 1.0 - d, 1.0);
     return h.xyz / max(abs(h.w), 1e-6) * sign(h.w);
 }
 
