@@ -588,7 +588,7 @@ impl Default for WgrFoliage {
 #[derive(Clone, Copy, PartialEq)]
 pub struct WgrGtao {
     pub enabled: u32, // 0 = the whole pass is skipped and consumers read AO = 1
-    pub debug: u32,   // 1 = opaque surfaces output the raw AO buffer as greyscale
+    pub debug: u32,   // raw debug view: 0 = off, 1 = AO greyscale, 2 = bent normal RGB
     pub radius_m: f32,
     pub strength: f32,
     pub slices: u32,
@@ -608,7 +608,7 @@ impl Default for WgrGtao {
         let d = crate::gfx3d::GtaoSettings::default();
         Self {
             enabled: d.enabled as u32,
-            debug: d.debug as u32,
+            debug: d.debug_mode,
             radius_m: d.radius_m,
             strength: d.strength,
             slices: d.slices,

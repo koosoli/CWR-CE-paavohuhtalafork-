@@ -7,7 +7,7 @@
 // Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
 // pipeline via the frame module, so terrain receives the same CSM shadows and
 // sun lighting.
-#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on, gtao_bent_normal_world}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on, gtao_bent_normal_world, gtao_debug_colour}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -340,7 +340,7 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     // Debug: the raw screen-space AO buffer as greyscale (unfogged), for tuning radius/strength/
     // slices/steps/blur against the buffer itself rather than through the lit result.
     if (gtao_debug_on() > 0.5) {
-        return vec4<f32>(vec3<f32>(gtao_ao(in.clip.xy)), 1.0);
+        return vec4<f32>(gtao_debug_colour(in.clip.xy, n), 1.0);
     }
 
     // fog_enabled: 2 = aerial perspective via the froxel volume (per-fragment); 1 =

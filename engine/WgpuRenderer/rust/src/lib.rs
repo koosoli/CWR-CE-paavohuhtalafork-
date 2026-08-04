@@ -914,7 +914,7 @@ impl Renderer {
             blur_radius: g.blur_radius,
             blur_depth_scale: g.blur_depth_scale,
             blur_normal_power: g.blur_normal_power,
-            debug: g.debug != 0,
+            debug_mode: g.debug,
             bent_normal: g.bent_normal != 0,
         });
     }

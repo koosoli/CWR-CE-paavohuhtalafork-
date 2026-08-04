@@ -2169,8 +2169,11 @@ pub struct GtaoSettings {
     pub blur_radius: f32,
     pub blur_depth_scale: f32,
     pub blur_normal_power: f32,
-    // 1 = terrain/objects output the raw AO buffer as greyscale instead of shading with it.
-    pub debug: bool,
+    // Raw debug view: 0 = off, 1 = AO as greyscale, 2 = bent normal as RGB. A mode rather than
+    // a bool because mode 1 shows only the scalar term, so the bent normal was invisible to
+    // inspection — toggling directional ambient changed nothing in the debug view and everything
+    // in the lit one.
+    pub debug_mode: u32,
     // Stage 2: steer the SH sky-irradiance lookup by the bent normal instead of the surface
     // normal. Separate from `enabled` because the scalar AO is worth having on its own and this
     // is the part most likely to need backing out if it looks wrong.
@@ -2222,7 +2225,7 @@ impl Default for GtaoSettings {
             blur_radius: 6.0,
             blur_depth_scale: 24.0,
             blur_normal_power: 8.0,
-            debug: false,
+            debug_mode: 0,
             bent_normal: true,
         }
     }
@@ -4529,7 +4532,7 @@ impl Gfx3d {
                 let on = g.enabled && i == gtao_camera;
                 let gtao = [
                     if on { 1.0f32 } else { 0.0 },
-                    if on && g.debug { 1.0 } else { 0.0 },
+                    if on { g.debug_mode.min(2) as f32 } else { 0.0 },
                     if on && g.bent_normal { 1.0 } else { 0.0 },
                     0.0,
                 ];
@@ -5676,7 +5679,7 @@ impl Gfx3d {
     }
 
     pub fn gtao_debug_on(&self) -> bool {
-        self.gtao_settings.enabled && self.gtao_settings.debug
+        self.gtao_settings.enabled && self.gtao_settings.debug_mode > 0
     }
 
     pub fn set_gtao_settings(&mut self, s: GtaoSettings) {
@@ -6093,8 +6096,17 @@ fn gtao_depth_chain_reduces_toward_the_nearest_surface() {
     // the pixel-radius clamp is back to shortening the world radius.
     let gtao = include_str!("gtao.wgsl");
     assert!(
-        gtao.contains("let mip = clamp(i32(floor(log2(max(step_px, 1.0)))) - 1, 0, max_mip);"),
+        gtao.contains("let mip = clamp(log2(max(step_px, 1.0)) - 1.0, 0.0, f32(max_mip));"),
         "the horizon march must step up a mip with distance"
+    );
+    // And the level must stay CONTINUOUS. The mip a tap wants scales with camera distance, so
+    // rounding it here makes the level flip as the camera moves, the sampled depth jump, and the
+    // AO pop — a flicker while moving and nothing at all while still. There is no temporal filter
+    // to absorb that (plan §0), so the discontinuity has to not exist rather than be smoothed
+    // later. This regressed once already, between the mip march landing and this test.
+    assert!(
+        gtao.contains("return mix(z_lo, z_hi, f);"),
+        "the march must blend between neighbouring mips, not snap to one"
     );
 }
 
@@ -6114,8 +6126,14 @@ fn gtao_bent_normal_reaches_the_ambient_term() {
         "the bent normal must be rotated out of VIEW space before sampling world-space SH"
     );
     for (name, src) in [
-        ("shaders/shading.wgsl", include_str!("../shaders/shading.wgsl")),
-        ("terrain/terrain.wgsl", include_str!("../terrain/terrain.wgsl")),
+        (
+            "shaders/shading.wgsl",
+            include_str!("../shaders/shading.wgsl"),
+        ),
+        (
+            "terrain/terrain.wgsl",
+            include_str!("../terrain/terrain.wgsl"),
+        ),
     ] {
         assert!(
             src.contains("sky_irradiance(gtao_bent_normal_world(")

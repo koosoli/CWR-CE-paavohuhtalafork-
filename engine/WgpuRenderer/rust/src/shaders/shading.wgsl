@@ -8,7 +8,7 @@
 
 #define_import_path shading
 
-#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao, gtao_ao, gtao_debug_on, gtao_bent_normal_world}
+#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao, gtao_ao, gtao_debug_on, gtao_bent_normal_world, gtao_debug_colour}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -200,7 +200,7 @@ fn shade(
     // judging AO through sun + SH ambient + fog + tonemap is far harder than looking at the
     // buffer. Terrain does the same, so the whole opaque scene switches together.
     if (gtao_debug_on() > 0.5) {
-        return vec3<f32>(gtao_ao(frag_coord));
+        return gtao_debug_colour(frag_coord, nrm);
     }
     var fog_color = frame.fog_color.rgb;
     if (linear > 0.5) {

@@ -297,11 +297,28 @@ fn gtao_bent_normal_world(frag_coord: vec2<f32>, fallback: vec3<f32>) -> vec3<f3
     return normalize(bent_world);
 }
 
-// 1 when the raw AO debug view is on (surfaces output the AO buffer as greyscale instead of
-// shading). Shipped WITH the effect, not after it: judging AO through a full lighting pipeline —
-// sun, SH ambient, fog, tonemap — is much harder than looking at the buffer itself.
-fn gtao_debug_on() -> f32 {
+// Raw GTAO debug view mode: 0 = off, 1 = AO as greyscale, 2 = bent normal as RGB. Shipped WITH
+// the effect, not after it: judging AO through a full lighting pipeline — sun, SH ambient, fog,
+// tonemap — is much harder than looking at the buffer itself.
+//
+// Mode 2 exists because mode 1 shows only the scalar term, so the bent normal was invisible to
+// inspection: toggling directional ambient changed nothing in the debug view and everything in
+// the lit one, which is a confusing way to evaluate a feature.
+fn gtao_debug_mode() -> f32 {
     return frame.gtao.y;
+}
+
+fn gtao_debug_on() -> f32 {
+    return select(0.0, 1.0, frame.gtao.y > 0.5);
+}
+
+// What the debug view should draw at this pixel: greyscale AO, or the bent normal mapped from
+// [-1,1] to [0,1] so directions read as colour.
+fn gtao_debug_colour(frag_coord: vec2<f32>, fallback_n: vec3<f32>) -> vec3<f32> {
+    if (frame.gtao.y > 1.5) {
+        return gtao_bent_normal_world(frag_coord, fallback_n) * 0.5 + vec3<f32>(0.5);
+    }
+    return vec3<f32>(gtao_ao(frag_coord));
 }
 
 // 1 when the sky-visibility debug view is on (terrain shows the factor as greyscale). A helper

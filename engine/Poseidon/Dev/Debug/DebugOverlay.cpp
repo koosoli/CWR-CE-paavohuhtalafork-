@@ -3029,9 +3029,12 @@ void DrawAmbientOcclusionTab()
     ImGui::TextDisabled("  Stage 2: light the ambient from the direction that is actually OPEN,");
     ImGui::TextDisabled("  not from the surface normal. Changes where light comes from, not just");
     ImGui::TextDisabled("  how much — this is the one that gives shaded surfaces form.");
-    changed |= ImGui::Checkbox("Show raw AO buffer (greyscale)", &ao.debug);
-    ImGui::TextDisabled("  OFF = the normal lit scene in colour, with AO folded into ambient");
-    ImGui::TextDisabled("  ON  = the AO buffer itself; white = open, dark = occluded");
+    changed |= ImGui::Combo("Raw buffer view", &ao.debugMode,
+                            "Off (lit scene) AO (greyscale) Bent normal (RGB) ");
+    ImGui::TextDisabled("  Off        = the normal lit scene in colour, AO folded into ambient");
+    ImGui::TextDisabled("  AO         = the visibility buffer; white = open, dark = occluded");
+    ImGui::TextDisabled("  Bent normal= the direction light arrives from, as colour. Use this to");
+    ImGui::TextDisabled("               see what 'Directional ambient' is actually doing.");
 
     ImGui::Separator();
     ImGui::TextDisabled("Coverage");

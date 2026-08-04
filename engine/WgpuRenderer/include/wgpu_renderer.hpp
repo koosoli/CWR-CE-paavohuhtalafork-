@@ -521,7 +521,7 @@ struct WgrFoliage
 struct WgrGtao
 {
     uint32_t enabled;           /* 0 = pass skipped entirely; consumers read AO = 1 */
-    uint32_t debug;             /* 1 = opaque surfaces output the raw AO buffer as greyscale */
+    uint32_t debug;             /* raw view: 0 = off, 1 = AO greyscale, 2 = bent normal RGB */
     float    radius_m;          /* occlusion reach in WORLD metres (projected per pixel) */
     float    strength;          /* exponent on visibility; 1 = physical, >1 deepens */
     uint32_t slices;            /* azimuthal directions per pixel */

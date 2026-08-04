@@ -965,9 +965,11 @@ class Engine : public IGraphicsEngine
         // light comes from, not just how much. Separate toggle so it can be backed out without
         // losing the scalar AO.
         bool bentNormal = true;
-        // Show the raw AO buffer as greyscale on opaque surfaces. Tune against this rather than
-        // through sun + ambient + fog + tonemap.
-        bool debug = false;
+        // Raw buffer view on opaque surfaces: 0 = off, 1 = AO as greyscale, 2 = bent normal as
+        // RGB. Tune against this rather than through sun + ambient + fog + tonemap. Mode 2 exists
+        // because mode 1 shows only the scalar term, which made the bent normal impossible to
+        // inspect — it changed nothing in the debug view and everything in the lit one.
+        int debugMode = 0;
     };
 
     /// Read / replace the screen-space AO knobs (see AoSettings). Default base returns an

@@ -67,11 +67,32 @@ fn view_pos(px: vec2<f32>, z: f32) -> vec3<f32> {
 // cover a large screen radius. Without it the radius has to be clamped in pixels, and that clamp
 // silently shortens the WORLD radius by a factor that grows as the camera closes on a surface —
 // so surfaces brightened as you walked toward them, which is the artifact this replaces.
-fn sample_z(px: vec2<i32>, mip: i32) -> f32 {
+fn sample_z_mip(px: vec2<i32>, mip: i32) -> f32 {
     let dims = vec2<i32>(textureDimensions(depth_mips, mip));
     let scale = i32(1u << u32(mip));
     let c = clamp(px / scale, vec2<i32>(0), dims - vec2<i32>(1));
     return textureLoad(depth_mips, c, mip).r;
+}
+
+// Same, but with a CONTINUOUS mip level: the two neighbouring mips blended by the fraction.
+//
+// The mip a tap wants is a function of its screen distance, which scales with camera distance —
+// so a discrete `floor(log2(...))` flips level as the camera moves, the sampled depth jumps, and
+// the AO pops. That reads as a faint flicker while moving and nothing at all while still, which
+// is exactly what got reported after the mip march landed.
+//
+// There is no temporal filter here to absorb that (plan §0: MSAA, no TAA), so the discontinuity
+// has to not exist rather than be smoothed away later. Blending costs one extra texture read per
+// tap and buys a level function that is continuous in camera distance. The plan's own rule is
+// that the temporally stable option wins even at some GPU cost; this is that trade.
+fn sample_z(px: vec2<i32>, mip_f: f32) -> f32 {
+    let lo = i32(floor(mip_f));
+    let hi = lo + 1;
+    let f = mip_f - floor(mip_f);
+    let z_lo = sample_z_mip(px, lo);
+    // Past the top of the chain there is no `hi` to blend toward; hold the last level.
+    let z_hi = select(z_lo, sample_z_mip(px, hi), hi <= i32(max(params.proj.w, 0.0)));
+    return mix(z_lo, z_hi, f);
 }
 
 // Interleaved gradient noise (Jimenez). Spatial only — see the header note on why there is
@@ -103,7 +124,7 @@ fn cs_gtao(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    let z = sample_z(px, 0);
+    let z = sample_z_mip(px, 0);
     // Nothing drawn here. Unoccluded, and marching would integrate garbage horizons against a
     // surface that does not exist. Bent normal points at the eye so a consumer that reads it
     // anyway gets something sane.
@@ -185,7 +206,9 @@ fn cs_gtao(@builtin(global_invocation_id) gid: vec3<u32>) {
             let o = vec2<i32>(dir * step_px);
             // One mip per doubling of the step distance, so the footprint sampled stays roughly
             // the gap between taps and the march cannot step over an occluder it never looked at.
-            let mip = clamp(i32(floor(log2(max(step_px, 1.0)))) - 1, 0, max_mip);
+            // Kept FRACTIONAL and blended (see sample_z) — rounding it here is what makes AO pop
+            // as the camera moves.
+            let mip = clamp(log2(max(step_px, 1.0)) - 1.0, 0.0, f32(max_mip));
 
             let q1 = clamp(px + o, vec2<i32>(0), dims - vec2<i32>(1));
             let z1 = sample_z(q1, mip);

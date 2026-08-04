@@ -633,9 +633,15 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     }
     if (const char* aod = std::getenv("WGR_GTAO_DEBUG"))
     {
-        _ao.debug = std::strcmp(aod, "0") != 0;
+        // 0 = off, 1 = AO greyscale, 2 = bent normal. Any non-numeric truthy value means 1.
+        const long mode = std::strtol(aod, nullptr, 10);
+        _ao.debugMode = int(mode < 0 ? 0 : (mode > 2 ? 2 : mode));
+        if (mode == 0 && std::strcmp(aod, "0") != 0)
+        {
+            _ao.debugMode = 1;
+        }
     }
-    LOG_INFO(Graphics, "Wgpu: gtao gate: enabled={} debug={} radius={} slices={} steps={}", _ao.enabled, _ao.debug,
+    LOG_INFO(Graphics, "Wgpu: gtao gate: enabled={} debugMode={} radius={} slices={} steps={}", _ao.enabled, _ao.debugMode,
              _ao.radius, _ao.slices, _ao.steps);
 
     // WGR_SHADOW_MAPS=1 enables cascaded shadow maps at startup (dev panel /
@@ -3508,7 +3514,7 @@ void EngineWgpu::PushRenderParams()
     // additionally gated on it here so leaving debug on with the effect off can't blank the world.
     p.gtao = {
         _ao.enabled ? 1u : 0u,
-        (_ao.enabled && _ao.debug) ? 1u : 0u,
+        _ao.enabled ? uint32_t(_ao.debugMode < 0 ? 0 : (_ao.debugMode > 2 ? 2 : _ao.debugMode)) : 0u,
         _ao.radius,
         _ao.strength,
         _ao.slices < 1 ? 1u : uint32_t(_ao.slices),
