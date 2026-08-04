@@ -2151,16 +2151,33 @@ impl Default for GtaoSettings {
         //   dist  5 m -> 171 px wanted, capped 96 -> effective radius 0.84 m
         //
         // Which is why AO showed up on foliage and fingers but not on a room's walls, floor or
-        // ceiling: indoors the horizon search never reached them. At 256 the same distances give
-        // 0.90 / 1.34 / 1.50 m, i.e. the radius that was actually asked for. Steps go up with it
-        // so the wider span is not undersampled.
+        // ceiling: indoors the horizon search never reached them. Steps go up with the cap so the
+        // wider span is not undersampled.
+        //
+        // The clamp also makes AO WEAKEN as you walk toward a surface, because the shortfall grows
+        // as the wanted pixel radius grows — a wall visibly brightens as you approach it, which is
+        // the opposite of what a world-space radius is for. Measured at radius 2.0 m:
+        //
+        //   dist  1 m -> wants 1143 px | cap 256 -> 0.45 m | cap 512 -> 0.90 m
+        //   dist  2 m -> wants  571 px | cap 256 -> 0.90 m | cap 512 -> 1.79 m
+        //   dist  3 m -> wants  381 px | cap 256 -> 1.34 m | cap 512 -> 2.00 m
+        //   dist  5 m -> wants  229 px | cap 256 -> 2.00 m | cap 512 -> 2.00 m
+        //
+        // 512 pushes the onset from ~5 m in to ~3 m and doubles close-range reach. It costs
+        // almost nothing: the tap COUNT is `steps`, not the cap — the cap only sets how far apart
+        // the taps are spread, so raising it trades cache coherence, not bandwidth.
+        //
+        // It MITIGATES rather than removes: any fixed screen clamp shortens the world radius
+        // somewhere. The real fix is a hierarchical-depth (Hi-Z mip) march, which makes a large
+        // screen radius O(log n) instead of O(n) — plan Stage 3, and the one genuinely useful
+        // idea to take from ZenRCAO. The Hi-Z pyramid already exists here for occlusion culling.
         Self {
             enabled: false,
             radius_m: 2.0,
             strength: 1.0,
             slices: 3,
             steps: 12,
-            max_radius_px: 256.0,
+            max_radius_px: 512.0,
             thickness: 1.0,
             blur_radius: 6.0,
             blur_depth_scale: 24.0,

@@ -947,8 +947,10 @@ class Engine : public IGraphicsEngine
         int steps = 12;
         // Cost bound: screen radius clamp in pixels. NOT a free knob — whenever it bites it
         // silently shortens `radius` above, so too low a value reads as "AO does nothing" on
-        // everything close to the camera (measured: 96 px gave a 0.5 m radius at 3 m, not 1.5).
-        float maxRadiusPixels = 256.0f;
+        // everything close to the camera (measured: 96 px gave a 0.5 m radius at 3 m, not 1.5)
+        // AND makes surfaces BRIGHTEN as you walk toward them, since the shortfall grows with
+        // proximity. Raise it before suspecting anything else.
+        float maxRadiusPixels = 512.0f;
         // Falloff past the radius. Rejects thin foreground occluders, which otherwise shadow
         // everything behind them out to infinity (GTAO's classic "sky behind a pole goes black").
         float thickness = 1.0f;
