@@ -219,10 +219,22 @@ normal where GTAO has coverage and the geometric normal elsewhere — GTAO's is 
    >
    > **Needs eyes:** the raw AO debug view on a real island. Nothing below is worth tuning until
    > someone has confirmed the buffer looks like ambient occlusion.
-2. **Bent normal → directional SH ambient.** Add the bent-normal output + `sky_irradiance(bent_n)`
-   path. Proper oct-normal resolve if sample-0 shimmers.
-3. **Polish:** multi-bounce curve, half-res + bilateral upsample perf path, thickness-heuristic tuning,
-   optional GTAO on the froxel/fog or objects-only fast path.
+2. **Bent normal → directional SH ambient.** — **LANDED 2026-08-05** (`6cefd0b`). Bent normal
+   accumulated per slice, weighted by the same `proj_len` as the visibility, shared with AO in one
+   Rgba16Float target so the bilateral blur filters both with identical weights. Consumed by
+   `terrain.wgsl` + `shading.wgsl` via `gtao_bent_normal_world`. Own toggle; debug view mode 2
+   draws it as RGB. Sample-0 normal resolve has not shimmered; no proper oct resolve needed yet.
+3. **Polish:** — **hierarchical march landed and is DEFAULT OFF** (`6cefd0b`, `4c4cae5`).
+   `gtao_depth_mips` builds a linear-view-Z chain (min-reduced = nearest surface; the Hi-Z pyramid
+   next door is min-over-reversed-Z = *farthest*, correct for culling and backwards for AO).
+   It works, and it flickers: which surface wins a coarse `min` changes abruptly as geometry enters
+   the block, and there is no TAA to absorb that. Blending neighbouring mips — the textbook fix —
+   made it markedly worse, because a coarse min-reduced texel and a fine one describe different
+   surfaces, so lerping them yields a depth matching no geometry. Kept behind `AoSettings::maxMip`
+   (default 0) rather than reverted, with the reasoning in `gtao.wgsl`, because the next person
+   will have the same idea.
+   Still open: multi-bounce curve, half-res + bilateral upsample, thickness tuning, **and measuring
+   the frame cost**, which has never been done.
 
 ## 8. Plumbing / files
 

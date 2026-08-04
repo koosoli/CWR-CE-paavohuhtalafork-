@@ -34,7 +34,16 @@ gate.
 - [x] **Zeus interactions verified by hand (2026-08-04)** — owner-confirmed working: cursor ownership in the focused viewport, lasso, copy/paste, group drag, and **mouse-wheel elevation** (Page Up/Down was moved to the wheel after it was found to collide with the free-fly camera's own `MoveUp`/`MoveDown` bindings). These are interactive mouse judgements and cannot be automated. Current build is installed at `D:\SteamLibrary\...\ARMA Cold War Assault\ColdWarAssault.exe`.
 - [x] **`WTR-001` closed (2026-08-04)** — reflection ownership resolved. Whether cloud duplication is gone is a visual judgement no code inspection settles; the owner confirmed it directly rather than via debug views 40/42. Recorded as **owner-verified, not independently reviewed** — Preview 0 has no second human, so that distinction is what the reader needs, not a bare tick.
 - [ ] **Verification commits and evidence hashes are populated** (`8456fd5`): all six blockers carry `verification_commit: 85b6772`, the first workflow run to go green, and hashes derived by `scripts/compute_evidence_hash.py` rather than asserted — two of the values carried in the handover notes had already drifted. **Reviewers remain**, and are the only thing left on this line. Then move each Preview-0 blocker from `INTEGRATED` to `VALIDATED` only when its state-dependent gate passes. Note the review model: Preview 0 has **no independent reviewer and cannot obtain one** — Oliver Kay is the only human on the project, so review is owner-performed smoke testing recorded per ticket in `reviewer_method`. The authoring AI is deliberately never recorded as a reviewer, since the author cannot also be the independent check. `VALIDATED` here means the owner verified it, not that a second party did.
-- [ ] Perform the reviewed activation/clean-checkout reproducibility pass before authorising `REL-000`.
+- [ ] Perform the reviewed **activation** pass before authorising `REL-000`. The **clean-checkout
+  reproducibility** half is done (2026-08-05) and found four defects, all fixed, all of which
+  failed silently: the build/install/run scripts were documented only in the generated `.qoder`
+  wiki and not in `CLAUDE.md` (`d9ce33b`), so an install missing 64 files looked normal;
+  `Build.ps1` could not configure from a clean shell because it never set up the Windows SDK, and
+  presented as "the C++ compiler is broken" (`ef2cdfc`); a fresh clone failed checkout on Windows
+  with `Filename too long` (`3a66939`); and `assets/` was never staged, so grass silently ran on
+  its procedural fallback (`20eda5a`). Verified end to end: fresh clone -> `Build.ps1` -> full
+  build -> `dist/` complete. What remains is activation itself, plus the owner-performed reviews
+  on the line above.
 
 ## Version 4.4.1 execution-contract correction
 
@@ -1544,13 +1553,32 @@ An approved cheaper fallback is acceptable when it:
 
 Prefer volumetric atmosphere/fog sampling of cloud sun transmittance rather than a purely fake radial post-process. Test clear, broken, full-overcast, storm, and fog scenes, with solid-geometry occlusion and stable temporal behaviour.
 
-## LIT-010 — GTAO — SUGGESTED
+## LIT-010 — GTAO — SUGGESTED — **IMPLEMENTED 2026-08-05**
 
 Use for contact grounding and corners, not as the sole solution for dark interiors.
 
-## LIT-020 — Geometry-aware interior sky visibility — REQUIRED outcome
+Shipped: scalar AO (Stage 1), bent-normal directional ambient (Stage 2), and a hierarchical
+mip march (Stage 3, **default off**). See `engine/WgpuRenderer/docs/screen-space-ao-plan.md`.
+Default ON, own dev-tools tab, three-way debug view (off / AO / bent normal).
+
+- [x] Contact grounding and corners — owner-confirmed, "i think i prefer it on".
+- [x] Ambient term only; direct sun and local lights untouched.
+- [ ] **Frame cost never measured.** GPU timers exist (`WTR-002`); the mip chain and the wider
+      march went in unmeasured. Do this before Preview 0.
+
+The line above about dark interiors held exactly as written: GTAO's radius is ~2 m and a room is
+larger, so interiors barely changed. That is `LIT-020`, below.
+
+## LIT-020 — Geometry-aware interior sky visibility — REQUIRED outcome — **PLANNED 2026-08-05**
 
 Investigate building voxelisation, outside flood fill, sky-visibility probes/volumes, and door/window portals.
+
+- [x] Investigated; design recorded in `engine/WgpuRenderer/docs/interior-sky-visibility-plan.md`.
+      Chosen approach: directional depth maps from a FIXED set of sky directions (zenith + tilted),
+      taking the unoccluded fraction. Voxelisation and portals are kept as Stage 2 fallbacks.
+      A bounding-sphere roof map was evaluated and rejected — the renderer has no boxes, and a
+      sphere around a building darkens the street outside it.
+- [ ] Implement. Not started.
 
 The initial prototype is scheduled in Milestone 3, but it does not block Preview 1A unless the project explicitly expands that preview to include interior-lighting acceptance.
 
