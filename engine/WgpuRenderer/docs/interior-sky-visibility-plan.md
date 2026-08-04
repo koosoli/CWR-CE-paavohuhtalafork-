@@ -51,13 +51,48 @@ Stage 2/3 target, not a first step.
 **D. Portals.** Author or derive window/door polygons. No authoring exists in this data set and
 deriving them from 2001 P3Ds is its own research project.
 
+### 3a. Why NOT the sun direction (asked 2026-08-05, and worth recording)
+
+The natural suggestion is to occlude along the SUN vector rather than straight down. It is the
+wrong light, and it fails in a way that is easy to miss:
+
+- The thing making interiors flat is the **sky ambient** — the SH projection of the whole dome,
+  arriving from every direction at once. It is not the sun.
+- **Direct sun is already occluded**, by the cascade shadow maps plus the terrain sun-shadow mask.
+  A room under a roof already receives no direct sun. That was never the gap.
+- Testing along the sun vector inverts at low sun: at sunset the sun is near horizontal, so a room
+  with a west-facing window would read "fully lit" while an open courtyard read "dark". The test
+  direction has nothing to do with where the sky is.
+
+The zenith is the right FIRST direction because a cosine-weighted hemisphere is dominated by it.
+
+### 3b. The good part of that question: sample the dome, not one direction
+
+The honest objection to a single top-down map is that it is one direction and the sky is a dome.
+Render the depth map from SEVERAL directions — zenith plus a few tilted toward the horizon — and
+take the unoccluded fraction, and the result actually approximates sky visibility.
+
+This matters more than it first appears: **a tilted map can see through a window**, because its
+rays arrive near-horizontally. That is precisely the "window-adjacent room receives light"
+criterion, which a zenith-only map structurally cannot satisfy and which was going to be deferred
+to voxels or portals. Same machinery, N views instead of one.
+
+Cost is N depth passes over the retained set. Start at 5 (zenith + 4 tilted ~50 deg, evenly spaced
+in azimuth); the tilted ones are a correction term and can be lower resolution than the zenith map.
+Weight each by its cosine so the zenith still dominates, matching the diffuse response.
+
+Directions must be FIXED in world space, not rotated with the camera or the time of day — a moving
+sample set is a temporal artifact generator, and there is no TAA here to hide one.
+
 ## 4. Stage 1 design (option B)
 
-- A depth-only target (e.g. 1024², `Depth32Float`) covering a world box around the camera —
+- N depth-only targets (see §3b; start with zenith + 4 tilted), `Depth32Float`, covering a world
+  box around the camera —
   start ~256 m, snapped to texel size so it does not shimmer as the camera moves. **Snapping is
   required, not polish**: an unsnapped ortho view resamples every frame and the resulting
   crawl is exactly the class of artifact the GTAO mip march was reverted for (no TAA to hide it).
-- An extra cull view with the top-down ortho VP; the existing per-view cull produces its args.
+- One extra cull view per direction, each with its ortho VP; the existing per-view cull produces
+  the args. The planar reflection is the template for a standalone extra view.
 - Reuse `gpu_driven_shadow.wgsl`'s depth-only draw with the sky VP supplied via a pass UBO.
 - Bind at `frame @binding(12)` + a `sky_reach(world_pos)` helper.
 - In the ambient term: attenuate the SH sky irradiance when geometry sits above, toward a floor.
@@ -72,20 +107,21 @@ map over a KERNEL in world space and take the fraction of taps that are unocclud
 middle of a roof every tap is blocked, at the edge some see sky, so a porch grades. Kernel width
 is the tuning knob and roughly sets how far light appears to reach in from an opening.
 
-This is why Stage 1 gets "porch partly dark" without portals — but it is also why it CANNOT do
-"window-adjacent room receives light": a window is a LATERAL opening, and every tap above a
-window-lit room is still roof. Stage 1 is expected to fail that criterion, and should say so
-rather than be tuned until it looks like it passes.
+This is what gets "porch partly dark" without portals.
 
 ### Expected result against acceptance
 
-| criterion | Stage 1 |
-|---|---|
-| Porch partly dark | yes (kernel softening) |
-| Window-adjacent room receives light | **no** — needs C or D |
-| Deep room is dark | yes |
-| Sealed bunker no skylight | yes |
-| Local lights continue working | yes (ambient term only; direct + local untouched) |
+| criterion | zenith map only | + tilted directions (§3b) |
+|---|---|---|
+| Porch partly dark | yes (kernel softening) | yes |
+| Window-adjacent room receives light | **no** — structurally impossible | **plausibly yes** — a tilted ray enters the window |
+| Deep room is dark | yes | yes (no direction reaches it) |
+| Sealed bunker no skylight | yes | yes |
+| Local lights continue working | yes (ambient term only; direct + local untouched) | yes |
+
+The window row is the reason to do §3b rather than ship the zenith map alone. It is marked
+"plausibly" because it depends on a tilted direction actually clearing the window reveal and the
+room's depth — measure it on a real building before claiming the criterion.
 
 ## 5. Risks
 
@@ -102,8 +138,8 @@ rather than be tuned until it looks like it passes.
 
 1. **Overhead depth map + kernel-softened sky attenuation.** Four of five acceptance criteria.
    Debug view of the reach factor, default OFF, ImGui tab. **This plan.**
-2. **Lateral reach** — voxel fill (option C) or portals (option D), which is what actually
-   delivers "window-adjacent room receives light". Decide between them only after Stage 1 has
-   been seen, because Stage 1 determines how much of the problem is left.
+2. **Lateral reach**, only if the tilted directions prove insufficient on real geometry — voxel
+   fill (option C) or portals (option D). Decide between them only after Stage 1 has been seen,
+   because Stage 1 determines how much of the problem is left.
 3. Polish: reach-modulated local-light falloff, coupling to the bent normal so interior ambient
    arrives from the opening rather than from straight up.
