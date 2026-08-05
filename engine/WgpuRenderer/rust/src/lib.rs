@@ -2007,7 +2007,8 @@ impl Renderer {
         self.gfx3d.cull_dispatch_shadows(&mut encoder);
         // And one for the interior sky-visibility map's ortho view (LIT-020). No-op unless the
         // feature is enabled and its target exists.
-        self.gfx3d.cull_dispatch_interior_sky(&mut encoder);
+        self.gfx3d
+            .cull_dispatch_interior_sky(&mut encoder, &self.gpu_timers);
 
         // Non-vacuity check on the map, once, ~2 s in. Reads the PREVIOUS frame's contents (this
         // frame's pass is recorded below and not yet submitted), which is exactly what we want:
@@ -2024,30 +2025,31 @@ impl Renderer {
                     .gfx3d
                     .interior_sky_map_coverage(&self.device, &self.queue)
                 {
+                    let total: f32 = cov.iter().sum();
+                    let per_dir = cov
+                        .iter()
+                        .map(|c| format!("{:.2}%", c * 100.0))
+                        .collect::<Vec<_>>()
+                        .join(" ");
                     self.log.log(
-                        if cov > 0.0 {
+                        if total > 0.0 {
                             log_level::INFO
                         } else {
                             log_level::WARN
                         },
                         &format!(
-                            "[wgr] interior sky map: {res}x{res}, {:.2}% of texels hold an occluder (args={} bind={} instances={} sub_draws={}){}",
-                            cov * 100.0,
+                            "[wgr] interior sky maps: {res}x{res} x{} — occluder coverage per direction                              (zenith first): {per_dir} (args={} bind={} instances={} sub_draws={}){}",
+                            cov.len(),
                             st.0,
                             st.1,
                             st.2,
                             st.3,
-                            if cov > 0.0 {
+                            if total > 0.0 {
                                 ""
                             } else if st.3 == 0 {
-                                " — EMPTY and the sky cull emitted no sub-draws: either nothing \
-                                 retained is within the box (legitimate on open terrain — widen \
-                                 it with WGR_INTERIOR_SKY_EXTENT to check) or the cull view is \
-                                 broken. Sky reach is 1 everywhere either way."
+                                " — ALL EMPTY and the sky cull emitted no sub-draws: either nothing                                  retained is within the box (legitimate on open terrain — widen it                                  with WGR_INTERIOR_SKY_EXTENT to check) or the cull views are                                  broken. Sky reach is 1 everywhere either way."
                             } else {
-                                " — EMPTY despite sub-draws: the cull kept geometry but nothing \
-                                 rasterised into the map. That is a VP or pass fault, not an \
-                                 empty neighbourhood."
+                                " — ALL EMPTY despite sub-draws: the cull kept geometry but nothing                                  rasterised. That is a VP or pass fault, not an empty neighbourhood."
                             }
                         ),
                     );
@@ -2061,7 +2063,7 @@ impl Renderer {
         // them run, regardless of submission order.
         encoder.push_debug_group("wgr_interior_sky_map");
         self.gfx3d
-            .render_interior_sky_pass(&mut encoder, &self.textures);
+            .render_interior_sky_pass(&mut encoder, &self.textures, &self.gpu_timers);
         encoder.pop_debug_group();
 
         // Cascade shadow depth passes run first so every segment's draws can

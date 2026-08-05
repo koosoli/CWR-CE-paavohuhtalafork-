@@ -665,6 +665,7 @@ pub struct WgrSkyVis {
     pub floor: f32,      // minimum ambient multiplier in a sealed volume
     pub kernel: f32,     // softening kernel radius, metres
     pub bias: f32,       // depth bias, metres (stops open ground occluding itself)
+    pub directional: f32, // 0 = uniform dimming, 1 = steer ambient fully along the open direction
 }
 
 impl Default for WgrSkyVis {
@@ -682,6 +683,7 @@ impl Default for WgrSkyVis {
             floor: d.floor,
             kernel: d.kernel,
             bias: d.bias,
+            directional: d.directional,
         }
     }
 }
@@ -1126,8 +1128,8 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrFoliage>() == 48);
 const _: () = assert!(std::mem::size_of::<WgrGtao>() == 52);
-const _: () = assert!(std::mem::size_of::<WgrSkyVis>() == 36);
-const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 456);
+const _: () = assert!(std::mem::size_of::<WgrSkyVis>() == 40);
+const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 460);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);

@@ -8,7 +8,7 @@
 
 #define_import_path shading
 
-#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao, gtao_ao, gtao_debug_on, gtao_bent_normal_world, gtao_debug_colour, interior_sky_ao, interior_sky_reach, interior_sky_debug_on}
+#import frame::{frame, terrain_sun_shadow, apply_fog, sky_irradiance, sky_vis_ao, gtao_ao, gtao_debug_on, gtao_bent_normal_world, gtao_debug_colour, interior_sky_ao, interior_sky_reach, interior_sky_debug_on, interior_sky_ambient_normal}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -120,7 +120,12 @@ fn shade(
         // reaches this pixel from, not along the surface normal. Near an occluder those differ,
         // and that difference is what stops a shaded surface reading as a flat wash. Falls back
         // to the geometric normal when GTAO or the bent-normal path is off.
-        let amb_n = gtao_bent_normal_world(frag_coord, nrm);
+        // Steered TWICE, by two occluders at different scales, and the order matters: GTAO's
+        // bent normal is the local (~2 m) open direction from the depth buffer, and the interior
+        // steer then bends that toward the direction the SKY reaches this point from — the
+        // window or doorway. Indoors GTAO has nothing useful to say (the room is bigger than its
+        // radius and the roof is off-screen), so the interior term is what carries the result.
+        let amb_n = interior_sky_ambient_normal(world_abs, gtao_bent_normal_world(frag_coord, nrm));
         var ambient = sky_irradiance(amb_n) * frame.sun_ambient.w * amb_ao;
         // Glass canopies: keep only a fraction of the sky wash so they read as glazing, not a lit
         // diffuse dome (the direct sun sheen + any glint still sit on top).

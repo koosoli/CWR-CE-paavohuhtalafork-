@@ -3100,10 +3100,11 @@ void DrawInteriorSkyTab()
     ImGui::Separator();
 
     changed |= ImGui::Checkbox("Enabled", &is.enabled);
-    ImGui::TextDisabled("  the A/B: stand in a doorway and toggle");
+    ImGui::TextDisabled("  the A/B: stand in a doorway and toggle. Hotkey: Ctrl+Shift+I");
     changed |= ImGui::Checkbox("Reach buffer (greyscale)", &is.debug);
     ImGui::TextDisabled("  white = open sky above, black = fully roofed. Tune against THIS,");
-    ImGui::TextDisabled("  not against the lit scene.");
+    ImGui::TextDisabled("  not against the lit scene. Hotkey: Ctrl+Shift+O");
+    ImGui::TextDisabled("  (both work with this panel closed — Ctrl+` reopens it)");
 
     ImGui::Separator();
     ImGui::TextDisabled("Look");
@@ -3115,6 +3116,10 @@ void DrawInteriorSkyTab()
     changed |= ImGui::SliderFloat("Kernel (m)", &is.kernel, 0.0f, 8.0f, "%.2f");
     ImGui::TextDisabled("  softening radius: roughly how far light appears to reach in past an");
     ImGui::TextDisabled("  opening. This is what grades a porch instead of drawing a hard line.");
+    changed |= ImGui::SliderFloat("Directional", &is.directional, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  0 = the room just gets darker. 1 = the ambient arrives FROM the");
+    ImGui::TextDisabled("  opening, so the wall facing the window is brighter than the wall");
+    ImGui::TextDisabled("  beside it. This is the knob that reads as 'light through the window'.");
 
     ImGui::Separator();
     ImGui::TextDisabled("Map (cost + resolving power)");
@@ -3126,9 +3131,74 @@ void DrawInteriorSkyTab()
     changed |= ImGui::SliderFloat("Height (m)", &is.height, 32.0f, 1024.0f, "%.0f");
     ImGui::TextDisabled("  how far above/below the camera the box reaches; must clear the tallest");
     ImGui::TextDisabled("  roof you can stand under");
+    // The tilted maps look along a ~50 deg slant, so a point `extent` away laterally sits
+    // extent*sin(50) along their view axis and falls out of the depth slab once that passes
+    // `height`. The zenith map is unaffected, so the symptom is subtle: window light quietly
+    // stops working at range while the roofs still darken correctly.
+    const float tiltReach = is.extent * 0.766f; // sin(50 deg)
+    if (tiltReach > is.height)
+    {
+        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.2f, 1.0f),
+                           "  ! extent too large for height: the TILTED maps clip past %.0f m",
+                           is.height / 0.766f);
+        ImGui::TextDisabled("  raise Height above %.0f, or lower Extent, or the window-light", tiltReach);
+        ImGui::TextDisabled("  directions silently stop contributing at range.");
+    }
     changed |= ImGui::SliderFloat("Bias (m)", &is.bias, 0.0f, 4.0f, "%.2f");
     ImGui::TextDisabled("  too low: open ground occludes itself (the whole world dims). Too high:");
     ImGui::TextDisabled("  light leaks in under thin roofs.");
+
+    ImGui::Separator();
+    ImGui::TextDisabled("GPU cost (last completed frame)");
+    {
+        float gpuMs[32];
+        const int regions = GEngine->GetWaterGpuTimings(gpuMs, 32);
+        if (regions <= (int)Engine::kInteriorSkyGpuRegionBegin)
+        {
+            ImGui::TextDisabled("Unavailable (adapter lacks TIMESTAMP_QUERY / non-wgpu backend).");
+        }
+        else if (ImGui::BeginTable("isGpuTimings", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+        {
+            float total = 0.0f;
+            const int end = std::min(regions, (int)Engine::kInteriorSkyGpuRegionEnd);
+            for (int i = (int)Engine::kInteriorSkyGpuRegionBegin; i < end; ++i)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(GEngine->GetWaterGpuTimingName(i));
+                ImGui::TableNextColumn();
+                if (gpuMs[i] < 0.0f)
+                    ImGui::TextDisabled("n/a");
+                else
+                {
+                    ImGui::Text("%.3f ms", gpuMs[i]);
+                    total += gpuMs[i];
+                }
+            }
+            // The frame total is the number that decides whether this is affordable, so show it
+            // next to the feature's own cost rather than making the reader hunt another tab.
+            const float frame = gpuMs[(int)Engine::kFrameGpuRegionTotal];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("GPU frame total");
+            ImGui::TableNextColumn();
+            if (frame < 0.0f)
+                ImGui::TextDisabled("n/a");
+            else
+                ImGui::Text("%.3f ms", frame);
+            ImGui::EndTable();
+            ImGui::Text("Interior sky: %.3f ms", total);
+            if (frame > 0.0f)
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%.1f%% of the GPU frame)", 100.0f * total / frame);
+            }
+            ImGui::SetItemTooltip("Sum of the rows above, from the last completed frame. Toggle "
+                                  "Enabled off and watch the frame total to get the honest "
+                                  "delta: passes can overlap on the GPU, so this sum is an "
+                                  "upper bound on what disabling the feature gives back.");
+        }
+    }
 
     ImGui::Separator();
     if (ImGui::Button("Reset interior sky to defaults"))
@@ -4775,9 +4845,34 @@ void ProcessEvent(const SDL_Event& event)
             ToggleVisible();
             return;
         }
+        const bool shiftDown = (event.key.mod & SDL_KMOD_SHIFT) != 0;
+        // Ctrl+Shift+I / Ctrl+Shift+O — interior sky visibility: toggle the EFFECT, and toggle
+        // its greyscale reach view. Panel-free like the water debug view below, because the A/B
+        // that actually decides whether this feature looks right is "stand in a doorway and
+        // flip it", and doing that through a tab is hopeless while the screen is grey.
+        if (event.key.scancode == SDL_SCANCODE_I && ctrlDown && shiftDown && GEngine)
+        {
+            auto is = GEngine->GetInteriorSkySettings();
+            is.enabled = !is.enabled;
+            GEngine->SetInteriorSkySettings(is);
+            LOG_INFO(Core, "Interior sky visibility: {}", is.enabled ? "ON" : "off");
+            return;
+        }
+        if (event.key.scancode == SDL_SCANCODE_O && ctrlDown && shiftDown && GEngine)
+        {
+            auto is = GEngine->GetInteriorSkySettings();
+            is.debug = !is.debug;
+            // The reach view is a view OF the effect: with the effect off there is no map and
+            // the renderer forces debug back to 0, so the key would silently do nothing. Turn
+            // the effect on rather than leave the user pressing a dead key.
+            if (is.debug)
+                is.enabled = true;
+            GEngine->SetInteriorSkySettings(is);
+            LOG_INFO(Core, "Interior sky reach view: {}", is.debug ? "ON (greyscale)" : "off (lit scene)");
+            return;
+        }
         // Ctrl+Shift+W — cycle the WTR-003 water debug view (works without
         // opening the dev panel).  Wraps 0→1→…→36→0.
-        const bool shiftDown = (event.key.mod & SDL_KMOD_SHIFT) != 0;
         if (event.key.scancode == SDL_SCANCODE_W && ctrlDown && shiftDown && GEngine && GEngine->SupportsWater())
         {
             auto ws = GEngine->GetWaterSettings();

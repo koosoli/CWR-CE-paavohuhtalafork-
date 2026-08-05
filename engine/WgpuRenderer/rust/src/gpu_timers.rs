@@ -63,11 +63,15 @@ pub enum Region {
     GrassPrepass = 22, // depth/normal prepass (near + mid)
     GrassColor = 23,   // colour pass (far + mid + near)
     GrassShadow = 24,  // near blades into the cascade depth map
+    // --- LIT-020: interior sky visibility. Both are encoder-level regions (a compute chain and
+    // a set of depth passes), so they bracket like the water ones.
+    InteriorSkyCull = 26, // one cull dispatch chain per sampled sky direction
+    InteriorSkyDraw = 27, // the per-direction depth passes that fill the sky map
     FrameTotal = 25,   // all submitted frame work; excludes acquire/present pacing
 }
 
 /// Region count — the FFI getter's element contract (WGR_GPU_TIMER_REGION_COUNT).
-pub const REGION_COUNT: usize = 26;
+pub const REGION_COUNT: usize = 28;
 /// Water occupies [0, WATER_REGION_COUNT); grass occupies the remainder. The two
 /// debug tabs slice the shared array with these so neither shows the other's rows.
 /// Consumed on the C++ side (Engine::kWaterGpuRegionEnd) and by the layout test.
@@ -324,7 +328,7 @@ mod tests {
     // count + a few pinned indices catches accidental reordering on either side.
     #[test]
     fn region_indices_stay_ffi_stable() {
-        assert_eq!(REGION_COUNT, 26);
+        assert_eq!(REGION_COUNT, 28);
         assert_eq!(Region::SpectrumInit as u32, 0);
         assert_eq!(Region::FftCompose as u32, 4);
         assert_eq!(Region::Interaction as u32, 5);
@@ -337,6 +341,11 @@ mod tests {
         assert_eq!(Region::GrassPlaceNear as u32, WATER_REGION_COUNT as u32);
         assert_eq!(Region::GrassShadow as u32, 24);
         assert_eq!(Region::FrameTotal as u32, 25);
+        // LIT-020 appended AFTER FrameTotal's index rather than renumbering it: these are FFI
+        // slot numbers mirrored in wgpu_renderer.hpp, so an insert would silently relabel every
+        // row in the debug tabs.
+        assert_eq!(Region::InteriorSkyCull as u32, 26);
+        assert_eq!(Region::InteriorSkyDraw as u32, 27);
         // Every region's begin/end pair fits the query set.
         assert!(QUERY_COUNT as usize == REGION_COUNT * 2);
         // A u32 written mask covers all regions.

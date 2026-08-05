@@ -304,10 +304,10 @@ pub struct CullState {
     // The planar mirror has its own frustum/outputs. It shares retained scene data only;
     // never the main camera's cull records or indirect arguments.
     reflection_view: Option<ShadowCullView>,
-    // Interior sky-visibility view (docs/interior-sky-visibility-plan.md §4): a top-down ortho
-    // frustum over a box around the camera, culled independently of everything above. Same
-    // standalone-extra-view shape as `reflection_view`.
-    sky_view: Option<ShadowCullView>,
+    // Interior sky-visibility views (docs/interior-sky-visibility-plan.md §4): ONE ortho frustum
+    // per sampled sky direction (zenith + tilted), each culled independently of everything above.
+    // Same multi-view shape as `shadow_views`; empty when the feature is off.
+    sky_views: Vec<ShadowCullView>,
 
     // Color-pass occlusion view (§5 Hi-Z). Same retained tables/instances, its own params
     // (occlusion tail) + args/records/counters, run by the `main_occlude` pipeline against the
@@ -523,7 +523,7 @@ impl CullState {
             bind: None,
             shadow_views: Vec::new(),
             reflection_view: None,
-            sky_view: None,
+            sky_views: Vec::new(),
             occlude_count_pipeline,
             occlude_emit_pipeline,
             occlude_scatter_pipeline,
@@ -689,16 +689,26 @@ impl CullState {
         self.reflection_view = None;
     }
 
-    // Interior sky-visibility view: the ortho box's frustum. Allocated on first use, exactly as
-    // the reflection view is, so a frame that never enables the feature pays nothing.
-    pub fn set_sky_params(&mut self, device: &wgpu::Device, mut params: CullParamsGpu) {
-        params.debug_flags = self.debug_flags;
-        let view = self.sky_view.get_or_insert_with(|| ShadowCullView::new(device));
-        view.params = params;
+    // Grow/shrink the interior sky-visibility view set to `n` (0 = feature off, no dispatches).
+    // Cheap: each view lazily allocates its outputs in prepare(), and dropping the tail frees
+    // them with it.
+    pub fn set_sky_view_count(&mut self, device: &wgpu::Device, n: usize) {
+        while self.sky_views.len() < n {
+            self.sky_views.push(ShadowCullView::new(device));
+        }
+        self.sky_views.truncate(n);
     }
 
-    pub fn clear_sky_view(&mut self) {
-        self.sky_view = None;
+    pub fn sky_view_count(&self) -> usize {
+        self.sky_views.len()
+    }
+
+    // Set sky direction `i`'s cull params (frustum from its ortho VP). No-op out of range.
+    pub fn set_sky_params(&mut self, i: usize, mut params: CullParamsGpu) {
+        if let Some(v) = self.sky_views.get_mut(i) {
+            params.debug_flags = self.debug_flags;
+            v.params = params;
+        }
     }
 
     fn mark_static_dirty(&mut self, slot: u32) {
@@ -844,11 +854,12 @@ impl CullState {
             grew |= g;
             self.reflection_view = Some(v);
         }
-        if let Some(v) = self.sky_view.take() {
+        for i in 0..self.sky_views.len() {
+            let v = std::mem::replace(&mut self.sky_views[i], ShadowCullView::new(device));
             let (v, g) =
                 self.prepare_standalone_view(device, queue, sections_len, shared_grew, total, v);
             grew |= g;
-            self.sky_view = Some(v);
+            self.sky_views[i] = v;
         }
 
         // Color-occlusion view (§5): only prepared when a Hi-Z view is set (occlusion active).
@@ -1147,11 +1158,11 @@ impl CullState {
     // Record the interior sky-visibility cull (top-down ortho box). Recorded before the sky
     // depth pass so wgpu barriers the compute writes -> that pass's indirect reads. No-op until
     // set_sky_params + prepare() have run with instances present.
-    pub fn dispatch_sky(&self, encoder: &mut wgpu::CommandEncoder) {
+    pub fn dispatch_sky(&self, encoder: &mut wgpu::CommandEncoder, i: usize) {
         if self.params.instance_count == 0 {
             return;
         }
-        let Some(view) = self.sky_view.as_ref() else {
+        let Some(view) = self.sky_views.get(i) else {
             return;
         };
         let (Some(bind), Some(args), Some(sec)) = (
@@ -1252,16 +1263,16 @@ impl CullState {
         self.reflection_view.as_ref().map(|v| &v.counter_buf)
     }
 
-    pub fn sky_out_args(&self) -> Option<&wgpu::Buffer> {
-        self.sky_view.as_ref().and_then(|v| v.out_args.as_ref())
+    pub fn sky_out_args(&self, i: usize) -> Option<&wgpu::Buffer> {
+        self.sky_views.get(i).and_then(|v| v.out_args.as_ref())
     }
 
-    pub fn sky_out_records(&self) -> Option<&wgpu::Buffer> {
-        self.sky_view.as_ref().and_then(|v| v.out_records.as_ref())
+    pub fn sky_out_records(&self, i: usize) -> Option<&wgpu::Buffer> {
+        self.sky_views.get(i).and_then(|v| v.out_records.as_ref())
     }
 
-    pub fn sky_counter_buf(&self) -> Option<&wgpu::Buffer> {
-        self.sky_view.as_ref().map(|v| &v.counter_buf)
+    pub fn sky_counter_buf(&self, i: usize) -> Option<&wgpu::Buffer> {
+        self.sky_views.get(i).map(|v| &v.counter_buf)
     }
 
     // Build a cull bind group for one VIEW: its own params/args/counters/records, but the
@@ -2416,18 +2427,19 @@ pub(crate) mod tests {
             lod_inv_width: 1.0,
             pixel_limit: 0.0,
         };
-        cull.set_sky_params(&device, params_from_shadow_cascade(vp_rel, eye, inputs));
+        cull.set_sky_view_count(&device, super::super::sky_vis::DIRECTION_COUNT);
+        cull.set_sky_params(0, params_from_shadow_cascade(vp_rel, eye, inputs));
 
         cull.prepare(&device, &queue);
         let mut enc =
             device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
         cull.dispatch(&mut enc);
-        cull.dispatch_sky(&mut enc);
+        cull.dispatch_sky(&mut enc, 0);
         queue.submit(std::iter::once(enc.finish()));
 
         let words_per_arg = super::ARG_WORDS;
         let total = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64 * words_per_arg;
-        let raw = read_u32s(&device, &queue, cull.sky_out_args().unwrap(), total);
+        let raw = read_u32s(&device, &queue, cull.sky_out_args(0).unwrap(), total);
         let live: Vec<&[u32]> = raw
             .chunks_exact(words_per_arg as usize)
             .filter(|a| a[1] != 0)
@@ -2439,7 +2451,7 @@ pub(crate) mod tests {
         );
         let rec_slot = live[0][4] as u64;
         let slots = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64;
-        let recs = read_u32s(&device, &queue, cull.sky_out_records().unwrap(), slots * 2);
+        let recs = read_u32s(&device, &queue, cull.sky_out_records(0).unwrap(), slots * 2);
         assert_eq!(
             recs[rec_slot as usize * 2],
             under,
@@ -2448,10 +2460,10 @@ pub(crate) mod tests {
 
         // Disabling the view must actually release it — a stale sky view would keep drawing an
         // out-of-date map into the frame after the feature was switched off.
-        cull.clear_sky_view();
+        cull.set_sky_view_count(&device, 0);
         cull.prepare(&device, &queue);
-        assert!(cull.sky_out_args().is_none());
-        assert!(cull.sky_out_records().is_none());
+        assert!(cull.sky_out_args(0).is_none());
+        assert!(cull.sky_out_records(0).is_none());
     }
 
     #[test]

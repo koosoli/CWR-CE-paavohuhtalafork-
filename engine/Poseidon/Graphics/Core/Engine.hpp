@@ -999,8 +999,8 @@ class Engine : public IGraphicsEngine
         // set the resolving power: 1024 texels over a 256 m box is 25 cm per texel, which is
         // enough for roofs and walls but NOT for window reveals (that is Stage 2's per-model
         // bake, not something a bigger number here fixes — the box has to follow the camera).
-        int resolution = 1024;
-        float extent = 128.0f;
+        int resolution = 2048;
+        float extent = 64.0f;
         // How far above and below the camera the box reaches. Must clear the tallest roof the
         // player can stand under and the deepest floor they can stand on.
         float height = 300.0f;
@@ -1008,13 +1008,18 @@ class Engine : public IGraphicsEngine
         float strength = 1.0f;
         // Minimum ambient multiplier in a sealed volume. NOT a nicety: OFP interiors carry very
         // few local lights, so an unfloored version of this is a black box you cannot play in.
-        float floorLevel = 0.35f;
+        float floorLevel = 0.55f;
         // Softening kernel radius in metres — roughly how far light appears to reach in past an
         // opening. This is what grades a porch instead of drawing a hard line at the doorway.
-        float kernel = 1.5f;
+        float kernel = 1.0f;
         // Depth bias in metres. Stops a surface that is its own highest geometry (open ground, a
         // crate in the street) from occluding itself.
         float bias = 0.25f;
+        // How far to steer the sky-irradiance lookup toward the direction light actually arrives
+        // from. 0 = uniform dimming (a room just gets darker); 1 = fully along the open
+        // direction. This is what makes a room read as LIT THROUGH ITS WINDOW instead of evenly
+        // dimmed — visibility alone only scales brightness, it never says where light came from.
+        float directional = 0.7f;
         // Draw the reach factor as greyscale on opaque surfaces instead of lighting with it.
         // Shipped WITH the effect: judging this through sun + ambient + fog + tonemap is much
         // harder than looking at the buffer.
@@ -1666,7 +1671,10 @@ class Engine : public IGraphicsEngine
         kGrassGpuRegionBegin = 19,
         kGrassGpuRegionEnd = 25,
         kFrameGpuRegionTotal = 25,
-        kGpuRegionEnd = 26,
+        // LIT-020 — sliced by the Interior Sky tab.
+        kInteriorSkyGpuRegionBegin = 26,
+        kInteriorSkyGpuRegionEnd = 28,
+        kGpuRegionEnd = 28,
     };
 
   protected:

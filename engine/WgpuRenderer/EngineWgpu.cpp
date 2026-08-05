@@ -2933,6 +2933,8 @@ const char* EngineWgpu::GetWaterGpuTimingName(int region) const
         "Grass colour",                   // WGR_GPU_TIMER_GRASS_COLOR (needs in-pass timestamps)
         "Grass shadow",                   // WGR_GPU_TIMER_GRASS_SHADOW (needs in-pass timestamps)
         "GPU frame total",                // WGR_GPU_TIMER_FRAME_TOTAL (all submitted work)
+        "Interior sky: cull",             // WGR_GPU_TIMER_INTERIOR_SKY_CULL (one chain per direction)
+        "Interior sky: depth maps",       // WGR_GPU_TIMER_INTERIOR_SKY_DRAW (all directions)
     };
     return (region >= 0 && region < (int)WGR_GPU_TIMER_REGION_COUNT) ? kNames[region] : "";
 }
@@ -3586,6 +3588,7 @@ void EngineWgpu::PushRenderParams()
         _interiorSky.floorLevel,
         _interiorSky.kernel,
         _interiorSky.bias,
+        _interiorSky.directional,
     };
 
     wgr_set_render_params(_renderer, &p);

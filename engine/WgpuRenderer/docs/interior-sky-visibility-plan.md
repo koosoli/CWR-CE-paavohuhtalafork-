@@ -2,8 +2,10 @@
 
 **Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** PLAN (2026-08-05).
 **Roadmap:** `LIT-020 — Geometry-aware interior sky visibility — REQUIRED outcome`.
-**Revised 2026-08-05:** hardware ray tracing ruled out (§3F); the per-frame tilted maps of §3b
-replaced by a per-model bake (§3c). Stage 1 is now a single zenith map.
+**Revised 2026-08-05:** hardware ray tracing ruled out (§3F). Shipped as a **five-direction**
+map — zenith plus four tilted (§3b), after §3c's resolution objection turned out to be
+extent-dependent and wrong at the box size actually used (§3c-bis). The per-model bake (§3c)
+remains the Stage 2 target for full quality.
 
 ## 1. The problem, stated precisely
 
@@ -112,6 +114,23 @@ At 25 cm/texel the tilted map does not merely fail the window criterion — it f
 *stochastically*, leaking sky through walls at some building orientations and sealing windows at
 others. And with 4 azimuths, whether a given building's windows work at all depends on how that
 building happens to be rotated in the mission.
+
+#### 3c-bis. …and why the tilted maps were built anyway (correction, 2026-08-05, same day)
+
+The table above is right about the numbers and wrong about the conclusion, because **the box size
+is a free variable and I took it as given**. 25 cm/texel comes from a 256 m box. Shrink the box to
+what the feature actually needs — it only has to cover the buildings you are standing among, not
+the view distance — and at 64 m half-extent with 2048 texels it is **6 cm/texel**, which resolves
+a 1.5 m window reveal across ~25 texels.
+
+Smoke testing settled it. With the zenith map alone, a real building read exactly as this section
+predicted a zenith map must: the room was uniformly darker, and the only bright surfaces were the
+outer walls — not window light, but the softening kernel's taps escaping past the building's
+footprint where there is no roof. That is a wrong-looking artifact, not a partial success.
+
+So Stage 1 ships five directions. The bake is still the better answer (it sees a window at 2 cm
+from any angle, costs nothing per frame, and is temporally exact), but it is no longer the ONLY
+answer, and shipping the cheap one first is what put a real building in front of a real tester.
 
 The occluder that decides whether a point in a room sees sky is, almost always, **the building that
 room is in**: one rigid model, from a set of a few hundred, whose shape never changes. So run §3b's
@@ -250,6 +269,13 @@ bug, which is exactly the failure mode the handover warns about.
 - **Doorways popping** as the camera crosses the map's edge — the box must extend well past the
   view distance that matters, or fade out at its border. (Built: the reach fades over the outer 5%
   of the map instead of ending in a line that would sweep across the world as the player walks.)
+- **A tilted map's usable extent is bounded by its height.** Looking along a ~50 deg slant, a
+  point `extent` away laterally sits `extent * sin(50)` along the view axis, so once that exceeds
+  `height` it leaves the depth slab and the tilted maps stop contributing — while the zenith map
+  carries on working. The symptom is subtle: roofs still darken, window light quietly stops.
+  Measured on the way in (extent 1500 / height 300 left two of four tilted layers empty). The
+  defaults sit far inside the limit (64 * 0.77 = 49 m against 300 m of height) and the dev tab
+  warns when a hand-set pair crosses it.
 - **Vegetation is in the map.** Nothing excludes it — the cull has no per-instance vegetation bit,
   and adding one is a per-section property the instance does not carry. So a forest canopy reads as
   a roof. That is arguably correct occlusion, but it is untested against the look and it is the
@@ -258,8 +284,11 @@ bug, which is exactly the failure mode the handover warns about.
 
 ## 6. Stages
 
-1. **Overhead (zenith) depth map + kernel-softened sky attenuation.** Four of five acceptance
-   criteria. Debug view of the reach factor, default OFF, ImGui tab. **This plan.**
+1. **Five-direction depth maps + kernel-softened, DIRECTION-STEERED sky attenuation.** Zenith plus
+   four tilted at ~50 deg, 6 cm/texel; the ambient is steered toward the direction the sky actually
+   reaches a point from, not merely scaled by how much of it does. Debug view of the reach factor,
+   GPU-timer rows, default OFF, ImGui tab. **This plan.** *(Shipped as one zenith map first; §3c-bis
+   records why that was not enough and what smoke testing showed.)*
 2. **Per-model baked sky-visibility volume** (§3c, option E). Owns the window criterion, and
    subsumes most of what per-frame tilted maps were for. Composites with Stage 1's map, which keeps
    the cases the bake structurally cannot see (terrain, inter-building, movers).

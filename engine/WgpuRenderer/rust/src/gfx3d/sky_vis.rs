@@ -15,10 +15,42 @@
 //     runs over. That is deliberate: terrain is never "above" the player, and including it would
 //     make every hillside a roof.
 //
-// Stage 1 is ONE direction, straight down. The window criterion ("a room next to a window receives
-// light") is structurally out of reach here and belongs to the Stage 2 per-model bake — see §3c.
+// Stage 1.5 (2026-08-05) samples the DOME, not one direction: a zenith map plus four tilted ones.
+// This is what the plan's §3b asked for and §3c deferred on a resolution argument — an argument
+// taken at a 256 m box. At the small box these use (64 m half-extent, 2048 texels = 6 cm/texel) a
+// 1.5 m window reveal is ~25 texels across, so a tilted map resolves it comfortably. A tilted map
+// matters because its rays arrive near-HORIZONTALLY: it can see through a window, which a zenith
+// map structurally cannot, at any resolution.
 
 use crate::ffi::WgrSkyVis;
+
+/// How many sky directions the map samples: the zenith plus `DIRECTION_COUNT - 1` tilted ones,
+/// evenly spaced in azimuth. Fixed at compile time because the DIRECTIONS THEMSELVES are fixed in
+/// world space — rotating them with the camera or the time of day would make every surface's
+/// occlusion wobble, and there is no TAA here to hide that.
+pub const DIRECTION_COUNT: usize = 5;
+
+/// Tilt of the non-zenith directions from straight up, in degrees. ~50 deg keeps them steep
+/// enough to still be dominated by the zenith in the cosine weighting, while being shallow enough
+/// that a ray can clear a window reveal and reach a metre or two into the room.
+const TILT_DEG: f32 = 50.0;
+
+/// The sampled directions, pointing FROM the surface TOWARD the sky, world space. Index 0 is the
+/// zenith. `w` carries the cosine weight (dot with up), so the caller never re-derives it and the
+/// shader reads the same number the CPU used.
+pub fn directions() -> [glam::Vec4; DIRECTION_COUNT] {
+    let mut out = [glam::Vec4::new(0.0, 1.0, 0.0, 1.0); DIRECTION_COUNT];
+    let tilt = TILT_DEG.to_radians();
+    let (st, ct) = tilt.sin_cos();
+    for (i, slot) in out.iter_mut().enumerate().skip(1) {
+        let az = std::f32::consts::TAU * (i - 1) as f32 / (DIRECTION_COUNT - 1) as f32;
+        let (sa, ca) = az.sin_cos();
+        // cos(tilt) is both the y component and the cosine weight — the same quantity, which is
+        // why the weight is not a second, drift-prone constant.
+        *slot = glam::Vec4::new(st * ca, ct, st * sa, ct);
+    }
+    out
+}
 
 /// Runtime knobs. Default OFF: this changes global lighting, so it opts in.
 #[derive(Clone, Copy, Debug)]
@@ -43,6 +75,11 @@ pub struct SkyVisSettings {
     /// surface that is its OWN highest geometry (open ground, a crate in the street) does not
     /// shadow itself.
     pub bias: f32,
+    /// How far to steer the sky-irradiance lookup toward the direction light actually arrives
+    /// from, 0 = off (uniform dimming only), 1 = fully along the open direction. This is the part
+    /// that makes a room read as LIT THROUGH ITS WINDOW rather than evenly darker: visibility
+    /// alone only scales brightness, it never says where the light came from.
+    pub directional: f32,
     /// 1 = draw the reach factor as greyscale instead of lighting with it. Shipped WITH the
     /// effect, not after it: judging this through sun + SH ambient + fog + tonemap is much
     /// harder than looking at the buffer.
@@ -53,13 +90,18 @@ impl Default for SkyVisSettings {
     fn default() -> Self {
         SkyVisSettings {
             enabled: false,
-            resolution: 1024,
-            extent: 128.0,
+            // 2048 over a 64 m half-box = 6 cm/texel: enough to resolve a window reveal, which
+            // is the whole reason the tilted directions exist (see the module header).
+            resolution: 2048,
+            extent: 64.0,
             height: 300.0,
             strength: 1.0,
-            floor: 0.35,
-            kernel: 1.5,
+            // Interiors carry almost no local lights, and with the sun shadowed the sky ambient
+            // is the ONLY light in the room. 0.35 measured as a cave in a real building.
+            floor: 0.55,
+            kernel: 1.0,
             bias: 0.25,
+            directional: 0.7,
             debug: false,
         }
     }
@@ -77,6 +119,7 @@ impl SkyVisSettings {
         self.floor = p.floor.clamp(0.0, 1.0);
         self.kernel = p.kernel.clamp(0.0, 32.0);
         self.bias = p.bias.clamp(0.0, 16.0);
+        self.directional = p.directional.clamp(0.0, 1.0);
         self.debug = p.debug != 0;
     }
 
@@ -97,39 +140,46 @@ pub struct SkyVisView {
     pub bias_ndc: f32,
 }
 
-/// Build the snapped top-down ortho view for a camera position.
+/// Build the snapped ortho view looking along `-dir` (i.e. FROM the sky toward the surface) for
+/// one sampled direction.
 ///
-/// SNAPPING is the whole point of doing this in one place: the eye's X/Z are quantised to the
-/// map's texel size so that as the camera walks, the world falls on the SAME texel centres and
-/// the map's contents are stable. Y is quantised to a metre for the same reason at a scale where
-/// it matters far less (a Y shift moves the stored depth and the receiver's reference depth
-/// together, so the comparison is nearly invariant to it — but the depth quantisation is not).
-///
-/// The view looks straight down (-Y) with +Z as "up" in view space, so the view's X/Y axes are
-/// world X/Z and quantising world X/Z is exactly quantising the texel grid.
-pub fn build_view(cam_pos: glam::Vec3, s: &SkyVisSettings) -> SkyVisView {
+/// SNAPPING is the whole point of doing this in one place, and it generalises to a tilted
+/// direction by snapping in the VIEW's own axes rather than in world X/Z: the eye's position
+/// along the view's right and up axes is quantised to the map's texel size, so as the camera
+/// walks, the world keeps landing on the same texel centres and the map's contents are stable.
+/// An unsnapped ortho view resamples the world every frame and the result crawls — there is no
+/// TAA here to hide it, which is exactly why the GTAO mip march ended up default-off.
+pub fn build_view_for(cam_pos: glam::Vec3, dir: glam::Vec3, s: &SkyVisSettings) -> SkyVisView {
     let texel = s.texel_size().max(1e-4);
     let snap = |v: f32, q: f32| (v / q).floor() * q;
-    let eye = glam::Vec3::new(
-        snap(cam_pos.x, texel),
-        snap(cam_pos.y, 1.0) + s.height,
-        snap(cam_pos.z, texel),
-    );
-    // World -> view for an eye looking straight down. Written out rather than via a look_at
-    // helper so the axis mapping is inspectable:
-    //     view.x = world.x - eye.x        (view right  = world +X)
-    //     view.y = eye.z - world.z        (view up     = world -Z)
-    //     view.z = world.y - eye.y        (the camera looks down its own -Z, right-handed, so
-    //                                      points BELOW the eye get negative view z)
-    // view up is world -Z rather than +Z so the rotation is a proper one (det +1) instead of a
-    // reflection — a mirrored view would flip triangle winding under any pipeline that culled.
+    // `back` is the view's +Z (the camera looks down its own -Z, right-handed), so back = dir:
+    // points BELOW the sky along -dir get negative view z, which is what the projection expects.
+    let back = dir.normalize();
+    // Any stable perpendicular pair. World up degenerates for a horizontal direction, so fall
+    // back to world Z there; these directions are fixed constants, so the choice never flickers.
+    let seed = if back.y.abs() > 0.99 {
+        glam::Vec3::Z
+    } else {
+        glam::Vec3::Y
+    };
+    // (right, up, back) right-handed. For the zenith this reproduces the original basis exactly:
+    // right = world +X, up = world -Z — which is what every snapping test below was written
+    // against, and getting the sign backwards here silently mirrors the map.
+    let right = back.cross(seed).normalize();
+    let up = back.cross(right);
+    // Eye sits `height` up the direction from the camera; its offsets along the view axes are
+    // quantised (right/up to a texel, depth to a metre — a depth shift moves the stored and the
+    // reference depth together, so it only has to beat depth quantisation).
+    let tx = snap(cam_pos.dot(right), texel);
+    let ty = snap(cam_pos.dot(up), texel);
+    let tz = snap(cam_pos.dot(back), 1.0) + s.height;
     let view = glam::Mat4::from_cols(
-        glam::Vec4::new(1.0, 0.0, 0.0, 0.0),
-        glam::Vec4::new(0.0, 0.0, 1.0, 0.0),
-        glam::Vec4::new(0.0, -1.0, 0.0, 0.0),
-        glam::Vec4::new(-eye.x, eye.z, -eye.y, 1.0),
+        glam::Vec4::new(right.x, up.x, back.x, 0.0),
+        glam::Vec4::new(right.y, up.y, back.y, 0.0),
+        glam::Vec4::new(right.z, up.z, back.z, 0.0),
+        glam::Vec4::new(-tx, -ty, -tz, 1.0),
     );
-    // Depth 0 at the top of the box, 1 at the bottom: a receiver under a roof has a LARGER
+    // Depth 0 at the sky end of the box, 1 at the far end: a receiver under a roof has a LARGER
     // depth than the roof, which is what the LessEqual comparison sampler tests.
     // "directx" is glam's name for the NDC convention wgpu uses: Z in [0, 1], Y-up.
     let proj = glam::camera::rh::proj::directx::orthographic(
@@ -146,6 +196,17 @@ pub fn build_view(cam_pos: glam::Vec3, s: &SkyVisSettings) -> SkyVisView {
         kernel_uv: s.kernel / (2.0 * s.extent).max(1e-4),
         bias_ndc: s.bias / (2.0 * s.height).max(1e-4),
     }
+}
+
+/// Every sampled direction's view for this frame, index-aligned with [`directions`].
+pub fn build_views(cam_pos: glam::Vec3, s: &SkyVisSettings) -> [SkyVisView; DIRECTION_COUNT] {
+    let dirs = directions();
+    std::array::from_fn(|i| build_view_for(cam_pos, dirs[i].truncate(), s))
+}
+
+/// The zenith view alone — the one every existing test and the debug path reason about.
+pub fn build_view(cam_pos: glam::Vec3, s: &SkyVisSettings) -> SkyVisView {
+    build_view_for(cam_pos, glam::Vec3::Y, s)
 }
 
 #[cfg(test)]

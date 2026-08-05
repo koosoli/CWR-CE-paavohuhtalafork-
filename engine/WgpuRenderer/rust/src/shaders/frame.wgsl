@@ -61,11 +61,16 @@ struct Frame {
     //   w = unused
     gtao: vec4<f32>,
     // Interior sky visibility (docs/interior-sky-visibility-plan.md), appended after gtao.
-    //   skyvis_vp    = ABSOLUTE world -> the sky map's ortho clip space (w = 1, orthographic)
-    //   skyvis       = (gate, debug, strength, floor)
-    //   skyvisb      = (kernel_uv, bias_ndc, unused, unused)
+    //   skyvis_vp[i]  = ABSOLUTE world -> sky-map layer i's ortho clip space (w = 1, ortho)
+    //   skyvis_dir[i] = that layer's direction toward the sky (xyz, world), w = its cosine weight
+    //   skyvis        = (gate, debug, strength, floor)
+    //   skyvisb       = (kernel_uv, bias_ndc, directional, unused)
+    // The DIRECTIONS ride the UBO rather than living as constants here: they and the matrices are
+    // one consistent set produced together on the CPU, and a WGSL copy of them is exactly the
+    // "two twins of one buffer with nothing checking they agree" trap.
     // `skyvisb` not `skyvis2`: naga_oil forbids composable identifiers ending in a digit.
-    skyvis_vp: mat4x4<f32>,
+    skyvis_vp: array<mat4x4<f32>, 5>,
+    skyvis_dir: array<vec4<f32>, 5>,
     skyvis: vec4<f32>,
     skyvisb: vec4<f32>,
 };
@@ -153,7 +158,7 @@ struct SkySh {
 // Sampled with the CASCADE comparison sampler at binding 2 — its LessEqual compare is exactly
 // "is my depth at or in front of the stored occluder", i.e. "can I see the sky", and the hardware
 // 2x2 PCF gives each tap a sub-texel gradient for free. See interior_sky_reach below.
-@group(0) @binding(12) var interior_sky_map: texture_depth_2d;
+@group(0) @binding(12) var interior_sky_map: texture_depth_2d_array;
 
 // Diffuse sky irradiance for a world-space surface normal, from the SH-9 sky projection
 // (Ramamoorthi, "An Efficient Representation for Irradiance Environment Maps"), divided by PI so
@@ -336,66 +341,106 @@ fn gtao_debug_colour(frag_coord: vec2<f32>, fallback_n: vec3<f32>) -> vec3<f32> 
     return vec3<f32>(gtao_ao(frag_coord));
 }
 
-// How much of the sky can reach this WORLD-ABSOLUTE point, from the top-down interior map:
-// 1 = open sky above, 0 = fully roofed. Returns 1 whenever the feature is off or the point is
-// outside the map, because absence of data must never darken.
+// Per-direction unoccluded fraction at a WORLD-ABSOLUTE point, for sky-map layer `i`.
+// 1 = that direction's sky is visible from here, 0 = fully blocked. Returns 1 outside the map,
+// because absence of data must never darken.
 //
 // Why a KERNEL and not a single tap: a hard "is anything above me" test gives black rooms and a
-// razor edge at the doorway. Taking the fraction of taps over a world-space disc that see sky
-// makes the transition grade — under the middle of a roof every tap is blocked, at its lip some
-// are not — and the kernel radius is then roughly "how far light appears to reach in past an
-// opening". That is what buys a partly-dark porch without any portal authoring.
+// razor edge at the doorway. Taking the fraction of taps over a small world-space disc makes the
+// transition grade — under the middle of a roof every tap is blocked, at its lip some are not —
+// and the kernel radius is roughly "how far light appears to reach in past an opening".
 //
 // The comparison sampler does the depth test: LessEqual returns 1 when the receiver's (biased)
-// depth is at or in front of the stored occluder, i.e. nothing is above it. The bias is what
-// stops a surface that is its own highest geometry — open ground, a crate in the street — from
-// shadowing itself.
-fn interior_sky_reach(world_abs: vec3<f32>) -> f32 {
-    if (frame.skyvis.x < 0.5) {
-        return 1.0;
-    }
+// depth is at or in front of the stored occluder, i.e. nothing lies between it and the sky along
+// this direction. The bias stops a surface that is its own highest geometry — open ground, a
+// crate in the street — from shadowing itself.
+fn interior_sky_reach_dir(world_abs: vec3<f32>, i: i32) -> f32 {
     // Orthographic: w is 1, so clip IS NDC.
-    let clip = frame.skyvis_vp * vec4<f32>(world_abs, 1.0);
+    let clip = frame.skyvis_vp[i] * vec4<f32>(world_abs, 1.0);
     let uv = vec2<f32>(clip.x * 0.5 + 0.5, -clip.y * 0.5 + 0.5);
     if (clip.z < 0.0 || clip.z > 1.0) {
         return 1.0;
     }
     let ref_d = clip.z - frame.skyvisb.y;
     let k = frame.skyvisb.x;
-    // 8 ring taps + a double-weighted centre. The ring is two squares at different radii rather
-    // than one, so the kernel has some radial spread instead of sampling a single circle.
-    var offs = array<vec2<f32>, 8>(
-        vec2<f32>( 1.0,  0.0), vec2<f32>(-1.0,  0.0),
-        vec2<f32>( 0.0,  1.0), vec2<f32>( 0.0, -1.0),
-        vec2<f32>( 0.5,  0.5), vec2<f32>(-0.5,  0.5),
-        vec2<f32>( 0.5, -0.5), vec2<f32>(-0.5, -0.5),
+    // Centre plus a 4-tap cross. Five taps per direction over five directions is already 25
+    // comparisons per fragment; widening the pattern is the wrong place to spend, because the
+    // DIRECTIONS are what buy the shape here, not the tap count.
+    var sum = textureSampleCompareLevel(interior_sky_map, shadow_samp, uv, i, ref_d) * 2.0;
+    var offs = array<vec2<f32>, 4>(
+        vec2<f32>(1.0, 0.0), vec2<f32>(-1.0, 0.0),
+        vec2<f32>(0.0, 1.0), vec2<f32>(0.0, -1.0),
     );
-    var sum = textureSampleCompareLevel(interior_sky_map, shadow_samp, uv, ref_d) * 2.0;
-    var wsum = 2.0;
-    for (var i = 0; i < 8; i++) {
-        let t = clamp(uv + offs[i] * k, vec2<f32>(0.0), vec2<f32>(1.0));
-        sum += textureSampleCompareLevel(interior_sky_map, shadow_samp, t, ref_d);
-        wsum += 1.0;
+    for (var t = 0; t < 4; t++) {
+        let p = clamp(uv + offs[t] * k, vec2<f32>(0.0), vec2<f32>(1.0));
+        sum += textureSampleCompareLevel(interior_sky_map, shadow_samp, p, i, ref_d);
     }
-    let reach = sum / wsum;
+    let reach = sum / 6.0;
     // Fade out at the box border instead of ending in a hard line: the map moves with the camera,
     // so a discontinuity at its edge would sweep across the world as the player walks.
     let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
     return mix(1.0, reach, smoothstep(0.0, 0.05, edge));
 }
 
+// Cosine-weighted fraction of the whole sky DOME reaching this point [0,1]. The zenith dominates
+// (it carries weight 1 against the tilted directions' cos 50 deg), which matches the diffuse
+// response — but the tilted maps are what let light in through a window, because their rays
+// arrive near-horizontally and a zenith map cannot see a vertical opening at any resolution.
+fn interior_sky_reach(world_abs: vec3<f32>) -> f32 {
+    if (frame.skyvis.x < 0.5) {
+        return 1.0;
+    }
+    var num = 0.0;
+    var den = 0.0;
+    for (var i = 0; i < 5; i++) {
+        let w = frame.skyvis_dir[i].w;
+        num += interior_sky_reach_dir(world_abs, i) * w;
+        den += w;
+    }
+    return num / max(den, 1e-4);
+}
+
 // Ambient multiplier from interior sky visibility [0,1]. AMBIENT ONLY — direct sun is already
 // occluded by the cascade shadow maps plus the terrain sun-shadow mask, and local lights are the
 // thing keeping an interior readable at all.
 //
-// The floor is not a nicety: OFP interiors carry very few local lights, so an unfloored version
-// of this is a black box the player cannot play in.
+// The floor is not a nicety: with the sun shadowed and few local lights, the sky ambient is the
+// ONLY light in an OFP room, so an unfloored version of this is a black box.
 fn interior_sky_ao(world_abs: vec3<f32>) -> f32 {
     if (frame.skyvis.x < 0.5) {
         return 1.0;
     }
     let occ = 1.0 - interior_sky_reach(world_abs);
     return max(1.0 - frame.skyvis.z * occ, frame.skyvis.w);
+}
+
+// The direction the sky actually reaches this point FROM, world space — the sampled directions
+// weighted by their own visibility and by how much this surface faces them. Falls back to the
+// surface normal when nothing is visible or the feature is off.
+//
+// This is the difference between a room that is merely DARKER and a room that is LIT THROUGH ITS
+// WINDOW. A visibility scalar can only scale brightness; it never says where the light came from,
+// so with uniform dimming every wall of a room stays equally lit relative to the others and the
+// opening reads as a bright patch rather than a light source. Steering the sky-irradiance lookup
+// toward the open direction makes the wall facing the window brighter than the wall beside it,
+// which is what the eye reads as light entering and bouncing.
+fn interior_sky_ambient_normal(world_abs: vec3<f32>, n: vec3<f32>) -> vec3<f32> {
+    if (frame.skyvis.x < 0.5 || frame.skyvisb.z <= 0.0) {
+        return n;
+    }
+    var acc = vec3<f32>(0.0);
+    for (var i = 0; i < 5; i++) {
+        let d = frame.skyvis_dir[i].xyz;
+        // Only the visible hemisphere contributes: a direction behind the surface cannot light it.
+        let facing = max(dot(n, d), 0.0);
+        if (facing > 0.0) {
+            acc += d * (interior_sky_reach_dir(world_abs, i) * facing * frame.skyvis_dir[i].w);
+        }
+    }
+    if (dot(acc, acc) < 1e-8) {
+        return n;
+    }
+    return normalize(mix(n, normalize(acc), frame.skyvisb.z));
 }
 
 // 1 when the interior-sky debug view is on: surfaces draw the reach factor as greyscale instead

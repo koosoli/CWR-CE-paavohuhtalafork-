@@ -550,12 +550,13 @@ struct WgrSkyVis
     uint32_t enabled;    /* 0 = no map, no cull view; consumers read reach = 1 */
     uint32_t debug;      /* 1 = draw the reach factor as greyscale instead of lighting with it */
     uint32_t resolution; /* depth-map edge in texels */
-    float extent;        /* HALF the world box, metres (1024 tex / 128 m half = 25 cm/texel) */
+    float extent;        /* HALF the world box, metres (2048 tex / 64 m half = 6 cm/texel) */
     float height;        /* box half-height above/below the camera, metres */
     float strength;      /* 0 = inert, 1 = full attenuation */
     float floor;         /* minimum ambient multiplier in a sealed volume */
     float kernel;        /* softening kernel radius, metres */
     float bias;          /* depth bias, metres (stops open ground occluding itself) */
+    float directional;   /* 0 = uniform dimming, 1 = ambient arrives from the open direction */
 };
 
 /* Every imgui-tweakable render parameter that crosses the FFI as a setter, in one block.
@@ -1001,7 +1002,12 @@ enum WgrGpuTimerRegion : uint32_t
     WGR_GPU_TIMER_GRASS_COLOR = 23,         // grass colour pass (far + mid + near)
     WGR_GPU_TIMER_GRASS_SHADOW = 24,        // near blades into the cascade depth map
     WGR_GPU_TIMER_FRAME_TOTAL = 25,         // all submitted frame work (excludes acquire/present pacing)
-    WGR_GPU_TIMER_REGION_COUNT = 26,
+    /* LIT-020 — interior sky visibility. Appended after FRAME_TOTAL rather than inserted next to
+     * it: these indices are the FFI contract the debug tabs slice by, so renumbering silently
+     * relabels every existing row. */
+    WGR_GPU_TIMER_INTERIOR_SKY_CULL = 26, // one cull dispatch chain per sampled sky direction
+    WGR_GPU_TIMER_INTERIOR_SKY_DRAW = 27, // the per-direction depth passes that fill the map
+    WGR_GPU_TIMER_REGION_COUNT = 28,
 };
 
 /* GRS-A — grass instance accounting (mirrors WgrGrassStats in rust/src/ffi.rs).
@@ -1218,8 +1224,8 @@ static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout mus
 static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFoliage) == 48, "WgrFoliage layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGtao) == 52, "WgrGtao layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrSkyVis) == 36, "WgrSkyVis layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrRenderParams) == 456, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSkyVis) == 40, "WgrSkyVis layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrRenderParams) == 460, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");

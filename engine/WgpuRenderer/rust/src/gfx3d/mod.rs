@@ -510,8 +510,10 @@ impl CameraGroup {
             + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64
             + 16
             + 16
-            // Interior sky visibility: the map's ortho VP (mat4) + two knob vec4s.
-            + 64
+            // Interior sky visibility: one ortho VP (mat4) and one direction vec4 per sampled
+            // sky direction, plus two knob vec4s.
+            + 64 * sky_vis::DIRECTION_COUNT as u64
+            + 16 * sky_vis::DIRECTION_COUNT as u64
             + 16
             + 16;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -659,7 +661,7 @@ impl CameraGroup {
                     visibility: wgpu::ShaderStages::FRAGMENT,
                     ty: wgpu::BindingType::Texture {
                         sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
+                        view_dimension: wgpu::TextureViewDimension::D2Array,
                         multisampled: false,
                     },
                     count: None,
@@ -2563,14 +2565,19 @@ pub struct Gfx3d {
     // no new pipeline, no new pass UBO layout: the ortho VP goes into the shadow pass UBO's
     // reserved slot (SKY_UBO_SLOT), so this is genuinely the reflection/cascade pattern again.
     interior_sky: SkyVisSettings,
-    interior_sky_target: Option<(wgpu::Texture, wgpu::TextureView)>,
+    // Depth ARRAY: one layer per sampled sky direction. (texture, per-layer render views,
+    // the D2Array view the shader samples).
+    interior_sky_target: Option<(wgpu::Texture, Vec<wgpu::TextureView>, wgpu::TextureView)>,
     // Bumped when the target is (re)allocated or dropped, so the camera bind group follows it.
     interior_sky_gen: u64,
     // This frame's snapped ortho view, Some only while the feature is live. Also the per-frame
     // gate the shader reads: no view -> reach reads 1 everywhere -> no darkening.
     interior_sky_view: Option<SkyVisView>,
-    // Group-1 draw bind over the sky cull view's records (same layout as the cascade ones).
-    gpu_sky_group1: Option<wgpu::BindGroup>,
+    // Per-direction views, index-aligned with sky_vis::directions(). Only meaningful while
+    // interior_sky_view is Some.
+    interior_sky_views: [SkyVisView; sky_vis::DIRECTION_COUNT],
+    // Group-1 draw binds over each sky cull view's records (same layout as the cascade ones).
+    gpu_sky_group1: Vec<Option<wgpu::BindGroup>>,
     // 1x1 stand-in bound at @binding(12) whenever the map does not exist.
     dummy_interior_sky_view: wgpu::TextureView,
 
@@ -2910,7 +2917,10 @@ impl Gfx3d {
             view_formats: &[],
         });
         let dummy_interior_sky_view =
-            dummy_interior_sky.create_view(&wgpu::TextureViewDescriptor::default());
+            dummy_interior_sky.create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
 
         // Compute skin bake (docs/compute-skin-bake-plan.md). group(0) = the four
         // storage buffers (source verts / skin data / palette / baked output), all
@@ -3111,7 +3121,8 @@ impl Gfx3d {
             interior_sky_target: None,
             interior_sky_gen: 0,
             interior_sky_view: None,
-            gpu_sky_group1: None,
+            interior_sky_views: sky_vis::build_views(glam::Vec3::ZERO, &SkyVisSettings::default()),
+            gpu_sky_group1: Vec::new(),
             dummy_interior_sky_view,
             skin_bake_enabled,
             skin_bake_pipeline,
@@ -4591,7 +4602,7 @@ impl Gfx3d {
             let interior_sky_view = self
                 .interior_sky_target
                 .as_ref()
-                .map(|(_, v)| v)
+                .map(|(_, _, v)| v)
                 .unwrap_or(&self.dummy_interior_sky_view);
             self.cameras.ensure(
                 device,
@@ -4683,7 +4694,8 @@ impl Gfx3d {
                         + 16,
                     bytemuck::cast_slice(&gtao),
                 );
-                // Interior sky visibility: the map's ABSOLUTE-space ortho VP + its knobs.
+                // Interior sky visibility: every layer's ABSOLUTE-space ortho VP, the matching
+                // sky directions, and the knobs.
                 //
                 // Not gated per camera, unlike GTAO immediately above, and the difference is
                 // worth stating: GTAO is a SCREEN-space buffer, so it is only valid for the
@@ -4691,30 +4703,44 @@ impl Gfx3d {
                 // segment, a cockpit view and the planar reflection all sample it at their own
                 // world positions and all get the right answer.
                 let sv = &self.interior_sky;
-                let (vp, kernel_uv, bias_ndc) = match self.interior_sky_view {
-                    Some(v) if self.interior_sky_target.is_some() => {
-                        (v.view_proj.to_cols_array(), v.kernel_uv, v.bias_ndc)
-                    }
-                    // Inert: the gate below is 0, so these are never read.
-                    _ => ([0.0f32; 16], 0.0, 0.0),
-                };
                 let on = self.interior_sky_active();
+                let dirs = sky_vis::directions();
+                let mut vp = [0.0f32; 16 * sky_vis::DIRECTION_COUNT];
+                let mut dir = [0.0f32; 4 * sky_vis::DIRECTION_COUNT];
+                for i in 0..sky_vis::DIRECTION_COUNT {
+                    if on {
+                        vp[i * 16..(i + 1) * 16]
+                            .copy_from_slice(&self.interior_sky_views[i].view_proj.to_cols_array());
+                    }
+                    dir[i * 4..(i + 1) * 4].copy_from_slice(&dirs[i].to_array());
+                }
+                let (kernel_uv, bias_ndc) = if on {
+                    (
+                        self.interior_sky_views[0].kernel_uv,
+                        self.interior_sky_views[0].bias_ndc,
+                    )
+                } else {
+                    (0.0, 0.0)
+                };
                 let knobs = [
                     if on { 1.0f32 } else { 0.0 },
                     if on && sv.debug { 1.0 } else { 0.0 },
                     sv.strength,
                     sv.floor,
                 ];
-                let knobs_b = [kernel_uv, bias_ndc, 0.0, 0.0];
+                let knobs_b = [kernel_uv, bias_ndc, sv.directional, 0.0];
                 let sky_base = base
                     + std::mem::size_of::<WgrCamera>() as u64
                     + 64
                     + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64
                     + 16
                     + 16;
+                let dir_off = sky_base + 64 * sky_vis::DIRECTION_COUNT as u64;
+                let knob_off = dir_off + 16 * sky_vis::DIRECTION_COUNT as u64;
                 queue.write_buffer(buf, sky_base, bytemuck::cast_slice(&vp));
-                queue.write_buffer(buf, sky_base + 64, bytemuck::cast_slice(&knobs));
-                queue.write_buffer(buf, sky_base + 80, bytemuck::cast_slice(&knobs_b));
+                queue.write_buffer(buf, dir_off, bytemuck::cast_slice(&dir));
+                queue.write_buffer(buf, knob_off, bytemuck::cast_slice(&knobs));
+                queue.write_buffer(buf, knob_off + 16, bytemuck::cast_slice(&knobs_b));
             }
         }
         // Track buffer regrowth so the combined group-1 bind groups (which borrow
@@ -5582,17 +5608,18 @@ impl Gfx3d {
             return;
         }
         let res = self.interior_sky.resolution.max(1);
+        let layers = sky_vis::DIRECTION_COUNT as u32;
         let stale = self
             .interior_sky_target
             .as_ref()
-            .is_none_or(|(t, _)| t.width() != res);
+            .is_none_or(|(t, _, _)| t.width() != res || t.depth_or_array_layers() != layers);
         if stale {
             let tex = device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("wgr_interior_sky_map"),
                 size: wgpu::Extent3d {
                     width: res,
                     height: res,
-                    depth_or_array_layers: 1,
+                    depth_or_array_layers: layers,
                 },
                 mip_level_count: 1,
                 sample_count: 1,
@@ -5603,19 +5630,44 @@ impl Gfx3d {
                     | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
-            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
-            self.interior_sky_target = Some((tex, view));
+            let layer_views = (0..layers)
+                .map(|l| {
+                    tex.create_view(&wgpu::TextureViewDescriptor {
+                        label: Some("wgr_interior_sky_layer"),
+                        dimension: Some(wgpu::TextureViewDimension::D2),
+                        base_array_layer: l,
+                        array_layer_count: Some(1),
+                        ..Default::default()
+                    })
+                })
+                .collect();
+            let sample_view = tex.create_view(&wgpu::TextureViewDescriptor {
+                label: Some("wgr_interior_sky_sample"),
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+            self.interior_sky_target = Some((tex, layer_views, sample_view));
             self.interior_sky_gen += 1;
         }
-        self.interior_sky_view = Some(sky_vis::build_view(cam_pos, &self.interior_sky));
+        self.interior_sky_views = sky_vis::build_views(cam_pos, &self.interior_sky);
+        self.interior_sky_view = Some(self.interior_sky_views[0]);
     }
 
     // Record the sky-visibility cull. Recorded before render_interior_sky_pass so wgpu barriers
     // the compute writes -> that pass's indirect reads.
-    pub fn cull_dispatch_interior_sky(&self, encoder: &mut wgpu::CommandEncoder) {
-        if self.interior_sky_active() {
-            self.cull.dispatch_sky(encoder);
+    pub fn cull_dispatch_interior_sky(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        timers: &crate::gpu_timers::GpuTimers,
+    ) {
+        if !self.interior_sky_active() {
+            return;
         }
+        timers.begin(encoder, crate::gpu_timers::Region::InteriorSkyCull);
+        for i in 0..self.cull.sky_view_count() {
+            self.cull.dispatch_sky(encoder, i);
+        }
+        timers.end(encoder, crate::gpu_timers::Region::InteriorSkyCull);
     }
 
     // Render the top-down depth map: one depth-only pass over the sky cull view's args, drawn by
@@ -5626,91 +5678,103 @@ impl Gfx3d {
         &self,
         encoder: &mut wgpu::CommandEncoder,
         textures: &SharedTextures,
+        timers: &crate::gpu_timers::GpuTimers,
     ) {
         if !self.interior_sky_active() {
             return;
         }
-        let (Some((_, target_view)), Some(pass_bind)) = (
+        let (Some((_, layer_views, _)), Some(pass_bind)) = (
             self.interior_sky_target.as_ref(),
             self.shadow_pass_ubo.bind.as_ref(),
         ) else {
             return;
         };
-        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-            label: Some("wgr_interior_sky_map"),
-            color_attachments: &[],
-            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                view: target_view,
-                depth_ops: Some(wgpu::Operations {
-                    // Clear to the FAR plane: an untouched texel means "nothing above here", so
-                    // open sky is the default and only real geometry can take it away.
-                    load: wgpu::LoadOp::Clear(1.0),
-                    store: wgpu::StoreOp::Store,
+        // One depth-only pass per sampled direction, all bracketed as a single timed region:
+        // the cost that matters to a decision ("is sampling the dome affordable") is the whole
+        // set, not any one layer.
+        timers.begin(encoder, crate::gpu_timers::Region::InteriorSkyDraw);
+        for (i, target_view) in layer_views.iter().enumerate() {
+            let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("wgr_interior_sky_map"),
+                color_attachments: &[],
+                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                    view: target_view,
+                    depth_ops: Some(wgpu::Operations {
+                        // Clear to the FAR plane: an untouched texel means "nothing between this
+                        // point and the sky", so open sky is the default and only real geometry
+                        // can take it away.
+                        load: wgpu::LoadOp::Clear(1.0),
+                        store: wgpu::StoreOp::Store,
+                    }),
+                    stencil_ops: None,
                 }),
-                stencil_ops: None,
-            }),
-            timestamp_writes: None,
-            occlusion_query_set: None,
-            multiview_mask: None,
-        });
-        let off = (SKY_UBO_SLOT as u64 * self.shadow_pass_ubo.stride) as u32;
-        rp.set_bind_group(0, pass_bind, &[off]);
-        self.draw_gpu_driven_depth(
-            &mut rp,
-            textures,
-            off,
-            self.gpu_sky_group1.as_ref(),
-            self.cull.sky_out_args(),
-            self.cull.sky_counter_buf(),
-        );
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            let off = ((SKY_UBO_SLOT + i) as u64 * self.shadow_pass_ubo.stride) as u32;
+            rp.set_bind_group(0, pass_bind, &[off]);
+            self.draw_gpu_driven_depth(
+                &mut rp,
+                textures,
+                off,
+                self.gpu_sky_group1.get(i).and_then(|b| b.as_ref()),
+                self.cull.sky_out_args(i),
+                self.cull.sky_counter_buf(i),
+            );
+        }
+        timers.end(encoder, crate::gpu_timers::Region::InteriorSkyDraw);
     }
 
-    // Read back the sky map and report (resolution, fraction of texels holding an occluder).
+    // Read back EVERY sky-map layer and report (resolution, per-direction fraction of texels
+    // holding an occluder). Index 0 is the zenith; the rest are the tilted directions.
     //
-    // This exists because "the pass ran and validation was silent" is NOT evidence the feature
-    // works: a map that renders nothing clears to 1.0 everywhere, every comparison passes, reach
-    // is 1 and the whole system is a silent no-op that looks exactly like success. A previous
-    // readback test in this renderer passed vacuously for precisely that reason. Anything
-    // meaningful here is a small non-zero fraction — a town from 300 m up covers a few percent.
+    // Per layer, not just the zenith, because the tilted maps are the entire reason this feature
+    // can see through a window — and a tilted layer that renders nothing is invisible in every
+    // other signal: it clears to the far plane, every comparison passes, its reach reads 1, and
+    // the result is simply the zenith-only behaviour wearing a five-direction costume.
     //
-    // Synchronous and slow (a full depth readback + device poll); one-shot diagnostic only.
+    // Synchronous and slow (a depth readback + device poll per layer); one-shot diagnostic only.
     pub fn interior_sky_map_coverage(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-    ) -> Option<(u32, f32)> {
-        let (tex, _) = self.interior_sky_target.as_ref()?;
+    ) -> Option<(u32, [f32; sky_vis::DIRECTION_COUNT])> {
+        let (tex, _, _) = self.interior_sky_target.as_ref()?;
         let res = tex.width();
         let mut px = vec![0.0f32; (res * res) as usize];
-        if !read_depth_layer(device, queue, tex, res, 0, &mut px) {
-            return None;
+        let mut cov = [0.0f32; sky_vis::DIRECTION_COUNT];
+        for (layer, slot) in cov.iter_mut().enumerate() {
+            if !read_depth_layer(device, queue, tex, res, layer as u32, &mut px) {
+                return None;
+            }
+            // Cleared texels hold exactly the far plane; anything less is geometry.
+            let occluded = px.iter().filter(|d| **d < 0.999).count();
+            *slot = occluded as f32 / px.len() as f32;
         }
-        // Cleared texels hold exactly the far plane; anything less is geometry.
-        let occluded = px.iter().filter(|d| **d < 0.999).count();
-        Some((res, occluded as f32 / px.len() as f32))
+        Some((res, cov))
     }
 
     // Which link of the sky-map chain is missing, for the one-shot diagnostic in lib.rs:
-    // (cull view prepared, draw bind built, retained instances, sub-draws the sky CULL emitted).
+    // (cull views prepared, draw binds built, retained instances, sub-draws the ZENITH cull
+    // emitted).
     //
-    // The last number is the one that matters and the reason this is not just three booleans:
-    // "the args buffer exists" says nothing about whether anything survived into it, and an
-    // empty map is equally consistent with a cull that rejected the world and a draw that never
-    // ran. Reading the survivor counters separates the two.
+    // The last number is the one that matters and the reason this is not just booleans: "the
+    // args buffer exists" says nothing about whether anything survived into it, and an empty map
+    // is equally consistent with a cull that rejected the world and a draw that never ran.
     pub fn interior_sky_debug_state(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
     ) -> (bool, bool, u32, u32) {
-        // Read the ARGS, not the counters: the counter buffers are STORAGE|INDIRECT|COPY_DST with
-        // no COPY_SRC, and the args are the actual draw payload anyway. A sub-draw with
-        // instance_count 0 is the unfilled tail, so only non-zero ones count.
+        // Read the ARGS, not the counters: the counter buffers carry no COPY_SRC, and the args
+        // are the actual draw payload anyway. instance_count 0 is the unfilled tail.
         let words = (cull::CULL_VARIANT_COUNT as u64 * self.cull.variant_capacity() as u64
             * (INDIRECT_ARG_SIZE / 4))
             .min(1 << 20);
         let survivors = self
             .cull
-            .sky_out_args()
+            .sky_out_args(0)
             .map(|a| {
                 read_u32_buffer(device, queue, a, words)
                     .chunks_exact((INDIRECT_ARG_SIZE / 4) as usize)
@@ -5719,8 +5783,8 @@ impl Gfx3d {
             })
             .unwrap_or(0);
         (
-            self.cull.sky_out_args().is_some(),
-            self.gpu_sky_group1.is_some(),
+            self.cull.sky_out_args(0).is_some(),
+            !self.gpu_sky_group1.is_empty(),
             self.cull.instance_count(),
             survivors,
         )
@@ -5802,26 +5866,34 @@ impl Gfx3d {
         // is camera-relative too. sky_vis::build_view returns the ABSOLUTE-space matrix (that is
         // what the fragment shader needs, and it is the same for every camera in the frame), so
         // both consumers here take it right-multiplied by a +cam_pos translation.
-        if let Some(sky) = self.interior_sky_view {
-            let vp_rel = sky.view_proj * glam::Mat4::from_translation(cam_pos);
-            self.shadow_pass_ubo.ensure(device, SKY_UBO_SLOT + 1);
-            if let Some(buf) = self.shadow_pass_ubo.buf.as_ref() {
-                let entry = ShadowPassUbo {
-                    light_vp: vp_rel.to_cols_array(),
-                    cam_pos: [cam_pos.x, cam_pos.y, cam_pos.z, 0.0],
-                };
-                queue.write_buffer(
-                    buf,
-                    SKY_UBO_SLOT as u64 * self.shadow_pass_ubo.stride,
-                    bytemuck::bytes_of(&entry),
+        if self.interior_sky_view.is_some() {
+            let dirs = sky_vis::directions();
+            self.cull
+                .set_sky_view_count(device, sky_vis::DIRECTION_COUNT);
+            self.shadow_pass_ubo
+                .ensure(device, SKY_UBO_SLOT + sky_vis::DIRECTION_COUNT);
+            for i in 0..sky_vis::DIRECTION_COUNT {
+                let vp_rel =
+                    self.interior_sky_views[i].view_proj * glam::Mat4::from_translation(cam_pos);
+                if let Some(buf) = self.shadow_pass_ubo.buf.as_ref() {
+                    let entry = ShadowPassUbo {
+                        light_vp: vp_rel.to_cols_array(),
+                        cam_pos: [cam_pos.x, cam_pos.y, cam_pos.z, 0.0],
+                    };
+                    queue.write_buffer(
+                        buf,
+                        (SKY_UBO_SLOT + i) as u64 * self.shadow_pass_ubo.stride,
+                        bytemuck::bytes_of(&entry),
+                    );
+                }
+                let _ = dirs;
+                self.cull.set_sky_params(
+                    i,
+                    cull::params_from_shadow_cascade(vp_rel, cam_pos, self.cull_inputs),
                 );
             }
-            self.cull.set_sky_params(
-                device,
-                cull::params_from_shadow_cascade(vp_rel, cam_pos, self.cull_inputs),
-            );
         } else {
-            self.cull.clear_sky_view();
+            self.cull.set_sky_view_count(device, 0);
         }
         let grew = self.cull.prepare(device, queue);
         if grew
@@ -5829,7 +5901,7 @@ impl Gfx3d {
             || self.gpu_shadow_group1.len() != n_cascades
             // The sky view is allocated on first enable and dropped on disable, so its records
             // buffer appears/disappears without any of the growth signals firing.
-            || self.gpu_sky_group1.is_some() != self.cull.sky_out_records().is_some()
+            || self.gpu_sky_group1.len() != self.cull.sky_view_count()
         {
             self.rebuild_gpu_group1(device);
         }
@@ -5879,11 +5951,14 @@ impl Gfx3d {
             .cull
             .reflection_out_records()
             .map(|r| build("wgr_gpu_driven_reflection_group1_bind", r));
-        // Interior sky-visibility view's records (Some only while the feature is enabled).
-        self.gpu_sky_group1 = self
-            .cull
-            .sky_out_records()
-            .map(|r| build("wgr_gpu_driven_sky_group1_bind", r));
+        // Interior sky-visibility views' records — one per sampled direction, empty when off.
+        self.gpu_sky_group1 = (0..self.cull.sky_view_count())
+            .map(|i| {
+                self.cull
+                    .sky_out_records(i)
+                    .map(|r| build("wgr_gpu_driven_sky_group1_bind", r))
+            })
+            .collect();
         // Color-pass draw bind: instances + the occlusion view's records + shared materials.
         // Only when the color view is live (occlusion active); else the color draw reuses the
         // main bind.
@@ -6490,10 +6565,48 @@ fn gtao_bent_normal_reaches_the_ambient_term() {
             include_str!("../terrain/terrain.wgsl"),
         ),
     ] {
+        // The bent normal must still REACH the lookup now that LIT-020 steers the same value a
+        // second time: the interior term wraps it (interior_sky_ambient_normal(world, bent))
+        // rather than replacing it, so both occluders compose instead of one quietly winning.
         assert!(
             src.contains("sky_irradiance(gtao_bent_normal_world(")
-                || src.contains("let amb_n = gtao_bent_normal_world("),
+                || src.contains("let amb_n = gtao_bent_normal_world(")
+                || (src.contains("gtao_bent_normal_world(")
+                    && src.contains("interior_sky_ambient_normal(")
+                    && src.contains("sky_irradiance(amb_n)")),
             "{name} must sample sky irradiance along the bent normal, not the surface normal"
         );
     }
+}
+
+// The interior steer must WRAP the bent normal, not discard it. Written separately from the test
+// above because the failure it guards is the opposite one: a later edit that drops
+// gtao_bent_normal_world and passes the raw surface normal into the interior steer would still
+// satisfy "the interior term is wired up" while silently deleting the screen-space term.
+#[test]
+fn interior_sky_steer_composes_with_the_bent_normal() {
+    for (name, src) in [
+        (
+            "shaders/shading.wgsl",
+            include_str!("../shaders/shading.wgsl"),
+        ),
+        (
+            "terrain/terrain.wgsl",
+            include_str!("../terrain/terrain.wgsl"),
+        ),
+    ] {
+        assert!(
+            src.contains("interior_sky_ambient_normal(")
+                && !src.contains("interior_sky_ambient_normal(world_abs, nrm)")
+                && !src.contains("interior_sky_ambient_normal(in.world_pos + frame.cam_pos.xyz, n)"),
+            "{name} must feed the BENT normal into the interior steer, not the raw surface normal"
+        );
+    }
+    let frame = include_str!("../shaders/frame.wgsl");
+    // The steer is what turns visibility into direction; without the reach weighting it is just
+    // an expensive way to return the normal.
+    assert!(
+        frame.contains("interior_sky_reach_dir(world_abs, i) * facing"),
+        "the steered direction must be weighted by each direction's own visibility"
+    );
 }
