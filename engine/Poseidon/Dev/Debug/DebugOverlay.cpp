@@ -4085,6 +4085,15 @@ void DrawWaterTab()
                           "1 = the reference's energy mapped onto our HDR sun radiance.");
     changed |= ImGui::SliderFloat("Reflection gain", &s.reflectionGain, 0.0f, 1.5f, "%.2f");
     changed |= ImGui::SliderFloat("Reflection FOV padding", &s.reflectionFovPad, 1.0f, 3.0f, "%.2fx");
+    changed |= ImGui::SliderFloat("Reflection edge fade", &s.reflectionEdgeFade, 0.02f, 0.49f, "%.2f");
+    ImGui::TextDisabled("Fraction of the reflection target over which the planar reflection hands back to the "
+                        "sky/environment sample. Some water cannot be covered by a planar reflection at all: "
+                        "tilt down and the water beneath you maps outside the mirrored camera's frustum at ANY "
+                        "field of view, so padding cannot reach it and this fade is what carries those pixels. "
+                        "At 0.03 the swap read as a line across the sea, because planar has parallax-correct "
+                        "clouds and the environment sample does not. Wider = the reflection loses parallax "
+                        "gradually instead of ending; too wide and you lose planar parallax over most of the "
+                        "water.");
     ImGui::TextDisabled("How much wider the planar reflection renders than the screen's field of view. The "
                         "reflected camera otherwise inherits the main projection exactly, so a grazing "
                         "reflection needs directions that were never rendered -- the lookup runs off the edge "

@@ -707,7 +707,8 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // WgrWaterParams at its asserted size on both sides of the FFI.
     _params.underwater_gate = {look.underwaterEffect ? 1.0f : 0.0f,
                                std::clamp(look.waveFoamIntensity, 0.0f, 2.0f),
-                               std::clamp(look.waveFoamDeepFalloff, 0.0f, 1.0f), 0.0f};
+                               std::clamp(look.waveFoamDeepFalloff, 0.0f, 1.0f),
+                               std::clamp(look.reflectionEdgeFade, 0.02f, 0.49f)};
     _params.sea_params = {look.seaStateCoupling ? 1.0f : 0.0f,
                           look.seaStateCoupling ? SeaStateResidualAmplitude(look.waveAmp) : look.waveAmp,
                           look.lowQuality ? 1.0f : 0.0f, look.shoreWaveGain};

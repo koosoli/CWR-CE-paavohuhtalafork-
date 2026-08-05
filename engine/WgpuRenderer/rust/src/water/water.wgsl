@@ -1026,7 +1026,19 @@ fn planar_reflection(surface_rel: vec3<f32>, surface_normal: vec3<f32>, roughnes
     // filtered mip chain below instead.
     let distorted_uv = clamp(uv, texel, vec2<f32>(1.0) - texel);
     let edge = min(min(distorted_uv.x, distorted_uv.y), min(1.0 - distorted_uv.x, 1.0 - distorted_uv.y));
-    let valid = smoothstep(max(texel.x, texel.y), 0.03, edge);
+    // Hand over to the sky/environment reflection across a WIDE band, not a hard rim.
+    //
+    // Some water simply cannot be covered by a planar reflection: tilt down and the water directly
+    // beneath you maps to a point directly ABOVE the mirrored camera, which is looking up and
+    // forward -- outside its frustum at any sane field of view. Widening the reflected FOV does not
+    // reach that case, so the fade is what has to carry it.
+    //
+    // At the old 3% the two sources swapped over almost instantly, and because planar carries
+    // parallax-correct clouds while the environment sample is a distant approximation, the swap
+    // read as a line drawn across the sea. Spreading it over a large fraction of the target makes
+    // the same handover invisible -- the reflection loses parallax gradually instead of ending.
+    let fade_band = clamp(wp.underwater_gate.w, 0.02, 0.49);
+    let valid = smoothstep(max(texel.x, texel.y), fade_band, edge);
     // The planar target is a real filtered mip pyramid. Keep a small minimum
     // footprint even on calm water: otherwise the cloud layer reads like a second,
     // unnaturally sharp sky painted on the sea. Surface roughness still broadens it

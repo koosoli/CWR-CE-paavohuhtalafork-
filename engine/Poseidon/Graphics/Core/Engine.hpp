@@ -1566,6 +1566,13 @@ class Engine : public IGraphicsEngine
         // resolution for coverage; the planar sample is mip-filtered on purpose, so a little
         // softness costs less here than a hard edge. 1.0 = the old behaviour.
         float reflectionFovPad = 1.35f;
+        // Fraction of the reflection target over which the planar reflection hands back to the
+        // sky/environment sample. Some water cannot be covered by a planar reflection at all --
+        // tilt down and the water beneath you maps outside the mirrored camera's frustum at any
+        // field of view -- so this fade is what carries those pixels. At the old 3% the swap read
+        // as a line across the sea, because planar has parallax-correct clouds and the environment
+        // sample does not. Wider = the reflection loses parallax gradually instead of ending.
+        float reflectionEdgeFade = 0.22f;
 
         // WTR-LOOK — physical sea-state coupling. The amplitude control used to scale the whole
         // variance spectrum uniformly, which raised every wave at its existing wavelength: a
