@@ -313,7 +313,12 @@ $fingerprint = [ordered]@{
     files          = @($entries)
 }
 $fingerprintPath = Join-Path $packageDir 'package-fingerprint.json'
-$fingerprint | ConvertTo-Json -Depth 6 | Out-File -FilePath $fingerprintPath -Encoding utf8
+# NOT Out-File -Encoding utf8: Windows PowerShell 5.1 writes a BOM, and a leading
+# BOM makes the file fail `json.load` in Python and every other strict parser.
+# This document exists so an outside reader can verify the package without
+# trusting us -- shipping it in a form their tools reject defeats it entirely.
+$json = $fingerprint | ConvertTo-Json -Depth 6
+[System.IO.File]::WriteAllText($fingerprintPath, $json, (New-Object System.Text.UTF8Encoding($false)))
 
 $zipPath = Join-Path $OutputRoot "$packageName.zip"
 if (Test-Path $zipPath) { Remove-Item -Force $zipPath }
