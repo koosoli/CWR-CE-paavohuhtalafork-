@@ -699,7 +699,12 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // gated by this flag, but depth alone cannot turn the pass off: the renderer engages it on
     // either that depth or the camera being near the surface, and a submerged camera is always
     // near the surface. That is why the checkbox appeared to do nothing.
-    _params.underwater_gate = {look.underwaterEffect ? 1.0f : 0.0f, 0.0f, 0.0f, 0.0f};
+    // y/z were reserved lanes; they now carry the WAVE-foam controls (whitecaps), which are
+    // deliberately separate from foamIntensity's shoreline band. Reusing spare lanes keeps
+    // WgrWaterParams at its asserted size on both sides of the FFI.
+    _params.underwater_gate = {look.underwaterEffect ? 1.0f : 0.0f,
+                               std::clamp(look.waveFoamIntensity, 0.0f, 2.0f),
+                               std::clamp(look.waveFoamDeepFalloff, 0.0f, 1.0f), 0.0f};
     _params.sea_params = {look.seaStateCoupling ? 1.0f : 0.0f,
                           look.seaStateCoupling ? SeaStateResidualAmplitude(look.waveAmp) : look.waveAmp,
                           look.lowQuality ? 1.0f : 0.0f, look.shoreWaveGain};

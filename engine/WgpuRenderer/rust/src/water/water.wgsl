@@ -50,6 +50,15 @@ struct WaterParams {
     debug_params: vec4<f32>, // WTR-003: x = debug view (0 = normal), y = spray gate, z = spray activity, w = viewport height px
     look_params: vec4<f32>,  // WTR-LOOK: x = energy model (0 legacy, 1 physical), y = glitter gain, z = SSS gain, w = reflection gain
     sea_params: vec4<f32>,   // WTR-LOOK: x = sea-state coupling, y = residual spectrum amp, z = low quality, w = shore breaker gain
+    // Declared so the two lanes below are reachable; the underwater COMPOSITOR is a separate
+    // shader that owns underwater_params in full.
+    underwater_params: vec4<f32>,
+    // x = underwater effect on/off (read by the compositor, not here).
+    // y = WAVE foam intensity: whitecaps and persistent breaker foam only, independent of the
+    //     shoreline band that foam_intensity drives.
+    // z = deep-water falloff for that wave foam, 0 = break the same everywhere, 1 = open ocean
+    //     stays nearly smooth. w reserved.
+    underwater_gate: vec4<f32>,
 };
 
 // Must match GRID_N in water/mod.rs -- this drives the CDLOD morph target, so a
@@ -1688,7 +1697,11 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
         // water forces that much sooner: the bottom compresses the orbital motion, the crest steepens
         // and spills. Over deep water the same sea state carries long swell that mostly does not break.
         let deep_water = smoothstep(6.0, 45.0, water_depth); // 0 = shoaling, 1 = open ocean
-        let break_readiness = mix(1.05, 0.55, deep_water);
+        // A wave breaks when it can no longer support its own steepness, and shoaling water forces
+        // that much sooner. The deep-water end is now tunable: the fixed 0.55 still left open
+        // ocean noticeably capped, and whitecaps out there should be occasional, not general.
+        let deep_falloff = clamp(wp.underwater_gate.z, 0.0, 1.0);
+        let break_readiness = mix(1.05, mix(1.05, 0.12, deep_falloff), deep_water);
         breaker_foam = clamp(crest_top * mix(0.28, 0.72, jacobian_break) * crest_shape * break_readiness,
             0.0, 1.0);
     }
@@ -1707,8 +1720,13 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     // the shallow/deep colours are set to (even black). Making the slider authoritative over every
     // foam source gives an actual coverage control.
     let foam_scale = max(wp.foam_intensity, 0.0);
-    let unstructured_foam = max(foam, max(persistent_foam, breaker_foam) * foam_scale) +
-        spray_flecks * foam_scale;
+    // Wave foam gets its own multiplier ON TOP of the global one. The shoreline band and the
+    // whitecaps are different phenomena -- one is water breaking on land, the other is a crest
+    // collapsing under its own steepness -- and wanting more of one while wanting less of the
+    // other is the normal case, not an exotic one.
+    let wave_scale = max(wp.underwater_gate.y, 0.0);
+    let unstructured_foam = max(foam, max(persistent_foam, breaker_foam) * foam_scale * wave_scale) +
+        spray_flecks * foam_scale * wave_scale;
     var combined_foam = 0.0;
     if (unstructured_foam > 0.001) {
         let foam_structure = foam_noise(in.base_xz * 2.7 + spray_wind * wp.time * 0.45, wp.time);

@@ -83,6 +83,12 @@ extern void SetVisibility(float distance);
 #include <array>
 #include <vector>
 
+// The cutscene letterbox state, defined at global scope in WorldSetup.cpp. Declared here rather
+// than pulled in via a header because only the Zeus camera needs it, and it must be at global
+// scope: declared inside the namespaces below, these would be new symbols that never link.
+extern bool showCinemaBorder;
+void ShowCinemaBorder(bool show);
+
 namespace Poseidon::Dev
 {
 namespace DebugOverlay
@@ -142,6 +148,18 @@ void ApplyDevPanelMouseState();
 // already implements collision-safe free flight and the normal movement
 // bindings.  Keeping it here also means it cannot leak into release builds.
 OLink<CameraVehicle> s_zeusCamera;
+// showCinemaBorder is a GLOBAL that defaults to true, so ANY active camera effect draws the
+// cutscene letterbox -- the CinemaBorder model plus the widescreen pillarbox bars. Zeus free-fly
+// installs a camera effect, so it inherited the letterbox and the view shrank to a cinematic band
+// the moment you enabled it. That is right for a cutscene and wrong for a developer camera.
+//
+// Saved and restored rather than forced off, because `showCinemaBorder` is also an SQF command a
+// mission may have set deliberately; Zeus is a temporary takeover and must give it back.
+//
+// Read through the global rather than a getter: ShowCinemaBorder(bool) has no matching reader,
+// and adding one for a dev panel is more surface than this needs. Both are declared at GLOBAL
+// scope above -- declaring them in here would name new symbols inside this namespace instead.
+bool s_zeusPrevCinemaBorder = true;
 std::string s_zeusStatus;
 int s_zeusSide = 0;
 int s_zeusSpawnKind = 0;
@@ -226,6 +244,8 @@ void EnableZeusCamera()
     GWorld->AddAnimal(camera);
     GWorld->SetCameraEffect(CreateCameraEffect(camera, "Internal", CamEffectTop, true));
     s_zeusCamera = camera;
+    s_zeusPrevCinemaBorder = showCinemaBorder;
+    ShowCinemaBorder(false);
     s_zeusCursor = new ControlsContainer(nullptr);
     s_zeusStatus = "Free-fly active: WASD move, Q/Z up/down, Shift doubles speed; hold RMB to look. Click Zeus objects "
                    "to select. Press Ctrl+` to reopen Zeus.";
@@ -242,6 +262,7 @@ void DisableZeusCamera()
         return;
     }
     GWorld->SetCameraEffect(nullptr);
+    ShowCinemaBorder(s_zeusPrevCinemaBorder);
     s_zeusCamera->SetDelete();
     s_zeusCamera = nullptr;
     s_zeusClickPlacement = false;
@@ -4136,6 +4157,20 @@ void DrawWaterTab()
     ImGui::SetItemTooltip("Column-depth band the churning foam spans (peaks ~1/4 in). 0 = no foam.");
     changed |= ImGui::SliderFloat("Foam intensity", &s.foamIntensity, 0.0f, 2.0f, "%.2f");
     ImGui::SetItemTooltip("Brightness / coverage of the shoreline foam.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Wave foam (whitecaps)");
+    ImGui::TextDisabled("Crests breaking on open water, separate from the shoreline band above. These are "
+                        "different phenomena -- water breaking on land versus a crest collapsing under its own "
+                        "steepness -- and 'Foam intensity' used to scale both, so calming the ocean also "
+                        "stripped the surf.");
+    changed |= ImGui::SliderFloat("Wave foam intensity", &s.waveFoamIntensity, 0.0f, 2.0f, "%.2f");
+    ImGui::SetItemTooltip("Whitecaps and persistent breaker foam. 0 = none; the shoreline band is unaffected.");
+    changed |= ImGui::SliderFloat("Deep-water falloff", &s.waveFoamDeepFalloff, 0.0f, 1.0f, "%.2f");
+    ImGui::SetItemTooltip("How strongly deep water suppresses whitecaps. 0 = waves break the same everywhere "
+                          "(the old behaviour, which is why the open ocean read as too foamy). 1 = open water "
+                          "stays nearly smooth and breaking concentrates in shoaling water near the coast, "
+                          "which is where a real sea breaks. Depth ramp is 6 m to 45 m.");
     changed |= ImGui::SliderFloat("Swash amplitude (m)", &s.swashAmp, 0.0f, 1.0f, "%.2f");
     ImGui::SetItemTooltip("How far the near-shore waterline oscillates in/out over the wet beach "
                           "(cosmetic — buoyancy stays on the flat plane).");

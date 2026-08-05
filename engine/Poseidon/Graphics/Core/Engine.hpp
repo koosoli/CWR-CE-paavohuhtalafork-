@@ -1511,6 +1511,16 @@ class Engine : public IGraphicsEngine
         // oscillation of the near-shore water edge in/out over the wet beach. Cosmetic only.
         float foamWidth = 1.12f;   // m of column depth the foam band spans (peaks ~1/4 in)
         float foamIntensity = 0.32f;// foam brightness / coverage
+        // WAVE foam: whitecaps and persistent breaker foam on open water, as opposed to the
+        // shoreline band the two values above drive. Separate because they are different
+        // phenomena -- water breaking on land versus a crest collapsing under its own steepness --
+        // and foamIntensity used to scale both, so there was no way to calm the ocean without
+        // also stripping the surf.
+        float waveFoamIntensity = 1.0f;
+        // How strongly deep water suppresses whitecaps. 0 = waves break the same everywhere;
+        // 1 = open ocean stays nearly smooth and breaking is concentrated where it belongs, in
+        // shoaling water near the coast.
+        float waveFoamDeepFalloff = 0.75f;
         // m the near-shore waterline oscillates in/out. Reduced from 0.47: this shifts the
         // EFFECTIVE column depth, so on a gently sloping beach half a metre of depth translates
         // into several metres of horizontal waterline travel, which reads as the water pulling
