@@ -33,8 +33,13 @@ gate.
 - [x] **`WTR-001` audit items answered with evidence** — eight of nine. See that ticket for the `WaterSurfaceState` dead fields, the slope-variance double-count, the cascade weights, SSR confidence, and a debug view that reports the wrong quantity.
 - [x] **Zeus interactions verified by hand (2026-08-04)** — owner-confirmed working: cursor ownership in the focused viewport, lasso, copy/paste, group drag, and **mouse-wheel elevation** (Page Up/Down was moved to the wheel after it was found to collide with the free-fly camera's own `MoveUp`/`MoveDown` bindings). These are interactive mouse judgements and cannot be automated. Current build is installed at `D:\SteamLibrary\...\ARMA Cold War Assault\ColdWarAssault.exe`.
 - [x] **`WTR-001` closed (2026-08-04)** — reflection ownership resolved. Whether cloud duplication is gone is a visual judgement no code inspection settles; the owner confirmed it directly rather than via debug views 40/42. Recorded as **owner-verified, not independently reviewed** — Preview 0 has no second human, so that distinction is what the reader needs, not a bare tick.
-- [ ] **Verification commits and evidence hashes are populated** (`8456fd5`): all six blockers carry `verification_commit: 85b6772`, the first workflow run to go green, and hashes derived by `scripts/compute_evidence_hash.py` rather than asserted — two of the values carried in the handover notes had already drifted. **Reviewers remain**, and are the only thing left on this line. Then move each Preview-0 blocker from `INTEGRATED` to `VALIDATED` only when its state-dependent gate passes. Note the review model: Preview 0 has **no independent reviewer and cannot obtain one** — Oliver Kay is the only human on the project, so review is owner-performed smoke testing recorded per ticket in `reviewer_method`. The authoring AI is deliberately never recorded as a reviewer, since the author cannot also be the independent check. `VALIDATED` here means the owner verified it, not that a second party did.
-- [ ] Perform the reviewed **activation** pass before authorising `REL-000`. The **clean-checkout
+- [x] **Verification commits and evidence hashes are populated** (`8456fd5`): all six blockers carry `verification_commit: 85b6772`, the first workflow run to go green, and hashes derived by `scripts/compute_evidence_hash.py` rather than asserted — two of the values carried in the handover notes had already drifted. **Reviewers remain**, and are the only thing left on this line. Then move each Preview-0 blocker from `INTEGRATED` to `VALIDATED` only when its state-dependent gate passes. Note the review model: Preview 0 has **no independent reviewer and cannot obtain one** — Oliver Kay is the only human on the project, so review is owner-performed smoke testing recorded per ticket in `reviewer_method`. The authoring AI is deliberately never recorded as a reviewer, since the author cannot also be the independent check. `VALIDATED` here means the owner verified it, not that a second party did. **Done 2026-08-03**:
+  each blocker records `reviewer: Oliver Kay` and a `reviewer_method` stating what was actually
+  exercised, and all six are `VALIDATED`. Two of those methods deliberately decline the smoke-test
+  claim — `CORE-005` is the ledger itself, which a running game cannot exercise, and `TEST-002`'s
+  capture paths were not driven by hand — so the record says what each review did and did not cover
+  rather than implying a uniform check.
+- [x] Perform the reviewed **activation** pass before authorising `REL-000`. The **clean-checkout
   reproducibility** half is done (2026-08-05) and found four defects, all fixed, all of which
   failed silently: the build/install/run scripts were documented only in the generated `.qoder`
   wiki and not in `CLAUDE.md` (`d9ce33b`), so an install missing 64 files looked normal;
@@ -42,8 +47,15 @@ gate.
   presented as "the C++ compiler is broken" (`ef2cdfc`); a fresh clone failed checkout on Windows
   with `Filename too long` (`3a66939`); and `assets/` was never staged, so grass silently ran on
   its procedural fallback (`20eda5a`). Verified end to end: fresh clone -> `Build.ps1` -> full
-  build -> `dist/` complete. What remains is activation itself, plus the owner-performed reviews
-  on the line above.
+  build -> `dist/` complete.
+
+  **Activation performed 2026-08-05** (`3723892`): the overlay is `template: false`,
+  `activation_state: ACTIVE`, `implementation_forbidden_until_resolved: false`, with a
+  `bootstrap_policy.resolution` block recording each required check. It is late rather than early —
+  all six blockers were already `VALIDATED` before the pass ran — so the resolution note states
+  that the flags record work which happened rather than authorising work that had not.
+  `REL-000` is promoted into `authorised_tickets` and `execution_queue` and has an `OPEN` ledger
+  record. Its packaging commit is **not** automatically `HEAD`: see the caveat on that record.
 
 ## Version 4.4.1 execution-contract correction
 
@@ -1576,7 +1588,7 @@ Default ON, own dev-tools tab, three-way debug view (off / AO / bent normal).
 The line above about dark interiors held exactly as written: GTAO's radius is ~2 m and a room is
 larger, so interiors barely changed. That is `LIT-020`, below.
 
-## LIT-020 — Geometry-aware interior sky visibility — REQUIRED outcome — **IMPLEMENTED 2026-08-05, PARKED: TESTER UNSATISFIED**
+## LIT-020 — Geometry-aware interior sky visibility — REQUIRED outcome — **BOTH STAGES IMPLEMENTED AND DEFAULT ON 2026-08-05; NOT RE-JUDGED, AND STAGE 2 IS UNHARDENED**
 
 Investigate building voxelisation, outside flood fill, sky-visibility probes/volumes, and door/window portals.
 
@@ -1592,32 +1604,53 @@ Investigate building voxelisation, outside flood fill, sky-visibility probes/vol
       tab, `Ctrl+Shift+I` / `Ctrl+Shift+O` hotkeys, default OFF.
 - [x] Hardware ray tracing evaluated and rejected: wgpu 29 gates ray queries behind an
       experimental **Vulkan-only** feature while this renderer runs DX12 on Windows.
-- [ ] **PARKED — the tester is not satisfied, and the feature stays default OFF.**
+- [x] **Stage 2 built the same day the parking notice was written** (`e74041f`..`a3e80aa`): the
+      per-model sky-visibility bake, fed by real LOD-0 geometry straight out of the shared geometry
+      pool, sampled per fragment, storing a DIRECTION per voxel alongside the scalar. Both stages
+      are now **default ON**.
+- [ ] **Not re-judged.** The owner verdict below was recorded against the per-frame-only version.
+      Nobody has looked at the baked path in a real building, so the acceptance list is stale in
+      the optimistic direction, not the pessimistic one.
+- [ ] **Stage 2 is unhardened, and this is a release risk, not a polish item.** §3d's requirements
+      do not exist in the code: no content-hashed disk cache, no background scheduling with a
+      reach = 1 fallback, no model-variance policy. `sky_bake.rs` is synchronous by design and the
+      layer that was supposed to sit above it was never written. Measured at ~18-22 ms per model;
+      ~500 models is a ~10 s main-thread load stall, shipping by default. Either harden it, or
+      default it OFF before anything is packaged. Tracked as a packaging caveat on `REL-000`.
 
-**Owner verdict (2026-08-05).** Foliage improved — "trees look better with interior ambient
+**Owner verdict (2026-08-05), against the per-frame-only version.** Foliage improved — "trees look better with interior ambient
 enabled". Interiors did not: *"the patches of strange shadows is still a problem inside
 buildings"*. Two rounds of fixes (nine-tap two-ring kernel for the banding, slope-scaled bias for
 grazing-angle self-shadowing) reduced it but did not remove it. Parked on the owner's instruction:
 *"i also do not want to continue on this for now unless you know how to fix it for good"*.
 
-**Why the remaining artifact is structural, not a tuning failure.** Every version of this samples a
-CAMERA-space depth map on a texel grid that has no relationship to the surfaces receiving the
-result. A wall gets its occlusion from texels that straddle its own edges, so the boundary between
-"lit" and "occluded" lands on the map's grid rather than on the geometry — which is exactly what
-patches with hard, geometry-unrelated edges look like. Wider kernels and better bias move that
-boundary around; they cannot make it follow the wall, because the information needed to do so is
-not in the map.
+**The diagnosis recorded here on 2026-08-05 was wrong, and the correction matters.** This section
+argued the patches were structural to sampling a CAMERA-space depth map — a texel grid unrelated to
+the surfaces receiving the result, so the lit/occluded boundary lands on the grid instead of on the
+wall. That reasoning was sound and the conclusion was still false. The tester isolated the real
+cause by setting `directional = 0`, which removes the patches entirely: it was the **directional
+steering**, not the depth sampling. `interior_sky_ambient_normal` bent the shading normal toward
+the reach-weighted open direction across only FIVE sampled directions, so the steered normal jumped
+between discrete values and the sky-irradiance lookup jumped with it. Hard edges that look like
+geometry, produced by quantisation. Recorded rather than quietly amended, because "structural to
+the approach" is exactly the kind of claim that stops the right fix being attempted.
 
-**The durable fix is the per-model bake (§3c / option E), not another tuning pass.** It resolves
-occlusion in MODEL space at ~2 cm, trilinearly filtered, so the result is attached to the building's
-own geometry, is temporally exact, and has no camera-relative grid to alias against. It also costs
-nothing per frame, which independently fixes the fixed ~0.36 ms cull tax measured here. §3d records
-the constraints a resumption must satisfy (content-hashed disk cache, background bake with a safe
-fallback, per-object volume lookup rather than a per-pixel loop, an explicit policy for animated
-doors / damaged models / mirrored instances). That is multi-day work, not a tweak — which is why it
-is parked rather than attempted now.
+**The per-model bake (§3c / option E) was then built anyway, and it is the right home for the
+steering.** It resolves occlusion in MODEL space, trilinearly filtered, attached to the building's
+own geometry with no camera-relative grid to alias against, and it stores the average incoming sky
+DIRECTION per voxel integrated over 41 directions — so steering is smooth, with nothing left to
+quantise. Falsifier built into its test suite: the window-side-brighter assertion is paired with
+the SAME room with the opening filled, which must NOT show the gradient. Both pass.
 
-Acceptance (unchanged; re-judge after the bake, not against the parked version):
+**What is missing is §3d, and it is missing entirely.** Content-hashed disk cache, background
+scheduling with a reach = 1 fallback, and the model-variance policy (animated doors, damaged and
+destroyed models, alpha-tested glass, proxies, visual LODs, and mirrored or negatively scaled
+instances — a model-space volume is orientation-free but is NOT mirror-free). `sky_bake.rs` is
+deliberately pure and synchronous; the layer that was to sit above it does not exist. At ~18-22 ms
+per model that is a ~10 s load stall on a full library, currently on by default.
+
+Acceptance (recorded against the per-frame-only version; **not yet re-judged** against the baked
+path, which is what the remaining item below is actually asking about):
 
 - [x] Porch partly dark.
 - [~] Window-adjacent room receives light — the tilted maps do let light in, but the surrounding
@@ -2867,9 +2900,11 @@ Milestone 2B may overlap Compatibility Preview C0 packaging when ticket ownershi
 - [ ] CLD-030.
 - [ ] GRS-040 downwash preservation.
 - [x] LIT-010 — shipped, default ON, frame cost measured (~8% of the GPU frame).
-- [~] Initial LIT-020 prototype — built and measured, but PARKED default-OFF: tester unsatisfied
-      with the residual shadow patches inside buildings. Resumption path is the per-model bake, not
-      further tuning. See LIT-020 above.
+- [~] LIT-020 — both stages implemented and default ON as of 2026-08-05, including the per-model
+      baked sky-visibility volumes. Two things keep this open rather than closed: the owner has not
+      re-judged it since the bake landed, and the §3d hardening (content-hashed cache, background
+      scheduling, model-variance policy) does not exist, so the bake costs a ~10 s load stall by
+      default. See LIT-020 above; the packaging consequence is recorded on REL-000.
 - [ ] LIT-030 may investigate indirect-light options but does not block Preview 1A.
 - [ ] TEMP-000 rules are applied to new cloud, god-ray, reflection, or volumetric histories where relevant.
 - [ ] Zeus weather/time commands through ZEU-000A.
