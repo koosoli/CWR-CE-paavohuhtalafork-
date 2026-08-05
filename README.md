@@ -33,6 +33,10 @@ that still let the original game content remain at the centre of the experience:
 - A procedural sky where the clouds cast shadows on the ground: terrain, objects,
   grass and water all read the same sun-transmittance map, so a passing deck dims
   the scene together rather than only the ground. Nights have stars (no moon yet).
+- Screen-space ambient occlusion (GTAO): scalar occlusion plus a bent-normal
+  directional ambient term and a hierarchical depth-mip march, on by default with
+  its own developer tab and debug views. Its cost scales with pixel count, so it
+  is worth turning down before anything else on a high-resolution display.
 - A modern, observable rendering path with GPU timing and developer diagnostics
   for testing and iteration.
 - Zeus mode in the developer tools: a Game Master-style free-fly camera with
