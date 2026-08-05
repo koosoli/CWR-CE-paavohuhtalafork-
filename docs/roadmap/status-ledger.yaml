@@ -480,11 +480,11 @@ tickets:
     class: RELEASE
     obligation: REQUIRED
     execution_mode: IMPLEMENT
-    scheduling_state: OPEN
-    status: PLANNED
+    scheduling_state: ACTIVE
+    status: INTEGRATED
     outcome: NOT_APPLICABLE
-    owner: null
-    branch: null
+    owner: Oliver Kay
+    branch: new-renderer-infrastructure
     baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
     verification_commit: null
     milestone: 0
@@ -492,16 +492,25 @@ tickets:
     depends_on: [PERF-001, CORE-005, CORE-NEG-001, CORE-NEG-002, RND-005A, TEST-002]
     blocked_by: []
     blocks: []
-    implementation_commits: []
+    implementation_commits: [4cf53ba, 8cdca40, d64f566, 5d45899]
     production_call_sites: []
-    test_ids: []
+    test_ids: [preview0-capability-matrix-check]
     benchmark_artifacts: []
     evidence_hash: null
     decision_record: null
     known_failures:
       - >-
-        Not started. Promoted 2026-08-05 because all six technical blockers are
-        VALIDATED and clean-checkout reproducibility was verified end to end.
+        INTEGRATED means the release TOOLING is on the branch and exercised, not
+        that a package has been published. Landed 2026-08-05: the capability
+        matrix generated from both ledgers with a CI drift check, the release
+        notes, and a packaging script proven end to end against a real build.
+        Nothing has been released.
+      - >-
+        Outstanding REL-000 acceptance items, none of which the tooling can
+        supply on its own: a demonstration video showing the released build; a
+        reference capture and timing bundle produced FROM the packaged commit
+        rather than carried from an earlier one; GL33/WGPU comparison evidence
+        regenerated against that same commit; and the release decision itself.
       - >-
         The packaged commit must be pinned deliberately. The recorded Preview-0
         manifest describes an earlier commit, and renderer work has landed since
@@ -521,4 +530,8 @@ tickets:
     reviewer: null
     reviewer_method: null
     supersedes: []
-    evidence: []
+    evidence:
+      - docs/release/preview0/README.md
+      - docs/release/preview0/capability-matrix.md
+      - scripts/generate_capability_matrix.py
+      - scripts/package_preview0.ps1

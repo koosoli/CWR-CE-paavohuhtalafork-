@@ -59,5 +59,5 @@ exercised. That distinction is the honest reading of every row below.
 | `CORE-NEG-002` | Versioned C++/Rust ABI | VALIDATED | Oliver Kay |
 | `RND-005A` | Renderer startup, capability, and safe shutdown | VALIDATED | Oliver Kay |
 | `TEST-002` | Capture, metrics, and build fingerprint | VALIDATED | Oliver Kay |
-| `REL-000` | Preview release package and public capability matrix | PLANNED | not yet reviewed |
+| `REL-000` | Preview release package and public capability matrix | INTEGRATED | not yet reviewed |
 
