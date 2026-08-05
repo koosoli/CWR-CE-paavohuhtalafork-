@@ -427,6 +427,42 @@ systems:
       - file: engine/WgpuRenderer/rust/src/gfx3d/sky_bake.rs
         symbol: SkyBake
 
+  - id: RSYS-GRASS
+    title: GPU-placed three-ring grass field
+    plan: engine/WgpuRenderer/docs/grass-plan.md
+    status: PARTIAL
+    owner: null
+    audited: 2026-08-05
+    completeness: >-
+      Ships and is on by default. Three compute-placed LOD rings — near (512² candidates,
+      real blade geometry, the only ring that casts shadows), mid (384², crossed cards
+      keeping a blade silhouette), far (384², terrain-conforming coverage quads, gated off
+      by default). Wind, tracks, interactor and helicopter downwash all drive placement.
+      Measured 2026-08-05 in the reference mission at 3441x1440: prepass 0.970 + colour
+      1.053 + shadow 0.156 = 2.179 ms of a 24.178 ms frame, 9.0%, at 48 647 near and
+      14 165 mid instances.
+
+      Surface detail has two paths: a procedurally generated 8-layer 64x256 array built on
+      the CPU at init, and authored images loaded from disk when present, with a silent
+      deliberate fallback either way. Missing or corrupt images cannot prevent startup.
+
+      PARTIAL for provenance, not for rendering. See known_gap; the rendering half of
+      GRS-GATE-1 is done and the asset half has not started.
+    known_gap: >-
+      GRS-GATE-1 unpassed: assets/ is gitignored, so the authored texture path is dead on
+      any fresh clone and every user gets the procedural look. No ASSET-010 source
+      registry, no licence record for any current image, no deterministic processing
+      recipe, no validated optional package.
+    production_call_sites:
+      - file: engine/WgpuRenderer/rust/src/grass/mod.rs
+        symbol: GrassStats
+      - file: engine/WgpuRenderer/rust/src/grass/blade_atlas.rs
+        symbol: LAYER_W
+      - file: engine/WgpuRenderer/TerrainWgpu.cpp
+        symbol: UploadGrassBladeAtlas
+      - file: engine/WgpuRenderer/include/wgpu_renderer.hpp
+        symbol: WgrGrassParams
+
 unbuilt_candidates: >-
   Verified by RND-030 as having no implementation, and therefore the correct starting
   points for new renderer work: forward-plus, gpu-terrain-water-cull,

@@ -40,6 +40,7 @@ rows as "exists, extent unconfirmed".
 | Compute skinning bake | **Experimental** | Accurate as recorded. skin_bake_enabled defaults false; WGR_SKIN_BAKE=1 enables. | 2026-08-03 | [plan](../../../engine/WgpuRenderer/docs/compute-skin-bake-plan.md) |
 | Screen-space ambient occlusion (GTAO) | **Partial** | Cost at Tier 1 resolution is ~32% of the GPU frame, against a headline figure of 8% measured in an 800x600 window. | 2026-08-05 | [plan](../../../engine/WgpuRenderer/docs/screen-space-ao-plan.md) |
 | Geometry-aware interior sky visibility | **Partial** | Section 3d absent (disk cache, background scheduling, model-variance policy). | 2026-08-05 | [plan](../../../engine/WgpuRenderer/docs/interior-sky-visibility-plan.md) |
+| GPU-placed three-ring grass field | **Partial** | GRS-GATE-1 unpassed: assets/ is gitignored, so the authored texture path is dead on any fresh clone and every user gets the procedural look. | 2026-08-05 | [plan](../../../engine/WgpuRenderer/docs/grass-plan.md) |
 | forward-plus | **Unavailable** | No implementation on this branch. | — | — |
 | gpu-terrain-water-cull | **Unavailable** | No implementation on this branch. | — | — |
 | terrain-fractal-detail | **Unavailable** | No implementation on this branch. | — | — |
