@@ -371,6 +371,15 @@ fn sky_radiance(dir: vec3<f32>) -> vec3<f32> {
         color = mix(color, fog, clamp(th, 0.0, 1.0));
     }
 
+    let night_blend_stars = 1.0 - smoothstep(sky.night_params.y, sky.night_params.x, sun.y);
+    // Stars. Added with the night floor and BEFORE the cloud composite below, so a cloud deck
+    // covers them exactly as it covers the sky behind it -- stars punching through overcast is the
+    // giveaway that they were pasted on at the end.
+    let star_amount = max(sky.output.y, 0.0);
+    if (star_amount > 0.001 && night_blend_stars > 0.0) {
+        color = color + star_field(dir, sun) * star_amount * night_blend_stars;
+    }
+
     // Night-sky floor: an authored deep-blue that fills in as the sun drops below the horizon
     // (blended by sun altitude), so twilight/night settle into a believable blue instead of the
     // physical model's near-black. See docs/procedural-sky-plan.md Stage 6.
@@ -486,6 +495,65 @@ fn cloud_density(p: vec3<f32>) -> f32 {
     let dist_fade = 1.0 - smoothstep(sky.cloud2.w * 0.3, sky.cloud2.w * 0.8, length(p.xz));
     d = clamp(d - (1.0 - d) * detail * 0.4 * dist_fade, 0.0, 1.0);
     return d;
+}
+
+// A procedural star field on the celestial sphere.
+//
+// Cube-grid rather than spherical coordinates: lat/long bunches stars at the poles, and the
+// bunching is obvious the moment you look up. Quantising the unit direction itself gives cells of
+// roughly equal solid angle, so density is even across the sky.
+//
+// One star per cell at a hashed offset. The sharp falloff is what makes a star read as a POINT
+// rather than a blob -- the width is a fraction of a cell, so at typical resolutions a star lands
+// on one or two pixels, which is what it should be.
+fn star_hash3(c: vec3<f32>) -> vec3<f32> {
+    var p = vec3<f32>(dot(c, vec3<f32>(127.1, 311.7, 74.7)),
+                      dot(c, vec3<f32>(269.5, 183.3, 246.1)),
+                      dot(c, vec3<f32>(113.5, 271.9, 124.6)));
+    return fract(sin(p) * 43758.5453123);
+}
+
+fn star_field(dir_in: vec3<f32>, sun: vec3<f32>) -> vec3<f32> {
+    // Wheel the field with the SUN'S AZIMUTH rather than a clock. This UBO carries no time value,
+    // and the sun's bearing is the celestial clock anyway -- it advances at the same 15 deg an
+    // hour the sky really turns at, so the stars drift through the night for free and stay
+    // consistent with wherever the sun comes up.
+    let ang = atan2(sun.z, sun.x);
+    let ca = cos(ang);
+    let sa = sin(ang);
+    let dir = vec3<f32>(dir_in.x * ca - dir_in.z * sa, dir_in.y, dir_in.x * sa + dir_in.z * ca);
+
+    // Below the horizon there is no sky to put stars in, and near it atmospheric extinction takes
+    // them out well before the geometric horizon -- so fade rather than cut.
+    let horizon = smoothstep(-0.02, 0.22, dir.y);
+    if (horizon <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+
+    let scale = 190.0;
+    let p = dir * scale;
+    let cell = floor(p);
+    let h = star_hash3(cell);
+    // Only a fraction of cells hold a star; without this the sky is a uniform dot screen.
+    if (h.x > 0.10) {
+        return vec3<f32>(0.0);
+    }
+    let centre = cell + vec3<f32>(0.25) + h * 0.5;
+    let d = length(p - centre);
+    let core = 1.0 - smoothstep(0.0, 0.42, d);
+    if (core <= 0.0) {
+        return vec3<f32>(0.0);
+    }
+    // Magnitude: mostly faint with a few bright ones, which is what the real distribution looks
+    // like. A uniform brightness reads as a texture rather than a sky.
+    let mag = pow(h.y, 3.0);
+    // No twinkle. Scintillation needs a per-frame clock and this UBO has none; faking it from the
+    // sun's bearing would change on the scale of hours, which is not twinkling. Left out rather
+    // than approximated into something that only looks like a bug.
+    //
+    // Colour by spectral class, kept subtle -- most stars read white to the naked eye.
+    let tint = mix(vec3<f32>(1.0, 0.86, 0.72), vec3<f32>(0.78, 0.86, 1.0), h.z);
+    return tint * (core * core * mag * horizon);
 }
 
 // View-ray parametric interval [t0, t1] inside the cloud shell, robust for camera below /

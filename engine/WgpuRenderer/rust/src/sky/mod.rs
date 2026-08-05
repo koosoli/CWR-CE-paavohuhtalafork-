@@ -277,6 +277,7 @@ pub struct Sky {
     cloud_shadow_pipeline: wgpu::ComputePipeline,
     cloud_shadow_strength: f32,
     cloud_shadow_map_params: [f32; 4],
+    star_intensity: f32,
     // Group(1) of cs_froxel: the terrain sun-shadow mask, rebuilt each frame (the mask
     // texture is Terrain-owned and regenerated) from the lent view + these two.
     froxel_shadow_layout: wgpu::BindGroupLayout,
@@ -1130,6 +1131,10 @@ impl Sky {
             // Default ON at a moderate strength: clouds that do not shade the ground are the
             // thing a player notices, and the pass is one 512x512 dispatch.
             cloud_shadow_strength: 0.85,
+            // Stars on by default: the night sky had nothing in it at all, which is the actual
+            // complaint. Additive on top of the authored night floor, so it brightens nothing
+            // during the day -- night_blend gates it to zero while the sun is up.
+            star_intensity: 1.0,
             cloud_shadow_map_params: [0.0, 0.0, 1.0 / CLOUD_SHADOW_SPAN, 0.85],
             froxel_view,
             froxel_shadow_layout,
@@ -1167,6 +1172,10 @@ impl Sky {
     /// the shaders that SAMPLE the map. Two independently computed mappings would drift.
     pub fn cloud_shadow_mapping_current(&self) -> [f32; 4] {
         self.cloud_shadow_map_params
+    }
+
+    pub fn set_star_intensity(&mut self, intensity: f32) {
+        self.star_intensity = intensity.clamp(0.0, 4.0);
     }
 
     pub fn set_cloud_shadow_strength(&mut self, strength: f32) {
@@ -1211,7 +1220,7 @@ impl Sky {
             cloud2: sky.cloud2,
             cloud3: sky.cloud3,
             cloud4: sky.cloud4,
-            output: [self.linear, 0.0, 0.0, 0.0],
+            output: [self.linear, self.star_intensity, 0.0, 0.0],
             cam_pos,
             cloud_shadow: self.cloud_shadow_mapping(cam_pos),
         };

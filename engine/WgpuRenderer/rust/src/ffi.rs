@@ -2248,6 +2248,20 @@ pub unsafe extern "C" fn wgr_set_sky_runtime(
     renderer.set_sky_runtime(*params);
 }
 
+/// Brightness of the procedural star field. 0 = none. Gated to night by sun altitude in the
+/// shader, so this never affects a daytime sky.
+///
+/// # Safety
+/// `renderer` must be a live renderer from `wgr_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_star_intensity(renderer: *mut WgrRenderer, intensity: f32) {
+    if renderer.is_null() {
+        return;
+    }
+    let renderer = unsafe { &mut *renderer };
+    renderer.set_star_intensity(intensity);
+}
+
 /// CLD-020: strength of the cloud shadow cast on the ground. 0 = off, 1 = the deck's full
 /// computed transmittance. A separate entry point rather than a new field in WgrSkyLook,
 /// because growing that struct changes a size the ABI handshake checks, and this is one float.

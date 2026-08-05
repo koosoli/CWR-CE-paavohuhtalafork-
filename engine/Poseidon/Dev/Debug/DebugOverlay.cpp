@@ -3730,6 +3730,15 @@ void DrawSkyTab()
                         "dark, because missing data must never invent shadow.");
 
     ImGui::Separator();
+    ImGui::TextUnformatted("Stars");
+    changed |= ImGui::SliderFloat("Star brightness", &s.starIntensity, 0.0f, 4.0f, "%.2f");
+    ImGui::TextDisabled("Procedural star field, gated to night by sun altitude -- it cannot affect a daytime sky. "
+                        "Added before the cloud composite, so a deck covers the stars the way it covers the sky "
+                        "behind them. It wheels with the sun's bearing, which is the celestial clock, so stars "
+                        "drift through the night. No twinkle: that needs a per-frame clock the sky UBO does not "
+                        "carry, and faking it from the sun's bearing would change over hours, not seconds.");
+
+    ImGui::Separator();
     ImGui::TextUnformatted("Night floor");
     ImGui::TextDisabled("authored deep-blue that fills in as the sun sets (the physical model goes near-black)");
     // Colours are normalised (click the swatch for the picker); intensity scales them.

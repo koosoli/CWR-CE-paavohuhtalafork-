@@ -936,6 +936,10 @@ impl Renderer {
 
     // Per-frame sky runtime (wgr_set_sky_runtime): the celestial + camera fields, written into
     // the runtime half of the sky UBO. The authored look half comes from set_render_params.
+    fn set_star_intensity(&mut self, intensity: f32) {
+        self.sky.set_star_intensity(intensity);
+    }
+
     fn set_cloud_shadow_strength(&mut self, strength: f32) {
         self.sky.set_cloud_shadow_strength(strength);
     }

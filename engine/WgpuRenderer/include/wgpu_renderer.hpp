@@ -1495,6 +1495,10 @@ extern "C"
        0 = off (every surface reads fully lit); 1 = the full computed transmittance. Its own entry
        point rather than a field in WgrSkyLook, because growing that struct changes a size the ABI
        handshake checks and this is one float. */
+    /* Brightness of the procedural star field. 0 = none. Gated to night by sun altitude in the
+       shader, so it never affects a daytime sky. */
+    WGR_API void wgr_set_star_intensity(WgrRenderer* renderer, float intensity);
+
     WGR_API void wgr_set_cloud_shadow_strength(WgrRenderer* renderer, float strength);
 
     /* Push the per-frame sky runtime (celestial dir/phase, night factor, fog colour, camera

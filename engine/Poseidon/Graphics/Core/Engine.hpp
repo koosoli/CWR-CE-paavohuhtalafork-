@@ -1423,6 +1423,11 @@ class Engine : public IGraphicsEngine
         // This is the "approved cheaper fallback" the roadmap allows rather than near/far
         // clipmaps with reprojection: one 512x512 dispatch, no history, no temporal state.
         float cloudShadowStrength = 0.85f;
+        // Procedural star field. The night sky had nothing in it at all -- the authored night
+        // floor is a flat blue wash, so a clear night read as black. Gated to night by sun
+        // altitude in the shader, and added before the cloud composite so a deck covers the stars
+        // the way it covers the sky behind them.
+        float starIntensity = 1.0f;
     };
     // True on backends with a procedural sky pass (wgpu); gates the ImGui Sky tab.
     virtual bool SupportsSky() const { return false; }
