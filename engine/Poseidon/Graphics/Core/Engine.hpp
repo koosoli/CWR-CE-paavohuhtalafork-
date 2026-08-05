@@ -1023,6 +1023,10 @@ class Engine : public IGraphicsEngine
         // direction. This is what makes a room read as LIT THROUGH ITS WINDOW instead of evenly
         // dimmed — visibility alone only scales brightness, it never says where light came from.
         float directional = 0.7f;
+        // Stage 2: apply the per-model BAKED volumes instead of the per-frame maps. The volumes
+        // are produced at load time (WGR_SKY_BAKE_VOLUMES); this is the runtime switch for
+        // whether shading reads them, so the two can be compared without a restart.
+        bool baked = false;
         // Draw the reach factor as greyscale on opaque surfaces instead of lighting with it.
         // Shipped WITH the effect: judging this through sun + ambient + fog + tonemap is much
         // harder than looking at the buffer.

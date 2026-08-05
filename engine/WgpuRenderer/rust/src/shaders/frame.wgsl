@@ -73,6 +73,10 @@ struct Frame {
     skyvis_dir: array<vec4<f32>, 5>,
     skyvis: vec4<f32>,
     skyvisb: vec4<f32>,
+    // Stage 2 (per-model BAKED volumes): (gate, strength, floor, debug). Its own lane rather
+    // than sharing `skyvis` so the two implementations can be toggled independently and A/B'd
+    // live — which is the only way to judge which one looks right.
+    skyvisc: vec4<f32>,
 };
 
 // One frame-global point or spot light. Positions are ABSOLUTE world space so a

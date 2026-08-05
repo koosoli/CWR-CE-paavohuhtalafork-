@@ -666,6 +666,11 @@ pub struct WgrSkyVis {
     pub kernel: f32,     // softening kernel radius, metres
     pub bias: f32,       // depth bias, metres (stops open ground occluding itself)
     pub directional: f32, // 0 = uniform dimming, 1 = steer ambient fully along the open direction
+    // Stage 2: APPLY the per-model baked volumes. Separate from `enabled` because the two are
+    // different implementations of the same idea and the point of having both is to A/B them.
+    // Producing the volumes still needs WGR_SKY_BAKE_VOLUMES at startup (the bake is load-time);
+    // this only decides whether the shading reads them.
+    pub baked: u32,
 }
 
 impl Default for WgrSkyVis {
@@ -684,6 +689,7 @@ impl Default for WgrSkyVis {
             kernel: d.kernel,
             bias: d.bias,
             directional: d.directional,
+            baked: d.baked as u32,
         }
     }
 }
@@ -1128,8 +1134,8 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrFoliage>() == 48);
 const _: () = assert!(std::mem::size_of::<WgrGtao>() == 52);
-const _: () = assert!(std::mem::size_of::<WgrSkyVis>() == 40);
-const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 460);
+const _: () = assert!(std::mem::size_of::<WgrSkyVis>() == 44);
+const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 464);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);

@@ -557,6 +557,7 @@ struct WgrSkyVis
     float kernel;        /* softening kernel radius, metres */
     float bias;          /* depth bias, metres (stops open ground occluding itself) */
     float directional;   /* 0 = uniform dimming, 1 = ambient arrives from the open direction */
+    uint32_t baked;      /* 1 = apply the per-model BAKED volumes (Stage 2) instead of the maps */
 };
 
 /* Every imgui-tweakable render parameter that crosses the FFI as a setter, in one block.
@@ -1228,8 +1229,8 @@ static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout mus
 static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFoliage) == 48, "WgrFoliage layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGtao) == 52, "WgrGtao layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrSkyVis) == 40, "WgrSkyVis layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrRenderParams) == 460, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSkyVis) == 44, "WgrSkyVis layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrRenderParams) == 464, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");

@@ -522,6 +522,8 @@ impl CameraGroup {
             + 64 * sky_vis::DIRECTION_COUNT as u64
             + 16 * sky_vis::DIRECTION_COUNT as u64
             + 16
+            + 16
+            // Stage 2 baked-volume knobs.
             + 16;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("wgr_3d_camera_layout"),
@@ -4785,6 +4787,16 @@ impl Gfx3d {
                 queue.write_buffer(buf, dir_off, bytemuck::cast_slice(&dir));
                 queue.write_buffer(buf, knob_off, bytemuck::cast_slice(&knobs));
                 queue.write_buffer(buf, knob_off + 16, bytemuck::cast_slice(&knobs_b));
+                // Baked volumes (Stage 2): gated on the runtime switch AND on a volume actually
+                // existing, so the knob cannot darken anything before a bake has run.
+                let baked_on = sv.baked && !self.sky_volumes.is_empty();
+                let knobs_c = [
+                    if baked_on { 1.0f32 } else { 0.0 },
+                    sv.strength,
+                    sv.floor,
+                    if baked_on && sv.debug { 1.0 } else { 0.0 },
+                ];
+                queue.write_buffer(buf, knob_off + 32, bytemuck::cast_slice(&knobs_c));
             }
         }
         // Track buffer regrowth so the combined group-1 bind groups (which borrow

@@ -80,6 +80,10 @@ pub struct SkyVisSettings {
     /// that makes a room read as LIT THROUGH ITS WINDOW rather than evenly darker: visibility
     /// alone only scales brightness, it never says where the light came from.
     pub directional: f32,
+    /// Apply the per-model BAKED volumes (Stage 2) rather than the per-frame maps. The volumes
+    /// themselves are produced at load time behind WGR_SKY_BAKE_VOLUMES; this is the runtime
+    /// switch that decides whether shading reads them, so the two approaches can be A/B'd live.
+    pub baked: bool,
     /// 1 = draw the reach factor as greyscale instead of lighting with it. Shipped WITH the
     /// effect, not after it: judging this through sun + SH ambient + fog + tonemap is much
     /// harder than looking at the buffer.
@@ -102,6 +106,7 @@ impl Default for SkyVisSettings {
             kernel: 1.0,
             bias: 0.25,
             directional: 0.7,
+            baked: false,
             debug: false,
         }
     }
@@ -120,6 +125,7 @@ impl SkyVisSettings {
         self.kernel = p.kernel.clamp(0.0, 32.0);
         self.bias = p.bias.clamp(0.0, 16.0);
         self.directional = p.directional.clamp(0.0, 1.0);
+        self.baked = p.baked != 0;
         self.debug = p.debug != 0;
     }
 

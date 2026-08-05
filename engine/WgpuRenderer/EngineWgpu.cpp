@@ -662,6 +662,12 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
             _interiorSky.extent = v;
         }
     }
+    // The bake produces volumes at load time; applying them is a runtime switch, so turning the
+    // bake on at startup also turns its use on — otherwise you pay the bake and see nothing.
+    if (const char* isb = std::getenv("WGR_SKY_BAKE_VOLUMES"))
+    {
+        _interiorSky.baked = std::strcmp(isb, "0") != 0;
+    }
     if (const char* isd = std::getenv("WGR_INTERIOR_SKY_DEBUG"))
     {
         _interiorSky.debug = std::strcmp(isd, "0") != 0;
@@ -3592,6 +3598,7 @@ void EngineWgpu::PushRenderParams()
         _interiorSky.kernel,
         _interiorSky.bias,
         _interiorSky.directional,
+        _interiorSky.baked ? 1u : 0u,
     };
 
     wgr_set_render_params(_renderer, &p);

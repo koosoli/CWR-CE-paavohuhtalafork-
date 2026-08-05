@@ -90,6 +90,9 @@ fn sky_vol_fetch(base: u32, c: vec3<u32>) -> f32 {
 // Baked sky visibility at a MODEL-space position, trilinearly filtered. 1 (no darkening) when the
 // model has no volume, which is also the correct answer while a bake is still pending.
 fn baked_sky_visibility(model: u32, model_pos: vec3<f32>) -> f32 {
+    if (frame.skyvisc.x < 0.5) {
+        return 1.0;
+    }
     let m = model * 2u;
     if (m + 1u >= arrayLength(&sky_volume_meta) || sky_volume_meta[m + 1u].w < 0.5) {
         return 1.0;
@@ -109,8 +112,13 @@ fn baked_sky_visibility(model: u32, model_pos: vec3<f32>) -> f32 {
     let c10 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i1.y, i0.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i1.y, i0.z)), f.x);
     let c01 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i0.y, i1.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i0.y, i1.z)), f.x);
     let c11 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i1.y, i1.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i1.y, i1.z)), f.x);
-    return clamp(mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z), 0.0, 1.0);
+    let vis = clamp(mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z), 0.0, 1.0);
+    // strength blends toward the occluded result; floor keeps a sealed room playable, for the
+    // same reason the per-frame path needs one — with the sun shadowed and no local lights, the
+    // sky ambient is the only light in an OFP room.
+    return max(1.0 - frame.skyvisc.y * (1.0 - vis), frame.skyvisc.z);
 }
+
 @group(2) @binding(0) var textures: binding_array<texture_2d<f32>>;
 @group(3) @binding(0) var samplers: binding_array<sampler, 8>;
 
@@ -328,6 +336,13 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     // cutouts (fences, grills, road/footprint decals) light normally. GPU-driven set is
     // opaque/cutout, never the glass path. The alpha discard above stays keyed on alpha_ref.
     let veg_cutout = in.is_veg != 0u && sm.alpha_ref > 0.0;
+    // Debug: the baked volume as greyscale, before fog, matching the per-frame path's reach view.
+    // The SHAPED value (strength + floor applied), not the raw one, because that is what the
+    // lighting will actually use — a debug view of a number the renderer does not consume is how
+    // you end up tuning against the wrong thing.
+    if (frame.skyvisc.x > 0.5 && frame.skyvisc.w > 0.5) {
+        return vec4<f32>(vec3<f32>(baked_sky_visibility(in.model_id, in.model_pos)), out_a);
+    }
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear,
         // Per-model baked sky visibility (LIT-020 Stage 2), 1 when the model has no volume.

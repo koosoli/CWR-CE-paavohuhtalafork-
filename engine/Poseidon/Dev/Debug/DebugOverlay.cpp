@@ -3151,15 +3151,23 @@ void DrawInteriorSkyTab()
     ImGui::TextDisabled("Direct sun (shadow maps) and local lights are never touched.");
     ImGui::Separator();
 
-    changed |= ImGui::Checkbox("Enabled", &is.enabled);
+    changed |= ImGui::Checkbox("Enabled (per-frame maps, Stage 1)", &is.enabled);
     ImGui::TextDisabled("  the A/B: stand in a doorway and toggle. Hotkey: Ctrl+Shift+I");
+    changed |= ImGui::Checkbox("Baked volumes (Stage 2)", &is.baked);
+    ImGui::TextDisabled("  the other implementation: occlusion resolved per MODEL, so its edges");
+    ImGui::TextDisabled("  follow the building instead of a camera-space grid — which is what");
+    ImGui::TextDisabled("  caused the shadow patches. Hotkey: Ctrl+Shift+B.");
+    ImGui::TextDisabled("  Needs WGR_SKY_BAKE_VOLUMES=1 at STARTUP to produce the volumes; this");
+    ImGui::TextDisabled("  switch only decides whether shading reads them. Both can be on, but");
+    ImGui::TextDisabled("  compare them one at a time.");
     changed |= ImGui::Checkbox("Reach buffer (greyscale)", &is.debug);
-    ImGui::TextDisabled("  white = open sky above, black = fully roofed. Tune against THIS,");
+    ImGui::TextDisabled("  white = open sky above, black = fully roofed. Applies to whichever of");
+    ImGui::TextDisabled("  the two is on. Tune against THIS,");
     ImGui::TextDisabled("  not against the lit scene. Hotkey: Ctrl+Shift+O");
     ImGui::TextDisabled("  (both work with this panel closed — Ctrl+` reopens it)");
 
     ImGui::Separator();
-    ImGui::TextDisabled("Look");
+    ImGui::TextDisabled("Look (Strength and Floor apply to BOTH implementations)");
     changed |= ImGui::SliderFloat("Strength", &is.strength, 0.0f, 1.0f, "%.2f");
     ImGui::TextDisabled("  0 = inert, 1 = full attenuation down to the floor");
     changed |= ImGui::SliderFloat("Floor", &is.floorLevel, 0.0f, 1.0f, "%.2f");
@@ -4921,6 +4929,14 @@ void ProcessEvent(const SDL_Event& event)
                 is.enabled = true;
             GEngine->SetInteriorSkySettings(is);
             LOG_INFO(Core, "Interior sky reach view: {}", is.debug ? "ON (greyscale)" : "off (lit scene)");
+            return;
+        }
+        if (event.key.scancode == SDL_SCANCODE_B && ctrlDown && shiftDown && GEngine)
+        {
+            auto is = GEngine->GetInteriorSkySettings();
+            is.baked = !is.baked;
+            GEngine->SetInteriorSkySettings(is);
+            LOG_INFO(Core, "Interior sky BAKED volumes: {}", is.baked ? "ON" : "off");
             return;
         }
         // Ctrl+Shift+W — cycle the WTR-003 water debug view (works without
