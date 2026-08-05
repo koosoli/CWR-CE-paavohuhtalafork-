@@ -503,8 +503,13 @@ tickets:
         INTEGRATED means the release TOOLING is on the branch and exercised, not
         that a package has been published. Landed 2026-08-05: the capability
         matrix generated from both ledgers with a CI drift check, the release
-        notes, and a packaging script proven end to end against a real build.
-        Nothing has been released.
+        notes, the release runbook, and a packaging script proven end to end
+        against a real build. Nothing has been released.
+      - >-
+        Package chain verified 2026-08-05 at commit cecf5db: all six refusal
+        paths exercised, a package assembled, and its two identity documents --
+        the fingerprint and the build manifest -- confirmed to name the same
+        commit, with every shipped file re-hashed against the fingerprint.
       - >-
         Outstanding REL-000 acceptance items, none of which the tooling can
         supply on its own: a demonstration video showing the released build; a
@@ -538,6 +543,11 @@ tickets:
     supersedes: []
     evidence:
       - docs/release/preview0/README.md
+      - docs/release/preview0/RELEASING.md
       - docs/release/preview0/capability-matrix.md
       - scripts/generate_capability_matrix.py
       - scripts/package_preview0.ps1
+      - docs/roadmap/evidence/preview0-wgpu-rel000-candidate-20260805.log
+      - docs/roadmap/evidence/preview0-wgpu-rel000-mission-20260805-original-training-capture.json
+      - docs/roadmap/evidence/preview0-wgpu-rel000-mission-20260805-original-training-capture.png
+      - docs/roadmap/evidence/preview0-manifest-rel000-candidate-20260805.json
