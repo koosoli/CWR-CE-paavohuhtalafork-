@@ -1119,6 +1119,11 @@ class Engine : public IGraphicsEngine
         bool alphaCards = false;
         float alphaCutoff = 0.5f;
         float cardWiden = 1.6f;
+        // How far a blade arcs over, as a multiple of its own height. Grass blades are not rigid;
+        // the stock bend moved a tip 5-19 cm on a ~0.8 m blade, roughly ten degrees, which is why
+        // a field of them read as spikes standing to attention. Taller blades arc further, so this
+        // scales with height rather than being an absolute distance. 0 = the old rigid look.
+        float bladeArch = 1.0f;
         // Mid LOD geometry. Off = the procedural crossed ribbons. On = crossed
         // cards carrying a photographed grass clump.
         //

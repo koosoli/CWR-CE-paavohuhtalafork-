@@ -933,7 +933,8 @@ pub struct WgrGrassParams {
     pub alpha_cards: f32,
     pub alpha_cutoff: f32,
     pub card_widen: f32,
-    pub _pad4: f32,
+    /// How far a blade arcs over, scaled by its own height. 0 = rigid spikes.
+    pub blade_arch: f32,
 }
 
 // Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.

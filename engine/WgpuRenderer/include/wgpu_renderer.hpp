@@ -832,7 +832,11 @@ struct WgrGrassParams
     float alpha_cards;
     float alpha_cutoff;
     float card_widen;
-    float _pad4;
+    /* How far a blade arcs over, as a multiple of its own height. The stock bend moved a tip
+       5-19 cm on a ~0.8 m blade -- about ten degrees -- which read as a field of rigid spikes.
+       Taller blades arc further, so this scales with height rather than being a fixed distance.
+       0 restores the old rigid look. */
+    float blade_arch;
 };
 
 // --- Water (GPU CDLOD surface) -----------------------------------------------

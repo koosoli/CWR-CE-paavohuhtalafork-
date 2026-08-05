@@ -98,19 +98,22 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     else if (species >= 4u) { legacy = vec3<f32>(1.9, 0.82, 0.42); }
     var varied = vec3<f32>(1.0, 1.0, 0.65);
     switch (species) {
-        case 0u: { varied = vec3<f32>(0.74, 1.06, 0.88); }
-        case 1u: { varied = vec3<f32>(1.00, 1.00, 0.65); }
-        case 2u: { varied = vec3<f32>(1.34, 0.92, 0.48); }
-        case 3u: { varied = vec3<f32>(0.62, 1.18, 1.06); }
-        case 4u: { varied = vec3<f32>(1.90, 0.82, 0.42); }
-        case 5u: { varied = vec3<f32>(1.52, 0.70, 0.28); }
-        case 6u: { varied = vec3<f32>(0.85, 1.15, 0.18); }
-        default: { varied = vec3<f32>(0.68, 1.32, 0.13); }
+        case 0u: { varied = vec3<f32>(0.74, 1.06, 0.34); }
+        case 1u: { varied = vec3<f32>(1.00, 1.00, 0.26); }
+        case 2u: { varied = vec3<f32>(1.34, 0.92, 0.20); }
+        case 3u: { varied = vec3<f32>(0.62, 1.18, 0.46); }
+        case 4u: { varied = vec3<f32>(1.90, 0.82, 0.22); }
+        case 5u: { varied = vec3<f32>(1.52, 0.70, 0.15); }
+        case 6u: { varied = vec3<f32>(0.85, 1.15, 0.12); }
+        default: { varied = vec3<f32>(0.68, 1.32, 0.09); }
     }
     let shape = mix(legacy, varied, clamp(grass.shape_mix.x, 0.0, 1.0));
     let height = mix(0.35, 1.05, height_seed) * grass.blade_height * shape.y;
     let bend_jitter = 1.0 + (hash11(inst.xz + 57.0) * 2.0 - 1.0) * clamp(grass.shape_mix.z, 0.0, 1.0);
-    let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0)) * bend_jitter;
+    // Arch must mirror grass.wgsl exactly, height scaling included, or a blade's shadow is cast
+    // by a straighter blade than the one being drawn.
+    let arch = max(grass.cards.w, 0.0);
+    let static_bend = forward * mix(0.10, 0.34, hash11(inst.xz + 31.0)) * bend_jitter * arch * height;
     // Flattening cached by cs_place. Without this the shadow pass rebuilt an
     // upright blade, so grass a player had walked flat kept casting a full
     // standing shadow.

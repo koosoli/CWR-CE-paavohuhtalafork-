@@ -410,16 +410,21 @@ fn species_shape_legacy(species: u32) -> vec3<f32> {
 fn species_shape_varied(species: u32) -> vec3<f32> {
     switch (species) {
         // 0..4 grass: fine upright, stock, broad arching, tall wisp.
-        case 0u: { return vec3<f32>(0.74, 1.06, 0.88); }
-        case 1u: { return vec3<f32>(1.00, 1.00, 0.65); }
-        case 2u: { return vec3<f32>(1.34, 0.92, 0.48); }
-        case 3u: { return vec3<f32>(0.62, 1.18, 1.06); }
+        // The taper EXPONENT decides whether this reads as grass or as a spike, and the values
+        // here were far too high. width = pow(1 - t, exponent), so 0.65 is already down to 64%
+        // width at mid-height -- a spear. A real blade holds most of its width up the stem and
+        // gives it all up near the tip, which is a LOW exponent: 0.26 is still 83% at mid-height
+        // and then falls away quickly.
+        case 0u: { return vec3<f32>(0.74, 1.06, 0.34); }
+        case 1u: { return vec3<f32>(1.00, 1.00, 0.26); }
+        case 2u: { return vec3<f32>(1.34, 0.92, 0.20); }
+        case 3u: { return vec3<f32>(0.62, 1.18, 0.46); }
         // 4..6 weed: broad flat leaf, then a shorter blunter one.
-        case 4u: { return vec3<f32>(1.90, 0.82, 0.42); }
-        case 5u: { return vec3<f32>(1.52, 0.70, 0.28); }
-        // 6..8 flower: stem, then a taller thinner stem.
-        case 6u: { return vec3<f32>(0.85, 1.15, 0.18); }
-        default: { return vec3<f32>(0.68, 1.32, 0.13); }
+        case 4u: { return vec3<f32>(1.90, 0.82, 0.22); }
+        case 5u: { return vec3<f32>(1.52, 0.70, 0.15); }
+        // 6..8 flower: stem, then a taller thinner stem. Near-constant so a head can read.
+        case 6u: { return vec3<f32>(0.85, 1.15, 0.12); }
+        default: { return vec3<f32>(0.68, 1.32, 0.09); }
     }
 }
 
@@ -620,11 +625,19 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     // jitter 0 leaves the old look untouched and turning it up widens the spread
     // in both directions rather than only leaning everything further over.
     let bend_jitter = 1.0 + (hash11(inst.xz + 57.0) * 2.0 - 1.0) * clamp(grass.shape_mix.z, 0.0, 1.0);
-    let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0)) * bend_jitter;
+    // ARCH. The old range displaced a tip by 5.5-19 cm on a blade around 0.8 m tall -- about ten
+    // degrees of lean, which is why a field of these read as rigid spikes standing to attention.
+    // Real meadow grass arcs over, and a taller blade arcs MORE because it is supporting more of
+    // its own length, so this is scaled by height below rather than being an absolute distance.
+    let arch = max(grass.cards.w, 0.0);
+    let static_bend = forward * mix(0.10, 0.34, hash11(inst.xz + 31.0)) * bend_jitter * arch;
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush_data = unpack2x16unorm(inst_packed.y);
     let crush = crush_data.x;
     let rotor_wash = active_rotor_wash(inst.xz, crush, crush_data.y);
+    // Arch proportional to height: a 1.3 m blade should lie over further than a 0.4 m one, not by
+    // the same number of centimetres.
+    let height_arch = static_bend * height;
     let crush_bend = vec3<f32>(crush_dir.x, 0.0, crush_dir.y) * height * (0.55 * crush);
     let crushed_height = height * (1.0 - 0.55 * crush);
     // Two crossed ribbons, each built from five quads. Every vertex samples
@@ -651,7 +664,7 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let taper_jitter = 1.0 + (hash11(inst.xz + 71.0) * 2.0 - 1.0) * clamp(grass.shape_mix.y, 0.0, 1.0);
     let taper = pow(max(1.0 - t, 0.0), max(shape.z * taper_jitter, 0.05));
     let half_width = width * taper;
-    let standing_bend = (static_bend + wind_bend) * (1.0 - 0.55 * crush) + crush_flutter;
+    let standing_bend = (height_arch + wind_bend) * (1.0 - 0.55 * crush) + crush_flutter;
     let curve = (standing_bend + crush_bend) * (t * t);
     let tangent = vec3<f32>(0.0, crushed_height, 0.0) + (standing_bend + crush_bend) * (2.0 * t);
     // Preserve a minimum apparent silhouette when a card is nearly edge-on

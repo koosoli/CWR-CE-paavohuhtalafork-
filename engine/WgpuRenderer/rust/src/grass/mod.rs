@@ -66,7 +66,7 @@ struct GrassParams {
     alpha_cards: f32,
     alpha_cutoff: f32,
     card_widen: f32,
-    _pad4: f32,
+    blade_arch: f32,
 }
 
 /// Mirrors `GrassInstance` in grass.wgsl and grass_shadow.wgsl (32 B). `packed`
@@ -286,7 +286,7 @@ impl Grass {
             alpha_cards: 0.0,
             alpha_cutoff: 0.5,
             card_widen: 1.6,
-            _pad4: 0.0,
+            blade_arch: 1.0,
         };
         queue.write_buffer(&grass_params, 0, bytemuck::bytes_of(&params));
 
@@ -1026,7 +1026,7 @@ impl Grass {
             // early-Z cost, and 1 would discard everything; keep it inside both.
             alpha_cutoff: params.alpha_cutoff.clamp(0.05, 0.95),
             card_widen: params.card_widen.clamp(1.0, 4.0),
-            _pad4: 0.0,
+            blade_arch: params.blade_arch.clamp(0.0, 3.0),
         };
         self.last_params = params;
         self.enabled = params.enabled != 0.0;

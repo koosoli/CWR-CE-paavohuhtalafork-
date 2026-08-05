@@ -2654,6 +2654,11 @@ void DrawGrassTab()
     ImGui::TextDisabled("Per-blade spread on the taper exponent, so neighbouring blades of the same species do "
                         "not narrow identically. Multiplicative about 1.0: 0 leaves the chosen profile alone "
                         "rather than shifting it.");
+    changed |= ImGui::SliderFloat("Arch", &grass.bladeArch, 0.0f, 3.0f, "%.2f");
+    ImGui::TextDisabled("How far a blade arcs over, as a multiple of its own height. 0 = rigid spikes standing "
+                        "to attention, which is what the stock bend gave: it moved a tip 5-19 cm on a ~0.8 m "
+                        "blade, about ten degrees. Taller blades arc further, so this scales with height rather "
+                        "than being a fixed distance. Costs nothing -- it is a vertex-shader curve.");
     changed |= ImGui::SliderFloat("Bend jitter", &grass.bendJitter, 0.0f, 1.0f, "%.2f");
     ImGui::TextDisabled("Per-blade spread on the resting lean. Also multiplicative about the stock range, so "
                         "turning it up widens the spread in both directions instead of leaning the whole field "
@@ -2747,6 +2752,7 @@ void DrawGrassTab()
         grass.alphaCards = false;
         grass.alphaCutoff = 0.5f;
         grass.cardWiden = 1.6f;
+        grass.bladeArch = 1.0f;
         grass.height = 1.25f;
         grass.useLiveWind = true;
         grass.windStrength = 1.2f;
