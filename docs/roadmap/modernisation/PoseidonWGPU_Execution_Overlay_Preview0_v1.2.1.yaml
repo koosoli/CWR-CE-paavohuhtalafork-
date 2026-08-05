@@ -1,14 +1,18 @@
 schema_version: 2
 overlay_id: PREVIEW0-EXEC-001
 revision: "1.2.1"
-document_status: READY_TO_BOOTSTRAP
-template: true
+document_status: ACTIVATED
+template: false
 
 roadmap:
   version: "4.4.1"
   path: docs/roadmap/modernisation/PoseidonWGPU_Modernisation_Roadmap_v4.4.1.md
   sha256: 3236e8cbecf780aded01e5789d41ed2beb1c8ae4bee80aafa0504ea73c501d33
-  repository_commit: null
+  # The commit that produced the roadmap content this sha256 covers. The roadmap is
+  # deliberately NOT edited by the activation commit: a roadmap change in the same
+  # commit could never name its own hash here, so roadmap prose corrections land
+  # separately and update this field, the sha256 above, and the checksum manifest.
+  repository_commit: e7bd9112c8d4de4c102d57828f0144701ecfa4af
 
 ledger:
   path: docs/roadmap/status-ledger.yaml
@@ -64,12 +68,12 @@ execution:
   baseline_semantics: PRE_ACTIVATION_CODE_BASELINE
   integration_owner: Oliver Kay
   authorization_policy: DENY_UNLESS_LISTED
-  activation_state: PREPARED
-  updated_at: "2026-08-01T14:51:00+02:00"
-  review_after: "2026-08-08"
+  activation_state: ACTIVE
+  updated_at: "2026-08-05T16:10:00+02:00"
+  review_after: "2026-08-12"
 
 bootstrap_policy:
-  implementation_forbidden_until_resolved: true
+  implementation_forbidden_until_resolved: false
   resolve_baseline_from_checkout: true
   baseline_command: git rev-parse HEAD
   integration_owner_source: launch_assignment
@@ -88,6 +92,26 @@ bootstrap_policy:
     - Change template to false and execution.activation_state to ACTIVE in the same reviewed commit.
     - Write the resolved overlay and bootstrap ledger back to the repository before any claim or implementation begins.
   failure_policy: STOP_WITH_DIAGNOSTIC
+  resolution:
+    resolved_at: "2026-08-05"
+    resolved_by: Oliver Kay
+    resolution_commit: null
+    checks:
+      baseline_resolved_from_checkout: 513430ae392f60dfa3375ad1cba600bbbc082a39
+      roadmap_repository_commit_recorded: e7bd9112c8d4de4c102d57828f0144701ecfa4af
+      roadmap_sha256_matches_tracked_file: true
+      ledger_exists_and_satisfies_full_schema: true
+      every_authorised_candidate_and_held_ticket_resolves_in_roadmap: true
+      wip_limits_satisfied: "0 ACTIVE records; limits vacuously satisfied"
+      validator: scripts/validate_preview0_ledger.py
+    note: >-
+      Activation is late rather than early: all six preview blockers were already
+      DONE and VALIDATED before this pass ran, so the flags below record work that
+      happened, they do not authorise work that had not. That is worth stating
+      plainly instead of leaving the overlay reading as though the gate held.
+
+      resolution_commit is null in the commit that writes this block, for the same
+      self-reference reason as roadmap.repository_commit above.
 
 wip_limits:
   scope: INTEGRATION_TARGET
@@ -114,6 +138,7 @@ authorised_tickets:
   - CORE-NEG-002
   - RND-005A
   - TEST-002
+  - REL-000
 
 execution_queue:
   - id: PERF-001
@@ -193,6 +218,35 @@ execution_queue:
         Completing this scoped activation does not complete every full TEST-002
         acceptance item scheduled for later milestones.
 
+  - id: REL-000
+    initial_scheduling_state: OPEN
+    initial_blocked_by: []
+    size: LARGE
+    cross_system: false
+    priority: 1
+    promoted_at: "2026-08-05"
+    promoted_by: Oliver Kay
+    promotion_reason: >-
+      All six technical preview blockers reached VALIDATED, and clean-checkout
+      reproducibility was verified end to end on 2026-08-05 (fresh clone ->
+      Build.ps1 -> full build -> complete dist/), which found and fixed four
+      silent defects. Both activation conditions recorded for this candidate are
+      therefore satisfied.
+    active_scope: >-
+      Package and publish the Preview 0 release: reproducible artifact, data and
+      startup instructions, build/driver fingerprint, Tier 1 configuration
+      statement, capability matrix derived from validated ledger records, known
+      limitations, reference capture and timing bundle, GL33/WGPU comparison
+      evidence, visual demonstration, and the independent-project disclaimer.
+    release_candidate_commit_policy: >-
+      Pin the packaged commit explicitly and record it. HEAD is NOT automatically
+      the candidate: renderer work has landed since the recorded manifest commit,
+      including the LIT-020 per-model sky bake, which is default ON and has no
+      disk cache or background scheduling, so it costs a measured ~18-22 ms per
+      model synchronously at load. Either pin a candidate that predates it, or
+      ship it default OFF, or complete the section 3d hardening first. Decide
+      this before building the artifact, not after.
+
 claim_protocol:
   ledger_is_lock_source: true
   queue_state_is_bootstrap_only: true
@@ -217,16 +271,8 @@ claim_protocol:
       - diagnostic_recorded
 
 next_candidates:
-  - id: REL-000
-    activation_condition:
-      all_preview_blockers_lifecycle_status:
-        - VALIDATED
-        - SHIPPABLE
-      technical_preview_candidate_reproducible: true
-    reason: >-
-      Package and publish Preview 0 only after the technical candidate is
-      reproducible and all blockers have acceptable evidence. Its canonical
-      milestone role remains BLOCKING for the public Preview 0 package.
+  # REL-000 was promoted into authorised_tickets and execution_queue on
+  # 2026-08-05; its activation conditions are recorded on the queue entry.
 
   - id: RND-030
     activation_condition:

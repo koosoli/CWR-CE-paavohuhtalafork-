@@ -4,7 +4,7 @@ execution:
   integration_target: new-renderer-infrastructure
   baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
   integration_owner: Oliver Kay
-  activation_state: PREPARED
+  activation_state: ACTIVE
   review_model: OWNER_REVIEW_NO_INDEPENDENT_REVIEWER
   review_model_note: >-
     Preview 0 has no independent reviewer and cannot obtain one: Oliver Kay is
@@ -474,3 +474,51 @@ tickets:
       - docs/roadmap/evidence/preview0-wgpu-clean-baseline-20260802-original-training-capture.json
       - docs/roadmap/evidence/preview0-gl33-vs-wgpu-clean-baseline-diff-20260802.json
       - docs/roadmap/evidence/preview0-gl33-vs-wgpu-clean-baseline-diff-20260802.png
+  - id: REL-000
+    is_example: false
+    title: Preview release package and public capability matrix
+    class: RELEASE
+    obligation: REQUIRED
+    execution_mode: IMPLEMENT
+    scheduling_state: OPEN
+    status: PLANNED
+    outcome: NOT_APPLICABLE
+    owner: null
+    branch: null
+    baseline_commit: 513430ae392f60dfa3375ad1cba600bbbc082a39
+    verification_commit: null
+    milestone: 0
+    milestone_role: BLOCKING
+    depends_on: [PERF-001, CORE-005, CORE-NEG-001, CORE-NEG-002, RND-005A, TEST-002]
+    blocked_by: []
+    blocks: []
+    implementation_commits: []
+    production_call_sites: []
+    test_ids: []
+    benchmark_artifacts: []
+    evidence_hash: null
+    decision_record: null
+    known_failures:
+      - >-
+        Not started. Promoted 2026-08-05 because all six technical blockers are
+        VALIDATED and clean-checkout reproducibility was verified end to end.
+      - >-
+        The packaged commit must be pinned deliberately. The recorded Preview-0
+        manifest describes an earlier commit, and renderer work has landed since
+        it -- notably the LIT-020 per-model sky-visibility bake, default ON with
+        no disk cache and no background scheduling, measured at ~18-22 ms per
+        model synchronously at load. Packaging HEAD as-is would ship that load
+        stall. Pin an earlier candidate, ship the bake default OFF, or complete
+        its section 3d hardening first.
+      - >-
+        Review model is unchanged: Oliver Kay is the only human on the project,
+        so this ticket cannot obtain an independent reviewer either. Whatever
+        reviewer_method it eventually records must say what was actually
+        exercised on the packaged artifact.
+    fallback: >-
+      No public package ships until this ticket closes; the technical candidate
+      and its evidence bundle remain available internally in the meantime.
+    reviewer: null
+    reviewer_method: null
+    supersedes: []
+    evidence: []
