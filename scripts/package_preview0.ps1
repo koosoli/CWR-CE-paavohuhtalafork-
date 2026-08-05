@@ -83,22 +83,45 @@ function Invoke-Native
         of reaching the refusal message written for exactly that case. The exit
         code, which is the actual answer, never gets looked at.
 
-        So: drop to 'Continue' for the duration of the call, merge stderr into the
-        returned text, and let the caller decide based on $LASTEXITCODE.
+        Dropping to 'Continue' fixes the abort but not the noise: git emits a
+        line-ending warning per file it touches, and merging that into the output
+        stream renders a dozen red NativeCommandError blocks in the middle of a
+        SUCCESSFUL package run. A release tool whose happy path looks like a
+        stack of errors trains its user to ignore errors.
+
+        So the process is started directly with its streams redirected to files.
+        No ErrorRecords are produced at all, stderr stays available for
+        diagnostics, and the exit code is read from the process rather than
+        inferred.
     #>
     param([Parameter(Mandatory = $true)][string]$Command,
           [string[]]$Arguments = @())
 
-    $previous = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
+    $outFile = [System.IO.Path]::GetTempFileName()
+    $errFile = [System.IO.Path]::GetTempFileName()
     try
     {
-        $output = & $Command @Arguments 2>&1 | Out-String
-        return [pscustomobject]@{ Output = $output.TrimEnd(); Code = $LASTEXITCODE }
+        $startArgs = @{
+            FilePath               = $Command
+            NoNewWindow            = $true
+            Wait                   = $true
+            PassThru               = $true
+            RedirectStandardOutput = $outFile
+            RedirectStandardError  = $errFile
+        }
+        if ($Arguments.Count -gt 0) { $startArgs.ArgumentList = $Arguments }
+        $process = Start-Process @startArgs
+        $stdout = (Get-Content -Raw -Path $outFile -ErrorAction SilentlyContinue)
+        $stderr = (Get-Content -Raw -Path $errFile -ErrorAction SilentlyContinue)
+        return [pscustomobject]@{
+            Output = ("$stdout").TrimEnd()
+            Error  = ("$stderr").TrimEnd()
+            Code   = $process.ExitCode
+        }
     }
     finally
     {
-        $ErrorActionPreference = $previous
+        Remove-Item -Force -ErrorAction SilentlyContinue $outFile, $errFile
     }
 }
 
@@ -110,7 +133,7 @@ if ($revision.Code -ne 0) { Fail "not a commit: $Commit" }
 $resolved = $revision.Output.Trim()
 
 $headResult = Invoke-Native -Command 'git' -Arguments @('-C', $repoRoot, 'rev-parse', 'HEAD')
-if ($headResult.Code -ne 0) { Fail "cannot resolve HEAD: $($headResult.Output)" }
+if ($headResult.Code -ne 0) { Fail "cannot resolve HEAD: $($headResult.Error)" }
 $head = $headResult.Output.Trim()
 
 if ($resolved -ne $head)
@@ -128,7 +151,7 @@ Check out the commit you intend to release, rebuild, and run this again.
 }
 
 $statusResult = Invoke-Native -Command 'git' -Arguments @('-C', $repoRoot, 'status', '--porcelain', '--untracked-files=no')
-if ($statusResult.Code -ne 0) { Fail "git status failed: $($statusResult.Output)" }
+if ($statusResult.Code -ne 0) { Fail "git status failed: $($statusResult.Error)" }
 if ($statusResult.Output)
 {
     Fail "working tree has uncommitted changes; a package built from it cannot be reproduced.`n$($statusResult.Output)"
@@ -144,8 +167,14 @@ foreach ($check in @(
 {
     $arguments = @((Join-Path $repoRoot $check[0])) + $check[1]
     $result = Invoke-Native -Command 'python' -Arguments $arguments
-    Write-Host $result.Output
-    if ($result.Code -ne 0) { Fail "$($check[0]) failed; fix it before publishing anything derived from it." }
+    if ($result.Output) { Write-Host $result.Output }
+    if ($result.Code -ne 0)
+    {
+        # The validators print their diagnostic to stderr, so it is the useful
+        # half of the failure and must be shown rather than swallowed.
+        if ($result.Error) { Write-Host $result.Error -ForegroundColor Red }
+        Fail "$($check[0]) failed; fix it before publishing anything derived from it."
+    }
 }
 
 # --- Build --------------------------------------------------------------------
