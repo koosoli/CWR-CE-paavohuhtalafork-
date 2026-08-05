@@ -4190,6 +4190,18 @@ void DrawWaterTab()
     ImGui::SetItemTooltip("Brightness / coverage of the shoreline foam.");
 
     ImGui::Separator();
+    ImGui::TextUnformatted("Ripple diagnostics");
+    ImGui::Text("Player water depth: %.3f m", static_cast<double>(GetPlayerWaterDepth()));
+    ImGui::Text("Events submitted (total): %u   drained last frame: %u",
+                TotalWaterInteractionsSubmitted(), LastWaterInteractionsDrained());
+    ImGui::TextDisabled("Walk into water and watch these three. Depth stays 0 = ground collision is not "
+                        "reporting water under the player, and nothing downstream can help. Depth rises but "
+                        "the submitted total does not = the emit conditions in Man::Simulate are not met "
+                        "(it needs depth > 0.05 m, and the continuous ripple also needs horizontal speed > "
+                        "0.15 m/s). Both rise but the water is flat = the events reach the renderer and the "
+                        "solver or its display is the problem -- check debug view 12 (interaction height).");
+
+    ImGui::Separator();
     ImGui::TextUnformatted("Wave foam (whitecaps)");
     ImGui::TextDisabled("Crests breaking on open water, separate from the shoreline band above. These are "
                         "different phenomena -- water breaking on land versus a crest collapsing under its own "

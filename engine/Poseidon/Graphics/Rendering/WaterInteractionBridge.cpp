@@ -13,6 +13,11 @@ uint32_t pendingCount = 0;
 std::mutex pendingEventsMutex;
 std::atomic<float> playerWaterDepth{0.0f};
 std::atomic<bool> rifleWaterImpactSprayEnabled{true};
+// Diagnostics for the Water tab. Player ripples stopped working and the code that emits them was
+// still intact, so the useful question is WHICH end is silent: nothing submitted, or submitted and
+// never drained. Two counters answer it without a debugger.
+std::atomic<uint32_t> submittedTotal{0};
+std::atomic<uint32_t> lastDrained{0};
 } // namespace
 
 void SubmitWaterInteraction(const HydroWaterInteractionEvent& event)
@@ -28,6 +33,7 @@ void SubmitWaterInteraction(const HydroWaterInteractionEvent& event)
         --pendingCount;
     }
     pendingEvents[pendingCount++] = event;
+    submittedTotal.fetch_add(1, std::memory_order_relaxed);
 }
 
 uint32_t DrainWaterInteractions(HydroWaterInteractionEvent* events, uint32_t capacity)
@@ -48,7 +54,18 @@ uint32_t DrainWaterInteractions(HydroWaterInteractionEvent* events, uint32_t cap
         pendingEvents[i - count] = pendingEvents[i];
     }
     pendingCount -= count;
+    lastDrained.store(count, std::memory_order_relaxed);
     return count;
+}
+
+uint32_t TotalWaterInteractionsSubmitted()
+{
+    return submittedTotal.load(std::memory_order_relaxed);
+}
+
+uint32_t LastWaterInteractionsDrained()
+{
+    return lastDrained.load(std::memory_order_relaxed);
 }
 
 void SetPlayerWaterDepth(float depth)

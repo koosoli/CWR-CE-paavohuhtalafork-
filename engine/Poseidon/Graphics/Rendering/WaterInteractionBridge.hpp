@@ -47,6 +47,13 @@ uint32_t DrainWaterInteractions(HydroWaterInteractionEvent* events, uint32_t cap
 void SetPlayerWaterDepth(float depth);
 float GetPlayerWaterDepth();
 
+// Water-tab diagnostics. Running total of events handed to the bridge, and how many the render
+// path took on its last drain. Together with the player water depth these localise a dead ripple
+// to one of three places: depth never rises (collision), depth rises but nothing is submitted
+// (the emit conditions), or events are submitted and drained but nothing appears (the solver).
+uint32_t TotalWaterInteractionsSubmitted();
+uint32_t LastWaterInteractionsDrained();
+
 // Dev-only visual control for the legacy CPU droplet emitter used by ordinary
 // rifle impacts. The water ripple/foam event remains independent of this switch.
 void SetRifleWaterImpactSprayEnabled(bool enabled);

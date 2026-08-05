@@ -1025,7 +1025,13 @@ fn planar_reflection(surface_rel: vec3<f32>, surface_normal: vec3<f32>, roughnes
     // a fixed water point as the player pitches. Surface roughness is handled by the
     // filtered mip chain below instead.
     let distorted_uv = clamp(uv, texel, vec2<f32>(1.0) - texel);
-    let edge = min(min(distorted_uv.x, distorted_uv.y), min(1.0 - distorted_uv.x, 1.0 - distorted_uv.y));
+    // How far OUTSIDE the target this lookup wanted to go. Fading on the INSIDE distance was the
+    // mistake: it threw away good reflection over a band of water that had perfectly valid data,
+    // and still ended in a boundary because the two sources differ. Measuring the overshoot
+    // instead means every pixel the planar target actually covers keeps its full reflection, and
+    // only the pixels beyond it are treated.
+    let over = max(vec2<f32>(0.0), max(texel - uv, uv - (vec2<f32>(1.0) - texel)));
+    let outside = length(over);
     // Hand over to the sky/environment reflection across a WIDE band, not a hard rim.
     //
     // Some water simply cannot be covered by a planar reflection: tilt down and the water directly
@@ -1038,14 +1044,23 @@ fn planar_reflection(surface_rel: vec3<f32>, surface_normal: vec3<f32>, roughnes
     // read as a line drawn across the sea. Spreading it over a large fraction of the target makes
     // the same handover invisible -- the reflection loses parallax gradually instead of ending.
     let fade_band = clamp(wp.underwater_gate.w, 0.02, 0.49);
-    let valid = smoothstep(max(texel.x, texel.y), fade_band, edge);
+    // Beyond the target, keep sampling the CLAMPED edge texels and blur them progressively into
+    // an average instead of dropping the reflection. Clamping alone would smear recognisable
+    // detail into streaks; blurring toward the top of the mip chain turns it into a plausible
+    // continuation of the sky above it, which for a cloud reflection is what the eye accepts.
+    let outside_t = clamp(outside / fade_band, 0.0, 1.0);
+    // Still fade, but over twice the band and starting only once we are outside -- so the handover
+    // is a long dissolve at the far edge rather than a boundary drawn across usable water.
+    let valid = 1.0 - smoothstep(0.0, fade_band * 2.0, outside);
     // The planar target is a real filtered mip pyramid. Keep a small minimum
     // footprint even on calm water: otherwise the cloud layer reads like a second,
     // unnaturally sharp sky painted on the sea. Surface roughness still broadens it
     // strongly for foam and windier conditions.
     let max_mip = f32(textureNumLevels(planar_color) - 1u);
     let reflection_lod = (0.14 + 0.86 * roughness * roughness) * max_mip;
-    let color = textureSampleLevel(planar_color, planar_samp, distorted_uv, reflection_lod).rgb;
+    // Escalate toward the coarsest mip as the lookup leaves the target, so the smear dissolves.
+    let lod = min(max_mip, mix(reflection_lod, max_mip, outside_t));
+    let color = textureSampleLevel(planar_color, planar_samp, distorted_uv, lod).rgb;
     return vec4<f32>(color, valid);
 }
 
