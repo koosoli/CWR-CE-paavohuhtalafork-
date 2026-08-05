@@ -12,7 +12,7 @@ roadmap:
   # deliberately NOT edited by the activation commit: a roadmap change in the same
   # commit could never name its own hash here, so roadmap prose corrections land
   # separately and update this field, the sha256 above, and the checksum manifest.
-  repository_commit: e7bd9112c8d4de4c102d57828f0144701ecfa4af
+  repository_commit: cc5000358a5006d8b633acefbf5537d26fbc7e90
 
 ledger:
   path: docs/roadmap/status-ledger.yaml
@@ -95,10 +95,10 @@ bootstrap_policy:
   resolution:
     resolved_at: "2026-08-05"
     resolved_by: Oliver Kay
-    resolution_commit: null
+    resolution_commit: 3723892dd1520ebe2a0ae0b561c1f915a97ebb4f
     checks:
       baseline_resolved_from_checkout: 513430ae392f60dfa3375ad1cba600bbbc082a39
-      roadmap_repository_commit_recorded: e7bd9112c8d4de4c102d57828f0144701ecfa4af
+      roadmap_repository_commit_recorded: cc5000358a5006d8b633acefbf5537d26fbc7e90
       roadmap_sha256_matches_tracked_file: true
       ledger_exists_and_satisfies_full_schema: true
       every_authorised_candidate_and_held_ticket_resolves_in_roadmap: true
