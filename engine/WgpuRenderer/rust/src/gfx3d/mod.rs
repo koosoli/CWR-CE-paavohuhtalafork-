@@ -15,6 +15,7 @@ mod cull;
 // Hi-Z depth pyramid for GPU-driven occlusion culling (docs/gpu-culling-and-depth-plan.md §5).
 mod gtao_depth_mips;
 mod hiz;
+pub mod sky_bake;
 pub mod sky_vis;
 use sky_vis::{SkyVisSettings, SkyVisView};
 

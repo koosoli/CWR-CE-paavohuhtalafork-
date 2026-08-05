@@ -288,6 +288,33 @@ a conservative union — with the TILTED views' along-axis depth cut right down 
 reach through an opening a few metres away, not 300 m) — would replace five instance sweeps with
 one. Not done yet; measure it, do not assume it.
 
+### Stage 2 progress (2026-08-05): the bake core exists and is proven
+
+`gfx3d/sky_bake.rs` + `sky_bake.wgsl` + `sky_bake_depth.wgsl` implement the bake itself: rasterise
+one model into a depth map per sky direction IN MODEL SPACE, then reduce those maps into a
+model-space visibility volume. Pure and synchronous by design — the caching and scheduling §3d
+demands live above it, so the core stays testable.
+
+Proven on a synthetic room (6 x 3 x 6 m, walls + floor + ceiling, 25 directions: zenith plus rings
+at 35 and 65 deg):
+
+| assertion | result |
+|---|---|
+| sealed room interior | < 0.15 visibility |
+| above the roof | > 0.7 |
+| window side vs far corner (same room, hole in the +X wall) | window side higher by > 0.05 |
+| **same comparison with the hole FILLED** | gradient absent — so it is the window, not the shape |
+
+That third row is the falsifier built into the suite: without it, "the window side is brighter"
+would pass on any volume that merely darkens toward corners. All three fail when the depth test is
+seeded out of the reduce shader, checked rather than assumed.
+
+**Still to do before this replaces the per-frame path:** feed real model geometry from the pool
+(the core takes positions + indices, the renderer has them in the geometry pool per LOD/section),
+a volume atlas plus per-model offset/scale in the model table, the per-fragment sample in
+`gpu_driven.wgsl`, and everything in §3d — content-hashed disk cache, background scheduling with a
+reach = 1 fallback, per-object volume lookup for movers, and the model-variance policy.
+
 ## 5. Risks
 
 - **Temporal stability.** Snap the ortho origin to texel size. See the GTAO mip march for what
