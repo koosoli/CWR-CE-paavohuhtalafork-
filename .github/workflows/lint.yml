@@ -46,6 +46,13 @@ jobs:
       - name: Check capability matrix matches the ledgers
         run: python3 scripts/generate_capability_matrix.py --check
 
+      # ASSET-010. Source files live under the gitignored assets/ tree so CI has
+      # none of them and the hash checks skip; what this enforces here is that
+      # every entry carries a real licence trail and that only one source is
+      # SELECTED. The hash half runs for whoever does have the files.
+      - name: Validate third-party asset registry
+        run: python3 scripts/validate_asset_registry.py
+
       # Cheap, and it guards a failure mode that is invisible when it happens:
       # two tests writing the same screenshot filename is a false pass under a
       # parallel run, not merely an overwritten file.

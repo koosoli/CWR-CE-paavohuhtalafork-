@@ -1,0 +1,141 @@
+schema_version: 1
+purpose: >-
+  ASSET-010 third-party source registry. Every asset that reaches a build must be
+  traceable from a verified original-provider licence to the exact bytes shipped.
+
+  This exists because the grass textures already in use had none of it: untracked
+  files, no source URL, no licence record, no metadata, and no recipe that could
+  rebuild them. They cannot be registered retroactively -- a recollection of where
+  a file came from is not provenance, and writing a guessed URL into this file
+  would be worse than leaving it empty, because it would look checked.
+
+licence_rule: >-
+  Aggregator licence labels are NOT authoritative. A 3dassets.one or similar search
+  result records what the aggregator believes. Every entry here must cite the
+  ORIGINAL provider's own statement, at a URL a reader can open.
+
+field_reference:
+  id: Stable identifier used by processing recipes and derived-asset records.
+  source_url: Where the files were fetched from.
+  provider_url: Original provider's site, not an aggregator.
+  provider: Provider name.
+  author: Author or studio, where stated.
+  licence: SPDX-style identifier where one applies.
+  licence_url: The provider's own licence statement.
+  licence_quote: The provider's wording, so a later licence change is detectable.
+  downloaded_utc: Date the archive hashes below were taken.
+  product_name: Provider's own product key. The unambiguous identifier; numeric
+    library ids are convenience links only.
+  intended_use: What this asset is for in this repo.
+  selection: SELECTED, REJECTED or EVALUATING, with a reason. GRS-GATE-1 requires
+    exactly one source path chosen AFTER comparing candidates, so rejected
+    candidates stay recorded rather than being deleted.
+  files: Per-file sha256 and byte length, as fetched, before any processing.
+
+sources:
+  - id: pbrpx-echinochloa-crus-galli-leaf-01
+    source_url: https://asset.pbrpx.com/Textures/PX_Echinochloa_crus_galli_Leaf_01/1K/
+    provider_url: https://library.pbrpx.com/asset?asset=517
+    product_name: PX_Echinochloa_crus_galli_Leaf_01
+    provider: PBRPX
+    author: PBRPX
+    licence: CC0-1.0
+    licence_url: https://pbrpx.com
+    licence_quote: >-
+      "You can use these assets for any purpose without worrying about copyright
+      issues. You can even sell these assets with your project." -- pbrpx.com,
+      describing its library as a CC0 asset library. Verified 2026-08-05 on the
+      provider's own site, not on the aggregator that surfaced it.
+    licence_note: >-
+      The provider states CC0 site-wide rather than per asset; there is no
+      per-asset licence field on the asset page. Recorded as such so the basis of
+      the claim is visible.
+
+      Separately, PBRPX's API at api.pbrpx.com carries DIFFERENT terms -- free for
+      non-profit and academic use, with commercial use requiring custom licensing.
+      Those terms govern the API, not the assets. Nothing in this repo may depend
+      on that API at build or run time; files are fetched from asset.pbrpx.com
+      directly. Discovery for this entry used one manual query only.
+    downloaded_utc: "2026-08-05"
+    intended_use: >-
+      Source sheet for the near-LOD grass blade array. ~20 isolated leaf blades on
+      a transparent background, which is the shape the existing 8-layer 64x256
+      array wants.
+    selection: >-
+      SELECTED. Compared against pbrpx-imperata-cylindrica-atlas-09 by inspecting
+      both opacity masks rather than by name: this one is isolated leaf blades,
+      tapering, with varying widths, and its albedo carries the exact structure
+      blade_atlas.rs currently approximates -- midrib, lengthwise veins, edge
+      lightening and tip dieback, plus one naturally dry blade.
+    files:
+      - name: PX_Echinochloa_crus_galli_Leaf_01_albedo.jpg
+        bytes: 80909
+        sha256: 3554e195dc4795f39943c849ebe5adac82affbc3ba20b2f213b951721ea23b55
+      - name: PX_Echinochloa_crus_galli_Leaf_01_opacity.jpg
+        bytes: 99504
+        sha256: d6d90bfa2bdb68e1ed0c8016409dfbe4a1c15193a76c38fc1bf5f355b0e68f24
+      - name: PX_Echinochloa_crus_galli_Leaf_01_normal.jpg
+        bytes: 126774
+        sha256: c4f217f5152df586ed0c74896086a645dbd240d74579b3f861a70e1207114b41
+      - name: PX_Echinochloa_crus_galli_Leaf_01_roughness.jpg
+        bytes: 67692
+        sha256: 9e228345eda857e4677ff4e57975b4089c48cc97a69cafd3f3651617de29996e
+      - name: PX_Echinochloa_crus_galli_Leaf_01_ao.jpg
+        bytes: 148501
+        sha256: 3b1419e8fdf0a81067cceb99354170b4b8f8988026c880aea83c168ec4bb50b3
+      - name: PX_Echinochloa_crus_galli_Leaf_01_translucency.jpg
+        bytes: 89944
+        sha256: 08664d1460b920ea18b9b7b4864170966975e22fdab4674e38e1f6ad0f5f0d50
+
+  - id: pbrpx-imperata-cylindrica-atlas-09
+    source_url: https://asset.pbrpx.com/Textures/PX_Imperata_cylindrica_Atlas_09/1K/
+    provider_url: https://pbrpx.com
+    product_name: PX_Imperata_cylindrica_Atlas_09
+    provider_url_note: >-
+      The library's numeric asset id for this product was not captured, and is
+      deliberately not guessed. product_name is the key that was verified -- it is
+      what the fetched source_url resolves under.
+    provider: PBRPX
+    author: PBRPX
+    licence: CC0-1.0
+    licence_url: https://pbrpx.com
+    licence_quote: >-
+      Same provider-level CC0 statement as the entry above, verified in the same
+      session.
+    downloaded_utc: "2026-08-05"
+    intended_use: >-
+      Evaluated as a candidate for the near-LOD blade array.
+    selection: >-
+      REJECTED for the blade array, and the reason is worth keeping: despite being
+      an "Atlas" it contains seed-head STALKS, not leaf blades -- flowering spikes
+      on hair-thin stems that would disappear almost entirely when resampled to a
+      64-texel-wide layer. Kept registered because it is a good candidate for seed
+      heads later, which GRS-010 lists as a wanted layer and which the procedural
+      atlas currently fakes with its flower species.
+    files:
+      - name: PX_Imperata_cylindrica_Atlas_09_albedo.jpg
+        bytes: 80790
+        sha256: c6bfac62391212c8f107e38b185affeb6dc65c7ce94e4dfffe4506ee45640959
+      - name: PX_Imperata_cylindrica_Atlas_09_opacity.jpg
+        bytes: 83489
+        sha256: 5d5af09bd27f9aa927db3a186471dd2b866ce9241cd5f8535ded0b9bae85af69
+      - name: PX_Imperata_cylindrica_Atlas_09_normal.jpg
+        bytes: 92497
+        sha256: 57dcab17253a0fca0f531f9715d19062d40423a5ad9853acc09264909d1df391
+      - name: PX_Imperata_cylindrica_Atlas_09_roughness.jpg
+        bytes: 42403
+        sha256: 8b894de2c18f49cc18428f84cb5f120c3c4395936174ff4d4a867085b349e9f6
+      - name: PX_Imperata_cylindrica_Atlas_09_ao.jpg
+        bytes: 99456
+        sha256: dd44644f93691278e02491ac1e0b41586e469aab5d5772915942f5cb0dde99a7
+      - name: PX_Imperata_cylindrica_Atlas_09_translucency.jpg
+        bytes: 69708
+        sha256: 0cd55a77f5bf165e9a653497d5f93118e3d21aa12cef4a701eb061c5e53d42c9
+
+unregistered_local_assets: >-
+  assets/grass/*.png and assets/generated/*.png predate this registry. Their origin
+  is recalled as a public-domain aggregator search but cannot be verified: they are
+  untracked, carry no PNG text metadata, and no processing script or note records
+  which asset produced them. They are therefore treated as LOCAL SCRATCH -- usable
+  on the machine they sit on, never shippable, and never to be registered on the
+  strength of a recollection. The registered source above replaces them.
