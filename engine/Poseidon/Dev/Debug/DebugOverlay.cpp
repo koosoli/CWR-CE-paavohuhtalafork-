@@ -3068,6 +3068,58 @@ void DrawAmbientOcclusionTab()
     ImGui::TextDisabled("  higher = stops harder at creases (keeps wall/floor contact)");
 
     ImGui::Separator();
+    ImGui::TextDisabled("GPU cost (last completed frame)");
+    {
+        float gpuMs[32];
+        const int regions = GEngine->GetWaterGpuTimings(gpuMs, 32);
+        if (regions <= (int)Engine::kGtaoGpuRegionBegin)
+        {
+            ImGui::TextDisabled("Unavailable (adapter lacks TIMESTAMP_QUERY / non-wgpu backend).");
+        }
+        else if (ImGui::BeginTable("aoGpuTimings", 2, ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg))
+        {
+            float total = 0.0f;
+            const int end = std::min(regions, (int)Engine::kGtaoGpuRegionEnd);
+            for (int i = (int)Engine::kGtaoGpuRegionBegin; i < end; ++i)
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::TextUnformatted(GEngine->GetWaterGpuTimingName(i));
+                ImGui::TableNextColumn();
+                if (gpuMs[i] < 0.0f)
+                    ImGui::TextDisabled("n/a");
+                else
+                {
+                    ImGui::Text("%.3f ms", gpuMs[i]);
+                    total += gpuMs[i];
+                }
+            }
+            const float frame = gpuMs[(int)Engine::kFrameGpuRegionTotal];
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::TextUnformatted("GPU frame total");
+            ImGui::TableNextColumn();
+            if (frame < 0.0f)
+                ImGui::TextDisabled("n/a");
+            else
+                ImGui::Text("%.3f ms", frame);
+            ImGui::EndTable();
+            ImGui::Text("AO: %.3f ms", total);
+            if (frame > 0.0f)
+            {
+                ImGui::SameLine();
+                ImGui::TextDisabled("(%.1f%% of the GPU frame)", 100.0f * total / frame);
+            }
+            ImGui::SetItemTooltip("Split three ways because they answer different questions: prep "
+                                  "is fixed setup (partly shared with occlusion culling), the "
+                                  "horizon march scales with slices x steps, and the blur scales "
+                                  "with its radius. Toggle Enabled off and watch the frame total "
+                                  "for the honest delta — passes can overlap, so this sum is an "
+                                  "upper bound on what disabling AO gives back.");
+        }
+    }
+
+    ImGui::Separator();
     if (ImGui::Button("Reset AO to defaults"))
     {
         const bool keepEnabled = ao.enabled;

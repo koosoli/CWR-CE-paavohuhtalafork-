@@ -1053,6 +1053,26 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
                         std::max(ms[WGR_GPU_TIMER_PLANAR_OBJECTS], 0.0f) +
                         std::max(ms[WGR_GPU_TIMER_PLANAR_CLOUDS], 0.0f) + std::max(ms[WGR_GPU_TIMER_PLANAR_MIPS], 0.0f),
                     total);
+                // LIT-010 / LIT-020 live in the same shared region array. Logged from here for
+                // the reason the water rows are: a tab screenshot cannot be diffed against a
+                // previous build, and a default-ON feature whose cost only exists on screen is
+                // an unmeasured feature in practice. Piggybacks the same 2 s budget.
+                float all[WGR_GPU_TIMER_REGION_COUNT] = {};
+                const int n = _engine.GetWaterGpuTimings(all, WGR_GPU_TIMER_REGION_COUNT);
+                if (n >= (int)WGR_GPU_TIMER_REGION_COUNT)
+                {
+                    const float ao = std::max(all[WGR_GPU_TIMER_GTAO_PREP], 0.0f) +
+                                     std::max(all[WGR_GPU_TIMER_GTAO_COMPUTE], 0.0f) +
+                                     std::max(all[WGR_GPU_TIMER_GTAO_BLUR], 0.0f);
+                    const float sky = std::max(all[WGR_GPU_TIMER_INTERIOR_SKY_CULL], 0.0f) +
+                                      std::max(all[WGR_GPU_TIMER_INTERIOR_SKY_DRAW], 0.0f);
+                    LOG_INFO(Graphics,
+                             "Lighting GPU ms: ao_prep={:.3f} ao_march={:.3f} ao_blur={:.3f} ao_total={:.3f} | "
+                             "isky_cull={:.3f} isky_maps={:.3f} isky_total={:.3f} | frame={:.3f}",
+                             all[WGR_GPU_TIMER_GTAO_PREP], all[WGR_GPU_TIMER_GTAO_COMPUTE],
+                             all[WGR_GPU_TIMER_GTAO_BLUR], ao, all[WGR_GPU_TIMER_INTERIOR_SKY_CULL],
+                             all[WGR_GPU_TIMER_INTERIOR_SKY_DRAW], sky, all[WGR_GPU_TIMER_FRAME_TOTAL]);
+                }
             }
         }
         if (rateOk)

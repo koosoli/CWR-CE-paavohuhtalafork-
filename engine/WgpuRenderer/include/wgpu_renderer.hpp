@@ -1007,7 +1007,11 @@ enum WgrGpuTimerRegion : uint32_t
      * relabels every existing row. */
     WGR_GPU_TIMER_INTERIOR_SKY_CULL = 26, // one cull dispatch chain per sampled sky direction
     WGR_GPU_TIMER_INTERIOR_SKY_DRAW = 27, // the per-direction depth passes that fill the map
-    WGR_GPU_TIMER_REGION_COUNT = 28,
+    /* LIT-010 — screen-space AO, split so the three stages can be attributed separately. */
+    WGR_GPU_TIMER_GTAO_PREP = 28,    // depth resolve + normal resolve + linear-Z mip chain
+    WGR_GPU_TIMER_GTAO_COMPUTE = 29, // the horizon march (scales with slices x steps)
+    WGR_GPU_TIMER_GTAO_BLUR = 30,    // bilateral denoise (scales with blur radius)
+    WGR_GPU_TIMER_REGION_COUNT = 31,
 };
 
 /* GRS-A — grass instance accounting (mirrors WgrGrassStats in rust/src/ffi.rs).

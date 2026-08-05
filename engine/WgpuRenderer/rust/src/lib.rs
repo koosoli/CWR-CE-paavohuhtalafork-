@@ -2597,7 +2597,7 @@ impl Renderer {
                     }
                 }
                 self.gfx3d
-                    .render_gtao(&self.device, &self.queue, &mut encoder, main_scene_cam);
+                    .render_gtao(&self.device, &self.queue, &mut encoder, main_scene_cam, &self.gpu_timers);
             }
 
             // Depth attachment for this segment's sub-passes. Post-tonemap (resolved) the target is

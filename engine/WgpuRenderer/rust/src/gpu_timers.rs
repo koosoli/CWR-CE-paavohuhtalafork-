@@ -67,11 +67,16 @@ pub enum Region {
     // a set of depth passes), so they bracket like the water ones.
     InteriorSkyCull = 26, // one cull dispatch chain per sampled sky direction
     InteriorSkyDraw = 27, // the per-direction depth passes that fill the sky map
+    // --- LIT-010: screen-space AO. Its cost had never been measured, which is a poor state in
+    // which to make it default-on.
+    GtaoPrep = 28,    // depth resolve + normal resolve + the linear-Z mip chain
+    GtaoCompute = 29, // the horizon-march itself
+    GtaoBlur = 30,    // bilateral denoise
     FrameTotal = 25,   // all submitted frame work; excludes acquire/present pacing
 }
 
 /// Region count — the FFI getter's element contract (WGR_GPU_TIMER_REGION_COUNT).
-pub const REGION_COUNT: usize = 28;
+pub const REGION_COUNT: usize = 31;
 /// Water occupies [0, WATER_REGION_COUNT); grass occupies the remainder. The two
 /// debug tabs slice the shared array with these so neither shows the other's rows.
 /// Consumed on the C++ side (Engine::kWaterGpuRegionEnd) and by the layout test.
@@ -328,7 +333,7 @@ mod tests {
     // count + a few pinned indices catches accidental reordering on either side.
     #[test]
     fn region_indices_stay_ffi_stable() {
-        assert_eq!(REGION_COUNT, 28);
+        assert_eq!(REGION_COUNT, 31);
         assert_eq!(Region::SpectrumInit as u32, 0);
         assert_eq!(Region::FftCompose as u32, 4);
         assert_eq!(Region::Interaction as u32, 5);
@@ -346,6 +351,8 @@ mod tests {
         // row in the debug tabs.
         assert_eq!(Region::InteriorSkyCull as u32, 26);
         assert_eq!(Region::InteriorSkyDraw as u32, 27);
+        assert_eq!(Region::GtaoPrep as u32, 28);
+        assert_eq!(Region::GtaoBlur as u32, 30);
         // Every region's begin/end pair fits the query set.
         assert!(QUERY_COUNT as usize == REGION_COUNT * 2);
         // A u32 written mask covers all regions.

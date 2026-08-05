@@ -268,6 +268,12 @@ bug, which is exactly the failure mode the handover warns about.
 | GPU frame total | 7.123 |
 | share of frame | **11.1%** |
 
+A second measurement, on an area where nothing is in the box, separates the two terms much more
+sharply: `isky_cull=0.362 isky_maps=0.055` of a 6.47 ms frame. The DEPTH MAPS are nearly free when
+there is nothing to draw — but the CULL is not, because it sweeps the whole instance table whether
+or not anything survives. So roughly 0.36 ms is a FIXED tax paid per frame regardless of scene
+content, and it is ~7x the cost of the rasterisation it feeds.
+
 The surprise is that the CULL costs twice the DRAW. Each of the five views runs the full
 three-pass collapse over the whole retained instance table (~98k instances) to keep a handful that
 fall inside a 64 m box. The draw is cheap precisely because so little survives.

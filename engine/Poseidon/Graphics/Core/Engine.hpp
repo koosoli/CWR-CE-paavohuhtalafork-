@@ -929,10 +929,13 @@ class Engine : public IGraphicsEngine
     /// between objects and the ground. The two occlude independently and are multiplied.
     ///
     /// Applied to the AMBIENT term only, on terrain + opaque objects; water is untouched.
-    /// wgpu path only. Default OFF pending look validation. See docs/screen-space-ao-plan.md.
+    /// wgpu path only. Default ON since 2026-08-05 (owner call after smoke testing alongside
+    /// LIT-020); its GPU cost is now measured — see the Amb. Occlusion tab's timer rows, which
+    /// were added in the same change specifically so a default-on feature is not also an
+    /// unmeasured one. See docs/screen-space-ao-plan.md.
     struct AoSettings
     {
-        bool enabled = false;
+        bool enabled = true;
         // Occlusion reach in WORLD metres, projected to pixels per fragment (so AO does not
         // swell as you walk toward a wall). ~1-2 m reads as contact shadow; larger reads as
         // soft global shading.
@@ -1674,7 +1677,10 @@ class Engine : public IGraphicsEngine
         // LIT-020 — sliced by the Interior Sky tab.
         kInteriorSkyGpuRegionBegin = 26,
         kInteriorSkyGpuRegionEnd = 28,
-        kGpuRegionEnd = 28,
+        // LIT-010 — sliced by the Amb. Occlusion tab.
+        kGtaoGpuRegionBegin = 28,
+        kGtaoGpuRegionEnd = 31,
+        kGpuRegionEnd = 31,
     };
 
   protected:

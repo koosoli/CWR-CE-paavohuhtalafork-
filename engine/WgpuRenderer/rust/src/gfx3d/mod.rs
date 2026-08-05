@@ -2264,8 +2264,10 @@ pub struct GtaoSettings {
 
 impl Default for GtaoSettings {
     fn default() -> Self {
-        // Default OFF: this is a look change over every opaque surface, so it ships behind the
-        // flag until it has been seen on a real island.
+        // Default ON since 2026-08-05 — it HAS now been seen on a real island, and the GPU cost
+        // it used to ship without is measured (Region::GtaoPrep/Compute/Blur). Kept in sync with
+        // C++ Engine::AoSettings, which pushes every frame and therefore wins; this value only
+        // decides frame 0.
         //
         // max_radius_px is the value that matters and it is MEASURED, not guessed. It is a cost
         // clamp, but it silently shortens the world radius whenever it bites, and at 800x600 with
@@ -2297,7 +2299,7 @@ impl Default for GtaoSettings {
         // screen radius O(log n) instead of O(n) — plan Stage 3, and the one genuinely useful
         // idea to take from ZenRCAO. The Hi-Z pyramid already exists here for occlusion culling.
         Self {
-            enabled: false,
+            enabled: true,
             radius_m: 2.0,
             strength: 1.0,
             slices: 3,
@@ -6107,6 +6109,7 @@ impl Gfx3d {
         queue: &wgpu::Queue,
         encoder: &mut wgpu::CommandEncoder,
         camera: usize,
+        timers: &crate::gpu_timers::GpuTimers,
     ) {
         let s = self.gtao_settings;
         if !s.enabled {
@@ -6116,6 +6119,11 @@ impl Gfx3d {
             return;
         };
         let (w, h) = self.depth_size;
+        // Timed in three parts because they answer different questions: PREP is the fixed setup
+        // cost paid before any AO exists (and is partly shared with occlusion culling), COMPUTE
+        // scales with slices x steps, and BLUR scales with its radius. One combined number would
+        // hide which knob to reach for.
+        timers.begin(encoder, crate::gpu_timers::Region::GtaoPrep);
         // Hi-Z may have resolved the depth already this frame, but it only runs when occlusion
         // culling is on. Recording it twice would be redundant GPU work, not a correctness bug;
         // skipping it when occlusion is off would make GTAO read a stale depth buffer, which is
@@ -6134,6 +6142,7 @@ impl Gfx3d {
             self.gtao_depth_mips
                 .build(device, queue, encoder, depth, near);
         }
+        timers.end(encoder, crate::gpu_timers::Region::GtaoPrep);
         self.gtao.upload(
             queue,
             &GtaoParams {
@@ -6166,8 +6175,12 @@ impl Gfx3d {
             s.blur_depth_scale,
             s.blur_normal_power,
         );
+        timers.begin(encoder, crate::gpu_timers::Region::GtaoCompute);
         self.gtao.dispatch(encoder, w, h);
+        timers.end(encoder, crate::gpu_timers::Region::GtaoCompute);
+        timers.begin(encoder, crate::gpu_timers::Region::GtaoBlur);
         self.gtao_blur.dispatch(encoder, w, h);
+        timers.end(encoder, crate::gpu_timers::Region::GtaoBlur);
     }
 
     // Record the color-pass occlusion cull (main_occlude), reading this frame's Hi-Z. Recorded

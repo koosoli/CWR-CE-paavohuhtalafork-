@@ -2935,6 +2935,9 @@ const char* EngineWgpu::GetWaterGpuTimingName(int region) const
         "GPU frame total",                // WGR_GPU_TIMER_FRAME_TOTAL (all submitted work)
         "Interior sky: cull",             // WGR_GPU_TIMER_INTERIOR_SKY_CULL (one chain per direction)
         "Interior sky: depth maps",       // WGR_GPU_TIMER_INTERIOR_SKY_DRAW (all directions)
+        "AO prep (resolve + mips)",       // WGR_GPU_TIMER_GTAO_PREP
+        "AO horizon march",               // WGR_GPU_TIMER_GTAO_COMPUTE
+        "AO bilateral blur",              // WGR_GPU_TIMER_GTAO_BLUR
     };
     return (region >= 0 && region < (int)WGR_GPU_TIMER_REGION_COUNT) ? kNames[region] : "";
 }
