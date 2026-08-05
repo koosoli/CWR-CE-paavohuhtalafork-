@@ -139,3 +139,48 @@ unregistered_local_assets: >-
   which asset produced them. They are therefore treated as LOCAL SCRATCH -- usable
   on the machine they sit on, never shippable, and never to be registered on the
   strength of a recollection. The registered source above replaces them.
+
+derived:
+  - id: grass-near-blade-layers
+    from_source: pbrpx-echinochloa-crus-galli-leaf-01
+    recipe: scripts/build_grass_blade_atlas.py
+    recipe_version: 1
+    output_dir: assets/grass
+    consumed_by: >-
+      TerrainWgpu::UploadGrassBladeAtlas, which loads the eight files as an
+      opaque 8-layer 64x256 texture array for the near grass ring. Absence of any
+      one of them falls the whole set back to the procedural atlas in
+      blade_atlas.rs -- the fallback is all-or-nothing by design.
+    known_defect: >-
+      Layer 3 carries a brown diagonal near the tip: another stem crossed this
+      blade in the source photograph and sits inside its opacity mask, so the
+      unwrap samples it. Left in rather than hand-corrected, because hand
+      correction is exactly what this recipe exists to remove; it reads as
+      damage on one of eight species at gameplay distance. Fix belongs in the
+      recipe (reject rows whose colour deviates from the blade's own trend) if
+      it ever looks wrong in motion.
+    files:
+      - name: meadow-grass-blade-0.png
+        bytes: 13012
+        sha256: 39d0ebfe07a63b274064f0d492cc253114a51dda66fbcb5282ff99e5ec046f3b
+      - name: meadow-grass-blade-1.png
+        bytes: 17023
+        sha256: e930f895860c92ebf4acf97bba0bf57e1a32ad204af6bf3c87b8db8d2076169c
+      - name: meadow-grass-blade-2.png
+        bytes: 12768
+        sha256: 4f273ef0e5a6dbd8d2d375c3a7c6541dd846b1211981b994d1c2813ed2f48dbd
+      - name: meadow-grass-blade-3.png
+        bytes: 12922
+        sha256: 853a7eee3130379d466090453004142727f1dd9788f2dc238a6702a8374ccffe
+      - name: meadow-grass-blade-4.png
+        bytes: 11273
+        sha256: baf57c710bb3a1ddac0dd3edd12f8c3dfd172e35df1b12479980563e685989b8
+      - name: meadow-grass-blade-5.png
+        bytes: 10116
+        sha256: d1bc60e18325582eb31b4a9f3bb0b9a251df746fe89568fcec4ab1661ff187d9
+      - name: meadow-grass-blade-6.png
+        bytes: 11903
+        sha256: 79eabb77b1f29350d28408be8ecfb8c16d0c58c993caf332d54958d656f6bc4f
+      - name: meadow-grass-blade-7.png
+        bytes: 10144
+        sha256: aa591b3f60eab0c58d2c461715177308f3fd0ec1cff19efc59b5ffea94a5a233
