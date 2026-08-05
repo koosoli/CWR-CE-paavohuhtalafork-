@@ -40,6 +40,13 @@
 .PARAMETER OutputRoot
     Where the package directory is created. Default dist/packages.
 
+.PARAMETER ManifestPath
+    Build manifest describing the packaged commit. Defaults to the recorded
+    Preview-0 manifest, which normally will NOT match a release candidate: that
+    file is TEST-002's evidence and is hashed as such, so a candidate should
+    generate its own with write_preview0_manifest.py and pass it here rather than
+    overwriting a different ticket's record.
+
 .PARAMETER SkipBuild
     Package what is already staged in dist/ instead of building first. Verified by
     content, never by timestamp -- see the stale-binary note above.
@@ -53,6 +60,7 @@ param(
     [string]$Preset = 'win-x64-clang-rwdi',
     [string]$Version = 'preview0',
     [string]$OutputRoot,
+    [string]$ManifestPath,
     [switch]$SkipBuild
 )
 
@@ -269,10 +277,16 @@ it silently behaves like an older build.
 # tell which is the build in their hands, which is worse than shipping neither.
 
 Step 'Checking the build manifest describes the pinned commit'
-$manifestPath = Join-Path $repoRoot 'docs\roadmap\evidence\preview0-manifest.json'
+# Defaults to the recorded Preview-0 manifest, but a release candidate normally
+# supplies its own with -ManifestPath. That recorded file is TEST-002's evidence
+# and is hashed as such, so regenerating it in place to describe a newer build
+# would silently invalidate a different ticket's record.
+if (-not $ManifestPath) { $ManifestPath = Join-Path $repoRoot 'docs\roadmap\evidence\preview0-manifest.json' }
+elseif (-not [IO.Path]::IsPathRooted($ManifestPath)) { $ManifestPath = Join-Path $repoRoot $ManifestPath }
+$manifestPath = $ManifestPath
 if (-not (Test-Path $manifestPath))
 {
-    Fail "no build manifest at docs/roadmap/evidence/preview0-manifest.json; generate one with scripts/write_preview0_manifest.py"
+    Fail "no build manifest at $manifestPath; generate one with scripts/write_preview0_manifest.py"
 }
 $manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json
 if ($manifest.git_commit -ne $resolved)
@@ -313,13 +327,15 @@ New-Item -ItemType Directory -Force -Path $docsDir | Out-Null
 foreach ($doc in @(
         'docs/release/preview0/README.md',
         'docs/release/preview0/capability-matrix.md',
-        'docs/roadmap/tier1-preview0-validation.md',
-        'docs/roadmap/evidence/preview0-manifest.json'))
+        'docs/roadmap/tier1-preview0-validation.md'))
 {
     $source = Join-Path $repoRoot $doc
     if (Test-Path $source) { Copy-Item $source -Destination $docsDir }
     else { Write-Host "NOTE: missing expected document $doc" -ForegroundColor Yellow }
 }
+# The manifest ships under a stable name regardless of which candidate file it
+# came from, so a reader always finds it at docs/preview0-manifest.json.
+Copy-Item $manifestPath -Destination (Join-Path $docsDir 'preview0-manifest.json')
 
 # --- Fingerprint --------------------------------------------------------------
 #
