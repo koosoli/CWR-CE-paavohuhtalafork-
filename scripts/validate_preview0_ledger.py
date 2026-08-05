@@ -24,6 +24,25 @@ def text(path: pathlib.Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
+def canonical_bytes(path: pathlib.Path) -> bytes:
+    """Read a tracked text file as CI will check it out.
+
+    The roadmap and overlay hashes are recorded by hand on Windows and verified
+    on Linux, so hashing the working-tree bytes makes the check depend on line
+    endings rather than on content.  `.gitattributes` pins `*.md` to `eol=lf`,
+    so a Windows editor that writes CRLF produces a file whose hash cannot match
+    the blob CI reads -- and the failure is invisible locally, because the same
+    CRLF bytes are on both sides of the local comparison.  That happened: an
+    activation commit recorded a CRLF hash and would have failed hosted CI only.
+
+    Normalising to LF costs nothing, since the recorded values were always LF
+    hashes; it only stops a CRLF worktree from agreeing with itself.
+    """
+    if not path.is_file():
+        raise ValueError(f"missing: {path.relative_to(ROOT)}")
+    return path.read_bytes().replace(b"\r\n", b"\n")
+
+
 def ids(doc: str, key: str) -> list[str]:
     lines = doc.splitlines()
     try:
@@ -175,8 +194,8 @@ def verify_clean_manifest() -> None:
 def verify_canonical_checksums(roadmap: pathlib.Path, overlay: pathlib.Path) -> None:
     tracked_file(str(CHECKSUMS.relative_to(ROOT)), "Preview-0 checksum manifest")
     expected_lines = {
-        f"{hashlib.sha256(roadmap.read_bytes()).hexdigest()}  {roadmap.name}",
-        f"{hashlib.sha256(overlay.read_bytes()).hexdigest()}  {overlay.name}",
+        f"{hashlib.sha256(canonical_bytes(roadmap)).hexdigest()}  {roadmap.name}",
+        f"{hashlib.sha256(canonical_bytes(overlay)).hexdigest()}  {overlay.name}",
     }
     recorded_lines = set(text(CHECKSUMS).splitlines())
     missing = expected_lines - recorded_lines
@@ -207,7 +226,7 @@ def main() -> int:
         tracked_file(path_line.split(": ", 1)[1], "canonical roadmap")
         tracked_file(str(OVERLAY.relative_to(ROOT)), "canonical overlay")
         expected_hash = next(line for line in overlay.splitlines() if line.startswith("  sha256: ")).split(": ", 1)[1]
-        actual_hash = hashlib.sha256(roadmap.read_bytes()).hexdigest()
+        actual_hash = hashlib.sha256(canonical_bytes(roadmap)).hexdigest()
         if actual_hash != expected_hash:
             raise ValueError("canonical roadmap hash mismatch")
         verify_canonical_checksums(roadmap, OVERLAY)

@@ -126,7 +126,8 @@ def main(argv: list[str]) -> int:
         print("--write needs a ticket id or --all", file=sys.stderr)
         return 1
     blocks = ticket_blocks(LEDGER.read_text(encoding="utf-8"))
-    wanted = sorted(blocks) if argv[0] == "--all" else [argv[0]]
+    sweep = argv[0] == "--all"
+    wanted = sorted(blocks) if sweep else [argv[0]]
     computed: dict[str, str] = {}
     for ticket in wanted:
         if ticket not in blocks:
@@ -134,8 +135,19 @@ def main(argv: list[str]) -> int:
             return 1
         value, paths = evidence_hash(blocks[ticket])
         if not paths:
-            print(f"{ticket}: no tracked evidence files — nothing to hash", file=sys.stderr)
-            return 1
+            # Fatal when a specific ticket was asked for -- the caller expected a
+            # hash and there is nothing to derive one from. Not fatal during a
+            # sweep: an OPEN ticket legitimately has no evidence yet, and the
+            # ledger only requires evidence_hash once a ticket reaches VALIDATED
+            # or SHIPPABLE. Before this, adding one unstarted ticket made --all
+            # exit non-zero before writing anything, so the recompute the
+            # validator tells you to run silently did nothing at all.
+            message = f"{ticket}: no tracked evidence files — nothing to hash"
+            if not sweep:
+                print(message, file=sys.stderr)
+                return 1
+            print(f"{message} (skipped)")
+            continue
         computed[ticket] = value
         print(f"{ticket}  {value}  ({len(paths)} file(s))")
     if write:
