@@ -331,6 +331,33 @@ so the content-hashed cache is a requirement and not a nicety.
 in the model table, the per-fragment sample in `gpu_driven.wgsl`, and everything in §3d — content-hashed disk cache, background scheduling with a
 reach = 1 fallback, per-object volume lookup for movers, and the model-variance policy.
 
+### The shadow patches: cause found, and my earlier diagnosis was wrong (2026-08-05)
+
+I attributed the patches to the per-frame map's camera-space texel grid, and argued they were
+structural to that approach. **That was wrong.** The tester found that setting `directional = 0`
+removes them, which isolates the cause precisely: it is the DIRECTIONAL STEERING, not the depth
+sampling.
+
+The mechanism: `interior_sky_ambient_normal` bends the shading normal toward the reach-weighted
+open direction, but there are only FIVE sampled directions. Across a surface the weights shift and
+the steered normal jumps between discrete directions, so the sky-irradiance lookup jumps with it —
+producing hard patches that look like geometry and are not. The same code runs on both paths,
+which is why the artifact appeared in Stage 1 and again in Stage 2.
+
+Both defaults changed accordingly: `directional` 0.7 -> **0**, `floor` 0.55 -> **0.20** (the
+tester's value in a real building).
+
+**Does that make the feature pointless?** No. Steering was an addition on top; the attenuation is
+the actual roadmap outcome, and it still works — rooms darken relative to outside, porches grade,
+sealed spaces go dark. What is lost is the *appearance* of light arriving through the window
+rather than the room merely being dimmer.
+
+**And the idea is not dead — it is in the wrong place.** The baked path samples 41 directions, so
+storing a DIRECTION per voxel alongside the scalar would steer smoothly, with no quantisation to
+alias. That is the natural home for it: bake the direction, do not derive it per frame from five
+samples. Note this also answers the time-of-day question properly — a baked direction picks up a
+sunset from the west-facing opening that a scalar cannot.
+
 ## 5. Risks
 
 - **Temporal stability.** Snap the ortho origin to texel size. See the GTAO mip march for what

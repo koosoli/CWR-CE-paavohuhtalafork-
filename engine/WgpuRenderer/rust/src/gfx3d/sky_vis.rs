@@ -101,11 +101,14 @@ impl Default for SkyVisSettings {
             height: 300.0,
             strength: 1.0,
             // Interiors carry almost no local lights, and with the sun shadowed the sky ambient
-            // is the ONLY light in the room. 0.35 measured as a cave in a real building.
-            floor: 0.55,
+            // is the ONLY light in the room. 0.20 chosen by the tester in a real building.
+            floor: 0.20,
             kernel: 1.0,
             bias: 0.25,
-            directional: 0.7,
+            // 0 by default: with only five directions the steered normal jumps between them
+            // across a surface, and that quantisation IS the shadow-patch artifact. See the C++
+            // Engine::InteriorSkySettings comment for the full finding.
+            directional: 0.0,
             baked: false,
             debug: false,
         }

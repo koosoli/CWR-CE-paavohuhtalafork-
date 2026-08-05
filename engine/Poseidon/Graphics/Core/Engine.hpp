@@ -1011,7 +1011,7 @@ class Engine : public IGraphicsEngine
         float strength = 1.0f;
         // Minimum ambient multiplier in a sealed volume. NOT a nicety: OFP interiors carry very
         // few local lights, so an unfloored version of this is a black box you cannot play in.
-        float floorLevel = 0.55f;
+        float floorLevel = 0.20f;
         // Softening kernel radius in metres — roughly how far light appears to reach in past an
         // opening. This is what grades a porch instead of drawing a hard line at the doorway.
         float kernel = 1.0f;
@@ -1020,9 +1020,19 @@ class Engine : public IGraphicsEngine
         float bias = 0.25f;
         // How far to steer the sky-irradiance lookup toward the direction light actually arrives
         // from. 0 = uniform dimming (a room just gets darker); 1 = fully along the open
-        // direction. This is what makes a room read as LIT THROUGH ITS WINDOW instead of evenly
-        // dimmed — visibility alone only scales brightness, it never says where light came from.
-        float directional = 0.7f;
+        // direction.
+        //
+        // DEFAULT 0 after smoke testing (2026-08-05). Steering was meant to make a room read as
+        // lit THROUGH its window rather than evenly dimmed, and it does — but with only five
+        // sampled directions the steered normal jumps between them across a surface, and that
+        // quantisation is the hard shadow patches that got this feature parked. Turning it to 0
+        // removed them, which is what identified the cause: the patches were never the depth
+        // map's texel grid, they were the direction set.
+        //
+        // The idea is sound and is not abandoned: the BAKED path samples 41 directions, so
+        // storing a direction per voxel there would steer smoothly. That is the place to bring
+        // it back, not here.
+        float directional = 0.0f;
         // Stage 2: apply the per-model BAKED volumes instead of the per-frame maps. The volumes
         // are produced at load time (WGR_SKY_BAKE_VOLUMES); this is the runtime switch for
         // whether shading reads them, so the two can be compared without a restart.
