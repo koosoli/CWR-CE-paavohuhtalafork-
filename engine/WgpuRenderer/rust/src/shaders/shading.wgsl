@@ -40,6 +40,12 @@ fn shade(
     dwx: vec3<f32>,
     dwy: vec3<f32>,
     linear: f32,
+    // Per-model BAKED sky visibility at this point [0,1] (LIT-020 Stage 2), or 1 when the model
+    // has no volume / the feature is off. Multiplies the ambient exactly like the other two
+    // occluders; it is separate from them because it answers a question neither can — "does the
+    // building I am standing in let sky in here" — from geometry resolved in MODEL space, so its
+    // boundaries land on the walls instead of on a camera-relative grid.
+    baked_sky_vis: f32,
     foliage_shadow_ao: f32,
     // Vegetation canopy cutout (leaf/needle section of a plant): enables the dense-canopy
     // self-occlusion darkening in terrain shadow (foliage_shadow_ao). Since Stage 2 (the MapType
@@ -109,7 +115,8 @@ fn shade(
     // visibility the "is there a roof over me" term that neither of the other two can see (one
     // knows only the heightfield, the other reaches ~2 m and cannot see off-screen geometry).
     // Each returns 1 when its own feature is off.
-    let amb_ao = sky_vis_ao(world_abs.xz) * gtao_ao(frag_coord) * interior_sky_ao(world_abs, nrm);
+    let amb_ao = sky_vis_ao(world_abs.xz) * gtao_ao(frag_coord)
+        * interior_sky_ao(world_abs, nrm) * clamp(baked_sky_vis, 0.0, 1.0);
     var sun: vec3<f32>;
     if (sky_lit) {
         // Sky-based lighting: frame-global atmosphere sun + DIRECTIONAL sky-irradiance ambient

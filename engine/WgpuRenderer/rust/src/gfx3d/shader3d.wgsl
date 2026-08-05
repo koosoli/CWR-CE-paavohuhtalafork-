@@ -258,7 +258,9 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     // alpha-test discard above stays keyed on alpha_ref (every cutout still discards).
     let veg_cutout = material.sun_ambient.w > 0.5 && alpha_ref > 0.0;
     let rgb = shade(
-        base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
+        base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear,
+        // The per-draw path has no retained model id, so no baked volume applies.
+        1.0, foliage_shadow_ao,
         veg_cutout, translucent > 0.5, veg_cutout, in.clip.xy,
     );
     return vec4<f32>(rgb, out_a);

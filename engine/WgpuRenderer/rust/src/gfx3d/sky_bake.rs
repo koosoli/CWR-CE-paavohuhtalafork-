@@ -724,3 +724,24 @@ mod tests {
         );
     }
 }
+
+// The volume's dimensions exist twice: here, and as SKY_VOL_* constants in gpu_driven.wgsl which
+// index the flat buffer. Nothing at runtime checks they agree — a mismatch silently reads the
+// wrong voxels and shows up as a wrong-looking building rather than an error, which is the same
+// class of failure as a Rust struct drifting from its WGSL twin.
+#[test]
+fn volume_dims_match_the_shader_constants() {
+    let d = BakeSettings::default().dims;
+    let src = include_str!("gpu_driven.wgsl");
+    for (name, want) in [
+        ("SKY_VOL_X", d[0]),
+        ("SKY_VOL_Y", d[1]),
+        ("SKY_VOL_Z", d[2]),
+    ] {
+        let needle = format!("const {name}: u32 = {want}u;");
+        assert!(
+            src.contains(&needle),
+            "gpu_driven.wgsl must declare `{needle}` to match BakeSettings::default().dims"
+        );
+    }
+}

@@ -2584,6 +2584,12 @@ pub struct Gfx3d {
     sky_volumes: FxHashMap<u32, (Vec<f32>, [f32; 3], [f32; 3])>,
     // Bake diagnostics awaiting a log sink; drained by lib.rs each frame.
     sky_bake_log: Vec<String>,
+    // The volumes packed for the GPU: `sky_volume_meta` is indexed by model id and holds
+    // (bbox_min, offset) / (bbox_max, dims-code); `sky_volume_data` is every volume concatenated.
+    // Rebuilt when a new model bakes, which is a load-time event, not a per-frame one.
+    sky_volume_meta: StorageArray,
+    sky_volume_data: StorageArray,
+    sky_volumes_dirty: bool,
     // Depth ARRAY: one layer per sampled sky direction. (texture, per-layer render views,
     // the D2Array view the shader samples).
     interior_sky_target: Option<(wgpu::Texture, Vec<wgpu::TextureView>, wgpu::TextureView)>,
@@ -3143,6 +3149,9 @@ impl Gfx3d {
             sky_bake: None,
             sky_volumes: FxHashMap::default(),
             sky_bake_log: Vec::new(),
+            sky_volume_meta: StorageArray::new("wgr_sky_volume_meta"),
+            sky_volume_data: StorageArray::new("wgr_sky_volume_data"),
+            sky_volumes_dirty: false,
             interior_sky_target: None,
             interior_sky_gen: 0,
             interior_sky_view: None,
@@ -5661,6 +5670,7 @@ impl Gfx3d {
             ));
         }
         self.sky_volumes.insert(model, (vis, bmin, bmax));
+        self.sky_volumes_dirty = true;
     }
 
     pub fn register_crown_centres(&mut self, centres: &[[f32; 4]]) -> u32 {
@@ -6029,7 +6039,13 @@ impl Gfx3d {
         } else {
             self.cull.set_sky_view_count(device, 0);
         }
-        let grew = self.cull.prepare(device, queue);
+        // Seed the dummies on the first call so the group-1 layout is satisfiable
+        // immediately, bake or no bake.
+        if self.sky_volume_meta.buf.is_none() {
+            self.sky_volumes_dirty = true;
+        }
+        let volumes_grew = self.upload_sky_volumes(device, queue);
+        let grew = self.cull.prepare(device, queue) || volumes_grew;
         if grew
             || self.gpu_group1_bind.is_none()
             || self.gpu_shadow_group1.len() != n_cascades
@@ -6041,12 +6057,64 @@ impl Gfx3d {
         }
     }
 
+    // Pack every baked volume into the two storage buffers the draw samples. Returns whether a
+    // buffer moved, so the group-1 binds that borrow them are rebuilt.
+    //
+    // One flat data buffer with manual trilinear in the shader, rather than a 3D texture atlas:
+    // a 3D texture caps out (2048 on the largest axis, so ~128 models at 16 voxels deep) and an
+    // R8Unorm 3D storage texture is not a core format anyway. A buffer has neither limit, and
+    // eight fetches is a small price for a term that only modulates ambient.
+    fn upload_sky_volumes(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) -> bool {
+        if !self.sky_volumes_dirty {
+            return false;
+        }
+        self.sky_volumes_dirty = false;
+        let d = sky_bake::BakeSettings::default().dims;
+        let stride = (d[0] * d[1] * d[2]) as usize;
+        let n_models = self.sky_volumes.keys().copied().max().unwrap_or(0) as usize + 1;
+        // meta[model] = (min.xyz, offset_in_voxels) then (max.xyz, has_volume)
+        let mut meta = vec![[0.0f32; 4]; n_models * 2];
+        let mut data: Vec<f32> = Vec::with_capacity(self.sky_volumes.len() * stride);
+        for (&model, (vis, lo, hi)) in self.sky_volumes.iter() {
+            if vis.len() != stride {
+                continue;
+            }
+            let off = data.len();
+            data.extend_from_slice(vis);
+            let m = model as usize * 2;
+            meta[m] = [lo[0], lo[1], lo[2], off as f32];
+            meta[m + 1] = [hi[0], hi[1], hi[2], 1.0];
+        }
+        if data.is_empty() {
+            // Never leave a zero-sized storage buffer: the bind group would fail validation and
+            // take every GPU-driven draw down with it, feature enabled or not.
+            data.push(1.0);
+        }
+        let mut grew = self
+            .sky_volume_meta
+            .ensure(device, (meta.len() * 16).max(16) as u64);
+        grew |= self
+            .sky_volume_data
+            .ensure(device, (data.len() * 4).max(4) as u64);
+        if let Some(b) = self.sky_volume_meta.buf.as_ref() {
+            queue.write_buffer(b, 0, bytemuck::cast_slice(&meta));
+        }
+        if let Some(b) = self.sky_volume_data.buf.as_ref() {
+            queue.write_buffer(b, 0, bytemuck::cast_slice(&data));
+        }
+        grew
+    }
+
     fn rebuild_gpu_group1(&mut self, device: &wgpu::Device) {
-        let (Some(inst), Some(rec), Some(mat), Some(crown)) = (
+        // The two sky-volume buffers are always present (upload_sky_volumes seeds a one-element
+        // dummy when nothing is baked) so the shared layout never has an absent binding.
+        let (Some(inst), Some(rec), Some(mat), Some(crown), Some(vmeta), Some(vdata)) = (
             self.cull.instance_buf(),
             self.cull.out_records(),
             self.cull.section_material_buf(),
             self.cull.crown_centre_buf(),
+            self.sky_volume_meta.buf.as_ref(),
+            self.sky_volume_data.buf.as_ref(),
         ) else {
             self.gpu_group1_bind = None;
             self.gpu_color_group1_bind = None;
@@ -6076,6 +6144,14 @@ impl Gfx3d {
                     wgpu::BindGroupEntry {
                         binding: 3,
                         resource: crown.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 4,
+                        resource: vmeta.as_entire_binding(),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 5,
+                        resource: vdata.as_entire_binding(),
                     },
                 ],
             })

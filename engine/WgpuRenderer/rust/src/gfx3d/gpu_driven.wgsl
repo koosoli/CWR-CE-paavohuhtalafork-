@@ -61,6 +61,56 @@ struct SectionMaterial {
 // A. A merged forest mesh has one meaningless inst.center, so each forest vertex indexes this
 // table (via its conform word) for its own tree's radial-normal centre. Register-once (cull.rs).
 @group(1) @binding(3) var<storage, read> crown_centres: array<vec4<f32>>;
+// Per-model BAKED sky visibility (LIT-020 Stage 2, docs/interior-sky-visibility-plan.md §3c).
+// `sky_volume_meta` holds two vec4s per model — (bbox_min.xyz, first voxel index) and
+// (bbox_max.xyz, 1 when a volume exists) — and `sky_volume_data` is every model's volume
+// concatenated, x-major.
+//
+// A flat buffer with manual trilinear rather than a 3D texture: a 3D texture caps at 2048 on its
+// largest axis (~128 models at 16 voxels deep) and R8Unorm 3D storage is not a core format. Eight
+// fetches is a small price for a term that only modulates ambient.
+@group(1) @binding(4) var<storage, read> sky_volume_meta: array<vec4<f32>>;
+@group(1) @binding(5) var<storage, read> sky_volume_data: array<f32>;
+
+// Volume dimensions. Must match sky_bake::BakeSettings::default().dims — the one place a Rust
+// value and its WGSL twin can silently disagree here, so a mismatch is a wrong-looking building
+// rather than an error. Guarded by a field-order test on the Rust side.
+const SKY_VOL_X: u32 = 32u;
+const SKY_VOL_Y: u32 = 16u;
+const SKY_VOL_Z: u32 = 32u;
+
+fn sky_vol_fetch(base: u32, c: vec3<u32>) -> f32 {
+    let i = base + c.x + c.y * SKY_VOL_X + c.z * SKY_VOL_X * SKY_VOL_Y;
+    if (i >= arrayLength(&sky_volume_data)) {
+        return 1.0;
+    }
+    return sky_volume_data[i];
+}
+
+// Baked sky visibility at a MODEL-space position, trilinearly filtered. 1 (no darkening) when the
+// model has no volume, which is also the correct answer while a bake is still pending.
+fn baked_sky_visibility(model: u32, model_pos: vec3<f32>) -> f32 {
+    let m = model * 2u;
+    if (m + 1u >= arrayLength(&sky_volume_meta) || sky_volume_meta[m + 1u].w < 0.5) {
+        return 1.0;
+    }
+    let lo = sky_volume_meta[m].xyz;
+    let hi = sky_volume_meta[m + 1u].xyz;
+    let base = u32(sky_volume_meta[m].w);
+    let dims = vec3<f32>(f32(SKY_VOL_X), f32(SKY_VOL_Y), f32(SKY_VOL_Z));
+    // Position in voxel coordinates, offset by half a voxel so the samples sit on voxel CENTRES
+    // (which is where the bake evaluated them).
+    let t = clamp((model_pos - lo) / max(hi - lo, vec3<f32>(1e-4)), vec3<f32>(0.0), vec3<f32>(1.0));
+    let v = clamp(t * dims - vec3<f32>(0.5), vec3<f32>(0.0), dims - vec3<f32>(1.0));
+    let i0 = vec3<u32>(floor(v));
+    let i1 = min(i0 + vec3<u32>(1u), vec3<u32>(u32(SKY_VOL_X) - 1u, u32(SKY_VOL_Y) - 1u, u32(SKY_VOL_Z) - 1u));
+    let f = v - floor(v);
+    let c00 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i0.y, i0.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i0.y, i0.z)), f.x);
+    let c10 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i1.y, i0.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i1.y, i0.z)), f.x);
+    let c01 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i0.y, i1.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i0.y, i1.z)), f.x);
+    let c11 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i1.y, i1.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i1.y, i1.z)), f.x);
+    return clamp(mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z), 0.0, 1.0);
+}
 @group(2) @binding(0) var textures: binding_array<texture_2d<f32>>;
 @group(3) @binding(0) var samplers: binding_array<sampler, 8>;
 
@@ -75,6 +125,12 @@ struct VsOut {
     // foliage lighting (leaf SSS + canopy AO) may apply; 0 = other cutouts (fences, grills, decals)
     // that must NOT pick up the leaf look. The alpha-test discard itself stays keyed on alpha_ref.
     @location(5) @interpolate(flat) is_veg: u32,
+    // MODEL-space position + this instance's model id, for the baked sky-visibility volume.
+    // Model space is the whole point: the volume is a property of the building, so the lookup
+    // must happen in the building's own frame rather than the camera's — which is precisely what
+    // the per-frame camera-space map could not do.
+    @location(6) model_pos: vec3<f32>,
+    @location(7) @interpolate(flat) model_id: u32,
 };
 
 // WgrInstance::flags bits: vegetation canopy — bend cutout-section normals toward a radial crown
@@ -217,6 +273,10 @@ fn vs_gpu(
     // Vegetation = any canopy flag (bush/tree/forest cover the whole vegetation MapType set);
     // gates the foliage lighting in fs_gpu so non-plant cutouts don't get the leaf look.
     out.is_veg = select(0u, 1u, canopy != 0u);
+    // Undeformed model-space position: the baked volume is a property of the AUTHORED model, so
+    // the lookup must use the authored vertex, not a terrain-conformed one.
+    out.model_pos = pos;
+    out.model_id = inst.model;
     return out;
 }
 
@@ -269,7 +329,9 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     // opaque/cutout, never the glass path. The alpha discard above stays keyed on alpha_ref.
     let veg_cutout = in.is_veg != 0u && sm.alpha_ref > 0.0;
     let rgb = shade(
-        base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear, foliage_shadow_ao,
+        base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear,
+        // Per-model baked sky visibility (LIT-020 Stage 2), 1 when the model has no volume.
+        baked_sky_visibility(in.model_id, in.model_pos), foliage_shadow_ao,
         veg_cutout, false, veg_cutout, in.clip.xy,
     );
     return vec4<f32>(rgb, out_a);

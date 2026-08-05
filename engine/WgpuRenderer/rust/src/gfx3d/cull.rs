@@ -1515,8 +1515,17 @@ pub fn gpu_group1_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("wgr_gpu_driven_group1"),
         // 0 instances, 1 records, 2 section materials, 3 per-tree crown centres (forest spherical
-        // normals; unused by the shadow VS but present so the shared layout stays compatible).
-        entries: &[storage(0), storage(1), storage(2), storage(3)],
+        // normals; unused by the shadow VS but present so the shared layout stays compatible),
+        // 4 per-model sky-visibility volume metadata + 5 the volume data itself (LIT-020 Stage 2;
+        // both are single-element dummies until a bake runs, so the layout never varies).
+        entries: &[
+            storage(0),
+            storage(1),
+            storage(2),
+            storage(3),
+            storage(4),
+            storage(5),
+        ],
     })
 }
 
