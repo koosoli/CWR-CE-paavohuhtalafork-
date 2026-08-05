@@ -93,7 +93,9 @@ pub struct SkyVisSettings {
 impl Default for SkyVisSettings {
     fn default() -> Self {
         SkyVisSettings {
-            enabled: false,
+            // Both stages default ON (owner call, 2026-08-05); C++ pushes every frame and wins,
+            // so this only decides frame 0.
+            enabled: true,
             // 2048 over a 64 m half-box = 6 cm/texel: enough to resolve a window reveal, which
             // is the whole reason the tilted directions exist (see the module header).
             resolution: 2048,
@@ -109,7 +111,7 @@ impl Default for SkyVisSettings {
             // across a surface, and that quantisation IS the shadow-patch artifact. See the C++
             // Engine::InteriorSkySettings comment for the full finding.
             directional: 0.0,
-            baked: false,
+            baked: true,
             debug: false,
         }
     }

@@ -662,8 +662,8 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
             _interiorSky.extent = v;
         }
     }
-    // The bake produces volumes at load time; applying them is a runtime switch, so turning the
-    // bake on at startup also turns its use on — otherwise you pay the bake and see nothing.
+    // The bake produces volumes at load time; applying them is a runtime switch. Both default
+    // on, so this env var is now the way to turn the pair OFF (=0) rather than on.
     if (const char* isb = std::getenv("WGR_SKY_BAKE_VOLUMES"))
     {
         _interiorSky.baked = std::strcmp(isb, "0") != 0;

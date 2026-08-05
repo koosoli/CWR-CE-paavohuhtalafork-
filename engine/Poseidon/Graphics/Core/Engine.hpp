@@ -997,7 +997,11 @@ class Engine : public IGraphicsEngine
     /// readable. wgpu path only. Default OFF. See docs/interior-sky-visibility-plan.md.
     struct InteriorSkySettings
     {
-        bool enabled = false;
+        // Both stages default ON as of 2026-08-05 (owner call). They compose: the per-frame maps
+        // cover what a per-model volume structurally cannot see — terrain under a building, one
+        // object roofing another, movers inside a room — while the baked volumes give a
+        // building's own surfaces edges that follow its geometry.
+        bool enabled = true;
         // Depth-map edge in texels, and HALF the world box it covers in metres. Together these
         // set the resolving power: 1024 texels over a 256 m box is 25 cm per texel, which is
         // enough for roofs and walls but NOT for window reveals (that is Stage 2's per-model
@@ -1036,7 +1040,7 @@ class Engine : public IGraphicsEngine
         // Stage 2: apply the per-model BAKED volumes instead of the per-frame maps. The volumes
         // are produced at load time (WGR_SKY_BAKE_VOLUMES); this is the runtime switch for
         // whether shading reads them, so the two can be compared without a restart.
-        bool baked = false;
+        bool baked = true;
         // Draw the reach factor as greyscale on opaque surfaces instead of lighting with it.
         // Shipped WITH the effect: judging this through sun + ambient + fog + tonemap is much
         // harder than looking at the buffer.

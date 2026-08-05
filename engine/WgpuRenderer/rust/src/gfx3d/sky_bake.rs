@@ -285,7 +285,7 @@ impl SkyBake {
         src: BakeSource<'_>,
         dirs: &[glam::Vec4],
         s: &BakeSettings,
-    ) -> Option<(Vec<f32>, [f32; 3], [f32; 3])> {
+    ) -> Option<(Vec<[f32; 4]>, [f32; 3], [f32; 3])> {
         if dirs.is_empty() {
             return None;
         }
@@ -456,7 +456,8 @@ impl SkyBake {
             bytemuck::cast_slice(dirs),
             wgpu::BufferUsages::STORAGE,
         );
-        let out_bytes = s.voxel_count() as u64 * 4;
+        // vec4 per voxel: xyz = incoming sky direction, w = visibility.
+        let out_bytes = s.voxel_count() as u64 * 16;
         let out_buf = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("wgr_sky_bake_out"),
             size: out_bytes,
@@ -532,7 +533,7 @@ impl SkyBake {
             return None;
         }
         let data = slice.get_mapped_range();
-        let out = bytemuck::cast_slice::<u8, f32>(&data).to_vec();
+        let out = bytemuck::cast_slice::<u8, [f32; 4]>(&data).to_vec();
         drop(data);
         staging.unmap();
         Some((out, bbox_min, bbox_max))
@@ -635,7 +636,7 @@ mod tests {
         (pos, idx)
     }
 
-    fn bake_room(window: bool) -> Option<(Vec<f32>, [f32; 3], [f32; 3], BakeSettings)> {
+    fn bake_room(window: bool) -> Option<(Vec<[f32; 4]>, [f32; 3], [f32; 3], BakeSettings)> {
         let (device, queue) = headless()?;
         let bake = SkyBake::new(&device, 12);
         let (pos, idx) = room(window);
@@ -667,13 +668,13 @@ mod tests {
 
     // Sample the volume at a model-space point (nearest voxel — the test asks about regions, not
     // about interpolation).
-    fn at(v: &[f32], lo: [f32; 3], hi: [f32; 3], s: &BakeSettings, p: [f32; 3]) -> f32 {
+    fn at(v: &[[f32; 4]], lo: [f32; 3], hi: [f32; 3], s: &BakeSettings, p: [f32; 3]) -> f32 {
         let mut i = [0usize; 3];
         for a in 0..3 {
             let t = ((p[a] - lo[a]) / (hi[a] - lo[a])).clamp(0.0, 0.999);
             i[a] = (t * s.dims[a] as f32) as usize;
         }
-        v[i[0] + i[1] * s.dims[0] as usize + i[2] * (s.dims[0] * s.dims[1]) as usize]
+        v[i[0] + i[1] * s.dims[0] as usize + i[2] * (s.dims[0] * s.dims[1]) as usize][3]
     }
 
     // The core claim: inside a sealed room the sky is not visible, outside it is, and the bake
@@ -702,6 +703,40 @@ mod tests {
         assert!(
             by_window > far_corner + 0.05,
             "the window side ({by_window}) must see more sky than the far corner ({far_corner})"
+        );
+    }
+
+    // Direction, not just amount. Beside a window the baked direction must LEAN TOWARD it, which
+    // is what makes a room read as lit through the opening rather than merely dimmer. Asserted
+    // against the sealed room too, because in a sealed room the only way out is up — so a
+    // direction that leans +X there would mean the test is measuring room shape, not the window.
+    #[test]
+    fn the_baked_direction_leans_toward_the_window() {
+        let (Some((open, lo, hi, s)), Some((sealed, ..))) = (bake_room(true), bake_room(false))
+        else {
+            return;
+        };
+        // Just inside the +X wall, level with the opening.
+        let p = [2.4f32, 1.5, 0.0];
+        let dir = |v: &[[f32; 4]]| {
+            let mut i = [0usize; 3];
+            for a in 0..3 {
+                let t = ((p[a] - lo[a]) / (hi[a] - lo[a])).clamp(0.0, 0.999);
+                i[a] = (t * s.dims[a] as f32) as usize;
+            }
+            v[i[0] + i[1] * s.dims[0] as usize + i[2] * (s.dims[0] * s.dims[1]) as usize]
+        };
+        let d_open = dir(&open);
+        let d_sealed = dir(&sealed);
+        assert!(
+            d_open[0] > 0.2,
+            "beside the window the sky must arrive from +X, got {d_open:?}"
+        );
+        assert!(
+            d_open[0] > d_sealed[0] + 0.15,
+            "the +X lean must come from the opening: open {} vs sealed {}",
+            d_open[0],
+            d_sealed[0]
         );
     }
 

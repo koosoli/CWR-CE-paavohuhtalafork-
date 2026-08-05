@@ -70,7 +70,7 @@ struct SectionMaterial {
 // largest axis (~128 models at 16 voxels deep) and R8Unorm 3D storage is not a core format. Eight
 // fetches is a small price for a term that only modulates ambient.
 @group(1) @binding(4) var<storage, read> sky_volume_meta: array<vec4<f32>>;
-@group(1) @binding(5) var<storage, read> sky_volume_data: array<f32>;
+@group(1) @binding(5) var<storage, read> sky_volume_data: array<vec4<f32>>;
 
 // Volume dimensions. Must match sky_bake::BakeSettings::default().dims — the one place a Rust
 // value and its WGSL twin can silently disagree here, so a mismatch is a wrong-looking building
@@ -79,12 +79,52 @@ const SKY_VOL_X: u32 = 32u;
 const SKY_VOL_Y: u32 = 16u;
 const SKY_VOL_Z: u32 = 32u;
 
-fn sky_vol_fetch(base: u32, c: vec3<u32>) -> f32 {
+// xyz = the direction the sky arrives from (model space), w = visibility.
+fn sky_vol_fetch(base: u32, c: vec3<u32>) -> vec4<f32> {
     let i = base + c.x + c.y * SKY_VOL_X + c.z * SKY_VOL_X * SKY_VOL_Y;
     if (i >= arrayLength(&sky_volume_data)) {
-        return 1.0;
+        return vec4<f32>(0.0, 1.0, 0.0, 1.0);
     }
     return sky_volume_data[i];
+}
+
+// Trilinear tap of the volume, both channels at once.
+fn sky_vol_sample(model: u32, model_pos: vec3<f32>) -> vec4<f32> {
+    let m = model * 2u;
+    if (m + 1u >= arrayLength(&sky_volume_meta) || sky_volume_meta[m + 1u].w < 0.5) {
+        return vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    }
+    let lo = sky_volume_meta[m].xyz;
+    let hi = sky_volume_meta[m + 1u].xyz;
+    let base = u32(sky_volume_meta[m].w);
+    let dims = vec3<f32>(f32(SKY_VOL_X), f32(SKY_VOL_Y), f32(SKY_VOL_Z));
+    // Half-voxel offset so samples sit on voxel CENTRES, where the bake evaluated them.
+    let t = clamp((model_pos - lo) / max(hi - lo, vec3<f32>(1e-4)), vec3<f32>(0.0), vec3<f32>(1.0));
+    let v = clamp(t * dims - vec3<f32>(0.5), vec3<f32>(0.0), dims - vec3<f32>(1.0));
+    let i0 = vec3<u32>(floor(v));
+    let i1 = min(i0 + vec3<u32>(1u), vec3<u32>(SKY_VOL_X - 1u, SKY_VOL_Y - 1u, SKY_VOL_Z - 1u));
+    let f = v - floor(v);
+    let c00 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i0.y, i0.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i0.y, i0.z)), f.x);
+    let c10 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i1.y, i0.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i1.y, i0.z)), f.x);
+    let c01 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i0.y, i1.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i0.y, i1.z)), f.x);
+    let c11 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i1.y, i1.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i1.y, i1.z)), f.x);
+    return mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z);
+}
+
+// The baked incoming-sky direction at a model-space point, rotated to WORLD space, or a zero
+// vector when the model has no volume. Unlike the five-direction per-frame steer, this is
+// integrated over 41 directions and then trilinearly filtered, so it varies smoothly across a
+// surface instead of jumping between a handful of discrete directions — which is what made the
+// per-frame version produce hard shadow patches.
+fn baked_sky_direction(model: u32, model_pos: vec3<f32>, rot: mat3x3<f32>) -> vec3<f32> {
+    if (frame.skyvisc.x < 0.5) {
+        return vec3<f32>(0.0);
+    }
+    let d = sky_vol_sample(model, model_pos).xyz;
+    if (dot(d, d) < 1e-6) {
+        return vec3<f32>(0.0);
+    }
+    return normalize(rot * d);
 }
 
 // Baked sky visibility at a MODEL-space position, trilinearly filtered. 1 (no darkening) when the
@@ -97,22 +137,7 @@ fn baked_sky_visibility(model: u32, model_pos: vec3<f32>) -> f32 {
     if (m + 1u >= arrayLength(&sky_volume_meta) || sky_volume_meta[m + 1u].w < 0.5) {
         return 1.0;
     }
-    let lo = sky_volume_meta[m].xyz;
-    let hi = sky_volume_meta[m + 1u].xyz;
-    let base = u32(sky_volume_meta[m].w);
-    let dims = vec3<f32>(f32(SKY_VOL_X), f32(SKY_VOL_Y), f32(SKY_VOL_Z));
-    // Position in voxel coordinates, offset by half a voxel so the samples sit on voxel CENTRES
-    // (which is where the bake evaluated them).
-    let t = clamp((model_pos - lo) / max(hi - lo, vec3<f32>(1e-4)), vec3<f32>(0.0), vec3<f32>(1.0));
-    let v = clamp(t * dims - vec3<f32>(0.5), vec3<f32>(0.0), dims - vec3<f32>(1.0));
-    let i0 = vec3<u32>(floor(v));
-    let i1 = min(i0 + vec3<u32>(1u), vec3<u32>(u32(SKY_VOL_X) - 1u, u32(SKY_VOL_Y) - 1u, u32(SKY_VOL_Z) - 1u));
-    let f = v - floor(v);
-    let c00 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i0.y, i0.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i0.y, i0.z)), f.x);
-    let c10 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i1.y, i0.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i1.y, i0.z)), f.x);
-    let c01 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i0.y, i1.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i0.y, i1.z)), f.x);
-    let c11 = mix(sky_vol_fetch(base, vec3<u32>(i0.x, i1.y, i1.z)), sky_vol_fetch(base, vec3<u32>(i1.x, i1.y, i1.z)), f.x);
-    let vis = clamp(mix(mix(c00, c10, f.y), mix(c01, c11, f.y), f.z), 0.0, 1.0);
+    let vis = clamp(sky_vol_sample(model, model_pos).w, 0.0, 1.0);
     // strength blends toward the occluded result; floor keeps a sealed room playable, for the
     // same reason the per-frame path needs one — with the sun shadowed and no local lights, the
     // sky ambient is the only light in an OFP room.
@@ -139,6 +164,12 @@ struct VsOut {
     // the per-frame camera-space map could not do.
     @location(6) model_pos: vec3<f32>,
     @location(7) @interpolate(flat) model_id: u32,
+    // The instance's model->world rotation, flat: the baked direction is stored in MODEL space
+    // (that is what makes it reusable across every instance) so it has to be rotated to world
+    // before it can steer a world-space irradiance lookup.
+    @location(8) @interpolate(flat) model_rot0: vec3<f32>,
+    @location(9) @interpolate(flat) model_rot1: vec3<f32>,
+    @location(10) @interpolate(flat) model_rot2: vec3<f32>,
 };
 
 // WgrInstance::flags bits: vegetation canopy — bend cutout-section normals toward a radial crown
@@ -285,6 +316,9 @@ fn vs_gpu(
     // the lookup must use the authored vertex, not a terrain-conformed one.
     out.model_pos = pos;
     out.model_id = inst.model;
+    out.model_rot0 = world[0].xyz;
+    out.model_rot1 = world[1].xyz;
+    out.model_rot2 = world[2].xyz;
     return out;
 }
 
@@ -346,7 +380,10 @@ fn fs_gpu(in: VsOut) -> @location(0) vec4<f32> {
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear,
         // Per-model baked sky visibility (LIT-020 Stage 2), 1 when the model has no volume.
-        baked_sky_visibility(in.model_id, in.model_pos), foliage_shadow_ao,
+        baked_sky_visibility(in.model_id, in.model_pos),
+        baked_sky_direction(in.model_id, in.model_pos,
+            mat3x3<f32>(in.model_rot0, in.model_rot1, in.model_rot2)),
+        foliage_shadow_ao,
         veg_cutout, false, veg_cutout, in.clip.xy,
     );
     return vec4<f32>(rgb, out_a);

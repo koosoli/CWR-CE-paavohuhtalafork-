@@ -30,10 +30,19 @@ struct BakeParams {
 // Depth maps, one array layer per direction, rasterised from the model's own geometry.
 @group(0) @binding(3) var depth_maps: texture_depth_2d_array;
 @group(0) @binding(4) var depth_samp: sampler_comparison;
-// Output volume, linearised: x + y*dims.x + z*dims.x*dims.y. A storage BUFFER rather than a
-// storage texture because R8Unorm is not a core storage format (it is not in wgpu's guaranteed
-// set) and this has to work on every adapter, not just the one it was written on.
-@group(0) @binding(5) var<storage, read_write> out_vis: array<f32>;
+// Output volume, linearised: x + y*dims.x + z*dims.x*dims.y. Per voxel: xyz = the average
+// direction the sky arrives FROM (model space, unnormalised sum), w = the cosine-weighted
+// fraction of sky that reaches it.
+//
+// The DIRECTION is what lets a room read as lit through its window rather than merely dimmer. It
+// is baked rather than derived per frame for a reason found the hard way: deriving it from five
+// per-frame directions makes the steered normal JUMP between them across a surface, and that
+// quantisation is visible as hard shadow patches. Here it is integrated over 41 directions and
+// then trilinearly filtered, so there is nothing to quantise.
+//
+// A storage BUFFER rather than a storage texture because R8Unorm is not a core storage format
+// and this has to work on every adapter, not just the one it was written on.
+@group(0) @binding(5) var<storage, read_write> out_vis: array<vec4<f32>>;
 
 // Model-space centre of voxel (ix, iy, iz).
 fn voxel_centre(i: vec3<u32>) -> vec3<f32> {
@@ -50,6 +59,7 @@ fn cs_bake(@builtin(global_invocation_id) gid: vec3<u32>) {
     let pos = voxel_centre(gid);
     var num = 0.0;
     var den = 0.0;
+    var dir_acc = vec3<f32>(0.0);
     for (var d = 0u; d < p.dims.w; d++) {
         let w = dir_vec[d].w;
         den += w;
@@ -60,6 +70,7 @@ fn cs_bake(@builtin(global_invocation_id) gid: vec3<u32>) {
             // Outside this direction's box: nothing of the model can block it, so the sky is
             // visible. Absence of data must never darken.
             num += w;
+            dir_acc += dir_vec[d].xyz * w;
             continue;
         }
         // LessEqual compare: 1 when the voxel is at or in front of the stored occluder, i.e.
@@ -67,7 +78,11 @@ fn cs_bake(@builtin(global_invocation_id) gid: vec3<u32>) {
         let vis = textureSampleCompareLevel(
             depth_maps, depth_samp, uv, i32(d), clip.z - p.bias.x);
         num += vis * w;
+        dir_acc += dir_vec[d].xyz * (vis * w);
     }
     let idx = gid.x + gid.y * p.dims.x + gid.z * p.dims.x * p.dims.y;
-    out_vis[idx] = num / max(den, 1e-4);
+    // Normalised so trilinear blending between voxels stays a direction; zero when nothing is
+    // visible, which the sampler reads as "no opinion, use the surface normal".
+    let dir = select(vec3<f32>(0.0), normalize(dir_acc), dot(dir_acc, dir_acc) > 1e-8);
+    out_vis[idx] = vec4<f32>(dir, num / max(den, 1e-4));
 }

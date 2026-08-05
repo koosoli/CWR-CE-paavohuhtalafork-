@@ -2583,7 +2583,7 @@ pub struct Gfx3d {
     sky_bake: Option<sky_bake::SkyBake>,
     // model index -> (volume, padded model-space AABB). CPU-side for now; the GPU atlas + the
     // per-fragment sample are the next step.
-    sky_volumes: FxHashMap<u32, (Vec<f32>, [f32; 3], [f32; 3])>,
+    sky_volumes: FxHashMap<u32, (Vec<[f32; 4]>, [f32; 3], [f32; 3])>,
     // Bake diagnostics awaiting a log sink; drained by lib.rs each frame.
     sky_bake_log: Vec<String>,
     // The volumes packed for the GPU: `sky_volume_meta` is indexed by model id and holds
@@ -3145,9 +3145,13 @@ impl Gfx3d {
             dummy_shadow_view,
             dummy_ao_view,
             interior_sky: SkyVisSettings::default(),
+            // ON by default so Stage 2 has volumes to read (owner call, 2026-08-05).
+            // WGR_SKY_BAKE_VOLUMES=0 disables it — which is the switch to reach for if the
+            // load-time bake (~20 ms per model, no disk cache yet) becomes intolerable before
+            // §3d's caching lands.
             sky_bake_enabled: std::env::var("WGR_SKY_BAKE_VOLUMES")
                 .map(|v| v != "0")
-                .unwrap_or(false),
+                .unwrap_or(true),
             sky_bake: None,
             sky_volumes: FxHashMap::default(),
             sky_bake_log: Vec::new(),
@@ -5668,8 +5672,8 @@ impl Gfx3d {
         // map's coverage check exists for. `enclosed` is the fraction of voxels that see less
         // than half the sky; a building with any interior must have some.
         if self.sky_volumes.len() < 8 {
-            let enclosed = vis.iter().filter(|v| **v < 0.5).count() as f32 / vis.len() as f32;
-            let mean = vis.iter().sum::<f32>() / vis.len() as f32;
+            let enclosed = vis.iter().filter(|v| v[3] < 0.5).count() as f32 / vis.len() as f32;
+            let mean = vis.iter().map(|v| v[3]).sum::<f32>() / vis.len() as f32;
             // Queued rather than printed: Gfx3d has no log sink, and eprintln! never reaches
             // --log-file, so a diagnostic written that way is missing exactly when it is read.
             self.sky_bake_log.push(format!(
@@ -6086,7 +6090,7 @@ impl Gfx3d {
         let n_models = self.sky_volumes.keys().copied().max().unwrap_or(0) as usize + 1;
         // meta[model] = (min.xyz, offset_in_voxels) then (max.xyz, has_volume)
         let mut meta = vec![[0.0f32; 4]; n_models * 2];
-        let mut data: Vec<f32> = Vec::with_capacity(self.sky_volumes.len() * stride);
+        let mut data: Vec<[f32; 4]> = Vec::with_capacity(self.sky_volumes.len() * stride);
         for (&model, (vis, lo, hi)) in self.sky_volumes.iter() {
             if vis.len() != stride {
                 continue;
@@ -6100,14 +6104,14 @@ impl Gfx3d {
         if data.is_empty() {
             // Never leave a zero-sized storage buffer: the bind group would fail validation and
             // take every GPU-driven draw down with it, feature enabled or not.
-            data.push(1.0);
+            data.push([0.0, 1.0, 0.0, 1.0]);
         }
         let mut grew = self
             .sky_volume_meta
             .ensure(device, (meta.len() * 16).max(16) as u64);
         grew |= self
             .sky_volume_data
-            .ensure(device, (data.len() * 4).max(4) as u64);
+            .ensure(device, (data.len() * 16).max(16) as u64);
         if let Some(b) = self.sky_volume_meta.buf.as_ref() {
             queue.write_buffer(b, 0, bytemuck::cast_slice(&meta));
         }

@@ -260,7 +260,7 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let rgb = shade(
         base.rgb, m, in.normal, in.world_pos, in.fog, dwx, dwy, linear,
         // The per-draw path has no retained model id, so no baked volume applies.
-        1.0, foliage_shadow_ao,
+        1.0, vec3<f32>(0.0), foliage_shadow_ao,
         veg_cutout, translucent > 0.5, veg_cutout, in.clip.xy,
     );
     return vec4<f32>(rgb, out_a);

@@ -46,6 +46,12 @@ fn shade(
     // building I am standing in let sky in here" — from geometry resolved in MODEL space, so its
     // boundaries land on the walls instead of on a camera-relative grid.
     baked_sky_vis: f32,
+    // The BAKED incoming-sky direction at this point, world space, or zero when the model has no
+    // volume. Steers the sky-irradiance lookup toward where light actually enters — the window —
+    // instead of only scaling how much arrives. Integrated over 41 directions at bake time and
+    // trilinearly filtered, so it varies smoothly; the five-direction per-frame equivalent jumped
+    // between discrete directions across a surface and that quantisation was the shadow patches.
+    baked_sky_dir: vec3<f32>,
     foliage_shadow_ao: f32,
     // Vegetation canopy cutout (leaf/needle section of a plant): enables the dense-canopy
     // self-occlusion darkening in terrain shadow (foliage_shadow_ao). Since Stage 2 (the MapType
@@ -132,7 +138,13 @@ fn shade(
         // steer then bends that toward the direction the SKY reaches this point from — the
         // window or doorway. Indoors GTAO has nothing useful to say (the room is bigger than its
         // radius and the roof is off-screen), so the interior term is what carries the result.
-        let amb_n = interior_sky_ambient_normal(world_abs, gtao_bent_normal_world(frag_coord, nrm));
+        var amb_n = interior_sky_ambient_normal(world_abs, gtao_bent_normal_world(frag_coord, nrm));
+        // The baked steer, when this model has a volume. frame.skyvisb.z is the shared
+        // "directional" knob: 0 leaves the ambient purely scaled (the safe default), 1 samples
+        // the sky fully along the direction it enters from.
+        if (dot(baked_sky_dir, baked_sky_dir) > 1e-6 && frame.skyvisb.z > 0.0) {
+            amb_n = normalize(mix(amb_n, baked_sky_dir, frame.skyvisb.z));
+        }
         var ambient = sky_irradiance(amb_n) * frame.sun_ambient.w * amb_ao;
         // Glass canopies: keep only a fraction of the sky wash so they read as glazing, not a lit
         // diffuse dome (the direct sun sheen + any glint still sit on top).

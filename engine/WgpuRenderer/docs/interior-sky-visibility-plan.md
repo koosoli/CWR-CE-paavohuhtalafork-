@@ -352,6 +352,18 @@ the actual roadmap outcome, and it still works — rooms darken relative to outs
 sealed spaces go dark. What is lost is the *appearance* of light arriving through the window
 rather than the room merely being dimmer.
 
+**Done (2026-08-05):** the bake now stores a DIRECTION per voxel alongside the scalar — the
+average direction the sky arrives from, integrated over 41 directions and trilinearly filtered, so
+there is nothing to quantise. `shade()` steers the sky-irradiance lookup along it, scaled by the
+same `directional` knob. Tested: beside a window the baked direction leans toward it (+X > 0.2),
+and the SAME room with the hole filled does not — so the lean comes from the opening, not the room
+shape.
+
+Both stages now default ON (owner call). They compose rather than compete: the per-frame maps
+cover what a per-model volume structurally cannot see — terrain under a building, one object
+roofing another, movers inside a room — while the volumes give a building's own surfaces edges
+that follow its geometry.
+
 **And the idea is not dead — it is in the wrong place.** The baked path samples 41 directions, so
 storing a DIRECTION per voxel alongside the scalar would steer smoothly, with no quantisation to
 alias. That is the natural home for it: bake the direction, do not derive it per frame from five
