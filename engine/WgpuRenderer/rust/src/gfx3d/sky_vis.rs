@@ -103,8 +103,8 @@ impl Default for SkyVisSettings {
             height: 300.0,
             strength: 1.0,
             // Interiors carry almost no local lights, and with the sun shadowed the sky ambient
-            // is the ONLY light in the room. 0.20 chosen by the tester in a real building.
-            floor: 0.20,
+            // is the ONLY light in the room. 0.32 chosen by the tester in a real building.
+            floor: 0.32,
             kernel: 1.0,
             bias: 0.25,
             // 0 by default: with only five directions the steered normal jumps between them

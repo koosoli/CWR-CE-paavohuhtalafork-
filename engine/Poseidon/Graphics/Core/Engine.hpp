@@ -1015,7 +1015,7 @@ class Engine : public IGraphicsEngine
         float strength = 1.0f;
         // Minimum ambient multiplier in a sealed volume. NOT a nicety: OFP interiors carry very
         // few local lights, so an unfloored version of this is a black box you cannot play in.
-        float floorLevel = 0.20f;
+        float floorLevel = 0.32f;
         // Softening kernel radius in metres — roughly how far light appears to reach in past an
         // opening. This is what grades a porch instead of drawing a hard line at the doorway.
         float kernel = 1.0f;
