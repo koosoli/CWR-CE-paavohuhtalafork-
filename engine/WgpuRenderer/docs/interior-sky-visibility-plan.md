@@ -258,6 +258,25 @@ The 128 m box was empty because the dev-map camera stands where the retained set
 end, and the lesson is the plan's own: the first "falsification" was a no-op that agreed with the
 bug, which is exactly the failure mode the handover warns about.
 
+### Measured cost (2026-08-05, first real building, 800x600 windowed, RWDI)
+
+| region | ms |
+|---|---|
+| interior sky: cull (5 direction chains) | 0.527 |
+| interior sky: depth maps (5 passes) | 0.260 |
+| **feature total** | **0.787** |
+| GPU frame total | 7.123 |
+| share of frame | **11.1%** |
+
+The surprise is that the CULL costs twice the DRAW. Each of the five views runs the full
+three-pass collapse over the whole retained instance table (~98k instances) to keep a handful that
+fall inside a 64 m box. The draw is cheap precisely because so little survives.
+
+That points at the fix: the five boxes cover nearly the same neighbourhood, so one shared cull over
+a conservative union — with the TILTED views' along-axis depth cut right down (they only need to
+reach through an opening a few metres away, not 300 m) — would replace five instance sweeps with
+one. Not done yet; measure it, do not assume it.
+
 ## 5. Risks
 
 - **Temporal stability.** Snap the ortho origin to texel size. See the GTAO mip march for what
@@ -276,6 +295,16 @@ bug, which is exactly the failure mode the handover warns about.
   Measured on the way in (extent 1500 / height 300 left two of four tilted layers empty). The
   defaults sit far inside the limit (64 * 0.77 = 49 m against 300 m of height) and the dev tab
   warns when a hand-set pair crosses it.
+- **Banding from too few kernel taps** (found in smoke testing, fixed). A single ring of four taps
+  gives a direction only six possible values; at a kernel wide enough to soften a doorway (1 m =
+  16 texels at the default) those six levels read as hard STEPPED PATCHES across a ceiling, which
+  looks like wrong geometry rather than a sampling artifact. Now two rings, nine taps, inner ring
+  rotated 45 deg.
+- **Grazing-angle self-shadowing** (same session, fixed). A fixed depth bias is only correct for a
+  map looking straight at the surface; a tilted direction meeting a wall at a grazing angle spans
+  far more depth per texel, and a head-on bias leaves that wall striping itself. The bias is now
+  slope-scaled by 1/cos of the surface-to-direction angle, clamped so a near-edge-on surface cannot
+  demand an unbounded bias and start leaking.
 - **Vegetation is in the map.** Nothing excludes it — the cull has no per-instance vegetation bit,
   and adding one is a per-section property the instance does not carry. So a forest canopy reads as
   a roof. That is arguably correct occlusion, but it is untested against the look and it is the

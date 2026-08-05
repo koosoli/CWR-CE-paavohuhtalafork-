@@ -6606,7 +6606,7 @@ fn interior_sky_steer_composes_with_the_bent_normal() {
     // The steer is what turns visibility into direction; without the reach weighting it is just
     // an expensive way to return the normal.
     assert!(
-        frame.contains("interior_sky_reach_dir(world_abs, i) * facing"),
+        frame.contains("interior_sky_reach_dir(world_abs, n, i) * facing"),
         "the steered direction must be weighted by each direction's own visibility"
     );
 }

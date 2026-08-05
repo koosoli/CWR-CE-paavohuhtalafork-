@@ -354,28 +354,41 @@ fn gtao_debug_colour(frag_coord: vec2<f32>, fallback_n: vec3<f32>) -> vec3<f32> 
 // depth is at or in front of the stored occluder, i.e. nothing lies between it and the sky along
 // this direction. The bias stops a surface that is its own highest geometry — open ground, a
 // crate in the street — from shadowing itself.
-fn interior_sky_reach_dir(world_abs: vec3<f32>, i: i32) -> f32 {
+fn interior_sky_reach_dir(world_abs: vec3<f32>, n: vec3<f32>, i: i32) -> f32 {
     // Orthographic: w is 1, so clip IS NDC.
     let clip = frame.skyvis_vp[i] * vec4<f32>(world_abs, 1.0);
     let uv = vec2<f32>(clip.x * 0.5 + 0.5, -clip.y * 0.5 + 0.5);
     if (clip.z < 0.0 || clip.z > 1.0) {
         return 1.0;
     }
-    let ref_d = clip.z - frame.skyvisb.y;
+    // SLOPE-SCALED bias. A fixed bias is only correct when the map looks straight at the surface;
+    // for a TILTED direction meeting a wall at a grazing angle, one texel spans far more depth
+    // than it does head-on, and a head-on bias leaves that wall shadowing itself in hard stripes.
+    // Scaling by 1/cos of the angle between the surface and the sampled direction tracks exactly
+    // that stretch. Clamped so a surface nearly edge-on to the direction cannot demand an
+    // unbounded bias and start leaking light through itself.
+    let ndotd = max(dot(n, frame.skyvis_dir[i].xyz), 0.15);
+    let ref_d = clip.z - frame.skyvisb.y / ndotd;
     let k = frame.skyvisb.x;
-    // Centre plus a 4-tap cross. Five taps per direction over five directions is already 25
-    // comparisons per fragment; widening the pattern is the wrong place to spend, because the
-    // DIRECTIONS are what buy the shape here, not the tap count.
+    // TWO rings, not one. A single ring of 4 taps gives a direction only 6 possible values, and
+    // at a kernel wide enough to soften a doorway (16 texels here) those 6 levels read as hard
+    // stepped patches across a ceiling rather than a gradient — measured in a real building, and
+    // the reason this pattern is not just "centre plus a cross". The inner ring is rotated 45 deg
+    // against the outer so the taps do not line up along the same axes.
     var sum = textureSampleCompareLevel(interior_sky_map, shadow_samp, uv, i, ref_d) * 2.0;
-    var offs = array<vec2<f32>, 4>(
+    var offs = array<vec2<f32>, 8>(
+        // outer ring
         vec2<f32>(1.0, 0.0), vec2<f32>(-1.0, 0.0),
         vec2<f32>(0.0, 1.0), vec2<f32>(0.0, -1.0),
+        // inner ring, rotated 45 deg, at ~half the radius
+        vec2<f32>(0.38, 0.38), vec2<f32>(-0.38, 0.38),
+        vec2<f32>(0.38, -0.38), vec2<f32>(-0.38, -0.38),
     );
-    for (var t = 0; t < 4; t++) {
+    for (var t = 0; t < 8; t++) {
         let p = clamp(uv + offs[t] * k, vec2<f32>(0.0), vec2<f32>(1.0));
         sum += textureSampleCompareLevel(interior_sky_map, shadow_samp, p, i, ref_d);
     }
-    let reach = sum / 6.0;
+    let reach = sum / 10.0;
     // Fade out at the box border instead of ending in a hard line: the map moves with the camera,
     // so a discontinuity at its edge would sweep across the world as the player walks.
     let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
@@ -386,7 +399,7 @@ fn interior_sky_reach_dir(world_abs: vec3<f32>, i: i32) -> f32 {
 // (it carries weight 1 against the tilted directions' cos 50 deg), which matches the diffuse
 // response — but the tilted maps are what let light in through a window, because their rays
 // arrive near-horizontally and a zenith map cannot see a vertical opening at any resolution.
-fn interior_sky_reach(world_abs: vec3<f32>) -> f32 {
+fn interior_sky_reach_n(world_abs: vec3<f32>, n: vec3<f32>) -> f32 {
     if (frame.skyvis.x < 0.5) {
         return 1.0;
     }
@@ -394,10 +407,17 @@ fn interior_sky_reach(world_abs: vec3<f32>) -> f32 {
     var den = 0.0;
     for (var i = 0; i < 5; i++) {
         let w = frame.skyvis_dir[i].w;
-        num += interior_sky_reach_dir(world_abs, i) * w;
+        num += interior_sky_reach_dir(world_abs, n, i) * w;
         den += w;
     }
     return num / max(den, 1e-4);
+}
+
+// Normal-free form for the DEBUG view, which draws the factor as a property of the point rather
+// than of the surface. Straight up stands in for the normal so the slope-scaled bias has
+// something sane to work with.
+fn interior_sky_reach(world_abs: vec3<f32>) -> f32 {
+    return interior_sky_reach_n(world_abs, vec3<f32>(0.0, 1.0, 0.0));
 }
 
 // Ambient multiplier from interior sky visibility [0,1]. AMBIENT ONLY — direct sun is already
@@ -406,11 +426,11 @@ fn interior_sky_reach(world_abs: vec3<f32>) -> f32 {
 //
 // The floor is not a nicety: with the sun shadowed and few local lights, the sky ambient is the
 // ONLY light in an OFP room, so an unfloored version of this is a black box.
-fn interior_sky_ao(world_abs: vec3<f32>) -> f32 {
+fn interior_sky_ao(world_abs: vec3<f32>, n: vec3<f32>) -> f32 {
     if (frame.skyvis.x < 0.5) {
         return 1.0;
     }
-    let occ = 1.0 - interior_sky_reach(world_abs);
+    let occ = 1.0 - interior_sky_reach_n(world_abs, n);
     return max(1.0 - frame.skyvis.z * occ, frame.skyvis.w);
 }
 
@@ -434,7 +454,7 @@ fn interior_sky_ambient_normal(world_abs: vec3<f32>, n: vec3<f32>) -> vec3<f32> 
         // Only the visible hemisphere contributes: a direction behind the surface cannot light it.
         let facing = max(dot(n, d), 0.0);
         if (facing > 0.0) {
-            acc += d * (interior_sky_reach_dir(world_abs, i) * facing * frame.skyvis_dir[i].w);
+            acc += d * (interior_sky_reach_dir(world_abs, n, i) * facing * frame.skyvis_dir[i].w);
         }
     }
     if (dot(acc, acc) < 1e-8) {

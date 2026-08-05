@@ -109,7 +109,7 @@ fn shade(
     // visibility the "is there a roof over me" term that neither of the other two can see (one
     // knows only the heightfield, the other reaches ~2 m and cannot see off-screen geometry).
     // Each returns 1 when its own feature is off.
-    let amb_ao = sky_vis_ao(world_abs.xz) * gtao_ao(frag_coord) * interior_sky_ao(world_abs);
+    let amb_ao = sky_vis_ao(world_abs.xz) * gtao_ao(frag_coord) * interior_sky_ao(world_abs, nrm);
     var sun: vec3<f32>;
     if (sky_lit) {
         // Sky-based lighting: frame-global atmosphere sun + DIRECTIONAL sky-irradiance ambient

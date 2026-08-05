@@ -334,7 +334,7 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     // while the walls around it darkened would look worse than not having the feature.
     sun_ambient *= sky_vis_ao(in.world_xz)
         * gtao_ao(in.clip.xy)
-        * interior_sky_ao(in.world_pos + frame.cam_pos.xyz);
+        * interior_sky_ao(in.world_pos + frame.cam_pos.xyz, n);
     let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) + sun_ambient;
     // HDR keeps radiance uncapped into the float target; LDR saturates like GL33.
     let sun = select(min(sun_raw, vec3<f32>(1.0)), sun_raw, linear > 0.5);
