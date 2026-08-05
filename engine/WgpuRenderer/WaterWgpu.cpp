@@ -699,6 +699,9 @@ void WaterWgpu::DrawWater(Scene& scene, int xBeg, int zBeg, int xEnd, int zEnd)
     // gated by this flag, but depth alone cannot turn the pass off: the renderer engages it on
     // either that depth or the camera being near the surface, and a submerged camera is always
     // near the surface. That is why the checkbox appeared to do nothing.
+    // Planar-reflection frustum padding. Its own entry point rather than a params lane, because
+    // it is consumed when the reflected CAMERA is built, before any water params are read.
+    wgr_set_planar_reflection_pad(_renderer, std::clamp(look.reflectionFovPad, 1.0f, 3.0f));
     // y/z were reserved lanes; they now carry the WAVE-foam controls (whitecaps), which are
     // deliberately separate from foamIntensity's shoreline band. Reusing spare lanes keeps
     // WgrWaterParams at its asserted size on both sides of the FFI.

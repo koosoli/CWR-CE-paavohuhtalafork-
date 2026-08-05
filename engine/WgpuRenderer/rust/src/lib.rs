@@ -178,6 +178,10 @@ mod runtime_diagnostics_tests {
 }
 
 pub struct Renderer {
+    // How much wider the planar reflection's frustum is than the screen's. 1 = the old behaviour,
+    // where a grazing reflection ran off the edge of the reflection target and the reflected
+    // clouds ended in a visible line.
+    planar_reflection_pad: f32,
     log: LogSink,
     runtime_diagnostics: Arc<RuntimeDiagnostics>,
     // `'static` is sound because C++ keeps the window alive until after `wgr_destroy`.
@@ -761,6 +765,10 @@ impl Renderer {
             | (if sample_count > 1 { 1 << 7 } else { 0 });
 
         Ok(Self {
+            // 1.35 by default: enough to push the reflection-target edge outside a normal
+            // grazing view, without giving away more angular resolution than the mip-filtered
+            // planar sample can absorb.
+            planar_reflection_pad: 1.35,
             log,
             runtime_diagnostics,
             surface,
@@ -936,6 +944,10 @@ impl Renderer {
 
     // Per-frame sky runtime (wgr_set_sky_runtime): the celestial + camera fields, written into
     // the runtime half of the sky UBO. The authored look half comes from set_render_params.
+    fn set_planar_reflection_pad(&mut self, pad: f32) {
+        self.planar_reflection_pad = pad.clamp(1.0, 3.0);
+    }
+
     fn set_star_intensity(&mut self, intensity: f32) {
         self.sky.set_star_intensity(intensity);
     }
@@ -1547,6 +1559,28 @@ impl Renderer {
             // own vertical screen mapping, so retain the matched reflected basis used
             // by the reflected terrain and cloud passes.
             reflected.view = (mirror * view * mirror).to_cols_array();
+            // WIDEN the reflected frustum. The reflected camera otherwise inherits the main
+            // camera's projection unchanged, so it renders exactly the screen's field of view --
+            // but a reflection needs directions the screen never looks at. At grazing angles the
+            // reflected ray leaves that frustum, the lookup falls off the edge of the reflection
+            // target, and the cloud reflection ends in a visible line across the water.
+            //
+            // Padding trades angular resolution for coverage: the same target now spans a wider
+            // cone, so the reflection is slightly softer and the edge moves outside the view.
+            // Softer is the right side of that trade here -- the planar reflection is already
+            // sampled from a mip pyramid on purpose, because a razor-sharp second sky painted on
+            // the sea is the artifact this system fought last time.
+            //
+            // Scaling the projection's x/y scale terms IS the FOV widening: for a perspective
+            // matrix m00 = 1/(aspect*tan(fov/2)) and m11 = 1/tan(fov/2), so dividing both by the
+            // pad multiplies tan(fov/2) by it. Applied BEFORE full_vp so the matrix the water
+            // shader projects with is the one the reflection was actually rendered with; a
+            // mismatch there would slide the whole reflection instead of widening it.
+            let pad = self.planar_reflection_pad.clamp(1.0, 3.0);
+            if pad > 1.0 {
+                reflected.proj[0] /= pad;
+                reflected.proj[5] /= pad;
+            }
             let full_vp = glam::Mat4::from_cols_array(&reflected.proj)
                 * glam::Mat4::from_cols_array(&reflected.view)
                 * glam::Mat4::from_translation(-glam::Vec3::from_array([

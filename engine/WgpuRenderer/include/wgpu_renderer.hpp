@@ -1495,6 +1495,11 @@ extern "C"
        0 = off (every surface reads fully lit); 1 = the full computed transmittance. Its own entry
        point rather than a field in WgrSkyLook, because growing that struct changes a size the ABI
        handshake checks and this is one float. */
+    /* How much wider the planar water reflection's frustum is than the screen's. 1 = the old
+       behaviour, where a grazing reflection ran off the edge of the reflection target and the
+       reflected clouds ended in a visible line. Higher covers more angle at lower resolution. */
+    WGR_API void wgr_set_planar_reflection_pad(WgrRenderer* renderer, float pad);
+
     /* Brightness of the procedural star field. 0 = none. Gated to night by sun altitude in the
        shader, so it never affects a daytime sky. */
     WGR_API void wgr_set_star_intensity(WgrRenderer* renderer, float intensity);

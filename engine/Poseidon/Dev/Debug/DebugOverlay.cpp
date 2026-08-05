@@ -4084,6 +4084,13 @@ void DrawWaterTab()
     ImGui::SetItemTooltip("Backlit-crest glow (the turquoise scatter through a wave with the sun behind it). "
                           "1 = the reference's energy mapped onto our HDR sun radiance.");
     changed |= ImGui::SliderFloat("Reflection gain", &s.reflectionGain, 0.0f, 1.5f, "%.2f");
+    changed |= ImGui::SliderFloat("Reflection FOV padding", &s.reflectionFovPad, 1.0f, 3.0f, "%.2fx");
+    ImGui::TextDisabled("How much wider the planar reflection renders than the screen's field of view. The "
+                        "reflected camera otherwise inherits the main projection exactly, so a grazing "
+                        "reflection needs directions that were never rendered -- the lookup runs off the edge "
+                        "of the reflection target and the reflected clouds end in a visible line across the "
+                        "water. 1.00 restores that. Padding trades angular resolution for coverage; the planar "
+                        "sample is mip-filtered by design, so a little softness costs less than a hard edge.");
     ImGui::SetItemTooltip("Scales the physical Fresnel reflection weight. 1 = uncapped (correct); lower only "
                           "if the sky/planar reflection itself is wrong and you need to hide it.");
     ImGui::EndDisabled();

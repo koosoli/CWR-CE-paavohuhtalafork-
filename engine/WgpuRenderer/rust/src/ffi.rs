@@ -2248,6 +2248,22 @@ pub unsafe extern "C" fn wgr_set_sky_runtime(
     renderer.set_sky_runtime(*params);
 }
 
+/// How much wider the planar water reflection's frustum is than the screen's. 1 = the old
+/// behaviour, where a grazing reflection ran off the edge of the reflection target and the
+/// reflected clouds ended in a visible line across the water. Higher covers more angle at
+/// proportionally lower angular resolution.
+///
+/// # Safety
+/// `renderer` must be a live renderer from `wgr_create`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn wgr_set_planar_reflection_pad(renderer: *mut WgrRenderer, pad: f32) {
+    if renderer.is_null() {
+        return;
+    }
+    let renderer = unsafe { &mut *renderer };
+    renderer.set_planar_reflection_pad(pad);
+}
+
 /// Brightness of the procedural star field. 0 = none. Gated to night by sun altitude in the
 /// shader, so this never affects a daytime sky.
 ///

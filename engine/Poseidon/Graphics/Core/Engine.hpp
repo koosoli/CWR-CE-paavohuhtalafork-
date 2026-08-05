@@ -1559,6 +1559,13 @@ class Engine : public IGraphicsEngine
         float glitterGain = 1.0f;    // sun-specular gain (1 = the model's own energy)
         float sssGain = 1.0f;        // subsurface / backlit-crest gain
         float reflectionGain = 0.7f; // environment-reflection gain (1 = uncapped physical Fresnel)
+        // How much wider the planar reflection renders than the screen's field of view. The
+        // reflected camera otherwise inherits the main projection exactly, so a grazing reflection
+        // needs directions that were never rendered, the lookup falls off the edge of the target,
+        // and the reflected clouds end in a visible line across the water. Padding trades angular
+        // resolution for coverage; the planar sample is mip-filtered on purpose, so a little
+        // softness costs less here than a hard edge. 1.0 = the old behaviour.
+        float reflectionFovPad = 1.35f;
 
         // WTR-LOOK — physical sea-state coupling. The amplitude control used to scale the whole
         // variance spectrum uniformly, which raised every wave at its existing wavelength: a
