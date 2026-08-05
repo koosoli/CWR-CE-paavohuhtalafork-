@@ -64,13 +64,27 @@ deriving them from 2001 P3Ds is its own research project.
 integral once per MODEL, at load time, into a small model-space 3D texture; sample it per fragment.
 See §3c — this replaces the per-frame tilted maps that §3b originally proposed.
 
-**F. Hardware ray tracing.** *Rejected, and not a close call.* `wgpu-types 29.0.4` gates ray queries
-behind `EXPERIMENTAL_RAY_QUERY`, whose own doc comment reads "Supported platforms: Vulkan" and
-"expected to be subject to breaking changes" (`features.rs:1042-1053`). This renderer comes up on
-DX12 on Windows, and GL33 is still the supported fallback backend. Putting the one feature that
-makes interiors work behind a Vulkan-only experimental flag means it does not exist for most users.
-A software BVH over the resident bindless mesh data is possible but is a multi-week project for a
-term that only modulates ambient.
+**F. Hardware ray tracing.** *Rejected — but the reason recorded here on 2026-08-05 was factually
+wrong, and the correction is worth having.* `wgpu-types 29.0.4` does gate ray queries behind
+`EXPERIMENTAL_RAY_QUERY`, whose own doc comment reads "Supported platforms: Vulkan" and "expected to
+be subject to breaking changes" (`features.rs:1042-1053`). That part stands.
+
+The claim that followed — "this renderer comes up on DX12 on Windows" — does not. **It comes up on
+Vulkan.** Checked 2026-08-05: nothing in the tree pins a backend (`lib.rs` builds its instance from
+`InstanceDescriptor::new_without_display_handle_from_env()` and asks for a high-performance adapter,
+with no `Backends` restriction and no `WGPU_BACKEND` set anywhere in the scripts), and every
+recorded run on the Tier 1 machine reports `NVIDIA GeForce RTX 3070 (Vulkan, DiscreteGpu)` — the
+runtime logs, the Preview-0 manifest, and the Tier 1 validation contract all agree. So the premise
+that put ray queries out of reach on the reference configuration is the opposite of true.
+
+The rejection still holds, on the argument that was never made: backend selection is not pinned, so
+a DX12 or Metal user gets a different answer than a Vulkan one, and a lighting term cannot be
+allowed to exist only on some backends while GL33 remains a supported fallback. That requires the
+raster path to exist regardless — which is what was built. Ray queries could later refine it where
+available, but they can never be the only implementation, so nothing about this ordering changes.
+
+A software BVH over the resident bindless mesh data remains possible and remains a multi-week
+project for a term that only modulates ambient.
 
 ### 3a. Why NOT the sun direction (asked 2026-08-05, and worth recording)
 

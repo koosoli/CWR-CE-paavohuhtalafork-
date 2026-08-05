@@ -1602,8 +1602,14 @@ Investigate building voxelisation, outside flood fill, sky-visibility probes/vol
       kernel-softened, slope-scale-biased, with the sky irradiance STEERED toward the reach-weighted
       open direction rather than merely scaled by it. Debug reach view, GPU-timer rows, dev-tools
       tab, `Ctrl+Shift+I` / `Ctrl+Shift+O` hotkeys, default OFF.
-- [x] Hardware ray tracing evaluated and rejected: wgpu 29 gates ray queries behind an
-      experimental **Vulkan-only** feature while this renderer runs DX12 on Windows.
+- [x] Hardware ray tracing evaluated and rejected — **but the stated reason was wrong, corrected
+      2026-08-05.** wgpu 29 does gate ray queries behind an experimental Vulkan-only feature. The
+      rest of the sentence, "while this renderer runs DX12 on Windows", is false: nothing in the
+      tree pins a backend, and every recorded run on the Tier 1 machine — runtime logs, Preview-0
+      manifest, and the Tier 1 validation contract alike — reports a **Vulkan** adapter. The
+      rejection survives on the argument that was never made: backend selection is not pinned, so
+      a DX12 or Metal user gets a different answer, and a lighting term cannot exist only on some
+      backends while GL33 remains a supported fallback. The raster path had to exist either way.
 - [x] **Stage 2 built the same day the parking notice was written** (`e74041f`..`a3e80aa`): the
       per-model sky-visibility bake, fed by real LOD-0 geometry straight out of the shared geometry
       pool, sampled per fragment, storing a DIRECTION per voxel alongside the scalar. Both stages

@@ -7,7 +7,7 @@ template: false
 roadmap:
   version: "4.4.1"
   path: docs/roadmap/modernisation/PoseidonWGPU_Modernisation_Roadmap_v4.4.1.md
-  sha256: f50d88cb34b6ae152b15fc1cb54feac1ad9618ca991f7360749be88b8db4a8a7
+  sha256: 09cb30187eb284a587d2b56fc1d34528ca267601880708bccb47b2a13bdcf09c
   # The commit that produced the roadmap content this sha256 covers. The roadmap is
   # deliberately NOT edited by the activation commit: a roadmap change in the same
   # commit could never name its own hash here, so roadmap prose corrections land
