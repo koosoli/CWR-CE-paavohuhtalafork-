@@ -30,6 +30,9 @@ that still let the original game content remain at the centre of the experience:
   reflections, foam, and projectile/explosion interactions.
 - Consolidated work from another [paavohuhtala/CWR-CE](https://github.com/paavohuhtala/CWR-CE)
   branch, including its volumetric cloud system.
+- A procedural sky where the clouds cast shadows on the ground: terrain, objects,
+  grass and water all read the same sun-transmittance map, so a passing deck dims
+  the scene together rather than only the ground. Nights have stars (no moon yet).
 - A modern, observable rendering path with GPU timing and developer diagnostics
   for testing and iteration.
 - Zeus mode in the developer tools: a Game Master-style free-fly camera with

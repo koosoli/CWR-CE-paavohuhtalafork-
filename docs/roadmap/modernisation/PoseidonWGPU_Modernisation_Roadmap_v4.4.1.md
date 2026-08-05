@@ -2993,6 +2993,21 @@ Milestone 2B may overlap Compatibility Preview C0 packaging when ticket ownershi
       the feature switched OFF, because a `discard` anywhere disables early-Z. Split into its own
       entry point and pipelines.
 - [ ] LIT-030 may investigate indirect-light options but does not block Preview 1A.
+- [x] Night sky: stars (2026-08-05). Procedural field gated to night, brightness slider in the Sky
+      tab. Owner-confirmed visible. Two gaps it exposed, both open: clouds do NOT occlude the stars
+      despite being composited after them — that ordering argument was wrong and needs re-testing,
+      not re-asserting — and real constellations need a star catalogue, which is a data job. The
+      moon remains undone.
+- [~] Water planar reflection edge (open, parked 2026-08-06). Looking down at water still shows a
+      boundary where the cloud reflection stops. Three fixes landed, each correcting a real fault
+      and none closing this: the reflected camera inherited the screen's exact FOV; the handover to
+      the sky reflection ran over 3% of the target; and the fade measured the wrong distance, so it
+      discarded reflection over water the target covers. It now measures the overshoot and
+      dissolves outward through the mip chain. Reduced, still visible. Settle whether the remainder
+      is the planar cutoff or Fresnel (debug view 23) BEFORE touching the fade again.
+- [x] Player water ripples work. A report that they had stopped was a STALE DEPLOY — the running
+      binaries did not match the build. Content-checking the deployment is what settled it, which is
+      the same lesson 36a9d29 already recorded. Owner's remaining note: they could be stronger.
 - [ ] TEMP-000 rules are applied to new cloud, god-ray, reflection, or volumetric histories where relevant.
 - [ ] Zeus weather/time commands through ZEU-000A.
 

@@ -91,11 +91,29 @@ systems:
     plan: engine/WgpuRenderer/docs/water-rendering-plan.md
     status: PARTIAL
     owner: null
-    audited: 2026-08-03
+    audited: 2026-08-06
     completeness: >-
       Plan is REVISED with stage 1 landed, and was the most recently maintained of the
       renderer plans. The surface itself — FFT cascades, shoaling, foam, interaction,
       planar reflection and SSR — is live and is the default look.
+
+      PLANAR REFLECTION EDGE, open as of 2026-08-06. Looking DOWN at water leaves a
+      visible boundary where the cloud reflection stops. Three attempts, each fixing a
+      real thing and none fixing this: the reflected camera was inheriting the screen's
+      exact field of view (padded, default 1.35x, right for grazing views); the handover
+      to the sky reflection ran over 3% of the target (widened, then reworked); and the
+      fade was measuring the wrong distance — it discarded reflection over water the
+      target covers, so it now measures the OVERSHOOT and dissolves outward through the
+      mip chain instead. The boundary is reduced but still visible, and the owner has
+      parked it. Whoever picks it up should first settle whether what remains is the
+      planar cutoff or plain Fresnel, which debug view 23 answers directly; do not
+      assume it is the fade again.
+
+      PLAYER RIPPLES work. A 2026-08-05 report that they had stopped was a STALE DEPLOY,
+      not a defect: the running binaries did not match the build, and content-checking
+      them is what settled it. Owner's remaining note is that they could be stronger.
+      Water-tab ripple diagnostics (player depth, events submitted, events drained) were
+      added while chasing it and are worth keeping.
 
       The underwater compositor is OFF by default (WaterSettings::underwaterEffect,
       2026-08-03): the look was not good enough to ship on. The pass and its per-pixel
@@ -280,7 +298,7 @@ systems:
     plan: engine/WgpuRenderer/docs/procedural-sky-plan.md
     status: PARTIAL
     owner: null
-    audited: 2026-08-03
+    audited: 2026-08-05
     completeness: >-
       Considerably further than "stages 0 and 1 landed" (the RND-030 summary) and
       further than the plan's own "Stage 2 in progress".
@@ -293,7 +311,20 @@ systems:
       volume, filled per frame from the sky LUTs. Stage 5 (clouds) — a cloud
       raymarch plus a separate over-scene cloud_composite.wgsl exist.
 
-      Stage 3 (night sky: moon + stars) — NOT done, despite appearances. moon_dir is
+      Stage 3 (night sky) — STARS DONE 2026-08-05, moon still not. A procedural star
+      field on a cube grid (spherical coordinates bunch stars at the poles) is added
+      before the cloud composite and gated to night by sun altitude, with a brightness
+      slider in the Sky tab. It wheels with the sun's azimuth, which is the celestial
+      clock this UBO can supply; there is deliberately no twinkle, because that needs a
+      per-frame clock the sky UBO does not carry.
+
+      Owner-confirmed working 2026-08-05. TWO GAPS FOUND BY THAT TEST, both open:
+      clouds do NOT occlude the stars even though they are composited afterwards — the
+      ordering argument was mine and it is wrong, so it needs re-testing rather than
+      re-asserting — and real constellations would need a star catalogue (Yale BSC or
+      similar), which is a data job rather than a shader one.
+
+      The moon remains undone: moon_dir is
       plumbed into the sky UBO and its own comment says the phase is "unused here";
       nothing in sky.wgsl renders a moon disc, and there are no stars. Grepping for
       "star" matches only the word "start".
