@@ -144,7 +144,7 @@ derived:
   - id: grass-near-blade-layers
     from_source: pbrpx-echinochloa-crus-galli-leaf-01
     recipe: scripts/build_grass_blade_atlas.py
-    recipe_version: 1
+    recipe_version: 4
     output_dir: assets/grass
     consumed_by: >-
       TerrainWgpu::UploadGrassBladeAtlas, which loads the eight files as an
@@ -161,26 +161,26 @@ derived:
       it ever looks wrong in motion.
     files:
       - name: meadow-grass-blade-0.png
-        bytes: 13012
-        sha256: 39d0ebfe07a63b274064f0d492cc253114a51dda66fbcb5282ff99e5ec046f3b
+        bytes: 13938
+        sha256: 4a0d628cd0005f6e1e7b642bb4b26dffbf59e037ab9b2c8f5b37a98dd399ffc9
       - name: meadow-grass-blade-1.png
-        bytes: 17023
-        sha256: e930f895860c92ebf4acf97bba0bf57e1a32ad204af6bf3c87b8db8d2076169c
+        bytes: 17930
+        sha256: 514855e7862996d6493065abdacc8f55bb9e560a7279bc62c5d69e5d9cdf321b
       - name: meadow-grass-blade-2.png
-        bytes: 12768
-        sha256: 4f273ef0e5a6dbd8d2d375c3a7c6541dd846b1211981b994d1c2813ed2f48dbd
+        bytes: 13796
+        sha256: 1799c531b19fcdea0fd8b42934008be579ae007a7e0cac3bd2a18b0a4a014b61
       - name: meadow-grass-blade-3.png
-        bytes: 12922
-        sha256: 853a7eee3130379d466090453004142727f1dd9788f2dc238a6702a8374ccffe
+        bytes: 13831
+        sha256: 0606240161dce97d0dde99362b824531856c1856d2286ad83b28e38b1d1dc065
       - name: meadow-grass-blade-4.png
-        bytes: 11273
-        sha256: baf57c710bb3a1ddac0dd3edd12f8c3dfd172e35df1b12479980563e685989b8
+        bytes: 12017
+        sha256: 319b93e583b6ff6e8cd27a1ab78e8b04fe12f7495971fe2ff9dc5ad849efcc43
       - name: meadow-grass-blade-5.png
-        bytes: 10116
-        sha256: d1bc60e18325582eb31b4a9f3bb0b9a251df746fe89568fcec4ab1661ff187d9
+        bytes: 11215
+        sha256: f66f93050221037013fdae4eefda9dd2ff878d0c585aafbef4c1c65b5fb2876a
       - name: meadow-grass-blade-6.png
-        bytes: 11903
-        sha256: 79eabb77b1f29350d28408be8ecfb8c16d0c58c993caf332d54958d656f6bc4f
+        bytes: 12722
+        sha256: d167dd5ae2e35a5575ec59f284622c441767fa9cbc052aab46f756f928a4c37c
       - name: meadow-grass-blade-7.png
-        bytes: 10144
-        sha256: aa591b3f60eab0c58d2c461715177308f3fd0ec1cff19efc59b5ffea94a5a233
+        bytes: 11099
+        sha256: 073c4ff2e00260460c9cf9cd1734979cfe2c4aa0c5b631fc7c6b0e40e16e9eb8

@@ -814,6 +814,25 @@ struct WgrGrassParams
     float dry_patches;
     float dry_patch_scale;
     float _pad3;
+    /* Blade shape controls. The four grass species used to share ONE silhouette,
+     * so a field read as the same blade repeated; shape_variety blends from that
+     * legacy behaviour (0) to eight distinct profiles (1), and the two jitters
+     * add per-blade taper/bend spread on top. Continuous so the Grass tab can
+     * A/B against the old look without a rebuild. */
+    float shape_variety;
+    float taper_jitter;
+    float bend_jitter;
+    /* Global scale on the near-LOD photo atlas, on top of its distance fade.
+     * 0 = ignore the photo entirely and keep the procedural surface. */
+    float blade_texture_strength;
+    /* Alpha cut-out cards: silhouette from the texture instead of the quad, which
+     * buys shape variety without more geometry but costs early-Z and adds
+     * overdraw. Off by default; measure before adopting. card_widen widens the
+     * quad so the cutout has material to remove. */
+    float alpha_cards;
+    float alpha_cutoff;
+    float card_widen;
+    float _pad4;
 };
 
 // --- Water (GPU CDLOD surface) -----------------------------------------------
@@ -1245,7 +1264,7 @@ static_assert(sizeof(WgrTerrainBatch) == 16, "WgrTerrainBatch layout must match 
 static_assert(sizeof(WgrGrassBatch) == 16, "WgrGrassBatch layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassTrack) == 16, "WgrGrassTrack layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGrassDownwash) == 16, "WgrGrassDownwash layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrGrassParams) == 1712, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrGrassParams) == 1744, "WgrGrassParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterParams) == 272, "WgrWaterParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterNode) == 40, "WgrWaterNode layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrWaterBatch) == 16, "WgrWaterBatch layout must match the Rust #[repr(C)] struct");

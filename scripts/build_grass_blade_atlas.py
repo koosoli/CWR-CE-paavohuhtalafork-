@@ -45,7 +45,7 @@ OUT_DIR = ROOT / "assets" / "grass"
 # Bumping this invalidates every derived hash on purpose: it is the "processing
 # version" ASSET-010 asks for, so a recipe change is visible as a provenance
 # change rather than as an unexplained image diff.
-RECIPE_VERSION = 1
+RECIPE_VERSION = 4
 
 LAYER_W, LAYER_H, LAYERS = 64, 256, 8
 
@@ -112,11 +112,40 @@ def row_span(row_mask: np.ndarray) -> tuple[int, int, int] | None:
 
 
 def unwrap(albedo: np.ndarray, mask: np.ndarray, bbox: tuple[int, int, int, int]) -> np.ndarray:
-    """Resample one blade into LAYER_W x LAYER_H, tip-first, sides trimmed to the mask."""
+    """Resample one blade into LAYER_W x LAYER_H x RGBA, tip-first.
+
+    The colour is trimmed to the mask, but the ALPHA is not: it records how much
+    of the layer's width the blade actually occupied at that height, centred. The
+    solid-geometry path ignores alpha entirely, while the alpha-card path uses it
+    as the silhouette -- so one set of images serves both, and the card path gets a
+    real tapering blade outline instead of a rectangle.
+    """
     y0, y1, _, _ = bbox
+    spans = [row_span(mask[y]) for y in range(y0, y1 + 1)]
+    widths = np.array([0.0 if s is None else float(s[1] - s[0] + 1) for s in spans])
+    # SMOOTH the width profile before using it as a silhouette. Raw per-row width
+    # follows the photograph's own noise -- a blade that is foreshortened, curled
+    # or partly occluded fluctuates several texels row to row -- and cutting the
+    # card to that produced lumpy leaf shapes rather than blades. A wide moving
+    # average keeps the real taper and discards the wobble.
+    window = max(9, (y1 - y0 + 1) // 12)
+    if window % 2 == 0:
+        window += 1
+    kernel = np.ones(window) / window
+    padded = np.pad(widths, window // 2, mode="edge")
+    smooth = np.convolve(padded, kernel, mode="valid")[: widths.size]
+    # Force the profile to widen monotonically from tip to root. Measured width
+    # alone gives a LEAF -- widest in the middle, tapering at both ends -- because
+    # that is what a photographed leaf lying at an angle measures as. A grass
+    # blade is widest where it leaves the ground and narrows all the way to the
+    # tip, so a running maximum from row 0 (the tip) downward turns the measured
+    # shape into a believable blade while keeping each source blade's own rate of
+    # taper. Without this the alpha-card path draws leaves standing on end.
+    smooth = np.maximum.accumulate(smooth)
+    widest = max(1.0, float(smooth.max()))
     rows: list[np.ndarray] = []
-    for y in range(y0, y1 + 1):
-        span = row_span(mask[y])
+    for offset, y in enumerate(range(y0, y1 + 1)):
+        span = spans[offset]
         if span is None:
             continue
         left, right, _ = span
@@ -127,10 +156,21 @@ def unwrap(albedo: np.ndarray, mask: np.ndarray, bbox: tuple[int, int, int, int]
         # with the dilated background.
         centres = np.linspace(left + 0.5, right - 0.5, LAYER_W)
         idx = np.clip(np.rint(centres).astype(np.int32), 0, albedo.shape[1] - 1)
-        rows.append(albedo[y, idx])
+        colour = albedo[y, idx]
+        # Alpha: this row's share of the widest row, centred in the layer. A
+        # narrow tip therefore occupies a narrow band of the card, which is what
+        # gives the cut-out its taper.
+        share = float(smooth[offset]) / widest
+        half = 0.5 * share * LAYER_W
+        centre = 0.5 * LAYER_W
+        columns = np.arange(LAYER_W) + 0.5
+        # Soften by one texel so the cutoff has a gradient to bite into instead
+        # of a hard step that would alias along the whole edge.
+        alpha = np.clip((half - np.abs(columns - centre)) + 0.5, 0.0, 1.0) * 255.0
+        rows.append(np.dstack([colour[None], alpha[None, :, None]])[0])
     if not rows:
         raise ValueError("blade had no usable rows")
-    stacked = np.stack(rows)  # (n, LAYER_W, 3), row 0 is the topmost = the tip
+    stacked = np.stack(rows)  # (n, LAYER_W, 4), row 0 is the topmost = the tip
     src_y = np.linspace(0, stacked.shape[0] - 1, LAYER_H)
     lower = np.floor(src_y).astype(np.int32)
     upper = np.clip(lower + 1, 0, stacked.shape[0] - 1)
@@ -181,8 +221,7 @@ def build() -> list[tuple[str, bytes]]:
     candidates.sort(key=lambda c: (-c[0], c[3]))
     outputs: list[tuple[str, bytes]] = []
     for layer, (_, y0, y1, x0, x1, blade_mask) in enumerate(candidates[:LAYERS]):
-        rgb = unwrap(albedo, blade_mask, (y0, y1, x0, x1))
-        rgba = np.dstack([rgb, np.full(rgb.shape[:2], 255, dtype=np.uint8)])
+        rgba = unwrap(albedo, blade_mask, (y0, y1, x0, x1))
         image = Image.fromarray(rgba)
         from io import BytesIO
 

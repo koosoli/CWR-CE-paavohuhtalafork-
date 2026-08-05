@@ -1098,6 +1098,27 @@ class Engine : public IGraphicsEngine
         float dryPatchScale = 0.030f;
         float weedPercent = 0.12f;
         float flowerPercent = 0.05f;
+        // Blade silhouette variety. The four grass species shared ONE profile,
+        // so a field read as the same blade repeated over and over -- the first
+        // thing a tester notices standing in it. 0 reproduces that legacy look
+        // exactly, 1 gives eight distinct width/height/taper profiles; the two
+        // jitters spread taper and lean per blade on top of whichever is chosen.
+        float shapeVariety = 1.0f;
+        float taperJitter = 0.35f;
+        float bendJitter = 0.30f;
+        // Global multiplier on the near-LOD photo atlas, on top of its own
+        // distance fade. 0 keeps the procedural surface detail even when the
+        // photo layers are present, which is the quickest way to tell whether a
+        // look problem is the texture or the geometry.
+        float bladeTextureStrength = 1.0f;
+        // Alpha cut-out cards: take the silhouette from the texture instead of
+        // the quad, so one card can carry several blade shapes. This is the
+        // Reforger-style approach and it buys shape variety without more
+        // geometry -- but it discards, which costs the early-Z the solid blade
+        // path relies on, and the widened quad adds overdraw. Off until measured.
+        bool alphaCards = false;
+        float alphaCutoff = 0.5f;
+        float cardWiden = 1.6f;
         // Mid LOD geometry. Off = the procedural crossed ribbons. On = crossed
         // cards carrying a photographed grass clump.
         //

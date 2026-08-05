@@ -2624,6 +2624,41 @@ void DrawGrassTab()
                         "colour correction to sit right next to the near grass.");
 
     ImGui::Separator();
+    ImGui::TextUnformatted("Blade shape");
+    changed |= ImGui::SliderFloat("Shape variety", &grass.shapeVariety, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("0 = the legacy look, where all FOUR grass species shared one silhouette and the field "
+                        "read as the same blade repeated. 1 = eight distinct width/height/taper profiles. This "
+                        "is geometry, not texture, so it costs nothing either way.");
+    changed |= ImGui::SliderFloat("Taper jitter", &grass.taperJitter, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("Per-blade spread on the taper exponent, so neighbouring blades of the same species do "
+                        "not narrow identically. Multiplicative about 1.0: 0 leaves the chosen profile alone "
+                        "rather than shifting it.");
+    changed |= ImGui::SliderFloat("Bend jitter", &grass.bendJitter, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("Per-blade spread on the resting lean. Also multiplicative about the stock range, so "
+                        "turning it up widens the spread in both directions instead of leaning the whole field "
+                        "further over.");
+    changed |= ImGui::SliderFloat("Photo texture strength", &grass.bladeTextureStrength, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("Scales the near-LOD photo atlas on top of its distance fade. 0 keeps the procedural "
+                        "surface even when photo layers are installed -- the quickest way to tell whether a look "
+                        "problem is the texture or the geometry. No effect when no photo atlas is loaded.");
+
+    ImGui::Separator();
+    ImGui::TextUnformatted("Alpha cut-out cards (experimental)");
+    changed |= ImGui::Checkbox("Silhouette from texture alpha", &grass.alphaCards);
+    ImGui::TextDisabled("Off = the blade outline is geometry (default). On = the quad is widened and the outline "
+                        "is cut out of the texture's alpha, so one card can carry several blade shapes. This is "
+                        "the Reforger-style approach and it buys shape variety without more geometry -- but it "
+                        "discards, which loses the early-Z the solid path relies on, and the wider quad adds "
+                        "overdraw. Watch the Grass rows in the benchmark table when turning it on.");
+    changed |= ImGui::SliderFloat("Alpha cutoff", &grass.alphaCutoff, 0.05f, 0.95f, "%.2f");
+    ImGui::TextDisabled("Texels below this alpha are discarded. Lower keeps more of the blade and its soft edge; "
+                        "higher trims harder and thins the silhouette. Only used when cards are on.");
+    changed |= ImGui::SliderFloat("Card widening", &grass.cardWiden, 1.0f, 4.0f, "%.2fx");
+    ImGui::TextDisabled("How much wider the quad is than the blade it draws. The cutout needs material to "
+                        "remove: at 1.00x there is nothing spare and the card reads as a rectangle again. "
+                        "Directly proportional to the overdraw this path costs.");
+
+    ImGui::Separator();
     ImGui::TextUnformatted("Species mix");
     changed |= ImGui::SliderFloat("Weed %", &grass.weedPercent, 0.0f, 1.0f, "%.2f");
     ImGui::TextDisabled("Broad flat leaves (clover, ragged weed). Wider and shorter than grass.");
@@ -2684,6 +2719,13 @@ void DrawGrassTab()
         grass.dryPatchScale = 0.030f;
         grass.weedPercent = 0.12f;
         grass.flowerPercent = 0.05f;
+        grass.shapeVariety = 1.0f;
+        grass.taperJitter = 0.35f;
+        grass.bendJitter = 0.30f;
+        grass.bladeTextureStrength = 1.0f;
+        grass.alphaCards = false;
+        grass.alphaCutoff = 0.5f;
+        grass.cardWiden = 1.6f;
         grass.height = 1.25f;
         grass.useLiveWind = true;
         grass.windStrength = 1.2f;

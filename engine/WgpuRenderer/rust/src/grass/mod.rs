@@ -56,6 +56,17 @@ struct GrassParams {
     dry_patches: f32,
     dry_patch_scale: f32,
     _pad3: f32,
+    // Shape and card controls. Trailing vec4 pair keeps the UBO 16-byte aligned.
+    //   shape_mix = (variety, taper jitter, bend jitter, blade texture strength)
+    //   cards     = (alpha cards on, alpha cutoff, card widening, spare)
+    shape_variety: f32,
+    taper_jitter: f32,
+    bend_jitter: f32,
+    blade_texture_strength: f32,
+    alpha_cards: f32,
+    alpha_cutoff: f32,
+    card_widen: f32,
+    _pad4: f32,
 }
 
 /// Mirrors `GrassInstance` in grass.wgsl and grass_shadow.wgsl (32 B). `packed`
@@ -130,6 +141,12 @@ pub struct Grass {
     far_place_pipeline: wgpu::ComputePipeline,
     color_pipeline: wgpu::RenderPipeline,
     color_no_write_pipeline: wgpu::RenderPipeline,
+    // Alpha cut-out variants. Separate pipelines rather than a flag inside
+    // fs_grass: a `discard` anywhere in the shader disables early-Z for the whole
+    // pipeline even when the branch never fires, which measured as +67% on the
+    // grass colour pass with the feature switched off.
+    cards_color_pipeline: wgpu::RenderPipeline,
+    cards_color_no_write_pipeline: wgpu::RenderPipeline,
     prepass_pipeline: wgpu::RenderPipeline,
     mid_prepass_pipeline: wgpu::RenderPipeline,
     mid_color_pipeline: wgpu::RenderPipeline,
@@ -257,6 +274,19 @@ impl Grass {
             dry_patches: 0.35,
             dry_patch_scale: 0.030,
             _pad3: 0.0,
+            // Shape variety defaults ON: four grass species sharing one
+            // silhouette is the defect, not a look worth preserving by default.
+            // 0 still reproduces it exactly for A/B.
+            shape_variety: 1.0,
+            taper_jitter: 0.35,
+            bend_jitter: 0.30,
+            blade_texture_strength: 1.0,
+            // Alpha cards OFF by default: they cost early-Z and add overdraw, so
+            // adopting them is a measured decision, not a default.
+            alpha_cards: 0.0,
+            alpha_cutoff: 0.5,
+            card_widen: 1.6,
+            _pad4: 0.0,
         };
         queue.write_buffer(&grass_params, 0, bytemuck::bytes_of(&params));
 
@@ -640,6 +670,20 @@ impl Grass {
             surface_format,
             false,
         );
+        let cards_color_pipeline = make_pipeline(
+            "wgr_grass_color_cards",
+            "vs_grass",
+            "fs_grass_cards",
+            surface_format,
+            true,
+        );
+        let cards_color_no_write_pipeline = make_pipeline(
+            "wgr_grass_color_cards_no_write",
+            "vs_grass",
+            "fs_grass_cards",
+            surface_format,
+            false,
+        );
         let prepass_pipeline = make_pipeline(
             "wgr_grass_prepass",
             "vs_grass",
@@ -779,6 +823,8 @@ impl Grass {
             far_place_pipeline,
             color_pipeline,
             color_no_write_pipeline,
+            cards_color_pipeline,
+            cards_color_no_write_pipeline,
             prepass_pipeline,
             mid_prepass_pipeline,
             mid_color_pipeline,
@@ -971,6 +1017,16 @@ impl Grass {
             dry_patches: params.dry_patches.clamp(0.0, 1.0),
             dry_patch_scale: params.dry_patch_scale.clamp(0.002, 0.3),
             _pad3: 0.0,
+            shape_variety: params.shape_variety.clamp(0.0, 1.0),
+            taper_jitter: params.taper_jitter.clamp(0.0, 1.0),
+            bend_jitter: params.bend_jitter.clamp(0.0, 1.0),
+            blade_texture_strength: params.blade_texture_strength.clamp(0.0, 1.0),
+            alpha_cards: if params.alpha_cards != 0.0 { 1.0 } else { 0.0 },
+            // A cutoff of 0 with cards on would discard nothing and merely pay the
+            // early-Z cost, and 1 would discard everything; keep it inside both.
+            alpha_cutoff: params.alpha_cutoff.clamp(0.05, 0.95),
+            card_widen: params.card_widen.clamp(1.0, 4.0),
+            _pad4: 0.0,
         };
         self.last_params = params;
         self.enabled = params.enabled != 0.0;
@@ -1172,7 +1228,15 @@ impl Grass {
             _ => Region::GrassColor,
         };
         timers.begin_pass(pass, region);
+        // Cut-out cards swap only the COLOUR pipelines. The prepass keeps the
+        // non-discarding shader: it writes depth and normals for a silhouette the
+        // colour pass is about to carve holes in, but a prepass that discarded
+        // would have to pay the same early-Z loss to remove texels the depth
+        // buffer already handles conservatively.
+        let cutout = self.last_params.alpha_cards > 0.5;
         let pipeline = match kind {
+            GrassPass::Color if cutout => &self.cards_color_pipeline,
+            GrassPass::ColorNoWrite if cutout => &self.cards_color_no_write_pipeline,
             GrassPass::Color => &self.color_pipeline,
             GrassPass::ColorNoWrite => &self.color_no_write_pipeline,
             GrassPass::Prepass => &self.prepass_pipeline,

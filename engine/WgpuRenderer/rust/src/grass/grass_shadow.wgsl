@@ -15,6 +15,8 @@ struct GrassParams {
     species_mix: vec4<f32>,
     // Layout must mirror grass.wgsl exactly -- same uniform buffer.
     look: vec4<f32>,
+    shape_mix: vec4<f32>,
+    cards: vec4<f32>,
 };
 // Must mirror grass.wgsl's 32-byte layout exactly: both shaders bind the same
 // instance buffer through the shared `data_layout`.
@@ -86,14 +88,29 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let side = vec3<f32>(cos(angle), 0.0, -sin(angle));
     let forward = vec3<f32>(sin(angle), 0.0, cos(angle));
     let height_seed = mix(hash11(inst.xz + 2.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
-    // Species shape must mirror grass.wgsl's species_shape(): a broad weed leaf
-    // casts a broad shadow, and a flower stem must not taper to a point.
+    // Species shape must mirror grass.wgsl's species_shape_mixed(): a broad weed
+    // leaf casts a broad shadow, and a flower stem must not taper to a point.
+    // This file re-implements it rather than importing, so the two drift unless
+    // edited together -- which is why the numbers below are the same literals.
     let species = instances[instance_index].packed.w & 7u;
-    var shape = vec3<f32>(1.0, 1.0, 0.65);
-    if (species >= 6u) { shape = vec3<f32>(0.85, 1.15, 0.18); }
-    else if (species >= 4u) { shape = vec3<f32>(1.9, 0.82, 0.42); }
+    var legacy = vec3<f32>(1.0, 1.0, 0.65);
+    if (species >= 6u) { legacy = vec3<f32>(0.85, 1.15, 0.18); }
+    else if (species >= 4u) { legacy = vec3<f32>(1.9, 0.82, 0.42); }
+    var varied = vec3<f32>(1.0, 1.0, 0.65);
+    switch (species) {
+        case 0u: { varied = vec3<f32>(0.74, 1.06, 0.88); }
+        case 1u: { varied = vec3<f32>(1.00, 1.00, 0.65); }
+        case 2u: { varied = vec3<f32>(1.34, 0.92, 0.48); }
+        case 3u: { varied = vec3<f32>(0.62, 1.18, 1.06); }
+        case 4u: { varied = vec3<f32>(1.90, 0.82, 0.42); }
+        case 5u: { varied = vec3<f32>(1.52, 0.70, 0.28); }
+        case 6u: { varied = vec3<f32>(0.85, 1.15, 0.18); }
+        default: { varied = vec3<f32>(0.68, 1.32, 0.13); }
+    }
+    let shape = mix(legacy, varied, clamp(grass.shape_mix.x, 0.0, 1.0));
     let height = mix(0.35, 1.05, height_seed) * grass.blade_height * shape.y;
-    let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
+    let bend_jitter = 1.0 + (hash11(inst.xz + 57.0) * 2.0 - 1.0) * clamp(grass.shape_mix.z, 0.0, 1.0);
+    let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0)) * bend_jitter;
     // Flattening cached by cs_place. Without this the shadow pass rebuilt an
     // upright blade, so grass a player had walked flat kept casting a full
     // standing shadow.
@@ -126,8 +143,13 @@ fn vs_grass_shadow(@builtin(vertex_index) vertex_index: u32, @builtin(instance_i
     let bend = (static_bend + wind_bend) * (1.0 - 0.55 * crush) + crush_bend + crush_flutter;
     // species_mix.z mirrors the Grass-tab blade width multiplier, or a widened
     // blade would cast the shadow of a thin one.
+    // Card widening and taper jitter mirror grass.wgsl: a shadow cast by the
+    // un-widened blade would not match the silhouette actually drawn.
+    let card_widen = mix(1.0, max(grass.cards.z, 1.0), grass.cards.x);
+    let taper_jitter = 1.0 + (hash11(inst.xz + 71.0) * 2.0 - 1.0) * clamp(grass.shape_mix.y, 0.0, 1.0);
     let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x *
-        max(grass.species_mix.z, 0.05) * pow(max(1.0 - t, 0.0), shape.z);
+        max(grass.species_mix.z, 0.05) * card_widen *
+        pow(max(1.0 - t, 0.0), max(shape.z * taper_jitter, 0.05));
     let lateral = select(axis * width, -axis * width, left);
     let world = inst.xyz + lateral + vec3<f32>(0.0, crushed_height * t, 0.0) + bend * (t * t);
     return shadow.light_vp * vec4<f32>(world - shadow.cam_pos.xyz, 1.0);

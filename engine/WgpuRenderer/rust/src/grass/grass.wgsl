@@ -53,6 +53,13 @@ struct GrassParams {
     //   .x = albedo saturation (1.0 = untouched)
     //   .y = dry-patch amount, .z = dry-patch noise scale, .w spare
     look: vec4<f32>,
+    //   .x = shape variety (0 = legacy three profiles, 1 = eight distinct)
+    //   .y = per-blade taper jitter, .z = per-blade bend jitter
+    //   .w = blade texture strength (0 = ignore the photo array entirely)
+    shape_mix: vec4<f32>,
+    //   .x = alpha cut-out cards on/off, .y = alpha cutoff
+    //   .z = card widening applied when cards are on, .w spare
+    cards: vec4<f32>,
 };
 
 // 32 bytes. `pos_seed` stays f32 for world precision; everything the compute
@@ -381,7 +388,11 @@ fn pick_species(world_xz: vec2<f32>) -> u32 {
 // Per-species blade shape. Weeds are broader and shorter; flowers are narrower
 // stems that must NOT taper away at the tip or the petal head would be drawn on
 // a point. Returns (width scale, height scale, taper exponent).
-fn species_shape(species: u32) -> vec3<f32> {
+// Legacy shape: three profiles for eight species, so the four grass species were
+// geometrically IDENTICAL and only differed by texture. That is what "all the
+// blades are the same shape" looks like from the outside. Kept as the blend
+// target for variety = 0 so the old look is still exactly reachable.
+fn species_shape_legacy(species: u32) -> vec3<f32> {
     if (species >= SPECIES_WEED_END) {
         // Flower: slim stem, taller, and a near-constant width so the head reads.
         return vec3<f32>(0.85, 1.15, 0.18);
@@ -391,6 +402,32 @@ fn species_shape(species: u32) -> vec3<f32> {
         return vec3<f32>(1.9, 0.82, 0.42);
     }
     return vec3<f32>(1.0, 1.0, 0.65);
+}
+
+// One profile per species: (width scale, height scale, taper exponent). The
+// taper exponent is what actually reads as "a different kind of grass" -- a high
+// exponent narrows to a needle, a low one keeps width to a blunt tip.
+fn species_shape_varied(species: u32) -> vec3<f32> {
+    switch (species) {
+        // 0..4 grass: fine upright, stock, broad arching, tall wisp.
+        case 0u: { return vec3<f32>(0.74, 1.06, 0.88); }
+        case 1u: { return vec3<f32>(1.00, 1.00, 0.65); }
+        case 2u: { return vec3<f32>(1.34, 0.92, 0.48); }
+        case 3u: { return vec3<f32>(0.62, 1.18, 1.06); }
+        // 4..6 weed: broad flat leaf, then a shorter blunter one.
+        case 4u: { return vec3<f32>(1.90, 0.82, 0.42); }
+        case 5u: { return vec3<f32>(1.52, 0.70, 0.28); }
+        // 6..8 flower: stem, then a taller thinner stem.
+        case 6u: { return vec3<f32>(0.85, 1.15, 0.18); }
+        default: { return vec3<f32>(0.68, 1.32, 0.13); }
+    }
+}
+
+// variety 0 reproduces the legacy three profiles exactly; 1 gives eight distinct
+// ones. Blending rather than switching means the dev-tools slider is continuous
+// and an A/B against the old look needs no rebuild.
+fn species_shape_mixed(species: u32, variety: f32) -> vec3<f32> {
+    return mix(species_shape_legacy(species), species_shape_varied(species), clamp(variety, 0.0, 1.0));
 }
 
 fn pack_flatten(flatten: vec4<f32>, species: u32) -> vec4<u32> {
@@ -570,11 +607,20 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
     let inst_packed = instances[instance_index].packed;
     // Species drives shape as well as albedo: a broad weed leaf and a flower
     // stem are not the same ribbon with a different texture on it.
-    let shape = species_shape(inst_packed.w & 7u);
+    let shape = species_shape_mixed(inst_packed.w & 7u, grass.shape_mix.x);
     let height = mix(0.35, 1.05, height_seed) * grass.blade_height * shape.y;
     // species_mix.z is the Grass-tab blade width multiplier (1.0 = stock look).
-    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x * max(grass.species_mix.z, 0.05);
-    let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0));
+    // Alpha cards carve their silhouette out of the texture, so the quad has to
+    // be WIDER than the blade it will show -- otherwise there is nothing for the
+    // cutout to remove and the card reads as a rectangle again.
+    let card_widen = mix(1.0, max(grass.cards.z, 1.0), grass.cards.x);
+    let width = mix(0.018, 0.045, hash11(inst.xz + 9.0)) * shape.x *
+        max(grass.species_mix.z, 0.05) * card_widen;
+    // Per-blade bend jitter. The stock range is deliberately the midpoint, so
+    // jitter 0 leaves the old look untouched and turning it up widens the spread
+    // in both directions rather than only leaning everything further over.
+    let bend_jitter = 1.0 + (hash11(inst.xz + 57.0) * 2.0 - 1.0) * clamp(grass.shape_mix.z, 0.0, 1.0);
+    let static_bend = forward * mix(0.055, 0.19, hash11(inst.xz + 31.0)) * bend_jitter;
     let crush_dir = unpack2x16snorm(inst_packed.x);
     let crush_data = unpack2x16unorm(inst_packed.y);
     let crush = crush_data.x;
@@ -600,7 +646,10 @@ fn vs_grass(@builtin(vertex_index) vertex_index: u32, @builtin(instance_index) i
                                   cos(terrain.time * 33.0 + seed * 53.0)) * height * (0.95 * rotor_wash);
     // Flowers use a near-flat taper exponent so the stem keeps its width up to
     // the tip -- a petal head painted on a point would vanish.
-    let taper = pow(max(1.0 - t, 0.0), shape.z);
+    // Per-blade taper jitter, multiplicative about 1.0 for the same reason as the
+    // bend jitter: 0 is the stock look, not a shifted one.
+    let taper_jitter = 1.0 + (hash11(inst.xz + 71.0) * 2.0 - 1.0) * clamp(grass.shape_mix.y, 0.0, 1.0);
+    let taper = pow(max(1.0 - t, 0.0), max(shape.z * taper_jitter, 0.05));
     let half_width = width * taper;
     let standing_bend = (static_bend + wind_bend) * (1.0 - 0.55 * crush) + crush_flutter;
     let curve = (standing_bend + crush_bend) * (t * t);
@@ -638,8 +687,10 @@ fn vs_grass_mid(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     let height_seed = mix(hash11(inst.xz + 13.0), clump_noise(inst.xz, 0.21, 0xa47f3cd1u), grass.debug_flags.y * 0.72);
     let inst_packed = instances[instance_index].packed;
     // Same species shape as the near path, so a plant does not change
-    // proportions as it crosses the near/mid boundary.
-    let shape = species_shape(inst_packed.w & 7u);
+    // proportions as it crosses the near/mid boundary. That includes the variety
+    // blend: applying it to only one ring would make blades visibly change shape
+    // as the player walks toward them.
+    let shape = species_shape_mixed(inst_packed.w & 7u, grass.shape_mix.x);
     let height = mix(0.32, 0.92, height_seed) * grass.blade_height * shape.y;
     let width = mix(0.024, 0.055, hash11(inst.xz + 23.0)) * shape.x * max(grass.species_mix.z, 0.05);
     let static_bend = forward * mix(0.04, 0.14, hash11(inst.xz + 71.0));
@@ -786,8 +837,28 @@ fn vs_grass_far(@builtin(vertex_index) vertex_index: u32, @builtin(instance_inde
     return out;
 }
 
+// Alpha cut-out variant. This exists as a SEPARATE entry point, rather than an
+// `if` inside fs_grass, because the mere PRESENCE of `discard` in a fragment
+// shader makes the driver disable early-Z for that pipeline -- whether or not the
+// branch is ever taken. Measured on the reference mission: keeping the cutout
+// behind a runtime flag inside fs_grass cost 1.761 ms against 1.053 ms in the
+// grass colour pass, a 67% penalty paid with the feature switched OFF. Two
+// pipelines, one shading function, no penalty on the default path.
+@fragment
+fn fs_grass_cards(in: VsOut) -> @location(0) vec4<f32> {
+    let cutout = textureSample(blade_tex, blade_samp, in.blade_uv.xy, i32(in.blade_uv.z));
+    if (cutout.a < grass.cards.y) {
+        discard;
+    }
+    return grass_shade(in);
+}
+
 @fragment
 fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
+    return grass_shade(in);
+}
+
+fn grass_shade(in: VsOut) -> vec4<f32> {
     let world = in.world_rel + frame.cam_pos.xyz;
     let base = vec3<f32>(0.055, 0.16, 0.025);
     let tip = vec3<f32>(0.32, 0.43, 0.10);
@@ -811,8 +882,16 @@ fn fs_grass(in: VsOut) -> @location(0) vec4<f32> {
     // positive mip bias stabilises that fine detail while keeping it readable
     // at the close ranges where this near-LOD texture is actually visible.
     let blade = textureSample(blade_tex, blade_samp, in.blade_uv.xy, i32(in.blade_uv.z));
+    // Alpha cut-out cards: the silhouette comes from the texture, not the quad,
+    // which is what buys shape variety without more geometry. It costs the early-Z
+    // the solid path enjoys, so it is a toggle and not the default -- measure
+    // before switching it on for good.
     let textured = blade.rgb * variation * gust_highlight;
-    let albedo = grass_saturation(dry_patch(mix(procedural, textured, in.blade_uv.w), world.xz, in.height_t));
+    // shape_mix.w scales the photo texture globally on top of the distance fade
+    // already in blade_uv.w, so the detail can be dialled back without deleting
+    // the atlas and falling all the way to procedural.
+    let texture_amount = in.blade_uv.w * clamp(grass.shape_mix.w, 0.0, 1.0);
+    let albedo = grass_saturation(dry_patch(mix(procedural, textured, texture_amount), world.xz, in.height_t));
     // Bend card normals toward an upright rounded-blade normal. This avoids
     // the flat dark-side look of a raw ribbon while preserving its silhouette.
     let n = normalize(mix(normalize(in.normal), vec3<f32>(0.0, 1.0, 0.0), 0.24));

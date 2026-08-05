@@ -3284,6 +3284,14 @@ void EngineWgpu::SetGrassSettings(const GrassSettings& settings)
     params.saturation = std::clamp(settings.saturation, 0.0f, 2.0f);
     params.dry_patches = std::clamp(settings.dryPatches, 0.0f, 1.0f);
     params.dry_patch_scale = std::clamp(settings.dryPatchScale, 0.002f, 0.3f);
+    params.shape_variety = std::clamp(settings.shapeVariety, 0.0f, 1.0f);
+    params.taper_jitter = std::clamp(settings.taperJitter, 0.0f, 1.0f);
+    params.bend_jitter = std::clamp(settings.bendJitter, 0.0f, 1.0f);
+    params.blade_texture_strength = std::clamp(settings.bladeTextureStrength, 0.0f, 1.0f);
+    params.alpha_cards = settings.alphaCards ? 1.0f : 0.0f;
+    params.alpha_cutoff = std::clamp(settings.alphaCutoff, 0.05f, 0.95f);
+    params.card_widen = std::clamp(settings.cardWiden, 1.0f, 4.0f);
+    params._pad4 = 0.0f;
     params.weed_percent = std::clamp(settings.weedPercent, 0.0f, 1.0f);
     params.flower_percent = std::clamp(settings.flowerPercent, 0.0f, 1.0f - params.weed_percent);
     // Everon/Eden's legacy geography marks normal terrain as excluded. The

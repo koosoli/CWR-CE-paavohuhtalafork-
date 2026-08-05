@@ -923,6 +923,17 @@ pub struct WgrGrassParams {
     pub dry_patches: f32,
     pub dry_patch_scale: f32,
     pub _pad3: f32,
+    // Shape and card controls. Trailing vec4 pair keeps the UBO 16-byte aligned.
+    //   shape_mix = (variety, taper jitter, bend jitter, blade texture strength)
+    //   cards     = (alpha cards on, alpha cutoff, card widening, spare)
+    pub shape_variety: f32,
+    pub taper_jitter: f32,
+    pub bend_jitter: f32,
+    pub blade_texture_strength: f32,
+    pub alpha_cards: f32,
+    pub alpha_cutoff: f32,
+    pub card_widen: f32,
+    pub _pad4: f32,
 }
 
 // Per-map + per-frame water parameters (a small UBO). See wgpu_renderer.hpp.
@@ -1150,8 +1161,8 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassBatch>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassTrack>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrGrassDownwash>() == 16);
-// 1712 = 107 * 16: the look vec4 keeps the UBO 16-byte aligned.
-const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1712);
+// 1744 = 109 * 16: the look, shape_mix and cards vec4s keep the UBO aligned.
+const _: () = assert!(std::mem::size_of::<WgrGrassParams>() == 1744);
 const _: () = assert!(std::mem::size_of::<WgrWaterParams>() == 272);
 const _: () = assert!(std::mem::size_of::<WgrWaterNode>() == 40);
 const _: () = assert!(std::mem::size_of::<WgrWaterBatch>() == 16);
