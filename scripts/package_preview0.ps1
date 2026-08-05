@@ -259,6 +259,43 @@ it silently behaves like an older build.
     Write-Host "  $name matches ($($stagedHash.Substring(0,16))...)"
 }
 
+# --- Gate 5: the build manifest must describe THIS commit ---------------------
+#
+# The package ships two documents that each claim to identify it: the Preview-0
+# build manifest and the fingerprint written below. Copying the manifest in
+# unchecked lets them disagree -- the fingerprint saying one commit and the
+# manifest, describing the capture, metrics, adapter and shader hashes, saying
+# another. A reader checking the package would find two answers and no way to
+# tell which is the build in their hands, which is worse than shipping neither.
+
+Step 'Checking the build manifest describes the pinned commit'
+$manifestPath = Join-Path $repoRoot 'docs\roadmap\evidence\preview0-manifest.json'
+if (-not (Test-Path $manifestPath))
+{
+    Fail "no build manifest at docs/roadmap/evidence/preview0-manifest.json; generate one with scripts/write_preview0_manifest.py"
+}
+$manifest = Get-Content -Raw -Path $manifestPath | ConvertFrom-Json
+if ($manifest.git_commit -ne $resolved)
+{
+    Fail @"
+The build manifest describes a different commit than the one being packaged.
+
+  packaging : $resolved
+  manifest  : $($manifest.git_commit)
+
+The manifest carries the capture, metrics, adapter and shader hashes for the
+build it was made from. Shipping it beside a fingerprint naming another commit
+gives a reader two identities for one package and no way to choose between them.
+
+Regenerate it against this commit -- scripts/write_preview0_manifest.py, with the
+runtime log, capture and metrics produced by this build -- then run this again.
+"@
+}
+if ($manifest.git_dirty)
+{
+    Fail 'the build manifest records git_dirty: true, so the build it describes cannot be reproduced.'
+}
+
 # --- Assemble -----------------------------------------------------------------
 
 $short = $resolved.Substring(0, 12)
@@ -330,5 +367,6 @@ Write-Host "  archive : $zipPath"
 Write-Host "  commit  : $resolved"
 Write-Host ''
 Write-Host 'Before publishing, confirm the known limitations recorded on REL-000 in' -ForegroundColor Yellow
-Write-Host 'docs/roadmap/status-ledger.yaml still describe this build -- in particular' -ForegroundColor Yellow
-Write-Host 'whether the interior sky-visibility bake is still default ON and unhardened.' -ForegroundColor Yellow
+Write-Host 'docs/roadmap/status-ledger.yaml still describe this build. Measure rather than' -ForegroundColor Yellow
+Write-Host 'assume: the last two cost estimates made here were both wrong, one by 30x in' -ForegroundColor Yellow
+Write-Host 'the pessimistic direction and one by 4x in the optimistic one.' -ForegroundColor Yellow

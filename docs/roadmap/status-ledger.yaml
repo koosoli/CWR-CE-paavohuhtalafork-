@@ -512,13 +512,19 @@ tickets:
         rather than carried from an earlier one; GL33/WGPU comparison evidence
         regenerated against that same commit; and the release decision itself.
       - >-
-        The packaged commit must be pinned deliberately. The recorded Preview-0
-        manifest describes an earlier commit, and renderer work has landed since
-        it -- notably the LIT-020 per-model sky-visibility bake, default ON with
-        no disk cache and no background scheduling, measured at ~18-22 ms per
-        model synchronously at load. Packaging HEAD as-is would ship that load
-        stall. Pin an earlier candidate, ship the bake default OFF, or complete
-        its section 3d hardening first.
+        The packaged commit must still be pinned deliberately, and the packaging
+        script enforces it -- but the reason first recorded here was wrong. This
+        entry claimed packaging HEAD would ship a ~10 s load stall from the
+        LIT-020 bake. Measured 2026-08-05 in the original training mission at the
+        Tier 1 configuration: 8 models, ~0.29 s, and 0.570 ms per frame. The
+        ~10 s figure extrapolated over the whole model library; the bake runs per
+        REGISTERED model. Corrected downward, and it no longer blocks a release.
+      - >-
+        What the same measurement DID find is larger and was not on anyone's
+        list: GTAO costs 31.9% of the GPU frame at the Tier 1 resolution
+        (ao_total 7.723 ms of 24.178 ms), against the 8% recorded from an 800x600
+        window. Within the 33.33 ms budget, so not release-blocking, but it is
+        the dominant cost in the frame and the release notes say so.
       - >-
         Review model is unchanged: Oliver Kay is the only human on the project,
         so this ticket cannot obtain an independent reviewer either. Whatever

@@ -111,11 +111,16 @@ python scripts/generate_capability_matrix.py --check
 
 Stated plainly, because a preview that hides these is worth less than one that names them.
 
-- **Interior sky visibility costs a load stall, and is on by default.** The per-model
-  sky-visibility bake runs synchronously at roughly 18-22 ms per model, and its planned disk cache
-  and background scheduling do not exist yet. Across a full model library that is on the order of a
-  ten-second stall during load. It is correctness-neutral — the result is right, it simply costs
-  time you did not intend to spend — but it is the most visible rough edge in this build.
+- **Ambient occlusion is expensive at high resolution.** GTAO costs about **32% of the GPU frame**
+  in the reference mission at 3441x1440 — 7.7 ms of a 24.2 ms frame, with the horizon march alone
+  the largest single item in the frame. It stays within the 33.3 ms frame budget, but it is the
+  first thing to look at if this build is slower than you expect, and it scales with pixels, so a
+  lower resolution helps disproportionately.
+- **Interior sky visibility bakes at load, without a cache.** The per-model bake runs synchronously
+  when a model is first registered, and its planned disk cache and background scheduling do not
+  exist yet, so the cost is paid on every launch. Measured in the reference mission: 8 models,
+  about 0.29 seconds. Missions that load many distinct models will pay proportionally more, and how
+  much more has not been measured.
 - **The interior lighting result has not been re-judged.** An earlier version drew criticism for
   shadow patches indoors; the cause was found and fixed, but nobody has confirmed the fixed version
   looks right in a real building. Treat it as unproven rather than accepted.

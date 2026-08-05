@@ -348,17 +348,27 @@ systems:
   - id: RSYS-GTAO
     title: Screen-space ambient occlusion (GTAO)
     plan: engine/WgpuRenderer/docs/screen-space-ao-plan.md
-    status: SHIPPED
+    status: PARTIAL
     owner: null
     audited: 2026-08-05
     completeness: >-
       Scalar AO, bent-normal directional ambient, and a hierarchical depth-mip march,
-      default ON as of 2026-08-05 on the owner's instruction. Cost measured in the same
-      change rather than assumed: ao_prep 0.096 / ao_march 0.273 / ao_blur 0.148 /
-      ao_total 0.518 ms against a 6.857 ms frame, so ~8% of the GPU frame, with the
-      horizon march half of it — slices x steps is the knob if it ever has to come down.
-      Nothing outstanding against the plan. Its stated limitation is a design bound, not
-      a defect: a ~2 m radius does not light interiors, which is what LIT-020 exists for.
+      default ON as of 2026-08-05 on the owner's instruction. Complete against its plan;
+      PARTIAL is about its cost, which is not under control at the Tier 1 configuration.
+
+      The recorded figure — ao_total 0.518 ms of a 6.857 ms frame, "~8% of the GPU frame"
+      — was measured at 800x600. Re-measured 2026-08-05 in the original training mission
+      at the Tier 1 resolution of 3441x1440: ao_prep 0.299 / ao_march 6.335 / ao_blur
+      1.089 = 7.723 ms of a 24.178 ms GPU frame, so **31.9%**, and the horizon march
+      alone is the largest single item in the frame by more than five times the next one.
+
+      Pixel count explains most of it and not all: the area ratio is 10.3x and the march
+      grew 23x. So this is not simply "the old number at a bigger resolution", and the
+      8% figure should not be quoted for any real configuration. slices x steps remains
+      the knob, and it now has a reason to be turned.
+    known_gap: >-
+      Cost at Tier 1 resolution is ~32% of the GPU frame, against a headline figure of 8%
+      measured in an 800x600 window. Needs a quality/cost decision, not a re-measurement.
     production_call_sites:
       - file: engine/WgpuRenderer/include/wgpu_renderer.hpp
         symbol: WgrGtao
@@ -387,15 +397,28 @@ systems:
       directional steering quantising across five sampled directions and fixed by baking
       the direction, but nobody has looked at the result in a real building since.
 
-      Second, and this is a shipping defect rather than polish: section 3d of the plan is
-      absent from the code. There is no content-hashed disk cache, no background
-      scheduling with a reach = 1 fallback, and no model-variance policy (animated doors,
-      damaged models, alpha-tested glass, proxies, visual LODs, mirrored or negatively
-      scaled instances — a model-space volume is orientation-free but is NOT mirror-free).
-      sky_bake.rs is deliberately pure and synchronous and the layer that was to sit above
-      it was never written, so the bake runs on the main thread at ~18-22 ms per model:
-      a ~10 s load stall across a full model library, on by default. Either harden it or
-      default it OFF before packaging. Tracked as a packaging caveat on REL-000.
+      Second, section 3d of the plan is absent from the code: no content-hashed disk
+      cache, no background scheduling with a reach = 1 fallback, and no model-variance
+      policy (animated doors, damaged models, alpha-tested glass, proxies, visual LODs,
+      mirrored or negatively scaled instances — a model-space volume is orientation-free
+      but is NOT mirror-free). sky_bake.rs is deliberately pure and synchronous and the
+      layer that was to sit above it was never written.
+
+      **The load-stall estimate was wrong, and measuring it corrected it downward.** The
+      plan's "~500 models is ~10 s" was repeated as though it described this build; it
+      does not. The bake runs once per REGISTERED model, meaning models a mission
+      actually loads, not the library. Measured 2026-08-05 in the original training
+      mission: **8 models, ~0.29 s total**. The per-model arithmetic was right; what was
+      never checked is how many models a mission registers.
+
+      So the cache and background scheduling are still required — a large mission on a
+      full island registers far more than eight, and that number is unmeasured — but this
+      is no longer a reason to hold a release. Per-frame cost is small and measured:
+      cull 0.408 + depth maps 0.163 = 0.570 ms, 2.4% of a 24.178 ms frame.
+    known_gap: >-
+      Section 3d absent (disk cache, background scheduling, model-variance policy). Load
+      cost scales with distinct models registered per mission; measured at 8 models /
+      ~0.29 s, unmeasured for large missions. Result not re-judged by the owner.
     production_call_sites:
       - file: engine/WgpuRenderer/include/wgpu_renderer.hpp
         symbol: WgrSkyVis

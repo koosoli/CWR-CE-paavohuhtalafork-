@@ -1584,6 +1584,21 @@ Default ON, own dev-tools tab, three-way debug view (off / AO / bent normal).
       needs to come down).
 - [x] **Default ON** as of 2026-08-05, on the owner's instruction, with the cost above measured in
       the same change.
+- [ ] **The 8% figure does not survive contact with the Tier 1 configuration.** Re-measured the
+      same day in the original training mission at 3441x1440, RWDI, Vulkan, RTX 3070:
+      `ao_prep=0.299 ao_march=6.335 ao_blur=1.089 ao_total=7.723 | frame=24.178` — **31.9% of the
+      GPU frame**, and the horizon march alone is the largest single item in that frame by more
+      than five times the next one. Evidence:
+      `docs/roadmap/evidence/preview0-wgpu-rel000-mission-20260805-original-training-capture.json`.
+
+      Resolution accounts for most of the gap and not all of it: the pixel area ratio between
+      800x600 and 3441x1440 is 10.3x, while the march grew 23x. So this is not the same
+      measurement scaled up, and **the 8% number should not be quoted for any real
+      configuration** — it describes an 800x600 window and nothing else. Recorded here rather
+      than quietly replaced, because that figure is what "measured, ~8%" was resting on.
+
+      What this needs is a quality-versus-cost decision, not another measurement. `slices x
+      steps` is still the knob, and it now has a reason to be turned.
 
 The line above about dark interiors held exactly as written: GTAO's radius is ~2 m and a room is
 larger, so interiors barely changed. That is `LIT-020`, below.
@@ -1617,12 +1632,25 @@ Investigate building voxelisation, outside flood fill, sky-visibility probes/vol
 - [ ] **Not re-judged.** The owner verdict below was recorded against the per-frame-only version.
       Nobody has looked at the baked path in a real building, so the acceptance list is stale in
       the optimistic direction, not the pessimistic one.
-- [ ] **Stage 2 is unhardened, and this is a release risk, not a polish item.** §3d's requirements
-      do not exist in the code: no content-hashed disk cache, no background scheduling with a
-      reach = 1 fallback, no model-variance policy. `sky_bake.rs` is synchronous by design and the
-      layer that was supposed to sit above it was never written. Measured at ~18-22 ms per model;
-      ~500 models is a ~10 s main-thread load stall, shipping by default. Either harden it, or
-      default it OFF before anything is packaged. Tracked as a packaging caveat on `REL-000`.
+- [ ] **Stage 2 is unhardened.** §3d's requirements do not exist in the code: no content-hashed
+      disk cache, no background scheduling with a reach = 1 fallback, no model-variance policy.
+      `sky_bake.rs` is synchronous by design and the layer that was supposed to sit above it was
+      never written.
+- [x] **The load-stall estimate was wrong, and measuring it corrected it downward.** Earlier
+      today this said "~500 models is a ~10 s main-thread load stall, shipping by default" and
+      called it a release risk. Measured 2026-08-05 in the original training mission: **8 models,
+      ~0.29 s total** (`preview0-wgpu-rel000-mission-20260805-original-training-capture.log`).
+
+      The per-model arithmetic was never the problem. The bake runs once per **registered** model
+      — the models a mission actually loads — and the "~500" was the size of the model library,
+      which nobody checked against what a mission registers. Per-frame cost is likewise small and
+      now measured: `Interior sky: cull 0.408 + depth maps 0.163 = 0.570 ms`, 2.4% of the frame.
+
+      The cache and background scheduling are still required: a large mission on a full island
+      registers far more than eight, and that number is still unmeasured. But this is no longer a
+      reason to hold a release, and the `REL-000` caveat is corrected accordingly. Worth noting
+      which way the error ran — the estimate was pessimistic, and it was repeated three times
+      before anyone ran the mission.
 
 **Owner verdict (2026-08-05), against the per-frame-only version.** Foliage improved — "trees look better with interior ambient
 enabled". Interiors did not: *"the patches of strange shadows is still a problem inside
@@ -2905,12 +2933,15 @@ Milestone 2B may overlap Compatibility Preview C0 packaging when ticket ownershi
 - [ ] CLD-020 using the preferred approach or approved fallback.
 - [ ] CLD-030.
 - [ ] GRS-040 downwash preservation.
-- [x] LIT-010 — shipped, default ON, frame cost measured (~8% of the GPU frame).
+- [~] LIT-010 — shipped and default ON, but its cost is not settled: ~8% of the GPU frame at
+      800x600, and **31.9%** re-measured in the reference mission at the Tier 1 resolution. Needs
+      a quality/cost decision. See LIT-010 above.
 - [~] LIT-020 — both stages implemented and default ON as of 2026-08-05, including the per-model
       baked sky-visibility volumes. Two things keep this open rather than closed: the owner has not
       re-judged it since the bake landed, and the §3d hardening (content-hashed cache, background
-      scheduling, model-variance policy) does not exist, so the bake costs a ~10 s load stall by
-      default. See LIT-020 above; the packaging consequence is recorded on REL-000.
+      scheduling, model-variance policy) does not exist. Its cost is measured and modest —
+      0.570 ms per frame, and 8 models / ~0.29 s of bake in the reference mission, correcting an
+      earlier ~10 s estimate that assumed the whole model library. See LIT-020 above.
 - [ ] LIT-030 may investigate indirect-light options but does not block Preview 1A.
 - [ ] TEMP-000 rules are applied to new cloud, god-ray, reflection, or volumetric histories where relevant.
 - [ ] Zeus weather/time commands through ZEU-000A.

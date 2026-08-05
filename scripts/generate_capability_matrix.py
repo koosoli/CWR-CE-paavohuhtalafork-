@@ -191,10 +191,16 @@ def render() -> str:
             continue
         plan = entry.get("plan", "")
         plan_cell = f"[plan]({plan_link(plan)})" if plan and plan != "null" else "—"
+        # The legend promises that a Partial row names its gap, so prefer the
+        # explicit `known_gap` when the entry has one. Falling back to the first
+        # sentence of `completeness` was leaving Partial rows describing what the
+        # system DOES -- which reads as a Works row with a different label, and
+        # makes the rating look arbitrary to the outside reader it exists for.
+        summary = entry.get("known_gap") or first_sentence(entry.get("completeness", ""))
         add(
             f"| {cell(entry.get('title', entry['id']))} "
             f"| **{STATUS_LABEL[status]}** "
-            f"| {cell(first_sentence(entry.get('completeness', '')))} "
+            f"| {cell(first_sentence(summary))} "
             f"| {cell(entry.get('audited', 'null'))} "
             f"| {plan_cell} |"
         )

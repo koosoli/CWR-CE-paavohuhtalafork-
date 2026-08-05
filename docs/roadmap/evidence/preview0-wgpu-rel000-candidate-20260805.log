@@ -1,0 +1,182 @@
+[2026-08-05 16:35:51.830] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]    TaskPool initialised: 8 task threads (16 logical cores)
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]    Command-line parsing complete
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]      user_dir:  C:\Users\mail\AppData\Roaming\CWR/
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]      user_content_dir: C:\Users\mail\OneDrive\Documents\Cold War Assault/
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]      cache_dir: C:\Users\mail\AppData\Local\CWR/
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]      temp_dir:  C:\Users\mail\AppData\Local\Temp\cwr/
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]    Game starting: version 3.01-8cdca40
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Initializing configuration system...
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Configuration system ready
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Initializing game configuration (language, stringtables, config files)...
+[2026-08-05 16:35:51.839] [app-80c0] [[0;32mINFO[0m] [[0;33mCONFIG[0m]    Language: English
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_ESCAPE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_1' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_2' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_3' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_4' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_5' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_6' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_7' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.853] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_8' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_9' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_0' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MINUS' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_EQUALS' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_BACKSPACE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_TAB' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_Q' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_W' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_E' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_R' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_T' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_Y' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_U' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_I' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_O' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_P' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LEFTBRACKET' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RIGHTBRACKET' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RETURN' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LCTRL' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_A' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_S' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_D' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_G' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_H' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_J' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_K' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_L' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SEMICOLON' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_APOSTROPHE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_GRAVE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LSHIFT' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_BACKSLASH' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_Z' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_X' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_C' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_V' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_B' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_N' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_M' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_COMMA' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PERIOD' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SLASH' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RSHIFT' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_MULTIPLY' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LALT' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SPACE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_CAPSLOCK' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F1' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F2' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F3' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F4' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F5' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F6' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F7' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F8' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F9' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F10' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_NUMLOCKCLEAR' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SCROLLLOCK' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_7' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_8' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_9' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_MINUS' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_4' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_5' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_6' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_PLUS' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_1' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_2' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_3' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_0' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_PERIOD' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_NONUSBACKSLASH' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F11' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F12' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F13' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F14' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_F15' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL2' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL6' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL4' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL5' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL3' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL7' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_EQUALS' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_PREVIOUS_TRACK' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL8' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INTERNATIONAL9' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LANG3' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LANG2' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_STOP' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LANG6' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LANG7' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_NEXT_TRACK' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_ENTER' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RCTRL' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MUTE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_PLAY_PAUSE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_STOP' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_VOLUMEDOWN' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_VOLUMEUP' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_HOME' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_COMMA' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_KP_DIVIDE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PRINTSCREEN' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.854] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RALT' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PAUSE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_HOME' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_UP' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PAGEUP' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LEFT' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RIGHT' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_END' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_DOWN' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_PAGEDOWN' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_INSERT' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_DELETE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_LGUI' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_RGUI' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_APPLICATION' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_POWER' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_SLEEP' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_WAKE' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_SEARCH' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_BOOKMARKS' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_REFRESH' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_STOP' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_FORWARD' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_AC_BACK' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_SDL_SCANCODE_MEDIA_SELECT' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_MP_LOCKED' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.855] [app-80c0] [[1;33mWARN[0m] [[1;34mCORE[0m]    [i18n] key 'STR_MP_UNLOCKED' not found in stringtable; callers will get empty string
+[2026-08-05 16:35:51.875] [app-80c0] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  ParseResource: merged bin/resource-extra.cpp into Res
+[2026-08-05 16:35:51.876] [app-80c0] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Game configuration initialized successfully
+[2026-08-05 16:35:51.876] [app-80c0] [[0;32mINFO[0m] [[0;33mCONFIG[0m]  Game configuration initialized (stringtables, modules, configs loaded)
+[2026-08-05 16:35:51.955] [app-80c0] [[0;32mINFO[0m] [[0;35mMEMORY[0m]  Process memory: 16237 MB physical, soft=4096 MB hard=8192 MB (auto)
+[2026-08-05 16:35:52.045] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu: creating renderer WGPU (Rust / wgpu) (3441x1440), crate v0.1.0, build aadd51a84710-release
+[2026-08-05 16:35:52.046] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu instance flags: InstanceFlags(DEBUG | VALIDATION_INDIRECT_CALL)
+[2026-08-05 16:35:52.426] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu adapter: NVIDIA GeForce RTX 3070 (Vulkan, DiscreteGpu)
+[2026-08-05 16:35:52.426] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu capabilities: bc=true bindless=true partially_bound=true indirect_first_instance=true multi_draw_count=true vertex_writable_storage=true timestamps=true timestamps_in_passes=true
+[2026-08-05 16:35:52.670] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu MSAA enabled: 4x (WGR_MSAA)
+[2026-08-05 16:35:52.670] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu HDR path enabled (WGR_HDR)
+[2026-08-05 16:35:52.670] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu GPU-driven indirect draws enabled (WGR_INDIRECT)
+[2026-08-05 16:35:52.744] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu GPU-driven rendering enabled (WGR_GPU_DRIVEN); inert until a scene registers
+[2026-08-05 16:35:52.881] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: Hydro FFT ocean enabled: initial 512x512 cascade maps; live tiers 256/512/1024
+[2026-08-05 16:35:53.239] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: WTR-002 GPU timestamp instrumentation enabled
+[2026-08-05 16:35:53.239] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: GRS-A in-pass timestamps enabled; grass draw rows will report
+[2026-08-05 16:35:53.239] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  wgpu: wgpu renderer created
+[2026-08-05 16:35:53.239] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu: gtao gate: enabled=true debugMode=0 radius=2 slices=3 steps=12
+[2026-08-05 16:35:53.239] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu: interior sky gate: enabled=true debug=false res=2048 extent=64 height=300 strength=1 floor=0.32 kernel=1 bias=0.25
+[2026-08-05 16:35:53.240] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  DebugOverlay: ImGui initialized on the engine overlay backend (press Ctrl+` / Ctrl+; to toggle)
+[2026-08-05 16:35:53.241] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Aspect: viewport=3441x1440 style=0 clamp=1 override=0 -> leftFOV=1.792 topFOV=0.750 uiX=[0.012..0.988] uiY=[0.000..1.000] world=[0.000..1.000]x[0.000..1.000]
+[2026-08-05 16:35:53.241] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu: VSync interval set to 1
+[2026-08-05 16:35:53.553] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]    World initialized successfully
+[2026-08-05 16:35:53.562] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  Wgpu: VSync interval set to 1
+[2026-08-05 16:35:54.015] [app-80c0] [[0;32mINFO[0m] [[1;36mAUDIO[0m]   EFX extension: available
+[2026-08-05 16:35:54.016] [app-80c0] [[0;32mINFO[0m] [[1;36mAUDIO[0m]   Init OK: OpenAL Soft
+[2026-08-05 16:35:54.017] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  FontSystem initialized (5 fonts in slot 0)
+[2026-08-05 16:35:54.031] [app-80c0] [[0;32mINFO[0m] [[1;32mGRAPHICS[0m]  ScenePreloader initialized (20 slot classes)
+[2026-08-05 16:35:54.031] [app-80c0] [[0;32mINFO[0m] [[1;34mCORE[0m]    Initialization check complete - exiting

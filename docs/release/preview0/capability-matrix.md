@@ -38,8 +38,8 @@ rows as "exists, extent unconfirmed".
 | Procedural sky and atmosphere | **Partial** | Considerably further than "stages 0 and 1 landed" (the RND-030 summary) and further than the plan's own "Stage 2 in progress". | 2026-08-03 | [plan](../../../engine/WgpuRenderer/docs/procedural-sky-plan.md) |
 | Foliage translucency | **Works** | All three stages are implemented and live on the default path. | 2026-08-03 | [plan](../../../engine/WgpuRenderer/docs/foliage-translucency-plan.md) |
 | Compute skinning bake | **Experimental** | Accurate as recorded. skin_bake_enabled defaults false; WGR_SKIN_BAKE=1 enables. | 2026-08-03 | [plan](../../../engine/WgpuRenderer/docs/compute-skin-bake-plan.md) |
-| Screen-space ambient occlusion (GTAO) | **Works** | Scalar AO, bent-normal directional ambient, and a hierarchical depth-mip march, default ON as of 2026-08-05 on the owner's instruction. | 2026-08-05 | [plan](../../../engine/WgpuRenderer/docs/screen-space-ao-plan.md) |
-| Geometry-aware interior sky visibility | **Partial** | Both stages exist and both are default ON as of 2026-08-05: per-frame directional depth maps (Stage 1) and per-model baked sky-visibility volumes storing a scalar and an incoming-sky DIRECTION per voxel (Stage 2). | 2026-08-05 | [plan](../../../engine/WgpuRenderer/docs/interior-sky-visibility-plan.md) |
+| Screen-space ambient occlusion (GTAO) | **Partial** | Cost at Tier 1 resolution is ~32% of the GPU frame, against a headline figure of 8% measured in an 800x600 window. | 2026-08-05 | [plan](../../../engine/WgpuRenderer/docs/screen-space-ao-plan.md) |
+| Geometry-aware interior sky visibility | **Partial** | Section 3d absent (disk cache, background scheduling, model-variance policy). | 2026-08-05 | [plan](../../../engine/WgpuRenderer/docs/interior-sky-visibility-plan.md) |
 | forward-plus | **Unavailable** | No implementation on this branch. | — | — |
 | gpu-terrain-water-cull | **Unavailable** | No implementation on this branch. | — | — |
 | terrain-fractal-detail | **Unavailable** | No implementation on this branch. | — | — |
