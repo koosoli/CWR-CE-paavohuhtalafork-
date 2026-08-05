@@ -1563,13 +1563,20 @@ Default ON, own dev-tools tab, three-way debug view (off / AO / bent normal).
 
 - [x] Contact grounding and corners — owner-confirmed, "i think i prefer it on".
 - [x] Ambient term only; direct sun and local lights untouched.
-- [ ] **Frame cost never measured.** GPU timers exist (`WTR-002`); the mip chain and the wider
-      march went in unmeasured. Do this before Preview 0.
+- [x] **Frame cost measured (2026-08-05)** and the open box closed. Three GPU-timer regions
+      (`GtaoPrep` / `GtaoCompute` / `GtaoBlur`), rows in the Amb. Occlusion tab, and a periodic
+      `Lighting GPU ms:` log line so a run can be diffed against a previous build rather than
+      compared by screenshot. Measured at 800x600 windowed, RWDI:
+      `ao_prep=0.096 ao_march=0.273 ao_blur=0.148 ao_total=0.518 | frame=6.857` — **~8% of the
+      GPU frame**, with the horizon march half of it (so slices x steps is the knob if it ever
+      needs to come down).
+- [x] **Default ON** as of 2026-08-05, on the owner's instruction, with the cost above measured in
+      the same change.
 
 The line above about dark interiors held exactly as written: GTAO's radius is ~2 m and a room is
 larger, so interiors barely changed. That is `LIT-020`, below.
 
-## LIT-020 — Geometry-aware interior sky visibility — REQUIRED outcome — **PLANNED 2026-08-05**
+## LIT-020 — Geometry-aware interior sky visibility — REQUIRED outcome — **IMPLEMENTED 2026-08-05, PARKED: TESTER UNSATISFIED**
 
 Investigate building voxelisation, outside flood fill, sky-visibility probes/volumes, and door/window portals.
 
@@ -1578,18 +1585,46 @@ Investigate building voxelisation, outside flood fill, sky-visibility probes/vol
       taking the unoccluded fraction. Voxelisation and portals are kept as Stage 2 fallbacks.
       A bounding-sphere roof map was evaluated and rejected — the renderer has no boxes, and a
       sphere around a building darkens the street outside it.
-- [ ] Implement. Not started.
+- [x] Implemented: five-direction depth maps (zenith + 4 tilted ~50 deg) at 6 cm/texel, one cull
+      view and one depth-array layer each, drawn by the existing GPU-driven shadow depth pipeline;
+      kernel-softened, slope-scale-biased, with the sky irradiance STEERED toward the reach-weighted
+      open direction rather than merely scaled by it. Debug reach view, GPU-timer rows, dev-tools
+      tab, `Ctrl+Shift+I` / `Ctrl+Shift+O` hotkeys, default OFF.
+- [x] Hardware ray tracing evaluated and rejected: wgpu 29 gates ray queries behind an
+      experimental **Vulkan-only** feature while this renderer runs DX12 on Windows.
+- [ ] **PARKED — the tester is not satisfied, and the feature stays default OFF.**
 
-The initial prototype is scheduled in Milestone 3, but it does not block Preview 1A unless the project explicitly expands that preview to include interior-lighting acceptance.
+**Owner verdict (2026-08-05).** Foliage improved — "trees look better with interior ambient
+enabled". Interiors did not: *"the patches of strange shadows is still a problem inside
+buildings"*. Two rounds of fixes (nine-tap two-ring kernel for the banding, slope-scaled bias for
+grazing-angle self-shadowing) reduced it but did not remove it. Parked on the owner's instruction:
+*"i also do not want to continue on this for now unless you know how to fix it for good"*.
 
-Acceptance:
+**Why the remaining artifact is structural, not a tuning failure.** Every version of this samples a
+CAMERA-space depth map on a texel grid that has no relationship to the surfaces receiving the
+result. A wall gets its occlusion from texels that straddle its own edges, so the boundary between
+"lit" and "occluded" lands on the map's grid rather than on the geometry — which is exactly what
+patches with hard, geometry-unrelated edges look like. Wider kernels and better bias move that
+boundary around; they cannot make it follow the wall, because the information needed to do so is
+not in the map.
 
-- [ ] Porch partly dark.
-- [ ] Window-adjacent room receives light.
-- [ ] Deep room is dark.
-- [ ] Sealed bunker has no unexplained ambient skylight.
-- [ ] Local lights continue working.
+**The durable fix is the per-model bake (§3c / option E), not another tuning pass.** It resolves
+occlusion in MODEL space at ~2 cm, trilinearly filtered, so the result is attached to the building's
+own geometry, is temporally exact, and has no camera-relative grid to alias against. It also costs
+nothing per frame, which independently fixes the fixed ~0.36 ms cull tax measured here. §3d records
+the constraints a resumption must satisfy (content-hashed disk cache, background bake with a safe
+fallback, per-object volume lookup rather than a per-pixel loop, an explicit policy for animated
+doors / damaged models / mirrored instances). That is multi-day work, not a tweak — which is why it
+is parked rather than attempted now.
 
+Acceptance (unchanged; re-judge after the bake, not against the parked version):
+
+- [x] Porch partly dark.
+- [~] Window-adjacent room receives light — the tilted maps do let light in, but the surrounding
+      surfaces carry the patch artifact, so this is not owner-accepted.
+- [x] Deep room is dark.
+- [x] Sealed bunker has no unexplained ambient skylight.
+- [x] Local lights continue working.
 
 ## LIT-030 — Relightable indirect and probe lighting — INVESTIGATE
 
@@ -2831,8 +2866,10 @@ Milestone 2B may overlap Compatibility Preview C0 packaging when ticket ownershi
 - [ ] CLD-020 using the preferred approach or approved fallback.
 - [ ] CLD-030.
 - [ ] GRS-040 downwash preservation.
-- [ ] LIT-010.
-- [ ] Initial LIT-020 prototype.
+- [x] LIT-010 — shipped, default ON, frame cost measured (~8% of the GPU frame).
+- [~] Initial LIT-020 prototype — built and measured, but PARKED default-OFF: tester unsatisfied
+      with the residual shadow patches inside buildings. Resumption path is the per-model bake, not
+      further tuning. See LIT-020 above.
 - [ ] LIT-030 may investigate indirect-light options but does not block Preview 1A.
 - [ ] TEMP-000 rules are applied to new cloud, god-ray, reflection, or volumetric histories where relevant.
 - [ ] Zeus weather/time commands through ZEU-000A.

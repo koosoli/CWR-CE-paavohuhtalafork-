@@ -1,6 +1,11 @@
 # Interior sky visibility (LIT-020) — plan
 
-**Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust). **Status:** PLAN (2026-08-05).
+**Renderer:** `engine/WgpuRenderer` (wgpu-native, Rust).
+**Status: IMPLEMENTED, then PARKED default-OFF (2026-08-05) — tester unsatisfied.** Foliage
+improved; interiors still show shadow patches with hard, geometry-unrelated edges after two rounds
+of fixes. Parked on the owner's instruction. The durable fix is the per-model bake (§3c / §3d), not
+another tuning pass — see the roadmap's LIT-020 entry for why the residual artifact is structural
+to sampling a camera-space depth grid.
 **Roadmap:** `LIT-020 — Geometry-aware interior sky visibility — REQUIRED outcome`.
 **Revised 2026-08-05:** hardware ray tracing ruled out (§3F). Shipped as a **five-direction**
 map — zenith plus four tilted (§3b), after §3c's resolution objection turned out to be
