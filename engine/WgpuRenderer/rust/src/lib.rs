@@ -2010,6 +2010,10 @@ impl Renderer {
         self.gfx3d
             .cull_dispatch_interior_sky(&mut encoder, &self.gpu_timers);
 
+        for line in self.gfx3d.take_sky_bake_log() {
+            self.log.log(log_level::INFO, &line);
+        }
+
         // Non-vacuity check on the map, once, ~2 s in. Reads the PREVIOUS frame's contents (this
         // frame's pass is recorded below and not yet submitted), which is exactly what we want:
         // a fully rendered map from a settled scene. 0.0% here means the pass drew nothing and
@@ -3112,7 +3116,15 @@ impl Renderer {
         materials: &[WgrModelMaterial],
     ) -> u32 {
         self.gfx3d
-            .register_model(bounding_sphere, lods, sections, materials, &self.textures)
+            .register_model(
+                &self.device,
+                &self.queue,
+                bounding_sphere,
+                lods,
+                sections,
+                materials,
+                &self.textures,
+            )
     }
 
     fn register_crown_centres(&mut self, centres: &[WgrVec4]) -> u32 {

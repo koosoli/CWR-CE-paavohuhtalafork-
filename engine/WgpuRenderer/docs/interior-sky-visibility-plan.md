@@ -309,10 +309,26 @@ That third row is the falsifier built into the suite: without it, "the window si
 would pass on any volume that merely darkens toward corners. All three fail when the depth test is
 seeded out of the reduce shader, checked rather than assumed.
 
-**Still to do before this replaces the per-frame path:** feed real model geometry from the pool
-(the core takes positions + indices, the renderer has them in the geometry pool per LOD/section),
-a volume atlas plus per-model offset/scale in the model table, the per-fragment sample in
-`gpu_driven.wgsl`, and everything in §3d — content-hashed disk cache, background scheduling with a
+**Now fed by real geometry (2026-08-05).** `register_model` bakes LOD 0 straight out of the shared
+geometry pool — no CPU copy of the mesh, no second source of truth for a model's geometry — using
+the model-space AABB each mesh computed once at `mesh_create`, while its vertices were still on the
+CPU. 41 directions (zenith + rings at 30/55/75 deg), 32x16x32 voxels, 1024² maps. Gated behind
+`WGR_SKY_BAKE_VOLUMES=1`, off by default, because §3d's caching does not exist yet.
+
+Measured on real OFP models, first run:
+
+| model | bbox | enclosed (vis < 0.5) |
+|---|---|---|
+| house | 9.6 x 12.4 x 9.1 m | 24.9% |
+| large building | 30.9 x 10.4 x 34.0 m | 47.8% |
+| small prop | 1.8 x 1.3 x 1.8 m | 20.9% |
+
+The correlation is the sanity check: more interior volume, more enclosed voxels. **~18-22 ms per
+model**, which is §3d's predicted load stall arriving exactly on schedule — ~500 models is ~10 s,
+so the content-hashed cache is a requirement and not a nicety.
+
+**Still to do before this replaces the per-frame path:** a volume atlas plus per-model offset/scale
+in the model table, the per-fragment sample in `gpu_driven.wgsl`, and everything in §3d — content-hashed disk cache, background scheduling with a
 reach = 1 fallback, per-object volume lookup for movers, and the model-variance policy.
 
 ## 5. Risks

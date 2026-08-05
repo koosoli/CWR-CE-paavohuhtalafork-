@@ -54,6 +54,26 @@ impl BakeSettings {
     }
 }
 
+/// The sampled sky directions: zenith plus two rings. Affordable at this count precisely because
+/// the bake is paid once per MODEL — the per-frame path could only afford five, and the shallow
+/// ring is the one that reaches through a vertical opening.
+///
+/// xyz points from the surface TOWARD the sky; w is the cosine weight (dot with up), so the
+/// zenith dominates and the response stays diffuse.
+pub fn hemisphere_directions() -> Vec<glam::Vec4> {
+    let mut dirs = vec![glam::Vec4::new(0.0, 1.0, 0.0, 1.0)];
+    for (tilt_deg, count) in [(30.0f32, 8u32), (55.0f32, 16u32), (75.0f32, 16u32)] {
+        let t = tilt_deg.to_radians();
+        let (st, ct) = t.sin_cos();
+        for i in 0..count {
+            let az = std::f32::consts::TAU * i as f32 / count as f32;
+            let (sa, ca) = az.sin_cos();
+            dirs.push(glam::Vec4::new(st * ca, ct, st * sa, ct));
+        }
+    }
+    dirs
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct BakeParams {
@@ -69,7 +89,27 @@ pub struct BakeMesh<'a> {
     pub indices: &'a [u32],
 }
 
+/// Where the bake reads geometry from. `Mesh` is the standalone path (tests, tools): it uploads
+/// its own buffers and derives the AABB itself. `Pool` is the renderer path: it rasterises
+/// straight out of the shared geometry pool, so there is no CPU copy of the mesh and no second
+/// source of truth for what a model's geometry is.
+pub enum BakeSource<'a> {
+    Mesh(&'a BakeMesh<'a>),
+    Pool {
+        vbuf: &'a wgpu::Buffer,
+        ibuf: &'a wgpu::Buffer,
+        ranges: &'a [PoolRange],
+        bbox_min: [f32; 3],
+        bbox_max: [f32; 3],
+    },
+}
+
 /// The pipelines and layouts for the bake, built once and reused for every model.
+/// One draw range into the shared geometry pool: (first_index, index_count, base_vertex).
+/// Exactly what the cull's section table already holds, so the bake consumes the renderer's
+/// existing geometry with no CPU copy of it.
+pub type PoolRange = (u32, u32, i32);
+
 pub struct SkyBake {
     depth_pipeline: wgpu::RenderPipeline,
     depth_layout: wgpu::BindGroupLayout,
@@ -81,7 +121,10 @@ pub struct SkyBake {
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 impl SkyBake {
-    pub fn new(device: &wgpu::Device) -> Self {
+    /// `vertex_stride` is the byte stride of the vertex buffer the bake will read. The renderer
+    /// passes the geometry pool's stride so the bake can rasterise straight out of the pool;
+    /// tests pass 12 for a bare position array. Position must be at offset 0 in both.
+    pub fn new(device: &wgpu::Device, vertex_stride: u64) -> Self {
         let depth_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("wgr_sky_bake_depth"),
             source: wgpu::ShaderSource::Wgsl(include_str!("sky_bake_depth.wgsl").into()),
@@ -117,7 +160,7 @@ impl SkyBake {
                 entry_point: Some("vs_bake_depth"),
                 compilation_options: Default::default(),
                 buffers: &[wgpu::VertexBufferLayout {
-                    array_stride: 12,
+                    array_stride: vertex_stride,
                     step_mode: wgpu::VertexStepMode::Vertex,
                     attributes: &[wgpu::VertexAttribute {
                         format: wgpu::VertexFormat::Float32x3,
@@ -228,25 +271,75 @@ impl SkyBake {
     /// Synchronous: it submits and waits. That is fine for a load-time bake and is exactly what
     /// §3d says must NOT happen on the main thread for a whole model library — the caching and
     /// background scheduling live above this, so that this stays a pure, testable function.
+    /// Bake one model. Returns the visibility volume as `dims.x*dims.y*dims.z` floats in
+    /// x-major order, 1 = open sky, 0 = fully enclosed, plus the padded model-space AABB the
+    /// volume covers (which the sampler needs to map a model-space position into it).
+    ///
+    /// Synchronous: it submits and waits. That is fine for a load-time bake and is exactly what
+    /// §3d says must NOT happen on the main thread for a whole model library — the caching and
+    /// background scheduling live above this, so that this stays a pure, testable function.
     pub fn bake(
         &self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
-        mesh: &BakeMesh<'_>,
+        src: BakeSource<'_>,
         dirs: &[glam::Vec4],
         s: &BakeSettings,
     ) -> Option<(Vec<f32>, [f32; 3], [f32; 3])> {
-        if mesh.positions.is_empty() || mesh.indices.is_empty() || dirs.is_empty() {
+        if dirs.is_empty() {
             return None;
         }
-        // Padded model-space AABB.
-        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-        for p in mesh.positions {
-            for a in 0..3 {
-                lo[a] = lo[a].min(p[a]);
-                hi[a] = hi[a].max(p[a]);
+        // Own the buffers only on the standalone path; the pool path borrows the renderer's.
+        let mut owned: Option<(wgpu::Buffer, wgpu::Buffer)> = None;
+        let (vbuf, ibuf, ranges, lo, hi) = match src {
+            BakeSource::Mesh(mesh) => {
+                if mesh.positions.is_empty() || mesh.indices.is_empty() {
+                    return None;
+                }
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for p in mesh.positions {
+                    for a in 0..3 {
+                        lo[a] = lo[a].min(p[a]);
+                        hi[a] = hi[a].max(p[a]);
+                    }
+                }
+                owned = Some((
+                    device.create_buffer_init_slice(
+                        "wgr_sky_bake_vbuf",
+                        bytemuck::cast_slice(mesh.positions),
+                        wgpu::BufferUsages::VERTEX,
+                    ),
+                    device.create_buffer_init_slice(
+                        "wgr_sky_bake_ibuf",
+                        bytemuck::cast_slice(mesh.indices),
+                        wgpu::BufferUsages::INDEX,
+                    ),
+                ));
+                let (v, i) = owned.as_ref().unwrap();
+                (
+                    v,
+                    i,
+                    vec![(0u32, mesh.indices.len() as u32, 0i32)],
+                    lo,
+                    hi,
+                )
             }
-        }
+            // Straight out of the renderer's geometry pool: no CPU copy of the mesh, and no
+            // second source of truth for what a model's geometry is. The AABB comes from the
+            // meshes, which computed it once when their vertices were still on the CPU.
+            BakeSource::Pool {
+                vbuf,
+                ibuf,
+                ranges,
+                bbox_min,
+                bbox_max,
+            } => {
+                if ranges.is_empty() {
+                    return None;
+                }
+                (vbuf, ibuf, ranges.to_vec(), bbox_min, bbox_max)
+            }
+        };
         let mut bbox_min = [0.0f32; 3];
         let mut bbox_max = [0.0f32; 3];
         for a in 0..3 {
@@ -271,17 +364,6 @@ impl SkyBake {
                 bbox_max[2] - bbox_min[2],
             )
             .length();
-
-        let vbuf = device.create_buffer_init_slice(
-            "wgr_sky_bake_vbuf",
-            bytemuck::cast_slice(mesh.positions),
-            wgpu::BufferUsages::VERTEX,
-        );
-        let ibuf = device.create_buffer_init_slice(
-            "wgr_sky_bake_ibuf",
-            bytemuck::cast_slice(mesh.indices),
-            wgpu::BufferUsages::INDEX,
-        );
 
         let n = dirs.len() as u32;
         let maps = device.create_texture(&wgpu::TextureDescriptor {
@@ -348,7 +430,9 @@ impl SkyBake {
             rp.set_bind_group(0, &bind, &[]);
             rp.set_vertex_buffer(0, vbuf.slice(..));
             rp.set_index_buffer(ibuf.slice(..), wgpu::IndexFormat::Uint32);
-            rp.draw_indexed(0..mesh.indices.len() as u32, 0, 0..1);
+            for &(first, count, base) in ranges.iter() {
+                rp.draw_indexed(first..(first + count), base, 0..1);
+            }
         }
 
         let params = BakeParams {
@@ -553,7 +637,7 @@ mod tests {
 
     fn bake_room(window: bool) -> Option<(Vec<f32>, [f32; 3], [f32; 3], BakeSettings)> {
         let (device, queue) = headless()?;
-        let bake = SkyBake::new(&device);
+        let bake = SkyBake::new(&device, 12);
         let (pos, idx) = room(window);
         // A dome sample: straight up plus rings at 35 and 65 degrees. The shallow ring is what
         // reaches through a vertical opening — the entire reason a per-model bake beats a
@@ -573,16 +657,11 @@ mod tests {
             map_res: 512,
             ..Default::default()
         };
-        let (v, lo, hi) = bake.bake(
-            &device,
-            &queue,
-            &BakeMesh {
-                positions: &pos,
-                indices: &idx,
-            },
-            &dirs,
-            &s,
-        )?;
+        let mesh = BakeMesh {
+            positions: &pos,
+            indices: &idx,
+        };
+        let (v, lo, hi) = bake.bake(&device, &queue, BakeSource::Mesh(&mesh), &dirs, &s)?;
         Some((v, lo, hi, s))
     }
 

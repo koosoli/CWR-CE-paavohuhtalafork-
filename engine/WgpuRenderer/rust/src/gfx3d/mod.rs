@@ -388,6 +388,12 @@ struct Mesh {
     // only for skinned meshes. Standalone (0-based), bound at vertex slot 1 with
     // base_vertex = 0 alongside the pool vbuf sliced to `vbase`.
     skin: Option<wgpu::Buffer>,
+    // Model-space AABB, computed once here while the vertices are still on the CPU. The
+    // sky-visibility bake (docs/interior-sky-visibility-plan.md §3c) needs a model's extent to
+    // place its volume, and this is the only moment the positions are cheaply available —
+    // afterwards they live in the GPU pool and recovering them means a readback.
+    aabb_min: [f32; 3],
+    aabb_max: [f32; 3],
 }
 
 // One GPU-driven section's registration source: the mesh handle it lives in, its mesh-local
@@ -2568,6 +2574,16 @@ pub struct Gfx3d {
     // no new pipeline, no new pass UBO layout: the ortho VP goes into the shadow pass UBO's
     // reserved slot (SKY_UBO_SLOT), so this is genuinely the reflection/cascade pattern again.
     interior_sky: SkyVisSettings,
+    // Per-model sky-visibility bake (Stage 2). Off by default: it is a synchronous load-time
+    // bake with none of §3d's caching or scheduling yet, so enabling it on a full model library
+    // is the load stall that plan section warns about. WGR_SKY_BAKE_VOLUMES=1 opts in.
+    sky_bake_enabled: bool,
+    sky_bake: Option<sky_bake::SkyBake>,
+    // model index -> (volume, padded model-space AABB). CPU-side for now; the GPU atlas + the
+    // per-fragment sample are the next step.
+    sky_volumes: FxHashMap<u32, (Vec<f32>, [f32; 3], [f32; 3])>,
+    // Bake diagnostics awaiting a log sink; drained by lib.rs each frame.
+    sky_bake_log: Vec<String>,
     // Depth ARRAY: one layer per sampled sky direction. (texture, per-layer render views,
     // the D2Array view the shader samples).
     interior_sky_target: Option<(wgpu::Texture, Vec<wgpu::TextureView>, wgpu::TextureView)>,
@@ -3121,6 +3137,12 @@ impl Gfx3d {
             dummy_shadow_view,
             dummy_ao_view,
             interior_sky: SkyVisSettings::default(),
+            sky_bake_enabled: std::env::var("WGR_SKY_BAKE_VOLUMES")
+                .map(|v| v != "0")
+                .unwrap_or(false),
+            sky_bake: None,
+            sky_volumes: FxHashMap::default(),
+            sky_bake_log: Vec::new(),
             interior_sky_target: None,
             interior_sky_gen: 0,
             interior_sky_view: None,
@@ -3492,11 +3514,21 @@ impl Gfx3d {
         if self.pool.generation() != gen_before {
             self.bake_bind_cache.clear();
         }
+        let (mut aabb_min, mut aabb_max) = ([f32::MAX; 3], [f32::MIN; 3]);
+        for v in verts {
+            let p = [v.pos.x, v.pos.y, v.pos.z];
+            for a in 0..3 {
+                aabb_min[a] = aabb_min[a].min(p[a]);
+                aabb_max[a] = aabb_max[a].max(p[a]);
+            }
+        }
         let key = self.meshes.insert(Mesh {
             alloc,
             index_count: indices.len() as u32,
             vert_count: verts.len() as u32,
             skin: None,
+            aabb_min,
+            aabb_max,
         });
         key.data().as_ffi()
     }
@@ -5454,6 +5486,8 @@ impl Gfx3d {
     // section/material/LOD arrays parallel. Returns the model id.
     pub fn register_model(
         &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
         bounding_sphere: f32,
         lods: &[WgrModelLod],
         sections: &[WgrModelSection],
@@ -5533,8 +5567,100 @@ impl Gfx3d {
                 _pad: 0,
             })
             .collect();
-        self.cull
-            .register_model(bounding_sphere, &gpu_lods, &gpu_sections, &gpu_materials)
+        let model = self
+            .cull
+            .register_model(bounding_sphere, &gpu_lods, &gpu_sections, &gpu_materials);
+        self.bake_model_sky_visibility(device, queue, model, lods, sections);
+        model
+    }
+
+    // Bake this model's sky-visibility volume (docs/interior-sky-visibility-plan.md §3c) from its
+    // LOD 0 geometry, straight out of the geometry pool.
+    //
+    // LOD 0 only: it is the silhouette the player stands inside, and a coarser LOD would bake a
+    // building whose walls are in slightly the wrong place — the one error this whole approach
+    // exists to avoid.
+    //
+    // §3d's requirements (content-hashed disk cache, background scheduling, a reach = 1 fallback
+    // while a volume is missing) are NOT met yet, which is exactly why this is gated off by
+    // default: a synchronous bake of a whole model library at load time is the load stall §3d
+    // warns about.
+    fn bake_model_sky_visibility(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        model: u32,
+        lods: &[WgrModelLod],
+        sections: &[WgrModelSection],
+    ) {
+        if !self.sky_bake_enabled {
+            return;
+        }
+        let Some(lod0) = lods.first() else {
+            return;
+        };
+        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+        let mut ranges: Vec<sky_bake::PoolRange> = Vec::new();
+        for i in 0..lod0.section_count {
+            let Some(sec) = sections.get((lod0.section_base + i) as usize) else {
+                continue;
+            };
+            let key: MeshKey = KeyData::from_ffi(sec.mesh).into();
+            let Some(mesh) = self.meshes.get(key) else {
+                continue;
+            };
+            for a in 0..3 {
+                lo[a] = lo[a].min(mesh.aabb_min[a]);
+                hi[a] = hi[a].max(mesh.aabb_max[a]);
+            }
+            ranges.push((
+                mesh.alloc.ibase + sec.index_begin,
+                sec.index_count,
+                mesh.alloc.vbase as i32,
+            ));
+        }
+        if ranges.is_empty() || lo[0] > hi[0] {
+            return;
+        }
+        let bake = self
+            .sky_bake
+            .get_or_insert_with(|| sky_bake::SkyBake::new(device, BAKED_VERT_SIZE));
+        let dirs = sky_bake::hemisphere_directions();
+        let settings = sky_bake::BakeSettings::default();
+        let Some((vis, bmin, bmax)) = bake.bake(
+            device,
+            queue,
+            sky_bake::BakeSource::Pool {
+                vbuf: self.pool.vbuf(),
+                ibuf: self.pool.ibuf(),
+                ranges: &ranges,
+                bbox_min: lo,
+                bbox_max: hi,
+            },
+            &dirs,
+            &settings,
+        ) else {
+            return;
+        };
+        // Report the first few, because a bake that silently produces an all-open volume is
+        // indistinguishable from a working one downstream — the same failure mode the per-frame
+        // map's coverage check exists for. `enclosed` is the fraction of voxels that see less
+        // than half the sky; a building with any interior must have some.
+        if self.sky_volumes.len() < 8 {
+            let enclosed = vis.iter().filter(|v| **v < 0.5).count() as f32 / vis.len() as f32;
+            let mean = vis.iter().sum::<f32>() / vis.len() as f32;
+            // Queued rather than printed: Gfx3d has no log sink, and eprintln! never reaches
+            // --log-file, so a diagnostic written that way is missing exactly when it is read.
+            self.sky_bake_log.push(format!(
+                    "[wgr] sky bake model {model}: {} voxels, mean vis {mean:.3}, {:.1}% enclosed,                      bbox {:.1}x{:.1}x{:.1} m",
+                    vis.len(),
+                    enclosed * 100.0,
+                    bmax[0] - bmin[0],
+                    bmax[1] - bmin[1],
+                    bmax[2] - bmin[2],
+            ));
+        }
+        self.sky_volumes.insert(model, (vis, bmin, bmax));
     }
 
     pub fn register_crown_centres(&mut self, centres: &[[f32; 4]]) -> u32 {
@@ -5577,6 +5703,11 @@ impl Gfx3d {
             lod_inv_width,
             pixel_limit,
         };
+    }
+
+    /// Drain queued sky-bake diagnostics (see bake_model_sky_visibility).
+    pub fn take_sky_bake_log(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.sky_bake_log)
     }
 
     pub fn set_interior_sky_settings(&mut self, s: SkyVisSettings) {
