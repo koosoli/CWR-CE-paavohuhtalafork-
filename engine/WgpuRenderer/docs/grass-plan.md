@@ -88,6 +88,40 @@ What is missing is everything about where an authored texture comes from:
 The project's own grass plan already required this — "no copied texture asset
 without separate licence verification" — and it has not happened.
 
+### Progress, 2026-08-05
+
+Source, registry and recipe are done; the authored path now runs from a verified
+CC0 source rather than from unverifiable local files.
+
+- `docs/assets/source-registry.yaml` records the selected source with its
+  original-provider licence quote and per-file hashes, plus the rejected
+  candidate and why. `scripts/validate_asset_registry.py` enforces it in CI.
+- `scripts/build_grass_blade_atlas.py` rebuilds the eight layers deterministically
+  from that source. `--check` is a real determinism test.
+- Engine confirms the load: *"near-LOD photo blade atlas uploaded (8 layers,
+  64x256)"* (`docs/roadmap/evidence/grs-gate1-blades-20260805-original-training-capture.log`).
+
+**Cost: unchanged, as it should be.** Same geometry, same instance count, same
+texture dimensions — only the contents of the array differ, so there is nothing
+for it to cost. Measured against the procedural build in the same mission:
+
+| region | procedural | photo | delta |
+|---|---|---|---|
+| Grass prepass | 0.970 ms | 0.965 ms | −0.005 |
+| Grass colour | 1.053 ms | 1.050 ms | −0.003 |
+| Grass shadow | 0.156 ms | 0.172 ms | +0.016 |
+
+All three are within run-to-run noise. VRAM is identical by construction:
+8 × 64 × 256 × RGBA8 = 512 KB either way. The frame total moved by +1.1 ms
+between the two runs, which is **not** attributed to grass — every grass row is
+flat, so whatever moved was elsewhere.
+
+**Still open.** The look has not been judged: the original training mission opens
+on a heavily overexposed beach, which washes the blades out and is a poor scene
+for the comparison `GRS-GATE-1` wants. That needs a meadow at sane exposure, and
+an owner eye. Also still missing: the mid-ring clump texture still comes from an
+unregistered local file, and there is no packaged, validated optional bundle.
+
 ### The order this has to be done in
 
 ```
