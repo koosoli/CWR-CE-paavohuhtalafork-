@@ -38,6 +38,14 @@ jobs:
       - name: Validate shipped-renderer register
         run: python3 scripts/validate_renderer_ledger.py
 
+      # The public capability matrix is generated from the two ledgers above, so
+      # the only way it can lie is by being stale. Regenerating and diffing here
+      # makes that impossible; a hand-maintained version of this table is exactly
+      # what RND-030 found had drifted, and this one is published to people who
+      # have no way to check it.
+      - name: Check capability matrix matches the ledgers
+        run: python3 scripts/generate_capability_matrix.py --check
+
       # Cheap, and it guards a failure mode that is invisible when it happens:
       # two tests writing the same screenshot filename is a false pass under a
       # parallel run, not merely an overwritten file.
