@@ -1,0 +1,111 @@
+{
+	"schema_version":	1,
+	"renderer":	"WGPU (Rust / wgpu)",
+	"runtime":	"Wgpu",
+	"gpu_timestamps_available":	true,
+	"gpu_timings_ms":	[{
+			"name":	"Spectrum init",
+			"milliseconds":	0.0716800019145012
+		}, {
+			"name":	"Spectrum evolve",
+			"milliseconds":	0.11059200018644333
+		}, {
+			"name":	"FFT horizontal",
+			"milliseconds":	0.21299199759960175
+		}, {
+			"name":	"FFT vertical",
+			"milliseconds":	0.20684799551963806
+		}, {
+			"name":	"FFT compose",
+			"milliseconds":	0.11264000087976456
+		}, {
+			"name":	"Interaction (inject+propagate)",
+			"milliseconds":	0.010239999741315842
+		}, {
+			"name":	"Foam update",
+			"milliseconds":	0.16896000504493713
+		}, {
+			"name":	"Whitewater",
+			"milliseconds":	-1
+		}, {
+			"name":	"Planar: sky",
+			"milliseconds":	0.24985599517822266
+		}, {
+			"name":	"Planar: terrain",
+			"milliseconds":	1.8974720239639282
+		}, {
+			"name":	"Planar: objects",
+			"milliseconds":	0.41062399744987488
+		}, {
+			"name":	"Planar: clouds",
+			"milliseconds":	0.15155200660228729
+		}, {
+			"name":	"Planar: mips",
+			"milliseconds":	0.032767999917268753
+		}, {
+			"name":	"Water SSR",
+			"milliseconds":	-1
+		}, {
+			"name":	"Water refraction",
+			"milliseconds":	-1
+		}, {
+			"name":	"Water draw",
+			"milliseconds":	0.76800000667572021
+		}, {
+			"name":	"Underwater froxel",
+			"milliseconds":	-1
+		}, {
+			"name":	"Underwater composite",
+			"milliseconds":	-1
+		}, {
+			"name":	"Caustics",
+			"milliseconds":	-1
+		}, {
+			"name":	"Place near (compute)",
+			"milliseconds":	0.046080000698566437
+		}, {
+			"name":	"Place mid (compute)",
+			"milliseconds":	0.027648000046610832
+		}, {
+			"name":	"Place far (compute)",
+			"milliseconds":	0.00819199997931719
+		}, {
+			"name":	"Grass prepass",
+			"milliseconds":	0.89600002765655518
+		}, {
+			"name":	"Grass colour",
+			"milliseconds":	2.08076810836792
+		}, {
+			"name":	"Grass shadow",
+			"milliseconds":	0.21094399690628052
+		}, {
+			"name":	"GPU frame total",
+			"milliseconds":	26.077184677124023
+		}, {
+			"name":	"Interior sky: cull",
+			"milliseconds":	0.37171199917793274
+		}, {
+			"name":	"Interior sky: depth maps",
+			"milliseconds":	0.14745600521564484
+		}, {
+			"name":	"AO prep (resolve + mips)",
+			"milliseconds":	0.28057599067687988
+		}, {
+			"name":	"AO horizon march",
+			"milliseconds":	6.9058561325073242
+		}, {
+			"name":	"AO bilateral blur",
+			"milliseconds":	0.984063982963562
+		}],
+	"grass":	{
+		"near_instances":	48647,
+		"mid_instances":	14165,
+		"far_instances":	1,
+		"near_candidates":	262144,
+		"mid_candidates":	147456,
+		"far_candidates":	147456,
+		"near_vertices":	2918820,
+		"mid_vertices":	169980,
+		"far_vertices":	6
+	}
+}

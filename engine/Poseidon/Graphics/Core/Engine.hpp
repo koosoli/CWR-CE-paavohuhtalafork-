@@ -1487,7 +1487,7 @@ class Engine : public IGraphicsEngine
         float warpAmp = 5.0f;
         float specPower = 11.0f;     // sun-glint sharpness
         float specIntensity = 3.82f; // sun-glint brightness (HDR, blooms)
-        float alpha = 0.88f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
+        float alpha = 1.00f;         // base opacity (Fresnel raises it toward 1 at grazing angles)
         // Sun shadow: terrain heightfield + CSM occlusion removes the sun glint and
         // direct-sun sheen where the water is shadowed; shadowDim additionally darkens
         // the whole shadowed surface (0 = physical sun-only removal, 1 = strong artistic).
@@ -1515,17 +1515,17 @@ class Engine : public IGraphicsEngine
         // Coast foam + swash (Stage 2c): a churning foam band at the waterline, and a gentle
         // oscillation of the near-shore water edge in/out over the wet beach. Cosmetic only.
         float foamWidth = 1.12f;   // m of column depth the foam band spans (peaks ~1/4 in)
-        float foamIntensity = 0.32f;// foam brightness / coverage
+        float foamIntensity = 0.10f;// foam brightness / coverage
         // WAVE foam: whitecaps and persistent breaker foam on open water, as opposed to the
         // shoreline band the two values above drive. Separate because they are different
         // phenomena -- water breaking on land versus a crest collapsing under its own steepness --
         // and foamIntensity used to scale both, so there was no way to calm the ocean without
         // also stripping the surf.
-        float waveFoamIntensity = 1.0f;
+        float waveFoamIntensity = 0.62f;
         // How strongly deep water suppresses whitecaps. 0 = waves break the same everywhere;
         // 1 = open ocean stays nearly smooth and breaking is concentrated where it belongs, in
         // shoaling water near the coast.
-        float waveFoamDeepFalloff = 0.75f;
+        float waveFoamDeepFalloff = 1.0f;
         // m the near-shore waterline oscillates in/out. Reduced from 0.47: this shifts the
         // EFFECTIVE column depth, so on a gently sloping beach half a metre of depth translates
         // into several metres of horizontal waterline travel, which reads as the water pulling
@@ -1535,8 +1535,8 @@ class Engine : public IGraphicsEngine
         // Terrain-side wet/intertidal band: near-flat ground just above the (swash-moved) sea
         // level reads as damp sand (darker albedo), registering with the water's edge. Shared
         // by the terrain shader via WgrTerrainParams. wetDarken = 1 disables it.
-        float wetHeight = 0.26f;   // m above sea level the damp band reaches
-        float wetDarken = 0.58f;   // albedo multiplier in the band (1 = no darkening)
+        float wetHeight = 4.0f;    // m above sea level the damp band reaches
+        float wetDarken = 0.35f;   // albedo multiplier in the band (1 = no darkening)
         // Master switch for water splash particles: the restrained CPU rifle-impact spray and
         // the GPU whitewater/spray billboard emitter. Enabled by default; activity remains at
         // 0.25 so ordinary impacts and crest spray stay subtle.
@@ -1553,7 +1553,7 @@ class Engine : public IGraphicsEngine
         bool physicalLook = true;
         float glitterGain = 1.0f;    // sun-specular gain (1 = the model's own energy)
         float sssGain = 1.0f;        // subsurface / backlit-crest gain
-        float reflectionGain = 1.0f; // environment-reflection gain (1 = uncapped physical Fresnel)
+        float reflectionGain = 0.7f; // environment-reflection gain (1 = uncapped physical Fresnel)
 
         // WTR-LOOK — physical sea-state coupling. The amplitude control used to scale the whole
         // variance spectrum uniformly, which raised every wave at its existing wavelength: a
@@ -1566,7 +1566,7 @@ class Engine : public IGraphicsEngine
         // fundamentally cannot overturn, so it never reads as a wave crashing into itself. A real
         // plunging breaker needs an actual breaking model, not a bigger sine. Left in place and
         // tunable rather than deleted, but it should stay off until that exists.
-        float shoreWaveGain = 0.0f;
+        float shoreWaveGain = 0.10f;
         // Dev-only performance mode: drops SSR, planar reflection and their scene sampling from
         // the water fragment shader. Off by default.
         bool lowQuality = false;

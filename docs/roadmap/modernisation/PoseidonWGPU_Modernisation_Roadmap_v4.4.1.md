@@ -1412,9 +1412,16 @@ Agents should compare these with other CC0/licence-compatible or original assets
 
 For every selected asset record source URL, provider, author, licence, licence URL, download date, archive hash, processing version, derived hash, and intended use.
 
-- [ ] CI rejects unregistered derived assets.
-- [ ] Source-to-derived provenance is complete.
-- [ ] Proprietary marketplace or game assets are not committed unlawfully.
+- [x] CI rejects unregistered derived assets — `scripts/validate_asset_registry.py` runs in the
+      Preview-0 lint job. Verified it can fail: a tampered source byte, a second SELECTED entry and
+      a removed `licence_url` are each rejected.
+- [x] Source-to-derived provenance is complete — `docs/assets/source-registry.yaml` records source
+      URL, provider, author, licence, licence quote, download date and per-file hashes, plus the
+      derived blade layers with their recipe version and hashes.
+- [x] Proprietary marketplace or game assets are not committed unlawfully — the registered source
+      is CC0 from its original provider. The pre-existing `assets/grass` PNGs are recorded as LOCAL
+      SCRATCH and deliberately NOT registered: their origin is recalled but unverifiable, and a
+      guessed URL would look checked without being checked.
 
 ## GRS-GATE-1 — One complete grass-asset path — REQUIRED before a large species library
 
@@ -1432,12 +1439,23 @@ One licence-compatible source candidate
 → visual and performance comparison
 ```
 
-- [ ] Exactly one initial source path is selected after comparing candidates.
-- [ ] Original game data remains untouched.
-- [ ] Removing the package restores procedural/original fallback.
-- [ ] Missing or corrupt textures cannot prevent startup.
-- [ ] Build outputs are reproducible.
-- [ ] VRAM, overdraw, and GPU cost are recorded.
+- [x] Exactly one initial source path is selected after comparing candidates — PBRPX
+      `PX_Echinochloa_crus_galli_Leaf_01` (CC0, verified on the provider's own site, not on the
+      aggregator that surfaced it). Chosen after comparing opacity masks against
+      `PX_Imperata_cylindrica_Atlas_09`, which is seed-head stalks rather than leaf blades; the
+      rejected candidate stays registered so the comparison is evidenced rather than asserted.
+- [x] Original game data remains untouched — the authored path reads loose files beside the
+      binaries, never a PBO.
+- [x] Removing the package restores procedural/original fallback — deleting the blade layers falls
+      the near ring back to the generated atlas, all-or-nothing by design.
+- [x] Missing or corrupt textures cannot prevent startup — absence and mismatch both log at INFO
+      and fall back.
+- [x] Build outputs are reproducible — `scripts/build_grass_blade_atlas.py` rebuilds the eight
+      layers deterministically from the registered source; `--check` is a real determinism test.
+- [~] VRAM, overdraw, and GPU cost are recorded — cost and VRAM are (2.179 ms of a 24.178 ms frame;
+      512 KB, unchanged between procedural and photo since the array dimensions are identical).
+      OVERDRAW is not: there is no overdraw capture yet, and the alpha-card path is exactly where
+      one would matter (+0.390 ms measured on the colour pass when enabled).
 - [ ] Only after this gate passes may agents expand to a broad species library.
 
 ## GRS-010 — PBR grass texture arrays — SUGGESTED
@@ -1549,17 +1567,36 @@ Compare local velocity grids, occupancy or SDF projection, a small pressure solv
 
 Cloud coverage, density, type, altitude, vertical growth, wind, precipitation, and extinction derive from weather. Clear, scattered, broken, overcast, storm, and foggy presets are suggestions, not immutable mappings.
 
-## CLD-020 — Cloud-shadow response — REQUIRED outcome for Preview 1A
+## CLD-020 — Cloud-shadow response — REQUIRED outcome for Preview 1A — **IMPLEMENTED 2026-08-05**
 
 Preview 1A requires a functioning cloud-shadow solution. The suggested implementation is near/far sun-transmittance clipmaps with temporal reprojection, wind-compensated history, partial updates, and quality scaling.
 
+Shipped as the **approved cheaper fallback**, not the suggested clipmaps: one compute pass marches
+the same `cloud_density` field the sky raymarch uses, from each ground texel toward the sun, into a
+world-anchored 512x512 map covering 4 km around the camera. Every lit surface then costs one
+texture tap. No temporal history, no reprojection, no partial updates — and therefore none of the
+failure modes those bring. `wgr_set_cloud_shadow_strength`; slider in the Sky tab.
+
 An approved cheaper fallback is acceptable when it:
 
-- [ ] Responds to authoritative cloud/weather state.
-- [ ] Affects terrain and major opaque geometry consistently.
-- [ ] Has a clearly documented quality limitation.
-- [ ] Fits the declared platform budget.
-- [ ] Can later be replaced without changing gameplay state.
+- [x] Responds to authoritative cloud/weather state — it marches the authored cloud field itself,
+      so coverage, extinction, deck altitude and wind drift all feed it with nothing to keep in sync.
+- [x] Affects terrain and major opaque geometry consistently — terrain, objects, grass and water all
+      sample the same map, so a cloud dims the whole scene together rather than only the ground.
+- [x] Has a clearly documented quality limitation — three, in the code and the tooltip: the map is
+      evaluated at SEA LEVEL, so a hillside and the valley beneath it get the same shadow; it covers
+      a finite 4 km square, outside which surfaces read fully lit (never dark — missing data must
+      not invent shadow); and its origin is snapped to its own texel grid, without which the pattern
+      crawls with camera movement.
+- [x] Fits the declared platform budget — below run-to-run noise at the Tier 1 configuration
+      (26.216 -> 26.145 ms frame total, i.e. unmeasurable against variance).
+- [x] Can later be replaced without changing gameplay state — it is a render-only transmittance
+      map read by shading; nothing in simulation, scripting or multiplayer observes it.
+
+Verified on 2026-08-05: zero validation errors, clear sky unchanged, forced overcast removes direct
+sun scene-wide including a soldier's own cast shadow, partial coverage puts the camera in a lit gap
+with that shadow back. **Not** verified: a shadow edge sweeping the ground in motion, which needs a
+person watching it.
 
 ## CLD-030 — God rays — REQUIRED outcome
 
@@ -2930,7 +2967,8 @@ Milestone 2B may overlap Compatibility Preview C0 packaging when ticket ownershi
 - [ ] ATM-GATE-1.
 - [ ] ATM-000 and ATM-010.
 - [ ] CLD-010.
-- [ ] CLD-020 using the preferred approach or approved fallback.
+- [x] CLD-020 — shipped 2026-08-05 as the approved cheaper fallback (a marched sun-transmittance
+      map, not clipmaps). All five fallback criteria met and recorded; cost below noise.
 - [ ] CLD-030.
 - [ ] GRS-040 downwash preservation.
 - [~] LIT-010 — shipped and default ON, but its cost is not settled: ~8% of the GPU frame at
@@ -2942,6 +2980,18 @@ Milestone 2B may overlap Compatibility Preview C0 packaging when ticket ownershi
       scheduling, model-variance policy) does not exist. Its cost is measured and modest —
       0.570 ms per frame, and 8 models / ~0.29 s of bake in the reference mission, correcting an
       earlier ~10 s estimate that assumed the whole model library. See LIT-020 above.
+- [x] Grass silhouette work (2026-08-05, tester-driven). `species_shape()` returned THREE profiles
+      for eight species, so all four grass species were geometrically identical and a field read as
+      one blade repeated. Now eight distinct profiles with per-blade taper and bend jitter. A second
+      pass found the deeper fault: the taper EXPONENTS were far too high, making every blade a
+      spear (0.65 is 64% width at mid-height), and the bend was an absolute distance of 5-19 cm —
+      about ten degrees — so the field stood to attention. Retuned to 0.09-0.46 and arch is now
+      proportional to blade height. Costs nothing; it is vertex-shader width and curve.
+- [x] Alpha cut-out card path for near grass, off by default. Silhouette from texture alpha rather
+      than geometry. Measured +0.390 ms on the grass colour pass when enabled — and the measurement
+      that matters more: putting the cutout behind a runtime flag INSIDE the shader cost +67% with
+      the feature switched OFF, because a `discard` anywhere disables early-Z. Split into its own
+      entry point and pipelines.
 - [ ] LIT-030 may investigate indirect-light options but does not block Preview 1A.
 - [ ] TEMP-000 rules are applied to new cloud, god-ray, reflection, or volumetric histories where relevant.
 - [ ] Zeus weather/time commands through ZEU-000A.
