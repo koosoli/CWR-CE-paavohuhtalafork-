@@ -7,7 +7,7 @@
 // Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
 // pipeline via the frame module, so terrain receives the same CSM shadows and
 // sun lighting.
-#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on, gtao_bent_normal_world, gtao_debug_colour}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on, gtao_bent_normal_world, gtao_debug_colour, interior_sky_ao, interior_sky_reach, interior_sky_debug_on}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -323,7 +323,14 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     // because they occlude independently and at disjoint scales (plan §6): sky-visibility is the
     // baked km-scale column factor that darkens valleys and cliff-bases, GTAO the screen-space
     // near/mid term that resolves local folds and object contact. Each returns 1 when off.
-    sun_ambient *= sky_vis_ao(in.world_xz) * gtao_ao(in.clip.xy);
+    //
+    // Interior sky visibility joins them as a third independent occluder. Terrain is deliberately
+    // absent from that MAP (a hillside is not a roof), but it must still RECEIVE the term: the
+    // floor of a shed, a barrack or an archway is terrain, and leaving it at full sky ambient
+    // while the walls around it darkened would look worse than not having the feature.
+    sun_ambient *= sky_vis_ao(in.world_xz)
+        * gtao_ao(in.clip.xy)
+        * interior_sky_ao(in.world_pos + frame.cam_pos.xyz);
     let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) + sun_ambient;
     // HDR keeps radiance uncapped into the float target; LDR saturates like GL33.
     let sun = select(min(sun_raw, vec3<f32>(1.0)), sun_raw, linear > 0.5);
@@ -341,6 +348,12 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     // slices/steps/blur against the buffer itself rather than through the lit result.
     if (gtao_debug_on() > 0.5) {
         return vec4<f32>(gtao_debug_colour(in.clip.xy, n), 1.0);
+    }
+
+    // Debug: the interior sky-reach factor as greyscale (unfogged). Terrain and objects switch
+    // together so the whole opaque scene shows the same buffer.
+    if (interior_sky_debug_on() > 0.5) {
+        return vec4<f32>(vec3<f32>(interior_sky_reach(in.world_pos + frame.cam_pos.xyz)), 1.0);
     }
 
     // fog_enabled: 2 = aerial perspective via the froxel volume (per-fragment); 1 =

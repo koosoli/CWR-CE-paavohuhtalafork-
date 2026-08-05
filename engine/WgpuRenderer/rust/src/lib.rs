@@ -261,6 +261,13 @@ pub struct Renderer {
     // pass ran and found no horizons, and the arithmetic that decides that is all in these few
     // numbers — cheaper to print them once than to reason about the shader.
     gtao_dbg_logged: bool,
+    // One-shot interior sky-visibility coverage report. A map that renders NOTHING clears to the
+    // far plane, every comparison passes, reach is 1 and the feature is a silent no-op that is
+    // indistinguishable from success in a log. This measures it instead. Counted in frames rather
+    // than fired on the first one for the reason recorded on the GTAO dump below: an early frame
+    // has no scene yet, and burning a one-shot flag on it means the diagnostic never fires.
+    interior_sky_dbg_frames: u32,
+    interior_sky_dbg_logged: bool,
     // Depth+normal prepass (docs/depth-prepass-plan.md). Ships unconditionally on wgpu
     // (decision 8); WGR_PREPASS=0 is a TEMPORARY dev A/B for bring-up validation only,
     // not a shipped runtime flag. When on, the first (world) depth segment gets a
@@ -814,6 +821,8 @@ impl Renderer {
             sky_debug: std::env::var("WGR_SKY_DEBUG").is_ok(),
             sky_dbg_last: (usize::MAX, usize::MAX),
             gtao_dbg_logged: false,
+            interior_sky_dbg_frames: 0,
+            interior_sky_dbg_logged: false,
             prepass_enabled,
             suppress_world_objects: false,
             cull_debug_draw: false,
@@ -918,6 +927,11 @@ impl Renderer {
             bent_normal: g.bent_normal != 0,
             max_mip: g.max_mip,
         });
+        // Interior sky visibility (LIT-020). Same unconditional plain-field write as GTAO above;
+        // the settings struct clamps, so a garbage push cannot allocate a 64k depth map.
+        let mut sv = *self.gfx3d.interior_sky_settings();
+        sv.apply(&p.interior_sky);
+        self.gfx3d.set_interior_sky_settings(sv);
     }
 
     // Per-frame sky runtime (wgr_set_sky_runtime): the celestial + camera fields, written into
@@ -1991,6 +2005,64 @@ impl Renderer {
         // cascade's depth-pass indirect args, consumed by the GPU-driven shadow draw inside
         // render_shadow_passes. No-op when GPU-driven / shadows are off.
         self.gfx3d.cull_dispatch_shadows(&mut encoder);
+        // And one for the interior sky-visibility map's ortho view (LIT-020). No-op unless the
+        // feature is enabled and its target exists.
+        self.gfx3d.cull_dispatch_interior_sky(&mut encoder);
+
+        // Non-vacuity check on the map, once, ~2 s in. Reads the PREVIOUS frame's contents (this
+        // frame's pass is recorded below and not yet submitted), which is exactly what we want:
+        // a fully rendered map from a settled scene. 0.0% here means the pass drew nothing and
+        // the whole feature is inert — the failure mode that otherwise looks identical to
+        // success, since an empty map reads as "open sky everywhere".
+        if self.gfx3d.interior_sky_active() && !self.interior_sky_dbg_logged {
+            self.interior_sky_dbg_frames += 1;
+            if self.interior_sky_dbg_frames > 120 {
+                let st = self
+                    .gfx3d
+                    .interior_sky_debug_state(&self.device, &self.queue);
+                if let Some((res, cov)) = self
+                    .gfx3d
+                    .interior_sky_map_coverage(&self.device, &self.queue)
+                {
+                    self.log.log(
+                        if cov > 0.0 {
+                            log_level::INFO
+                        } else {
+                            log_level::WARN
+                        },
+                        &format!(
+                            "[wgr] interior sky map: {res}x{res}, {:.2}% of texels hold an occluder (args={} bind={} instances={} sub_draws={}){}",
+                            cov * 100.0,
+                            st.0,
+                            st.1,
+                            st.2,
+                            st.3,
+                            if cov > 0.0 {
+                                ""
+                            } else if st.3 == 0 {
+                                " — EMPTY and the sky cull emitted no sub-draws: either nothing \
+                                 retained is within the box (legitimate on open terrain — widen \
+                                 it with WGR_INTERIOR_SKY_EXTENT to check) or the cull view is \
+                                 broken. Sky reach is 1 everywhere either way."
+                            } else {
+                                " — EMPTY despite sub-draws: the cull kept geometry but nothing \
+                                 rasterised into the map. That is a VP or pass fault, not an \
+                                 empty neighbourhood."
+                            }
+                        ),
+                    );
+                    self.interior_sky_dbg_logged = true;
+                }
+            }
+        }
+
+        // Interior sky-visibility depth map, recorded with the shadow depth passes and for the
+        // same reason: every segment's shading samples it, so it must be complete before any of
+        // them run, regardless of submission order.
+        encoder.push_debug_group("wgr_interior_sky_map");
+        self.gfx3d
+            .render_interior_sky_pass(&mut encoder, &self.textures);
+        encoder.pop_debug_group();
 
         // Cascade shadow depth passes run first so every segment's draws can
         // sample the completed map, regardless of submission order. Debug groups

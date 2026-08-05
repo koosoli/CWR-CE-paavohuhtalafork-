@@ -644,6 +644,37 @@ EngineWgpu::EngineWgpu(const GraphicsEngineParams& params) : _windowed(params.us
     LOG_INFO(Graphics, "Wgpu: gtao gate: enabled={} debugMode={} radius={} slices={} steps={}", _ao.enabled,
              _ao.debugMode, _ao.radius, _ao.slices, _ao.steps);
 
+    // Interior sky visibility (LIT-020). Default OFF; WGR_INTERIOR_SKY=1 enables it at startup
+    // and WGR_INTERIOR_SKY_DEBUG=1 boots straight into the greyscale reach view. Same reasoning
+    // as the GTAO gate directly above for why this lives on the C++ side.
+    if (const char* is = std::getenv("WGR_INTERIOR_SKY"))
+    {
+        _interiorSky.enabled = std::strcmp(is, "0") != 0;
+    }
+    // Box half-size override. Bring-up needs this: the map covers only +-extent around the
+    // camera, so on an empty stretch of terrain an EMPTY map is the correct answer, and telling
+    // that apart from a broken one means widening the box until something has to appear.
+    if (const char* ise = std::getenv("WGR_INTERIOR_SKY_EXTENT"))
+    {
+        const float v = std::strtof(ise, nullptr);
+        if (v > 0.0f)
+        {
+            _interiorSky.extent = v;
+        }
+    }
+    if (const char* isd = std::getenv("WGR_INTERIOR_SKY_DEBUG"))
+    {
+        _interiorSky.debug = std::strcmp(isd, "0") != 0;
+    }
+    // Through the log sink, not eprintln!/stderr: renderer diagnostics that must survive into
+    // --log-file have to go through the sink or they are simply not there when you read the log.
+    LOG_INFO(Graphics,
+             "Wgpu: interior sky gate: enabled={} debug={} res={} extent={} height={} strength={} floor={} "
+             "kernel={} bias={}",
+             _interiorSky.enabled, _interiorSky.debug, _interiorSky.resolution, _interiorSky.extent,
+             _interiorSky.height, _interiorSky.strength, _interiorSky.floorLevel, _interiorSky.kernel,
+             _interiorSky.bias);
+
     // WGR_SHADOW_MAPS=1 enables cascaded shadow maps at startup (dev panel /
     // tri verbs can still toggle at runtime).
     if (const char* sm = std::getenv("WGR_SHADOW_MAPS"))
@@ -3541,6 +3572,20 @@ void EngineWgpu::PushRenderParams()
         _ao.blurNormalPower,
         _ao.bentNormal ? 1u : 0u,
         uint32_t(_ao.maxMip < 0 ? 0 : _ao.maxMip),
+    };
+
+    p.interior_sky = {
+        _interiorSky.enabled ? 1u : 0u,
+        // Debug only means anything while the map exists, so gate it on `enabled` — otherwise
+        // turning the effect off with the debug view up leaves the world drawn in flat white.
+        (_interiorSky.enabled && _interiorSky.debug) ? 1u : 0u,
+        uint32_t(_interiorSky.resolution < 256 ? 256 : _interiorSky.resolution),
+        _interiorSky.extent,
+        _interiorSky.height,
+        _interiorSky.strength,
+        _interiorSky.floorLevel,
+        _interiorSky.kernel,
+        _interiorSky.bias,
     };
 
     wgr_set_render_params(_renderer, &p);

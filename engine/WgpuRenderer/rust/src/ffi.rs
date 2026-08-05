@@ -646,6 +646,44 @@ pub struct WgrRenderParams {
     pub sky_visibility: WgrSkyVisibility,
     pub foliage: WgrFoliage,
     pub gtao: WgrGtao,
+    pub interior_sky: WgrSkyVis,
+}
+
+// Interior sky visibility (LIT-020, docs/interior-sky-visibility-plan.md). Distinct from
+// `WgrSkyVisibility` above, which is the TERRAIN heightfield's baked sky-view factor: this one is
+// the top-down depth map of the retained OBJECT set, and it is what tells the renderer it is
+// indoors. Rides WgrRenderParams for the same reason WgrGtao does.
+#[repr(C)]
+#[derive(Clone, Copy, PartialEq)]
+pub struct WgrSkyVis {
+    pub enabled: u32,    // 0 = no map rendered, no cull view, consumers read reach = 1
+    pub debug: u32,      // 1 = draw the reach factor as greyscale instead of lighting with it
+    pub resolution: u32, // depth-map edge in texels
+    pub extent: f32,     // HALF the world box, metres (1024 tex / 128 m half = 25 cm/texel)
+    pub height: f32,     // box half-height above/below the camera, metres
+    pub strength: f32,   // 0 = inert, 1 = full attenuation
+    pub floor: f32,      // minimum ambient multiplier in a sealed volume
+    pub kernel: f32,     // softening kernel radius, metres
+    pub bias: f32,       // depth bias, metres (stops open ground occluding itself)
+}
+
+impl Default for WgrSkyVis {
+    fn default() -> Self {
+        // Kept in sync with gfx3d::sky_vis::SkyVisSettings::default (the renderer's frame-0
+        // values) and with the C++ side, which pushes every frame and therefore wins.
+        let d = crate::gfx3d::sky_vis::SkyVisSettings::default();
+        Self {
+            enabled: d.enabled as u32,
+            debug: d.debug as u32,
+            resolution: d.resolution,
+            extent: d.extent,
+            height: d.height,
+            strength: d.strength,
+            floor: d.floor,
+            kernel: d.kernel,
+            bias: d.bias,
+        }
+    }
 }
 
 pub const NO_PALETTE: u32 = 0xFFFF_FFFF;
@@ -1088,7 +1126,8 @@ const _: () = assert!(std::mem::size_of::<WgrTerrainSunShadow>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrSkyVisibility>() == 32);
 const _: () = assert!(std::mem::size_of::<WgrFoliage>() == 48);
 const _: () = assert!(std::mem::size_of::<WgrGtao>() == 52);
-const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 420);
+const _: () = assert!(std::mem::size_of::<WgrSkyVis>() == 36);
+const _: () = assert!(std::mem::size_of::<WgrRenderParams>() == 456);
 const _: () = assert!(std::mem::size_of::<WgrFrameParams>() == 16);
 const _: () = assert!(std::mem::size_of::<WgrCameraShadow>() == 352);
 const _: () = assert!(std::mem::size_of::<WgrCamera>() == 576);

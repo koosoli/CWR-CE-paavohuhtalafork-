@@ -60,6 +60,14 @@ struct Frame {
     //   z = 1 to steer sky irradiance by the bent normal (Stage 2 directional ambient)
     //   w = unused
     gtao: vec4<f32>,
+    // Interior sky visibility (docs/interior-sky-visibility-plan.md), appended after gtao.
+    //   skyvis_vp    = ABSOLUTE world -> the sky map's ortho clip space (w = 1, orthographic)
+    //   skyvis       = (gate, debug, strength, floor)
+    //   skyvisb      = (kernel_uv, bias_ndc, unused, unused)
+    // `skyvisb` not `skyvis2`: naga_oil forbids composable identifiers ending in a digit.
+    skyvis_vp: mat4x4<f32>,
+    skyvis: vec4<f32>,
+    skyvisb: vec4<f32>,
 };
 
 // One frame-global point or spot light. Positions are ABSOLUTE world space so a
@@ -139,6 +147,13 @@ struct SkySh {
 // and under MSAA every covered sample of a pixel legitimately shares one value (plan §5).
 // See gtao_ao / gtao_bent_normal_world below.
 @group(0) @binding(11) var gtao_tex: texture_2d<f32>;
+
+// Interior sky-visibility map (gfx3d/sky_vis.rs): a top-down orthographic DEPTH map of the
+// retained object set over a box around the camera, Depth32Float, forward-Z (0 = top of the box).
+// Sampled with the CASCADE comparison sampler at binding 2 — its LessEqual compare is exactly
+// "is my depth at or in front of the stored occluder", i.e. "can I see the sky", and the hardware
+// 2x2 PCF gives each tap a sub-texel gradient for free. See interior_sky_reach below.
+@group(0) @binding(12) var interior_sky_map: texture_depth_2d;
 
 // Diffuse sky irradiance for a world-space surface normal, from the SH-9 sky projection
 // (Ramamoorthi, "An Efficient Representation for Irradiance Environment Maps"), divided by PI so
@@ -319,6 +334,75 @@ fn gtao_debug_colour(frag_coord: vec2<f32>, fallback_n: vec3<f32>) -> vec3<f32> 
         return gtao_bent_normal_world(frag_coord, fallback_n) * 0.5 + vec3<f32>(0.5);
     }
     return vec3<f32>(gtao_ao(frag_coord));
+}
+
+// How much of the sky can reach this WORLD-ABSOLUTE point, from the top-down interior map:
+// 1 = open sky above, 0 = fully roofed. Returns 1 whenever the feature is off or the point is
+// outside the map, because absence of data must never darken.
+//
+// Why a KERNEL and not a single tap: a hard "is anything above me" test gives black rooms and a
+// razor edge at the doorway. Taking the fraction of taps over a world-space disc that see sky
+// makes the transition grade — under the middle of a roof every tap is blocked, at its lip some
+// are not — and the kernel radius is then roughly "how far light appears to reach in past an
+// opening". That is what buys a partly-dark porch without any portal authoring.
+//
+// The comparison sampler does the depth test: LessEqual returns 1 when the receiver's (biased)
+// depth is at or in front of the stored occluder, i.e. nothing is above it. The bias is what
+// stops a surface that is its own highest geometry — open ground, a crate in the street — from
+// shadowing itself.
+fn interior_sky_reach(world_abs: vec3<f32>) -> f32 {
+    if (frame.skyvis.x < 0.5) {
+        return 1.0;
+    }
+    // Orthographic: w is 1, so clip IS NDC.
+    let clip = frame.skyvis_vp * vec4<f32>(world_abs, 1.0);
+    let uv = vec2<f32>(clip.x * 0.5 + 0.5, -clip.y * 0.5 + 0.5);
+    if (clip.z < 0.0 || clip.z > 1.0) {
+        return 1.0;
+    }
+    let ref_d = clip.z - frame.skyvisb.y;
+    let k = frame.skyvisb.x;
+    // 8 ring taps + a double-weighted centre. The ring is two squares at different radii rather
+    // than one, so the kernel has some radial spread instead of sampling a single circle.
+    var offs = array<vec2<f32>, 8>(
+        vec2<f32>( 1.0,  0.0), vec2<f32>(-1.0,  0.0),
+        vec2<f32>( 0.0,  1.0), vec2<f32>( 0.0, -1.0),
+        vec2<f32>( 0.5,  0.5), vec2<f32>(-0.5,  0.5),
+        vec2<f32>( 0.5, -0.5), vec2<f32>(-0.5, -0.5),
+    );
+    var sum = textureSampleCompareLevel(interior_sky_map, shadow_samp, uv, ref_d) * 2.0;
+    var wsum = 2.0;
+    for (var i = 0; i < 8; i++) {
+        let t = clamp(uv + offs[i] * k, vec2<f32>(0.0), vec2<f32>(1.0));
+        sum += textureSampleCompareLevel(interior_sky_map, shadow_samp, t, ref_d);
+        wsum += 1.0;
+    }
+    let reach = sum / wsum;
+    // Fade out at the box border instead of ending in a hard line: the map moves with the camera,
+    // so a discontinuity at its edge would sweep across the world as the player walks.
+    let edge = min(min(uv.x, 1.0 - uv.x), min(uv.y, 1.0 - uv.y));
+    return mix(1.0, reach, smoothstep(0.0, 0.05, edge));
+}
+
+// Ambient multiplier from interior sky visibility [0,1]. AMBIENT ONLY — direct sun is already
+// occluded by the cascade shadow maps plus the terrain sun-shadow mask, and local lights are the
+// thing keeping an interior readable at all.
+//
+// The floor is not a nicety: OFP interiors carry very few local lights, so an unfloored version
+// of this is a black box the player cannot play in.
+fn interior_sky_ao(world_abs: vec3<f32>) -> f32 {
+    if (frame.skyvis.x < 0.5) {
+        return 1.0;
+    }
+    let occ = 1.0 - interior_sky_reach(world_abs);
+    return max(1.0 - frame.skyvis.z * occ, frame.skyvis.w);
+}
+
+// 1 when the interior-sky debug view is on: surfaces draw the reach factor as greyscale instead
+// of being lit by it. Shipped WITH the effect for the same reason the GTAO one was — judging this
+// through sun + SH ambient + fog + tonemap is much harder than looking at the buffer.
+fn interior_sky_debug_on() -> f32 {
+    return select(0.0, 1.0, frame.skyvis.y > 0.5);
 }
 
 // 1 when the sky-visibility debug view is on (terrain shows the factor as greyscale). A helper

@@ -540,6 +540,24 @@ struct WgrGtao
     uint32_t max_mip;           /* highest mip the horizon march may use; 0 = full res only */
 };
 
+/* Interior sky visibility (LIT-020) — see docs/interior-sky-visibility-plan.md. A top-down
+ * orthographic depth map of the retained OBJECT set: a fragment with geometry above it loses sky
+ * AMBIENT toward `floor`. Distinct from WgrSkyVisibility, which is the terrain heightfield's baked
+ * sky-view factor and knows nothing about buildings. Direct sun and local lights are never
+ * touched. Default OFF. */
+struct WgrSkyVis
+{
+    uint32_t enabled;    /* 0 = no map, no cull view; consumers read reach = 1 */
+    uint32_t debug;      /* 1 = draw the reach factor as greyscale instead of lighting with it */
+    uint32_t resolution; /* depth-map edge in texels */
+    float extent;        /* HALF the world box, metres (1024 tex / 128 m half = 25 cm/texel) */
+    float height;        /* box half-height above/below the camera, metres */
+    float strength;      /* 0 = inert, 1 = full attenuation */
+    float floor;         /* minimum ambient multiplier in a sealed volume */
+    float kernel;        /* softening kernel radius, metres */
+    float bias;          /* depth bias, metres (stops open ground occluding itself) */
+};
+
 /* Every imgui-tweakable render parameter that crosses the FFI as a setter, in one block.
  * Append future look knobs here; do not add new FFI setters. */
 struct WgrRenderParams
@@ -551,6 +569,7 @@ struct WgrRenderParams
     WgrSkyVisibility    sky_visibility;
     WgrFoliage          foliage;
     WgrGtao             gtao;
+    WgrSkyVis           interior_sky;
 };
 
 /* Frame-global scalars carried in the camera UBO so the 3D shader can read them
@@ -1199,7 +1218,8 @@ static_assert(sizeof(WgrTerrainSunShadow) == 16, "WgrTerrainSunShadow layout mus
 static_assert(sizeof(WgrSkyVisibility) == 32, "WgrSkyVisibility layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFoliage) == 48, "WgrFoliage layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrGtao) == 52, "WgrGtao layout must match the Rust #[repr(C)] struct");
-static_assert(sizeof(WgrRenderParams) == 420, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrSkyVis) == 36, "WgrSkyVis layout must match the Rust #[repr(C)] struct");
+static_assert(sizeof(WgrRenderParams) == 456, "WgrRenderParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrFrameParams) == 16, "WgrFrameParams layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCameraShadow) == 352, "WgrCameraShadow layout must match the Rust #[repr(C)] struct");
 static_assert(sizeof(WgrCamera) == 576, "WgrCamera layout must match the Rust #[repr(C)] struct");

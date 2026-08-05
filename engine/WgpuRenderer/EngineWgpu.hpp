@@ -219,6 +219,14 @@ class EngineWgpu : public EngineDummy
         _ao = s;
         PushRenderParams();
     }
+    // Interior sky visibility (docs/interior-sky-visibility-plan.md) — same pattern: stored
+    // here, folded into the consolidated render-params block by PushRenderParams.
+    InteriorSkySettings GetInteriorSkySettings() const override { return _interiorSky; }
+    void SetInteriorSkySettings(const InteriorSkySettings& s) override
+    {
+        _interiorSky = s;
+        PushRenderParams();
+    }
     void SetShadowMapSunFactor(float factor01) override { _smSunFactor = factor01; }
     bool UsesGpuShadowCasters() const override { return true; }
     void SetShadowCascades(const shadow::CascadeSet& cascades, int resolution) override;
@@ -444,6 +452,8 @@ class EngineWgpu : public EngineDummy
     // Foliage lighting knobs (docs/foliage-translucency-plan.md), pushed via PushRenderParams.
     FoliageSettings _foliage;
     AoSettings _ao;
+    // Interior sky visibility (docs/interior-sky-visibility-plan.md), pushed via PushRenderParams.
+    InteriorSkySettings _interiorSky;
     GrassSettings _grass;
     // A circular history of terrain contacts.  Kept in engine space so foot
     // and vehicle trails persist even though grass placement is camera-relative.

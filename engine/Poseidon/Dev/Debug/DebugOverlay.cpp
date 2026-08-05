@@ -3082,6 +3082,69 @@ void DrawAmbientOcclusionTab()
     }
 }
 
+// Interior sky visibility (LIT-020) — its own tab for the same reason AO has one: the two things
+// you actually do here are A/B the effect and flip to the raw reach buffer, and both have to be
+// one click away. Judging this through full lighting is much harder than looking at the buffer.
+void DrawInteriorSkyTab()
+{
+    if (!GEngine)
+    {
+        return;
+    }
+    Engine::InteriorSkySettings is = GEngine->GetInteriorSkySettings();
+    bool changed = false;
+
+    ImGui::TextDisabled("Tells the renderer it is INDOORS: a top-down depth map of the object");
+    ImGui::TextDisabled("scene. Geometry above a surface removes its SKY AMBIENT, toward a floor.");
+    ImGui::TextDisabled("Direct sun (shadow maps) and local lights are never touched.");
+    ImGui::Separator();
+
+    changed |= ImGui::Checkbox("Enabled", &is.enabled);
+    ImGui::TextDisabled("  the A/B: stand in a doorway and toggle");
+    changed |= ImGui::Checkbox("Reach buffer (greyscale)", &is.debug);
+    ImGui::TextDisabled("  white = open sky above, black = fully roofed. Tune against THIS,");
+    ImGui::TextDisabled("  not against the lit scene.");
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Look");
+    changed |= ImGui::SliderFloat("Strength", &is.strength, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  0 = inert, 1 = full attenuation down to the floor");
+    changed |= ImGui::SliderFloat("Floor", &is.floorLevel, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("  minimum ambient in a sealed room. NOT optional — OFP interiors carry");
+    ImGui::TextDisabled("  almost no local lights, so 0 here is a black box you cannot play in.");
+    changed |= ImGui::SliderFloat("Kernel (m)", &is.kernel, 0.0f, 8.0f, "%.2f");
+    ImGui::TextDisabled("  softening radius: roughly how far light appears to reach in past an");
+    ImGui::TextDisabled("  opening. This is what grades a porch instead of drawing a hard line.");
+
+    ImGui::Separator();
+    ImGui::TextDisabled("Map (cost + resolving power)");
+    changed |= ImGui::SliderInt("Resolution", &is.resolution, 256, 4096);
+    changed |= ImGui::SliderFloat("Extent (m, half-box)", &is.extent, 32.0f, 512.0f, "%.0f");
+    ImGui::TextDisabled("  %.2f m per texel. Roofs and walls need well under a metre; window",
+                        is.resolution > 0 ? (2.0f * is.extent / float(is.resolution)) : 0.0f);
+    ImGui::TextDisabled("  reveals are NOT reachable here at any setting (that is the Stage 2 bake).");
+    changed |= ImGui::SliderFloat("Height (m)", &is.height, 32.0f, 1024.0f, "%.0f");
+    ImGui::TextDisabled("  how far above/below the camera the box reaches; must clear the tallest");
+    ImGui::TextDisabled("  roof you can stand under");
+    changed |= ImGui::SliderFloat("Bias (m)", &is.bias, 0.0f, 4.0f, "%.2f");
+    ImGui::TextDisabled("  too low: open ground occludes itself (the whole world dims). Too high:");
+    ImGui::TextDisabled("  light leaks in under thin roofs.");
+
+    ImGui::Separator();
+    if (ImGui::Button("Reset interior sky to defaults"))
+    {
+        const bool keepEnabled = is.enabled;
+        is = Engine::InteriorSkySettings{};
+        is.enabled = keepEnabled;
+        changed = true;
+    }
+
+    if (changed)
+    {
+        GEngine->SetInteriorSkySettings(is);
+    }
+}
+
 // Live anti-aliasing knobs — MSAA sample count, SSAA render scale and
 // alpha-to-coverage apply at the next frame boundary, so the effect is
 // visible immediately while hunting for the shipped default.
@@ -4362,6 +4425,11 @@ void DrawMainWindow()
         if (ImGui::BeginTabItem("Amb. Occlusion"))
         {
             DrawAmbientOcclusionTab();
+            ImGui::EndTabItem();
+        }
+        if (ImGui::BeginTabItem("Interior Sky"))
+        {
+            DrawInteriorSkyTab();
             ImGui::EndTabItem();
         }
         if (ImGui::BeginTabItem("Grass"))

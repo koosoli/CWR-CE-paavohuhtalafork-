@@ -983,6 +983,49 @@ class Engine : public IGraphicsEngine
     virtual AoSettings GetAoSettings() const { return {}; }
     virtual void SetAoSettings(const AoSettings& /*s*/) {}
 
+    /// Interior sky visibility (LIT-020) — the LONG-RANGE, geometry-aware complement to the two
+    /// AO terms above, and the only one that can tell the renderer it is INDOORS. Terrain
+    /// sky-vis knows the heightfield only, so a building is invisible to it; GTAO reaches ~2 m
+    /// and cannot see a roof that is off-screen. This renders a top-down orthographic depth map
+    /// of the object scene and attenuates the sky AMBIENT under it, toward a floor.
+    ///
+    /// Direct sun and local lights are untouched: the cascade shadow maps and the terrain
+    /// sun-shadow mask already occlude the sun, and the local lights are what keep an interior
+    /// readable. wgpu path only. Default OFF. See docs/interior-sky-visibility-plan.md.
+    struct InteriorSkySettings
+    {
+        bool enabled = false;
+        // Depth-map edge in texels, and HALF the world box it covers in metres. Together these
+        // set the resolving power: 1024 texels over a 256 m box is 25 cm per texel, which is
+        // enough for roofs and walls but NOT for window reveals (that is Stage 2's per-model
+        // bake, not something a bigger number here fixes — the box has to follow the camera).
+        int resolution = 1024;
+        float extent = 128.0f;
+        // How far above and below the camera the box reaches. Must clear the tallest roof the
+        // player can stand under and the deepest floor they can stand on.
+        float height = 300.0f;
+        // 0 = inert, 1 = full attenuation.
+        float strength = 1.0f;
+        // Minimum ambient multiplier in a sealed volume. NOT a nicety: OFP interiors carry very
+        // few local lights, so an unfloored version of this is a black box you cannot play in.
+        float floorLevel = 0.35f;
+        // Softening kernel radius in metres — roughly how far light appears to reach in past an
+        // opening. This is what grades a porch instead of drawing a hard line at the doorway.
+        float kernel = 1.5f;
+        // Depth bias in metres. Stops a surface that is its own highest geometry (open ground, a
+        // crate in the street) from occluding itself.
+        float bias = 0.25f;
+        // Draw the reach factor as greyscale on opaque surfaces instead of lighting with it.
+        // Shipped WITH the effect: judging this through sun + ambient + fog + tonemap is much
+        // harder than looking at the buffer.
+        bool debug = false;
+    };
+
+    /// Read / replace the interior sky-visibility knobs. Default base returns an all-default
+    /// set; only the wgpu backend stores + pushes it.
+    virtual InteriorSkySettings GetInteriorSkySettings() const { return {}; }
+    virtual void SetInteriorSkySettings(const InteriorSkySettings& /*s*/) {}
+
     /// Procedural terrain grass (wgpu).  Kept separate from foliage: these values control
     /// GPU-generated ground blades, not authored alpha-tested trees or bushes.
     struct GrassSettings

@@ -15,6 +15,8 @@ mod cull;
 // Hi-Z depth pyramid for GPU-driven occlusion culling (docs/gpu-culling-and-depth-plan.md §5).
 mod gtao_depth_mips;
 mod hiz;
+pub mod sky_vis;
+use sky_vis::{SkyVisSettings, SkyVisView};
 
 use crate::ffi::{
     DRAW3D_ON_SURFACE, DRAW3D_ZBIAS_MASK, DRAW3D_ZBIAS_SHIFT, NO_PALETTE, WgrBlend, WgrCamera,
@@ -50,6 +52,11 @@ const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 // 1x depth aspect, so the Hi-Z copy layout is unchanged.
 const RESOLVED_DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const MAX_CASCADES: u32 = 4;
+// The shadow pass UBO's slot reserved for the interior sky-visibility map's ortho VP. It sits
+// past every cascade so the two never collide however many cascades are active, which is what
+// lets the sky map reuse the cascades' pass-UBO layout (and therefore their whole pipeline)
+// instead of duplicating one.
+const SKY_UBO_SLOT: usize = MAX_CASCADES as usize;
 
 // Polygon-offset variants (mirror GL33's SetPolygonOffsetForDecals / ..ForShadows):
 // decals nudge coplanar overlays toward the camera; ZBias overlay faces (signs) get
@@ -329,6 +336,42 @@ fn read_depth_layer(
     true
 }
 
+// Synchronous read of the first `words` u32s of a GPU buffer. Diagnostic use only (it stalls on
+// a device poll); the buffer must carry COPY_SRC.
+fn read_u32_buffer(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    src: &wgpu::Buffer,
+    words: u64,
+) -> Vec<u32> {
+    let bytes = words * 4;
+    let staging = device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("wgr_u32_readback"),
+        size: bytes,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+        label: Some("wgr_u32_readback"),
+    });
+    encoder.copy_buffer_to_buffer(src, 0, &staging, 0, bytes);
+    queue.submit(std::iter::once(encoder.finish()));
+    let slice = staging.slice(..);
+    let (tx, rx) = std::sync::mpsc::channel();
+    slice.map_async(wgpu::MapMode::Read, move |r| {
+        let _ = tx.send(r);
+    });
+    if device.poll(wgpu::PollType::wait_indefinitely()).is_err() || !matches!(rx.recv(), Ok(Ok(())))
+    {
+        return Vec::new();
+    }
+    let data = slice.get_mapped_range();
+    let out = bytemuck::cast_slice::<u8, u32>(&data).to_vec();
+    drop(data);
+    staging.unmap();
+    out
+}
+
 slotmap::new_key_type! {
     struct MeshKey;
 }
@@ -450,6 +493,9 @@ struct CameraGroup {
     bound_mask_gen: u64,
     // Generation of the GTAO target bound at @binding(11); see Gfx3d::depth_gen.
     bound_ao_gen: u64,
+    // Generation of the interior sky-visibility map bound at @binding(12); see
+    // Gfx3d::interior_sky_gen.
+    bound_interior_sky_gen: u64,
 }
 
 impl CameraGroup {
@@ -462,6 +508,10 @@ impl CameraGroup {
         let bind_size = std::mem::size_of::<WgrCamera>() as u64
             + 64
             + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64
+            + 16
+            + 16
+            // Interior sky visibility: the map's ortho VP (mat4) + two knob vec4s.
+            + 64
             + 16
             + 16;
         let layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
@@ -599,6 +649,21 @@ impl CameraGroup {
                     },
                     count: None,
                 },
+                // Interior sky-visibility depth map (Gfx3d-owned, Depth32Float, lent by view):
+                // the top-down ortho map of the retained object set. Sampled with the COMPARISON
+                // sampler at binding 2 — its LessEqual compare IS the "is my depth at or above the
+                // stored occluder" test, and the hardware 2x2 PCF gives the softening kernel its
+                // sub-texel gradient for free.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 12,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -650,6 +715,7 @@ impl CameraGroup {
             mapping_buf,
             bound_mask_gen: u64::MAX,
             bound_ao_gen: u64::MAX,
+            bound_interior_sky_gen: u64::MAX,
         }
     }
 
@@ -676,6 +742,8 @@ impl CameraGroup {
         skyvis_view: &wgpu::TextureView,
         ao_view: &wgpu::TextureView,
         ao_gen: u64,
+        interior_sky_view: &wgpu::TextureView,
+        interior_sky_gen: u64,
     ) {
         let needed = count as u64 * self.stride;
         let grow = self.cap < needed || self.buf.is_none();
@@ -695,6 +763,10 @@ impl CameraGroup {
             // The AO target is reallocated on every resize, so the bind group must follow it or
             // it keeps a view of a destroyed texture.
             || self.bound_ao_gen != ao_gen
+            // Same reason as the AO target: the sky map is reallocated when its resolution
+            // changes (or dropped when the feature is turned off), and a stale bind group would
+            // hold a view of a destroyed texture.
+            || self.bound_interior_sky_gen != interior_sky_gen
             || self.bind.is_none()
         {
             self.bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -753,11 +825,16 @@ impl CameraGroup {
                         binding: 11,
                         resource: wgpu::BindingResource::TextureView(ao_view),
                     },
+                    wgpu::BindGroupEntry {
+                        binding: 12,
+                        resource: wgpu::BindingResource::TextureView(interior_sky_view),
+                    },
                 ],
             }));
             self.bound_shadow_gen = shadow_gen;
             self.bound_mask_gen = mask_gen;
             self.bound_ao_gen = ao_gen;
+            self.bound_interior_sky_gen = interior_sky_gen;
         }
     }
 
@@ -2481,6 +2558,22 @@ pub struct Gfx3d {
     // 1x1 stand-in for the GTAO target before the first ensure_depth (see its creation).
     dummy_ao_view: wgpu::TextureView,
 
+    // Interior sky visibility (docs/interior-sky-visibility-plan.md §4). The map is a plain
+    // Depth32Float target rendered by the SHADOW depth pipeline over the sky cull view's args —
+    // no new pipeline, no new pass UBO layout: the ortho VP goes into the shadow pass UBO's
+    // reserved slot (SKY_UBO_SLOT), so this is genuinely the reflection/cascade pattern again.
+    interior_sky: SkyVisSettings,
+    interior_sky_target: Option<(wgpu::Texture, wgpu::TextureView)>,
+    // Bumped when the target is (re)allocated or dropped, so the camera bind group follows it.
+    interior_sky_gen: u64,
+    // This frame's snapped ortho view, Some only while the feature is live. Also the per-frame
+    // gate the shader reads: no view -> reach reads 1 everywhere -> no darkening.
+    interior_sky_view: Option<SkyVisView>,
+    // Group-1 draw bind over the sky cull view's records (same layout as the cascade ones).
+    gpu_sky_group1: Option<wgpu::BindGroup>,
+    // 1x1 stand-in bound at @binding(12) whenever the map does not exist.
+    dummy_interior_sky_view: wgpu::TextureView,
+
     // Compute skin bake (docs/compute-skin-bake-plan.md). WGR_SKIN_BAKE=0 disables it and
     // falls back to per-pass VS skinning (the skinned pipelines above); default on.
     skin_bake_enabled: bool,
@@ -2797,6 +2890,28 @@ impl Gfx3d {
         });
         let dummy_ao_view = dummy_ao.create_view(&wgpu::TextureViewDescriptor::default());
 
+        // Stand-in for frame @binding(12) whenever no sky-visibility map exists (feature off, or
+        // before the first frame that renders one). Its CONTENT matters more than the AO dummy's:
+        // it is sampled with a comparison sampler, and a cleared depth texture reads 0 = "an
+        // occluder at the very top of the box", i.e. everything indoors. That is why the shader
+        // gates on frame.skyvis.x instead of trusting the texture — see interior_sky_reach.
+        let dummy_interior_sky = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_interior_sky_dummy"),
+            size: wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: SHADOW_FORMAT,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let dummy_interior_sky_view =
+            dummy_interior_sky.create_view(&wgpu::TextureViewDescriptor::default());
+
         // Compute skin bake (docs/compute-skin-bake-plan.md). group(0) = the four
         // storage buffers (source verts / skin data / palette / baked output), all
         // whole-buffer so min_binding_size is left open; group(1) = BakeParams.
@@ -2992,6 +3107,12 @@ impl Gfx3d {
             shadow_gen: 0,
             dummy_shadow_view,
             dummy_ao_view,
+            interior_sky: SkyVisSettings::default(),
+            interior_sky_target: None,
+            interior_sky_gen: 0,
+            interior_sky_view: None,
+            gpu_sky_group1: None,
+            dummy_interior_sky_view,
             skin_bake_enabled,
             skin_bake_pipeline,
             skin_bake_layout,
@@ -4452,6 +4573,13 @@ impl Gfx3d {
         // Terrain sun-shadow world->UV mapping for the lit-mesh sampler (group 0).
         self.cameras.upload_mapping(queue, shadow_mapping);
         if !cameras.is_empty() {
+            // Interior sky-visibility map + this frame's snapped ortho view, BEFORE the camera
+            // bind group is built (it binds the map) and before the per-camera upload (it writes
+            // the view's matrix). Keyed on the main scene camera — the map is a world-space
+            // structure, so every camera in the frame reads the same one correctly.
+            let main = cameras.get(gtao_camera).unwrap_or(&cameras[0]);
+            let sky_cam = glam::Vec3::new(main.cam_pos[0], main.cam_pos[1], main.cam_pos[2]);
+            self.prepare_interior_sky(device, sky_cam);
             // Bind the current shadow map (or the dummy while none exists); the
             // depth passes for this frame were prepared before this call, so the
             // target is final.
@@ -4460,6 +4588,11 @@ impl Gfx3d {
                 .as_ref()
                 .map(|t| &t.sample_view)
                 .unwrap_or(&self.dummy_shadow_view);
+            let interior_sky_view = self
+                .interior_sky_target
+                .as_ref()
+                .map(|(_, v)| v)
+                .unwrap_or(&self.dummy_interior_sky_view);
             self.cameras.ensure(
                 device,
                 cameras.len(),
@@ -4472,6 +4605,8 @@ impl Gfx3d {
                 skyvis_view,
                 self.gtao.ao_view().unwrap_or(&self.dummy_ao_view),
                 self.depth_gen,
+                interior_sky_view,
+                self.interior_sky_gen,
             );
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {
@@ -4548,6 +4683,38 @@ impl Gfx3d {
                         + 16,
                     bytemuck::cast_slice(&gtao),
                 );
+                // Interior sky visibility: the map's ABSOLUTE-space ortho VP + its knobs.
+                //
+                // Not gated per camera, unlike GTAO immediately above, and the difference is
+                // worth stating: GTAO is a SCREEN-space buffer, so it is only valid for the
+                // camera that produced it. This map is a WORLD-space structure — the weapon
+                // segment, a cockpit view and the planar reflection all sample it at their own
+                // world positions and all get the right answer.
+                let sv = &self.interior_sky;
+                let (vp, kernel_uv, bias_ndc) = match self.interior_sky_view {
+                    Some(v) if self.interior_sky_target.is_some() => {
+                        (v.view_proj.to_cols_array(), v.kernel_uv, v.bias_ndc)
+                    }
+                    // Inert: the gate below is 0, so these are never read.
+                    _ => ([0.0f32; 16], 0.0, 0.0),
+                };
+                let on = self.interior_sky_active();
+                let knobs = [
+                    if on { 1.0f32 } else { 0.0 },
+                    if on && sv.debug { 1.0 } else { 0.0 },
+                    sv.strength,
+                    sv.floor,
+                ];
+                let knobs_b = [kernel_uv, bias_ndc, 0.0, 0.0];
+                let sky_base = base
+                    + std::mem::size_of::<WgrCamera>() as u64
+                    + 64
+                    + std::mem::size_of::<crate::ffi::WgrFoliage>() as u64
+                    + 16
+                    + 16;
+                queue.write_buffer(buf, sky_base, bytemuck::cast_slice(&vp));
+                queue.write_buffer(buf, sky_base + 64, bytemuck::cast_slice(&knobs));
+                queue.write_buffer(buf, sky_base + 80, bytemuck::cast_slice(&knobs_b));
             }
         }
         // Track buffer regrowth so the combined group-1 bind groups (which borrow
@@ -5383,6 +5550,182 @@ impl Gfx3d {
         };
     }
 
+    pub fn set_interior_sky_settings(&mut self, s: SkyVisSettings) {
+        self.interior_sky = s;
+    }
+
+    pub fn interior_sky_settings(&self) -> &SkyVisSettings {
+        &self.interior_sky
+    }
+
+    // Whether the map exists and this frame's view was built — the single gate every consumer
+    // (cull dispatch, depth pass, camera UBO, shader) reads. False leaves reach = 1 everywhere,
+    // which is "no darkening", the correct absence behaviour for an occlusion term.
+    pub fn interior_sky_active(&self) -> bool {
+        self.interior_sky_view.is_some() && self.interior_sky_target.is_some()
+    }
+
+    // (Re)allocate the sky depth target and build this frame's snapped ortho view. Called from
+    // prepare() BEFORE the camera bind group is built, because that bind group binds this
+    // texture at @binding(12).
+    //
+    // Requires GPU-driven rendering: the map is drawn entirely from the cull compute's indirect
+    // args, so with the CPU path there is nothing to render into it. Silently inert rather than
+    // half-working — a map containing only some of the world would darken by accident.
+    fn prepare_interior_sky(&mut self, device: &wgpu::Device, cam_pos: glam::Vec3) {
+        if !(self.interior_sky.enabled && self.gpu_driven_enabled) {
+            if self.interior_sky_target.is_some() {
+                self.interior_sky_target = None;
+                self.interior_sky_gen += 1;
+            }
+            self.interior_sky_view = None;
+            return;
+        }
+        let res = self.interior_sky.resolution.max(1);
+        let stale = self
+            .interior_sky_target
+            .as_ref()
+            .is_none_or(|(t, _)| t.width() != res);
+        if stale {
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("wgr_interior_sky_map"),
+                size: wgpu::Extent3d {
+                    width: res,
+                    height: res,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: SHADOW_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            let view = tex.create_view(&wgpu::TextureViewDescriptor::default());
+            self.interior_sky_target = Some((tex, view));
+            self.interior_sky_gen += 1;
+        }
+        self.interior_sky_view = Some(sky_vis::build_view(cam_pos, &self.interior_sky));
+    }
+
+    // Record the sky-visibility cull. Recorded before render_interior_sky_pass so wgpu barriers
+    // the compute writes -> that pass's indirect reads.
+    pub fn cull_dispatch_interior_sky(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.interior_sky_active() {
+            self.cull.dispatch_sky(encoder);
+        }
+    }
+
+    // Render the top-down depth map: one depth-only pass over the sky cull view's args, drawn by
+    // the SAME GPU-driven shadow pipeline the cascades use (same depth format, same forward-Z
+    // LessEqual convention, same group layouts) with the ortho VP supplied through the shadow
+    // pass UBO's reserved slot.
+    pub fn render_interior_sky_pass(
+        &self,
+        encoder: &mut wgpu::CommandEncoder,
+        textures: &SharedTextures,
+    ) {
+        if !self.interior_sky_active() {
+            return;
+        }
+        let (Some((_, target_view)), Some(pass_bind)) = (
+            self.interior_sky_target.as_ref(),
+            self.shadow_pass_ubo.bind.as_ref(),
+        ) else {
+            return;
+        };
+        let mut rp = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("wgr_interior_sky_map"),
+            color_attachments: &[],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: target_view,
+                depth_ops: Some(wgpu::Operations {
+                    // Clear to the FAR plane: an untouched texel means "nothing above here", so
+                    // open sky is the default and only real geometry can take it away.
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Store,
+                }),
+                stencil_ops: None,
+            }),
+            timestamp_writes: None,
+            occlusion_query_set: None,
+            multiview_mask: None,
+        });
+        let off = (SKY_UBO_SLOT as u64 * self.shadow_pass_ubo.stride) as u32;
+        rp.set_bind_group(0, pass_bind, &[off]);
+        self.draw_gpu_driven_depth(
+            &mut rp,
+            textures,
+            off,
+            self.gpu_sky_group1.as_ref(),
+            self.cull.sky_out_args(),
+            self.cull.sky_counter_buf(),
+        );
+    }
+
+    // Read back the sky map and report (resolution, fraction of texels holding an occluder).
+    //
+    // This exists because "the pass ran and validation was silent" is NOT evidence the feature
+    // works: a map that renders nothing clears to 1.0 everywhere, every comparison passes, reach
+    // is 1 and the whole system is a silent no-op that looks exactly like success. A previous
+    // readback test in this renderer passed vacuously for precisely that reason. Anything
+    // meaningful here is a small non-zero fraction — a town from 300 m up covers a few percent.
+    //
+    // Synchronous and slow (a full depth readback + device poll); one-shot diagnostic only.
+    pub fn interior_sky_map_coverage(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> Option<(u32, f32)> {
+        let (tex, _) = self.interior_sky_target.as_ref()?;
+        let res = tex.width();
+        let mut px = vec![0.0f32; (res * res) as usize];
+        if !read_depth_layer(device, queue, tex, res, 0, &mut px) {
+            return None;
+        }
+        // Cleared texels hold exactly the far plane; anything less is geometry.
+        let occluded = px.iter().filter(|d| **d < 0.999).count();
+        Some((res, occluded as f32 / px.len() as f32))
+    }
+
+    // Which link of the sky-map chain is missing, for the one-shot diagnostic in lib.rs:
+    // (cull view prepared, draw bind built, retained instances, sub-draws the sky CULL emitted).
+    //
+    // The last number is the one that matters and the reason this is not just three booleans:
+    // "the args buffer exists" says nothing about whether anything survived into it, and an
+    // empty map is equally consistent with a cull that rejected the world and a draw that never
+    // ran. Reading the survivor counters separates the two.
+    pub fn interior_sky_debug_state(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+    ) -> (bool, bool, u32, u32) {
+        // Read the ARGS, not the counters: the counter buffers are STORAGE|INDIRECT|COPY_DST with
+        // no COPY_SRC, and the args are the actual draw payload anyway. A sub-draw with
+        // instance_count 0 is the unfilled tail, so only non-zero ones count.
+        let words = (cull::CULL_VARIANT_COUNT as u64 * self.cull.variant_capacity() as u64
+            * (INDIRECT_ARG_SIZE / 4))
+            .min(1 << 20);
+        let survivors = self
+            .cull
+            .sky_out_args()
+            .map(|a| {
+                read_u32_buffer(device, queue, a, words)
+                    .chunks_exact((INDIRECT_ARG_SIZE / 4) as usize)
+                    .filter(|d| d[1] != 0)
+                    .count() as u32
+            })
+            .unwrap_or(0);
+        (
+            self.cull.sky_out_args().is_some(),
+            self.gpu_sky_group1.is_some(),
+            self.cull.instance_count(),
+            survivors,
+        )
+    }
+
     pub fn prepare_cull(
         &mut self,
         device: &wgpu::Device,
@@ -5450,8 +5793,44 @@ impl Gfx3d {
                 cull::params_from_shadow_cascade(lvp, scam, self.cull_inputs),
             );
         }
+        // Interior sky-visibility view: its own ortho frustum over the same retained set. The
+        // view itself was built in prepare() (the camera UBO needed it); here it becomes a cull
+        // view + a pass-UBO slot.
+        //
+        // SPACES, the one thing that is easy to get silently wrong here: the GPU-driven depth VS
+        // makes each vertex camera-relative before applying light_vp, and the cull's frustum test
+        // is camera-relative too. sky_vis::build_view returns the ABSOLUTE-space matrix (that is
+        // what the fragment shader needs, and it is the same for every camera in the frame), so
+        // both consumers here take it right-multiplied by a +cam_pos translation.
+        if let Some(sky) = self.interior_sky_view {
+            let vp_rel = sky.view_proj * glam::Mat4::from_translation(cam_pos);
+            self.shadow_pass_ubo.ensure(device, SKY_UBO_SLOT + 1);
+            if let Some(buf) = self.shadow_pass_ubo.buf.as_ref() {
+                let entry = ShadowPassUbo {
+                    light_vp: vp_rel.to_cols_array(),
+                    cam_pos: [cam_pos.x, cam_pos.y, cam_pos.z, 0.0],
+                };
+                queue.write_buffer(
+                    buf,
+                    SKY_UBO_SLOT as u64 * self.shadow_pass_ubo.stride,
+                    bytemuck::bytes_of(&entry),
+                );
+            }
+            self.cull.set_sky_params(
+                device,
+                cull::params_from_shadow_cascade(vp_rel, cam_pos, self.cull_inputs),
+            );
+        } else {
+            self.cull.clear_sky_view();
+        }
         let grew = self.cull.prepare(device, queue);
-        if grew || self.gpu_group1_bind.is_none() || self.gpu_shadow_group1.len() != n_cascades {
+        if grew
+            || self.gpu_group1_bind.is_none()
+            || self.gpu_shadow_group1.len() != n_cascades
+            // The sky view is allocated on first enable and dropped on disable, so its records
+            // buffer appears/disappears without any of the growth signals firing.
+            || self.gpu_sky_group1.is_some() != self.cull.sky_out_records().is_some()
+        {
             self.rebuild_gpu_group1(device);
         }
     }
@@ -5468,31 +5847,12 @@ impl Gfx3d {
             self.cull_debug_bind = None;
             return;
         };
-        self.gpu_group1_bind = Some(device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("wgr_gpu_driven_group1_bind"),
-            layout: &self.gpu_group1_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: inst.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: rec.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: mat.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 3,
-                    resource: crown.as_entire_binding(),
-                },
-            ],
-        }));
-        self.gpu_reflection_group1_bind = self.cull.reflection_out_records().map(|rec| {
+        // Every view's group-1 bind is the SAME layout over the SAME shared buffers, differing
+        // only in which cull view's records it points at — so build them all through one helper
+        // rather than repeating the four-entry descriptor per view.
+        let build = |label: &'static str, records: &wgpu::Buffer| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("wgr_gpu_driven_reflection_group1_bind"),
+                label: Some(label),
                 layout: &self.gpu_group1_layout,
                 entries: &[
                     wgpu::BindGroupEntry {
@@ -5501,7 +5861,7 @@ impl Gfx3d {
                     },
                     wgpu::BindGroupEntry {
                         binding: 1,
-                        resource: rec.as_entire_binding(),
+                        resource: records.as_entire_binding(),
                     },
                     wgpu::BindGroupEntry {
                         binding: 2,
@@ -5513,34 +5873,24 @@ impl Gfx3d {
                     },
                 ],
             })
-        });
+        };
+        self.gpu_group1_bind = Some(build("wgr_gpu_driven_group1_bind", rec));
+        self.gpu_reflection_group1_bind = self
+            .cull
+            .reflection_out_records()
+            .map(|r| build("wgr_gpu_driven_reflection_group1_bind", r));
+        // Interior sky-visibility view's records (Some only while the feature is enabled).
+        self.gpu_sky_group1 = self
+            .cull
+            .sky_out_records()
+            .map(|r| build("wgr_gpu_driven_sky_group1_bind", r));
         // Color-pass draw bind: instances + the occlusion view's records + shared materials.
         // Only when the color view is live (occlusion active); else the color draw reuses the
-        // main bind. Same layout as gpu_group1_bind.
-        self.gpu_color_group1_bind = self.cull.color_out_records().map(|crec| {
-            device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("wgr_gpu_driven_color_group1_bind"),
-                layout: &self.gpu_group1_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: inst.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: crec.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 2,
-                        resource: mat.as_entire_binding(),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 3,
-                        resource: crown.as_entire_binding(),
-                    },
-                ],
-            })
-        });
+        // main bind.
+        self.gpu_color_group1_bind = self
+            .cull
+            .color_out_records()
+            .map(|r| build("wgr_gpu_driven_color_group1_bind", r));
         // Cull-sphere debug bind (instances + models) — rebuilt on the same buffer-growth signal.
         self.cull_debug_bind = self.cull.model_buf().map(|models| {
             device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -5563,30 +5913,10 @@ impl Gfx3d {
         let n = self.cull.shadow_view_count();
         self.gpu_shadow_group1.clear();
         for c in 0..n {
-            let bind = self.cull.shadow_out_records(c).map(|rec| {
-                device.create_bind_group(&wgpu::BindGroupDescriptor {
-                    label: Some("wgr_gpu_driven_shadow_group1_bind"),
-                    layout: &self.gpu_group1_layout,
-                    entries: &[
-                        wgpu::BindGroupEntry {
-                            binding: 0,
-                            resource: inst.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 1,
-                            resource: rec.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 2,
-                            resource: mat.as_entire_binding(),
-                        },
-                        wgpu::BindGroupEntry {
-                            binding: 3,
-                            resource: crown.as_entire_binding(),
-                        },
-                    ],
-                })
-            });
+            let bind = self
+                .cull
+                .shadow_out_records(c)
+                .map(|r| build("wgr_gpu_driven_shadow_group1_bind", r));
             self.gpu_shadow_group1.push(bind);
         }
     }
@@ -5798,14 +6128,35 @@ impl Gfx3d {
         pass_ubo_off: u32,
         c: usize,
     ) {
+        self.draw_gpu_driven_depth(
+            pass,
+            textures,
+            pass_ubo_off,
+            self.gpu_shadow_group1.get(c).and_then(|b| b.as_ref()),
+            self.cull.shadow_out_args(c),
+            self.cull.shadow_counter_buf(c),
+        );
+    }
+
+    // Depth-only GPU-driven draw for ONE view whose VP lives in the shadow pass UBO: a shadow
+    // cascade, or the interior sky-visibility map. Same pipeline, same group layouts, same
+    // forward-Z convention — only the pass-UBO slot, the records bind and the indirect args
+    // differ, which is exactly why the sky map needed no new pipeline.
+    fn draw_gpu_driven_depth(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        textures: &SharedTextures,
+        pass_ubo_off: u32,
+        group1: Option<&wgpu::BindGroup>,
+        args: Option<&wgpu::Buffer>,
+        counters: Option<&wgpu::Buffer>,
+    ) {
         if !self.gpu_driven_enabled {
             return;
         }
-        let (Some(pass_bind), Some(group1), Some(args)) = (
-            self.shadow_pass_ubo.bind.as_ref(),
-            self.gpu_shadow_group1.get(c).and_then(|b| b.as_ref()),
-            self.cull.shadow_out_args(c),
-        ) else {
+        let (Some(pass_bind), Some(group1), Some(args)) =
+            (self.shadow_pass_ubo.bind.as_ref(), group1, args)
+        else {
             return;
         };
         pass.set_pipeline(&self.gpu_shadow_pipeline);
@@ -5820,7 +6171,7 @@ impl Gfx3d {
         pass.set_index_buffer(self.pool.ibuf().slice(..), wgpu::IndexFormat::Uint32);
         let cap = self.cull.variant_capacity();
         if self.multi_draw_count_enabled {
-            let Some(counters) = self.cull.shadow_counter_buf(c) else {
+            let Some(counters) = counters else {
                 return;
             };
             for v in 0..cull::CULL_VARIANT_COUNT {

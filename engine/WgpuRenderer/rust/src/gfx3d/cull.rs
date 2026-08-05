@@ -304,6 +304,10 @@ pub struct CullState {
     // The planar mirror has its own frustum/outputs. It shares retained scene data only;
     // never the main camera's cull records or indirect arguments.
     reflection_view: Option<ShadowCullView>,
+    // Interior sky-visibility view (docs/interior-sky-visibility-plan.md §4): a top-down ortho
+    // frustum over a box around the camera, culled independently of everything above. Same
+    // standalone-extra-view shape as `reflection_view`.
+    sky_view: Option<ShadowCullView>,
 
     // Color-pass occlusion view (§5 Hi-Z). Same retained tables/instances, its own params
     // (occlusion tail) + args/records/counters, run by the `main_occlude` pipeline against the
@@ -519,6 +523,7 @@ impl CullState {
             bind: None,
             shadow_views: Vec::new(),
             reflection_view: None,
+            sky_view: None,
             occlude_count_pipeline,
             occlude_emit_pipeline,
             occlude_scatter_pipeline,
@@ -684,6 +689,18 @@ impl CullState {
         self.reflection_view = None;
     }
 
+    // Interior sky-visibility view: the ortho box's frustum. Allocated on first use, exactly as
+    // the reflection view is, so a frame that never enables the feature pays nothing.
+    pub fn set_sky_params(&mut self, device: &wgpu::Device, mut params: CullParamsGpu) {
+        params.debug_flags = self.debug_flags;
+        let view = self.sky_view.get_or_insert_with(|| ShadowCullView::new(device));
+        view.params = params;
+    }
+
+    pub fn clear_sky_view(&mut self) {
+        self.sky_view = None;
+    }
+
     fn mark_static_dirty(&mut self, slot: u32) {
         self.static_dirty = Some(match self.static_dirty {
             Some((lo, hi)) => (lo.min(slot), hi.max(slot)),
@@ -818,39 +835,20 @@ impl CullState {
             }
         }
 
-        let reflection_rebuild = if let Some(v) = self.reflection_view.as_mut() {
-            let view_grew = ensure_view_outputs(
-                device,
-                self.variant_capacity,
-                sections_len,
-                &mut v.out_args,
-                &mut v.out_records,
-                &mut v.out_args_cap,
-                &mut v.sec_count,
-                &mut v.sec_count_cap,
-            );
-            finalize(&mut v.params);
-            queue.write_buffer(&v.params_buf, 0, bytemuck::bytes_of(&v.params));
-            grew |= view_grew;
-            shared_grew || view_grew || v.bind.is_none()
-        } else {
-            false
-        };
-        if reflection_rebuild {
-            let bind = {
-                let v = self.reflection_view.as_ref().unwrap();
-                match (
-                    v.out_args.as_ref(),
-                    v.out_records.as_ref(),
-                    v.sec_count.as_ref(),
-                ) {
-                    (Some(a), Some(r), Some(sc)) => {
-                        self.build_view_bind(device, &v.params_buf, a, &v.counter_buf, r, sc)
-                    }
-                    _ => None,
-                }
-            };
-            self.reflection_view.as_mut().unwrap().bind = bind;
+        // Standalone extra views (planar reflection, interior sky visibility): each owns its
+        // frustum + outputs and shares only the retained tables. Taken out and put back so the
+        // shared-table bind build (&self) can run while the view is owned locally.
+        if let Some(v) = self.reflection_view.take() {
+            let (v, g) =
+                self.prepare_standalone_view(device, queue, sections_len, shared_grew, total, v);
+            grew |= g;
+            self.reflection_view = Some(v);
+        }
+        if let Some(v) = self.sky_view.take() {
+            let (v, g) =
+                self.prepare_standalone_view(device, queue, sections_len, shared_grew, total, v);
+            grew |= g;
+            self.sky_view = Some(v);
         }
 
         // Color-occlusion view (§5): only prepared when a Hi-Z view is set (occlusion active).
@@ -880,6 +878,48 @@ impl CullState {
             self.color_bind = None;
         }
         grew
+    }
+
+    // Prepare ONE standalone extra view (reflection / sky): allocate its outputs, upload its
+    // params, and rebuild its bind when a buffer moved. Taken BY VALUE and handed back because
+    // the bind is built from `&self` (the shared retained tables) while the view is mutated —
+    // owning it locally is what keeps the two borrows apart. Returns (view, grew).
+    fn prepare_standalone_view(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        sections_len: u64,
+        shared_grew: bool,
+        instance_count: u64,
+        mut view: ShadowCullView,
+    ) -> (ShadowCullView, bool) {
+        let view_grew = ensure_view_outputs(
+            device,
+            self.variant_capacity,
+            sections_len,
+            &mut view.out_args,
+            &mut view.out_records,
+            &mut view.out_args_cap,
+            &mut view.sec_count,
+            &mut view.sec_count_cap,
+        );
+        view.params.instance_count = instance_count as u32;
+        view.params.variant_capacity = self.variant_capacity;
+        view.params.variant_count = CULL_VARIANT_COUNT;
+        queue.write_buffer(&view.params_buf, 0, bytemuck::bytes_of(&view.params));
+        if shared_grew || view_grew || view.bind.is_none() {
+            view.bind = match (
+                view.out_args.as_ref(),
+                view.out_records.as_ref(),
+                view.sec_count.as_ref(),
+            ) {
+                (Some(a), Some(r), Some(sc)) => {
+                    self.build_view_bind(device, &view.params_buf, a, &view.counter_buf, r, sc)
+                }
+                _ => None,
+            };
+        }
+        (view, view_grew)
     }
 
     fn rebuild_bind(&mut self, device: &wgpu::Device) {
@@ -1104,6 +1144,36 @@ impl CullState {
         );
     }
 
+    // Record the interior sky-visibility cull (top-down ortho box). Recorded before the sky
+    // depth pass so wgpu barriers the compute writes -> that pass's indirect reads. No-op until
+    // set_sky_params + prepare() have run with instances present.
+    pub fn dispatch_sky(&self, encoder: &mut wgpu::CommandEncoder) {
+        if self.params.instance_count == 0 {
+            return;
+        }
+        let Some(view) = self.sky_view.as_ref() else {
+            return;
+        };
+        let (Some(bind), Some(args), Some(sec)) = (
+            view.bind.as_ref(),
+            view.out_args.as_ref(),
+            view.sec_count.as_ref(),
+        ) else {
+            return;
+        };
+        self.record_collapse(
+            encoder,
+            "wgr_cull_sky",
+            bind,
+            args,
+            &view.counter_buf,
+            sec,
+            &self.count_pipeline,
+            &self.emit_pipeline,
+            &self.scatter_pipeline,
+        );
+    }
+
     // Record the color-occlusion cull (Hi-Z): frustum + distance + LOD + occlusion, collapsed.
     // MUST be recorded AFTER the Hi-Z build (which reads this frame's prepass depth) and before
     // the color pass reads color_out_args. No-op unless prepare() set up the color bind (Hi-Z
@@ -1180,6 +1250,18 @@ impl CullState {
 
     pub fn reflection_counter_buf(&self) -> Option<&wgpu::Buffer> {
         self.reflection_view.as_ref().map(|v| &v.counter_buf)
+    }
+
+    pub fn sky_out_args(&self) -> Option<&wgpu::Buffer> {
+        self.sky_view.as_ref().and_then(|v| v.out_args.as_ref())
+    }
+
+    pub fn sky_out_records(&self) -> Option<&wgpu::Buffer> {
+        self.sky_view.as_ref().and_then(|v| v.out_records.as_ref())
+    }
+
+    pub fn sky_counter_buf(&self) -> Option<&wgpu::Buffer> {
+        self.sky_view.as_ref().map(|v| &v.counter_buf)
     }
 
     // Build a cull bind group for one VIEW: its own params/args/counters/records, but the
@@ -2241,6 +2323,135 @@ pub(crate) mod tests {
             1,
             "shadow record.section == LOD1 section id"
         );
+    }
+
+    // The sky map's ortho frustum, extracted exactly as prepare_cull does it, at the WORLD
+    // COORDINATES a real mission uses. Measured in-game before this existed: the sky cull
+    // rejected all 98684 instances while the same view with the frustum test disabled kept 192
+    // sub-draws, so the planes — not the dispatch, the bind or the args — were the rejector.
+    #[test]
+    fn sky_ortho_frustum_accepts_what_is_inside_the_box() {
+        let s = super::super::sky_vis::SkyVisSettings::default();
+        // A plausible mission position on Everon, not the origin: whatever is wrong here is
+        // invisible at (0,0,0), where every translation term is zero.
+        let cam = Vec3::new(2537.0, 21.5, -4381.0);
+        let sky = super::super::sky_vis::build_view(cam, &s);
+        let vp_rel = sky.view_proj * Mat4::from_translation(cam);
+        let planes = frustum_planes(vp_rel);
+
+        // Camera-relative offsets, as the cull tests them (center - cam_pos).
+        assert!(inside(&planes, Vec3::ZERO), "under the camera");
+        assert!(inside(&planes, Vec3::new(20.0, -5.0, 30.0)), "nearby");
+        assert!(
+            inside(&planes, Vec3::new(0.0, 250.0, 0.0)),
+            "high above: the box spans +-height, and a roof ABOVE the camera is the whole point"
+        );
+        assert!(
+            !inside(&planes, Vec3::new(4000.0, 0.0, 0.0)),
+            "far outside the box"
+        );
+    }
+
+    // The interior sky-visibility view (docs/interior-sky-visibility-plan.md §4) on a real
+    // device: its ortho box must accept what is under the camera and reject what is outside it.
+    //
+    // This runs on the headless device rather than validating WGSL, because the failure this
+    // guards is a RESOURCE one — a standalone extra view whose bind group or output buffers were
+    // never prepared produces no draws at all, and Naga has nothing to say about that.
+    #[test]
+    fn sky_cull_view_covers_the_box_and_rejects_outside_it() {
+        let Some((device, queue)) = headless() else {
+            return;
+        };
+        let mut cull = CullState::new(&device);
+
+        let sections = [SectionGpu {
+            first_index: 0,
+            index_count: 3,
+            base_vertex: 0,
+            variant: 0,
+        }];
+        let lods = [LodGpu {
+            resolution: 0.0,
+            section_base: 0,
+            section_count: 1,
+            is_decal: 0,
+        }];
+        let materials = [SectionMaterialGpu::zeroed(); 1];
+        let model = cull.register_model(4.0, &lods, &sections, &materials);
+
+        let mk = |x: f32| InstanceGpu {
+            world: Mat4::IDENTITY.to_cols_array(),
+            center: [x, 0.0, 0.0, 1.0],
+            model,
+            flags: 0,
+            cull_radius: 0,
+            _pad: 0,
+            conform0: [0.0; 4],
+            conform1: [0.0; 4],
+            conform2: [0.0; 4],
+        };
+        let under = cull.instance_add(mk(0.0)); // under the camera: inside the box
+        let _far = cull.instance_add(mk(4000.0)); // far outside the 128 m half-extent
+
+        // Main view params: instance_count comes from here, and dispatch_sky no-ops at 0.
+        let eye = Vec3::new(0.0, 20.0, 0.0);
+        let mut params = CullParamsGpu::zeroed();
+        params.cam_pos = [eye.x, eye.y, eye.z, 0.0];
+        params.objects_z2 = 1.0e30;
+        params.lod_scale = 1.0;
+        params.lod_inv_width = 1.0;
+        params.pixel_limit = 0.0;
+        params.debug_flags = 1; // main view: frustum off, it is not what is under test
+        cull.set_params(params);
+
+        let settings = super::super::sky_vis::SkyVisSettings::default();
+        let sky = super::super::sky_vis::build_view(eye, &settings);
+        // Camera-relative, exactly as prepare_cull hands it over (the cull tests
+        // center - cam_pos, and the depth VS makes vertices camera-relative before the VP).
+        let vp_rel = sky.view_proj * Mat4::from_translation(eye);
+        let inputs = CullInputs {
+            objects_z: 900.0,
+            lod_scale: 1.0,
+            lod_inv_width: 1.0,
+            pixel_limit: 0.0,
+        };
+        cull.set_sky_params(&device, params_from_shadow_cascade(vp_rel, eye, inputs));
+
+        cull.prepare(&device, &queue);
+        let mut enc =
+            device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+        cull.dispatch(&mut enc);
+        cull.dispatch_sky(&mut enc);
+        queue.submit(std::iter::once(enc.finish()));
+
+        let words_per_arg = super::ARG_WORDS;
+        let total = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64 * words_per_arg;
+        let raw = read_u32s(&device, &queue, cull.sky_out_args().unwrap(), total);
+        let live: Vec<&[u32]> = raw
+            .chunks_exact(words_per_arg as usize)
+            .filter(|a| a[1] != 0)
+            .collect();
+        assert_eq!(live.len(), 1, "one section survives the sky ortho frustum");
+        assert_eq!(
+            live[0][1], 1,
+            "instance_count == 1: the far instance is outside the box"
+        );
+        let rec_slot = live[0][4] as u64;
+        let slots = CULL_VARIANT_COUNT as u64 * cull.variant_capacity() as u64;
+        let recs = read_u32s(&device, &queue, cull.sky_out_records().unwrap(), slots * 2);
+        assert_eq!(
+            recs[rec_slot as usize * 2],
+            under,
+            "the surviving record is the instance under the camera"
+        );
+
+        // Disabling the view must actually release it — a stale sky view would keep drawing an
+        // out-of-date map into the frame after the feature was switched off.
+        cull.clear_sky_view();
+        cull.prepare(&device, &queue);
+        assert!(cull.sky_out_args().is_none());
+        assert!(cull.sky_out_records().is_none());
     }
 
     #[test]
