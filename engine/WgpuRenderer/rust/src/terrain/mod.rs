@@ -77,6 +77,12 @@ pub struct TerrainShadowMap {
     pub sky_vis_contrast: f32,
     // Pad the struct to 48 bytes (a multiple of 16) for the uniform layout.
     pub _pad2: f32,
+    // CLD-020 cloud sun-transmittance mapping, riding this same shared group(0) uniform for the
+    // same reason the sky-visibility controls do: terrain, objects and grass all need it and none
+    // of them wants another binding. xy = the map's snapped world-xz min corner, z = 1/span in
+    // metres, w = strength. w = 0 means every surface reads fully lit, which is also what an
+    // off-map lookup returns -- missing data must never invent shadow.
+    pub cloud_shadow: glam::Vec4,
 }
 
 // Terrain height-sampling params for the mesh conform pass (vegetation): the world->
@@ -1030,6 +1036,9 @@ impl Terrain {
             sky_vis_debug: self.sky_vis_debug,
             sky_vis_contrast: self.sky_vis_contrast,
             _pad2: 0.0,
+            // Filled by the caller from the Sky pass, which owns the map and its snapping. The
+            // terrain has no way to know where the cloud map was placed this frame.
+            cloud_shadow: glam::Vec4::new(0.0, 0.0, 1.0, 0.0),
         }
     }
 

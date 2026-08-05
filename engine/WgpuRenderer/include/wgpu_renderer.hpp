@@ -1487,6 +1487,12 @@ extern "C"
      * See docs/render-params-consolidation-plan.md. */
     WGR_API void wgr_set_render_params(WgrRenderer* renderer, const WgrRenderParams* params);
 
+    /* CLD-020: strength of the cloud shadow the deck casts on terrain, objects, grass and water.
+       0 = off (every surface reads fully lit); 1 = the full computed transmittance. Its own entry
+       point rather than a field in WgrSkyLook, because growing that struct changes a size the ABI
+       handshake checks and this is one float. */
+    WGR_API void wgr_set_cloud_shadow_strength(WgrRenderer* renderer, float strength);
+
     /* Push the per-frame sky runtime (celestial dir/phase, night factor, fog colour, camera
      * altitude, fog range) — the runtime half of the sky UBO; the look half comes from
      * wgr_set_render_params. */

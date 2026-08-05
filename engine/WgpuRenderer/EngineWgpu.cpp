@@ -3546,6 +3546,13 @@ void EngineWgpu::PushRenderParams()
     p.sky.cloud2 = {_sky.cloudHgG, _sky.cloudPowder, _sky.cloudAmbient, _sky.cloudMaxDist};
     p.sky.cloud3 = {weatherScale, _sky.cloudWeatherAmount, warpScale, _sky.cloudWarpAmount};
 
+    // CLD-020 cloud shadows. Pushed through its own entry point rather than a WgrSkyLook lane:
+    // the look struct's size is part of the ABI handshake, and this is one float.
+    if (_renderer != nullptr)
+    {
+        wgr_set_cloud_shadow_strength(_renderer, std::clamp(_sky.cloudShadowStrength, 0.0f, 1.0f));
+    }
+
     // Long-distance terrain sun-shadow (wgpu-only); strength 0 = disabled. The renderer
     // diffs this sub-block so a per-frame push doesn't re-run the sweep.
     p.terrain_sun_shadow = {

@@ -7,7 +7,7 @@
 // Shares group(0) (the camera UBO + cascade shadow map) with the lit 3D
 // pipeline via the frame module, so terrain receives the same CSM shadows and
 // sun lighting.
-#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on, gtao_bent_normal_world, gtao_debug_colour, interior_sky_ao, interior_sky_reach, interior_sky_debug_on, interior_sky_ambient_normal}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, sky_irradiance, sky_vis_ao, cloud_sun_shadow, sky_vis_debug_on, sky_vis_debug_value, gtao_ao, gtao_debug_on, gtao_bent_normal_world, gtao_debug_colour, interior_sky_ao, interior_sky_reach, interior_sky_debug_on, interior_sky_ambient_normal}
 #import shadow::shadow_strength
 #import lighting::lights_contrib
 #import color::srgb_to_linear
@@ -335,7 +335,9 @@ fn fs_terrain(in: VsOut) -> @location(0) vec4<f32> {
     sun_ambient *= sky_vis_ao(in.world_xz)
         * gtao_ao(in.clip.xy)
         * interior_sky_ao(in.world_pos + frame.cam_pos.xyz, n);
-    let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) + sun_ambient;
+    // CLD-020: cloud transmittance dims the DIRECT term only, leaving sky ambient intact, so
+    // ground under a cloud settles toward ambient rather than toward black.
+    let sun_raw = sun_diffuse * cos_fi * (1.0 - shadow) * cloud_sun_shadow(in.world_xz) + sun_ambient;
     // HDR keeps radiance uncapped into the float target; LDR saturates like GL33.
     let sun = select(min(sun_raw, vec3<f32>(1.0)), sun_raw, linear > 0.5);
     let local = lights_contrib(in.world_pos, n, vec3<f32>(1.0), vec3<f32>(1.0), linear);

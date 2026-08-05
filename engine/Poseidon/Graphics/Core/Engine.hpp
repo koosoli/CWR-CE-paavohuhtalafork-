@@ -1412,6 +1412,12 @@ class Engine : public IGraphicsEngine
         float cloudPowder = 1.0f;                          // Beer-Powder dark-edge strength (0..1)
         float cloudAmbient = 1.0f;                         // sky-ambient fill scale on the shadowed sides
         float cloudMaxDist = 60000.0f;                     // march / visibility cap (m); keep <= ~80 km
+        // CLD-020 cloud shadows: the deck dims the direct sun on terrain, objects, grass and
+        // water through a world-anchored transmittance map rebuilt each frame around the camera.
+        // 0 = off (every surface reads fully lit, and the compute pass early-outs per texel).
+        // This is the "approved cheaper fallback" the roadmap allows rather than near/far
+        // clipmaps with reprojection: one 512x512 dispatch, no history, no temporal state.
+        float cloudShadowStrength = 0.85f;
     };
     // True on backends with a procedural sky pass (wgpu); gates the ImGui Sky tab.
     virtual bool SupportsSky() const { return false; }

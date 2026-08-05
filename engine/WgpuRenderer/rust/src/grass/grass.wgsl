@@ -1,4 +1,4 @@
-#import frame::{frame, reverse_z, apply_fog, sky_irradiance, terrain_sun_shadow, sky_vis_ao}
+#import frame::{frame, reverse_z, apply_fog, sky_irradiance, terrain_sun_shadow, sky_vis_ao, cloud_sun_shadow}
 #import gbuffer::oct_encode
 
 struct TerrainParams {
@@ -899,11 +899,12 @@ fn grass_shade(in: VsOut) -> vec4<f32> {
     let ndl = max(dot(n, light_dir), 0.0);
     let wrap = max((dot(n, light_dir) + 0.35) / 1.35, 0.0);
     let terrain_shadow = terrain_sun_shadow(world.xz, world.y);
-    let direct = frame.sun_diffuse.rgb * mix(ndl, wrap, 0.35) * (1.0 - terrain_shadow);
+    let cloud_lit = cloud_sun_shadow(world.xz);
+    let direct = frame.sun_diffuse.rgb * mix(ndl, wrap, 0.35) * (1.0 - terrain_shadow) * cloud_lit;
     let ambient = sky_irradiance(normalize(mix(n, vec3<f32>(0.0, 1.0, 0.0), 0.45))) * sky_vis_ao(world.xz);
     let view_dir = normalize(-in.world_rel);
     let transmission = pow(max(dot(view_dir, -light_dir), 0.0), 1.5) * (1.0 - ndl) * grass.debug_flags.w;
-    let subsurface = vec3<f32>(1.0, 0.72, 0.18) * transmission * frame.sun_diffuse.rgb * (1.0 - terrain_shadow);
+    let subsurface = vec3<f32>(1.0, 0.72, 0.18) * transmission * frame.sun_diffuse.rgb * (1.0 - terrain_shadow) * cloud_lit;
     let lit = albedo * (ambient + direct + subsurface);
     let fogged = apply_fog(lit, in.world_rel);
     return vec4<f32>(select(lit, fogged, grass.render_flags.y >= 0.5), 1.0);
@@ -922,7 +923,8 @@ fn fs_grass_far(in: VsOut) -> @location(0) vec4<f32> {
     let light_dir = normalize(frame.sun_dir_world.xyz);
     let diffuse = max((dot(n, light_dir) + 0.35) / 1.35, 0.0);
     let terrain_shadow = terrain_sun_shadow(world.xz, world.y);
-    let direct = frame.sun_diffuse.rgb * diffuse * (1.0 - terrain_shadow);
+    let cloud_lit = cloud_sun_shadow(world.xz);
+    let direct = frame.sun_diffuse.rgb * diffuse * (1.0 - terrain_shadow) * cloud_lit;
     let ambient = sky_irradiance(n) * sky_vis_ao(world.xz);
     let lit = albedo * (ambient + direct);
     let fogged = apply_fog(lit, in.world_rel);
@@ -957,7 +959,8 @@ fn fs_grass_mid_tuft(in: VsOut) -> @location(0) vec4<f32> {
     let ndl = max(dot(n, light_dir), 0.0);
     let wrap = max((dot(n, light_dir) + 0.35) / 1.35, 0.0);
     let terrain_shadow = terrain_sun_shadow(world.xz, world.y);
-    let direct = frame.sun_diffuse.rgb * mix(ndl, wrap, 0.5) * (1.0 - terrain_shadow);
+    let cloud_lit = cloud_sun_shadow(world.xz);
+    let direct = frame.sun_diffuse.rgb * mix(ndl, wrap, 0.5) * (1.0 - terrain_shadow) * cloud_lit;
     let ambient = sky_irradiance(normalize(mix(n, vec3<f32>(0.0, 1.0, 0.0), 0.45))) * sky_vis_ao(world.xz);
     let lit = albedo * (ambient + direct);
     let fogged = apply_fog(lit, in.world_rel);

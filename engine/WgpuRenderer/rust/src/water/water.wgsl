@@ -10,7 +10,7 @@
 // The look params are UBO fields (not pipeline overrides) so the Water ImGui tab tunes
 // them live.
 
-#import frame::{frame, reverse_z, fog_factor, apply_fog, terrain_sun_shadow, sky_vis_ao}
+#import frame::{frame, reverse_z, fog_factor, apply_fog, terrain_sun_shadow, sky_vis_ao, cloud_sun_shadow}
 #import shadow::shadow_strength
 #import color::srgb_to_linear
 #import water_fft_sampling::fft_aperiodic_uv
@@ -1287,7 +1287,9 @@ fn fs_water(in: VsOut) -> @location(0) vec4<f32> {
     let ter_s = ter_raw * in.fog;
     let sun_shadow = max(csm_s, ter_s);
     let sun_up = smoothstep(0.0, 0.06, l.y);
-    let sun_vis = (1.0 - sun_shadow) * sun_up;
+    // CLD-020: clouds dim the water''"'"'s direct sun too, or the sea stays brilliant under an
+    // overcast that visibly darkens the shore beside it.
+    let sun_vis = (1.0 - sun_shadow) * sun_up * cloud_sun_shadow(in.base_xz);
     var sun_diffuse = frame.sun_diffuse.rgb;
     var sun_ambient = frame.sun_ambient.rgb;
     var fog_color = frame.fog_color.rgb;

@@ -936,6 +936,10 @@ impl Renderer {
 
     // Per-frame sky runtime (wgr_set_sky_runtime): the celestial + camera fields, written into
     // the runtime half of the sky UBO. The authored look half comes from set_render_params.
+    fn set_cloud_shadow_strength(&mut self, strength: f32) {
+        self.sky.set_cloud_shadow_strength(strength);
+    }
+
     fn set_sky_runtime(&mut self, rt: ffi::WgrSkyRuntime) {
         let s = &mut self.sky_params;
         s.sun_dir[0] = rt.sun_dir[0]; // keep sun_dir.w (sunIntensity, a look field)
@@ -1482,7 +1486,12 @@ impl Renderer {
         // the shared camera group(0) so lit meshes receive terrain shadow too.
         let shadow_mask_view = self.terrain.shadow_mask_view();
         let shadow_mask_gen = self.terrain.shadow_gen();
-        let shadow_mapping = self.terrain.shadow_mapping();
+        let mut shadow_mapping = self.terrain.shadow_mapping();
+        // The Sky pass owns the cloud map and its texel snapping, so it is the only thing that
+        // knows where the map landed this frame. Publishing the SAME numbers the compute pass
+        // used is the point: two independently derived mappings would disagree by a texel and the
+        // shadows would sit slightly off from the clouds casting them.
+        shadow_mapping.cloud_shadow = glam::Vec4::from_array(self.sky.cloud_shadow_mapping_current());
         // Lend the terrain heightmap to the mesh conform group (group 4) so object
         // vertex shaders conform ClipLand vegetation to SurfaceY without CPU rewrites.
         let heightmap_view = self.terrain.heightmap_view();
@@ -1565,6 +1574,7 @@ impl Renderer {
             self.sky.froxel_view(),
             self.sky.sh_buffer(),
             &skyvis_view,
+            self.sky.cloud_shadow_view(),
             &self.foliage_params,
             reflected_camera.zip(planar_sea),
             main_scene_cam,

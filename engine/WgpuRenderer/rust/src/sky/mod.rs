@@ -198,6 +198,11 @@ struct SkyUniform {
     // xyz = absolute world camera position, so cs_froxel can turn a marched camera-
     // relative offset into a world position for the terrain sun-shadow mask lookup.
     cam_pos: [f32; 4],
+    // CLD-020 cloud sun-transmittance map. xy = world-xz of the map's min corner, SNAPPED to the
+    // texel grid (an unsnapped origin makes the shadow pattern crawl whenever the camera moves,
+    // which reads as the clouds sliding across the ground). z = 1/span in metres, w = strength,
+    // where 0 skips the pass and leaves every surface fully lit.
+    cloud_shadow: [f32; 4],
 }
 
 // The atmosphere-only fields that determine the LUTs (sun/night/exposure excluded,
@@ -223,6 +228,16 @@ fn lut_key(sky: &WgrSky) -> LutKey {
         sky.control[3], // ozone strength
     ]
 }
+
+/// Cloud sun-transmittance map (CLD-020). One texel per `CLOUD_SHADOW_SPAN / CLOUD_SHADOW_DIM`
+/// metres of world, centred on the camera.
+///
+/// 512 over 4 km is ~7.8 m per texel. That is coarse for a shadow and exactly right for THIS
+/// shadow: a cloud deck edge is tens of metres of penumbra anyway, so finer texels would cost
+/// march work to resolve detail the phenomenon does not have. 4 km covers the view distance that
+/// matters without the map's edge becoming visible as a lighting seam.
+const CLOUD_SHADOW_DIM: u32 = 512;
+const CLOUD_SHADOW_SPAN: f32 = 4096.0;
 
 pub struct Sky {
     // Main fullscreen sky pipeline (targets the scene format).
@@ -257,6 +272,11 @@ pub struct Sky {
     #[allow(dead_code)]
     froxel_tex: wgpu::Texture,
     froxel_view: wgpu::TextureView,
+    cloud_shadow_tex: wgpu::Texture,
+    cloud_shadow_view: wgpu::TextureView,
+    cloud_shadow_pipeline: wgpu::ComputePipeline,
+    cloud_shadow_strength: f32,
+    cloud_shadow_map_params: [f32; 4],
     // Group(1) of cs_froxel: the terrain sun-shadow mask, rebuilt each frame (the mask
     // texture is Terrain-owned and regenerated) from the lent view + these two.
     froxel_shadow_layout: wgpu::BindGroupLayout,
@@ -673,6 +693,27 @@ impl Sky {
             ..Default::default()
         });
 
+        // rgba8unorm, not r8unorm: R8Unorm is NOT a core WebGPU storage format, and asking for it
+        // produced an invalid texture whose invalid view then failed BOTH the sky and the camera
+        // bind groups -- a cascade whose first error names a bind group and never mentions the
+        // format. Only .r is used; 512x512x4 = 1 MB. Also filterable when sampled, which the
+        // single-channel float formats are not guaranteed to be.
+        let cloud_shadow_tex = device.create_texture(&wgpu::TextureDescriptor {
+            label: Some("wgr_cloud_shadow"),
+            size: wgpu::Extent3d {
+                width: CLOUD_SHADOW_DIM,
+                height: CLOUD_SHADOW_DIM,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8Unorm,
+            usage: wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        });
+        let cloud_shadow_view = cloud_shadow_tex.create_view(&Default::default());
+
         let compute_uniform = wgpu::BindGroupLayoutEntry {
             binding: 0,
             visibility: wgpu::ShaderStages::COMPUTE,
@@ -714,6 +755,35 @@ impl Sky {
                         format: FROXEL_FORMAT,
                         view_dimension: wgpu::TextureViewDimension::D3,
                     },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 7,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::StorageTexture {
+                        access: wgpu::StorageTextureAccess::WriteOnly,
+                        format: wgpu::TextureFormat::Rgba8Unorm,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                    },
+                    count: None,
+                },
+                // cs_cloud_shadow marches the same cloud field the sky raymarch uses, so this
+                // compute layout needs the noise volume and its Repeat sampler too. cs_froxel does
+                // not touch them, but a layout is per-group and not per-entry-point.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D3,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                wgpu::BindGroupLayoutEntry {
+                    binding: 6,
+                    visibility: wgpu::ShaderStages::COMPUTE,
+                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
             ],
@@ -820,6 +890,24 @@ impl Sky {
                 cache: None,
             })
         };
+        // Same group(0) as the froxel fill -- it needs the sky uniform and the cloud noise, and
+        // reusing the layout avoids a second bind group holding the same four resources. It takes
+        // only group(0), so the pipeline layout stops there.
+        let cloud_shadow_pipeline = {
+            let pl = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("wgr_cloud_shadow"),
+                bind_group_layouts: &[Some(&froxel_layout)],
+                immediate_size: 0,
+            });
+            device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+                label: Some("wgr_cloud_shadow"),
+                layout: Some(&pl),
+                module: &shader,
+                entry_point: Some("cs_cloud_shadow"),
+                compilation_options: Default::default(),
+                cache: None,
+            })
+        };
         let froxel_bind = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("wgr_sky_froxel_bind"),
             layout: &froxel_layout,
@@ -843,6 +931,18 @@ impl Sky {
                 wgpu::BindGroupEntry {
                     binding: 5,
                     resource: wgpu::BindingResource::TextureView(&froxel_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&cloud_shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::TextureView(&cloud_noise_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::Sampler(&cloud_sampler),
                 },
             ],
         });
@@ -1024,6 +1124,13 @@ impl Sky {
             froxel_pipeline,
             froxel_bind,
             froxel_tex,
+            cloud_shadow_tex,
+            cloud_shadow_view,
+            cloud_shadow_pipeline,
+            // Default ON at a moderate strength: clouds that do not shade the ground are the
+            // thing a player notices, and the pass is one 512x512 dispatch.
+            cloud_shadow_strength: 0.85,
+            cloud_shadow_map_params: [0.0, 0.0, 1.0 / CLOUD_SHADOW_SPAN, 0.85],
             froxel_view,
             froxel_shadow_layout,
             mask_sampler,
@@ -1035,6 +1142,39 @@ impl Sky {
             last_lut: None,
             lut_dirty: true,
         }
+    }
+
+    /// World mapping for the cloud sun-transmittance map: a square of
+    /// `CLOUD_SHADOW_SPAN` metres centred on the camera, with the min corner SNAPPED to
+    /// the map's own texel grid.
+    ///
+    /// The snap is the whole trick. An origin that tracks the camera continuously
+    /// re-rasterises the same clouds into different texels every frame, and the eye reads
+    /// that as the shadows crawling over the ground independently of the wind. Snapping
+    /// means a texel keeps covering the same square of world until it leaves the map.
+    fn cloud_shadow_mapping(&self, cam_pos: [f32; 4]) -> [f32; 4] {
+        let texel = CLOUD_SHADOW_SPAN / CLOUD_SHADOW_DIM as f32;
+        let snap = |v: f32| (v / texel).floor() * texel;
+        [
+            snap(cam_pos[0] - CLOUD_SHADOW_SPAN * 0.5),
+            snap(cam_pos[2] - CLOUD_SHADOW_SPAN * 0.5),
+            1.0 / CLOUD_SHADOW_SPAN,
+            self.cloud_shadow_strength,
+        ]
+    }
+
+    /// The mapping last uploaded, so the frame bind group can publish the same numbers to
+    /// the shaders that SAMPLE the map. Two independently computed mappings would drift.
+    pub fn cloud_shadow_mapping_current(&self) -> [f32; 4] {
+        self.cloud_shadow_map_params
+    }
+
+    pub fn set_cloud_shadow_strength(&mut self, strength: f32) {
+        self.cloud_shadow_strength = strength.clamp(0.0, 1.0);
+    }
+
+    pub fn cloud_shadow_view(&self) -> &wgpu::TextureView {
+        &self.cloud_shadow_view
     }
 
     // Rebuild the sky uniform for this frame and flag the LUTs dirty if the
@@ -1073,7 +1213,9 @@ impl Sky {
             cloud4: sky.cloud4,
             output: [self.linear, 0.0, 0.0, 0.0],
             cam_pos,
+            cloud_shadow: self.cloud_shadow_mapping(cam_pos),
         };
+        self.cloud_shadow_map_params = u.cloud_shadow;
         queue.write_buffer(&self.uniform_buf, 0, bytemuck::bytes_of(&u));
         // Terrain sun-shadow mask mapping for cs_froxel's occlusion lookup (own copy so
         // the froxel fill doesn't depend on the graphics camera group's buffer).
@@ -1356,6 +1498,29 @@ impl Sky {
         pass.set_bind_group(1, &shadow_bind, &[]);
         pass.dispatch_workgroups(FROXEL_W.div_ceil(8), FROXEL_H.div_ceil(8), 1);
         drop(pass);
+        encoder.pop_debug_group();
+
+        // CLD-020: the cloud sun-transmittance map, in the same encoder and reusing group(0).
+        // Runs after the froxel fill only for tidiness -- the two are independent, and both read
+        // the sky uniform this frame already wrote.
+        //
+        // The dispatch is unconditional even at strength 0, and that is deliberate: the shader
+        // early-outs to "fully lit" per texel, so the map is always VALID. Skipping the dispatch
+        // would leave whatever the last enabled frame wrote, and toggling the feature off would
+        // freeze the old shadows on the ground instead of clearing them.
+        encoder.push_debug_group("wgr_cloud_shadow");
+        let mut cloud_pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+            label: Some("wgr_cloud_shadow"),
+            timestamp_writes: None,
+        });
+        cloud_pass.set_pipeline(&self.cloud_shadow_pipeline);
+        cloud_pass.set_bind_group(0, &self.froxel_bind, &[]);
+        cloud_pass.dispatch_workgroups(
+            CLOUD_SHADOW_DIM.div_ceil(8),
+            CLOUD_SHADOW_DIM.div_ceil(8),
+            1,
+        );
+        drop(cloud_pass);
         encoder.pop_debug_group();
     }
 

@@ -3691,6 +3691,18 @@ void DrawSkyTab()
     ImGui::SetItemTooltip("March / visibility cap; the far deck dissolves into the horizon haze");
 
     ImGui::Separator();
+    ImGui::TextUnformatted("Ground shadows (CLD-020)");
+    changed |= ImGui::SliderFloat("Cloud shadow strength", &s.cloudShadowStrength, 0.0f, 1.0f, "%.2f");
+    ImGui::TextDisabled("How much the deck dims direct sun on terrain, objects, grass and water. 0 = off, and "
+                        "the pass then writes fully-lit texels rather than being skipped, so switching it off "
+                        "clears the shadows instead of freezing the last ones on the ground.");
+    ImGui::TextDisabled("Ambient is untouched, so shaded ground settles toward sky ambient rather than black. "
+                        "Two limits worth knowing: the map is evaluated at sea level, so a hillside and the "
+                        "valley below it get the same shadow (fine for something this soft), and it covers a "
+                        "4 km square around the camera -- outside that, surfaces read fully lit rather than "
+                        "dark, because missing data must never invent shadow.");
+
+    ImGui::Separator();
     ImGui::TextUnformatted("Night floor");
     ImGui::TextDisabled("authored deep-blue that fills in as the sun sets (the physical model goes near-black)");
     // Colours are normalised (click the swatch for the picker); intensity scales them.

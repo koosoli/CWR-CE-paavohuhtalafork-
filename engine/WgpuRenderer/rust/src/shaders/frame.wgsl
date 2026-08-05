@@ -118,6 +118,9 @@ struct TerrainShadowMap {
     sky_vis_contrast: f32, // occ = 1 - pow(V, contrast); >1 deepens the AO for near-1 V
     // naga_oil forbids composable identifiers ending in a digit (see `ctlb` above), so pad_c.
     pad_c: f32,
+    // CLD-020: xy = the cloud transmittance map's snapped world-xz min corner, z = 1/span (m),
+    // w = strength (0 = disabled -> fully lit).
+    cloud_shadow: vec4<f32>,
 };
 @group(0) @binding(4) var terrain_shadow_mask: texture_2d<f32>;
 @group(0) @binding(5) var terrain_shadow_samp: sampler;
@@ -163,6 +166,9 @@ struct SkySh {
 // "is my depth at or in front of the stored occluder", i.e. "can I see the sky", and the hardware
 // 2x2 PCF gives each tap a sub-texel gradient for free. See interior_sky_reach below.
 @group(0) @binding(12) var interior_sky_map: texture_depth_2d_array;
+// CLD-020: sun transmittance through the cloud deck, one texel per world square, written each
+// frame by cs_cloud_shadow. Sampled with the clamping terrain sampler (binding 5).
+@group(0) @binding(13) var cloud_shadow_tex: texture_2d<f32>;
 
 // Diffuse sky irradiance for a world-space surface normal, from the SH-9 sky projection
 // (Ramamoorthi, "An Efficient Representation for Irradiance Environment Maps"), divided by PI so
@@ -238,6 +244,23 @@ fn apply_fog(rgb: vec3<f32>, world_pos_rel: vec3<f32>) -> vec3<f32> {
 // Occlusion [0,1] of the sun by terrain at world position (xz, y): 0 = lit, 1 =
 // fully in terrain shadow. Zero when the feature is off or the point is off the map
 // or above the shadow ceiling. Shared by the terrain and lit-mesh fragment shaders.
+// Fraction of direct sunlight reaching a world position through the clouds: 1 = full sun,
+// 0 = fully shadowed. CLD-020.
+//
+// Returns 1 (fully lit) when disabled OR outside the map. That direction is deliberate and worth
+// stating: absence of data must never invent shadow, because a dark band at the map's edge would
+// track the camera and read as a rendering fault rather than as weather.
+fn cloud_sun_shadow(world_xz: vec2<f32>) -> f32 {
+    if (terrain_shadow_map.cloud_shadow.w <= 0.0) {
+        return 1.0;
+    }
+    let uv = (world_xz - terrain_shadow_map.cloud_shadow.xy) * terrain_shadow_map.cloud_shadow.z;
+    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) {
+        return 1.0;
+    }
+    return clamp(textureSampleLevel(cloud_shadow_tex, terrain_shadow_samp, uv, 0.0).r, 0.0, 1.0);
+}
+
 fn terrain_sun_shadow(world_xz: vec2<f32>, world_y: f32) -> f32 {
     if (terrain_shadow_map.enabled < 0.5) {
         return 0.0;

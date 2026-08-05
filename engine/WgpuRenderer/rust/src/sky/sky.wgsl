@@ -33,6 +33,10 @@ struct Sky {
     cloud4: vec4<f32>,
     output: vec4<f32>,        // x = linear output (1) vs self-tonemap (0)
     cam_pos: vec4<f32>,       // xyz = ABSOLUTE world camera position (froxel -> terrain-mask lookup)
+    // CLD-020 cloud sun-transmittance map. xy = world-xz of the map's min corner (SNAPPED to the
+    // texel grid on the CPU, so the field does not crawl as the camera moves), z = 1/span in
+    // metres, w = strength (0 = the pass is skipped entirely and every surface reads fully lit).
+    cloud_shadow: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> sky: Sky;
@@ -43,6 +47,8 @@ struct Sky {
 // fs_sky / fs_sky_env sample it. (binding 5 is the froxel storage image, declared further down.)
 @group(0) @binding(4) var cloud_noise: texture_3d<f32>;
 @group(0) @binding(6) var cloud_samp: sampler;
+// CLD-020 output: sun transmittance through the cloud deck, one texel per world square.
+@group(0) @binding(7) var cloud_shadow_out: texture_storage_2d<rgba8unorm, write>;
 
 const PI: f32 = 3.14159265359;
 const TRANSMITTANCE_STEPS: f32 = 40.0;
@@ -857,6 +863,74 @@ fn csm_occlusion(pos: vec3<f32>) -> f32 {
     // CSM occlusion hands off to the long-range terrain mask without a hard edge.
     let fade = clamp((csm.splits[n - 1] - eye_depth) / max(csm.ctl.z, 0.001), 0.0, 1.0);
     return (1.0 - lit) * fade;
+}
+
+// CLD-020 -- cloud shadows.
+//
+// Marches the SAME cloud_density field the sky raymarch uses, from a ground point toward the sun,
+// and stores the resulting transmittance in a world-anchored 2D map. Every lit surface then costs
+// one texture tap instead of a raymarch, which is the whole point: per-pixel marching would be
+// correct and unaffordable, while this is one dispatch shared by terrain, objects and grass.
+//
+// Deliberate limitations, so nobody has to rediscover them:
+//   * Flat map. Transmittance is evaluated at ONE altitude, so a hillside and the valley under it
+//     get the same shadow. Cloud shadows are enormous and soft, so this reads correctly; it would
+//     not for a sharp caster.
+//   * Camera-centred and finite. Outside the span, surfaces read fully lit rather than dark --
+//     absence of data must never invent shadow.
+//   * The map is snapped to its own texel grid, NOT to the camera. An unsnapped origin makes the
+//     whole pattern crawl with every camera movement, which reads as the clouds sliding.
+@compute @workgroup_size(8, 8, 1)
+fn cs_cloud_shadow(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let dims = textureDimensions(cloud_shadow_out);
+    if (gid.x >= dims.x || gid.y >= dims.y) {
+        return;
+    }
+    // Fully lit is the safe default: a disabled or degenerate pass must not darken the world.
+    if (sky.cloud_shadow.w <= 0.0 || sky.cloud0.x <= 0.001) {
+        textureStore(cloud_shadow_out, vec2<i32>(gid.xy), vec4<f32>(1.0, 0.0, 0.0, 1.0));
+        return;
+    }
+    let span = 1.0 / max(sky.cloud_shadow.z, 1e-6);
+    let texel = span / f32(dims.x);
+    let world_xz = sky.cloud_shadow.xy + (vec2<f32>(f32(gid.x), f32(gid.y)) + 0.5) * texel;
+
+    let sun = normalize(sky.sun_dir.xyz);
+    // Below the horizon there is no sun to occlude. Returning lit here also stops the march from
+    // running against a ray that never reaches the deck.
+    if (sun.y <= 0.02) {
+        textureStore(cloud_shadow_out, vec2<i32>(gid.xy), vec4<f32>(1.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    // Planet-centred position of this ground texel. cloud_world() reconstructs the world xz as
+    // cam_pos.xz + p.xz, so p.xz must be CAMERA-RELATIVE for the noise to stay world-anchored.
+    let rel = world_xz - sky.cam_pos.xz;
+    // Evaluated at SEA LEVEL, not at the terrain height under the texel: the deck sits ~1.5 km up,
+    // so a few hundred metres of terrain moves the sun ray by a fraction of a cloud, and sea level
+    // is a value this pass can trust without a heightmap lookup per texel.
+    let ground = vec3<f32>(rel.x, sky.params.z, rel.y);
+
+    let interval = cloud_interval(ground, sun);
+    if (interval.y <= interval.x) {
+        textureStore(cloud_shadow_out, vec2<i32>(gid.xy), vec4<f32>(1.0, 0.0, 0.0, 1.0));
+        return;
+    }
+
+    let steps = 12;
+    let dt = (interval.y - interval.x) / f32(steps);
+    var tau = 0.0;
+    for (var i = 0; i < steps; i = i + 1) {
+        // Mid-point sampling: with only twelve steps through a slab, sampling at the segment start
+        // biases the whole integral toward the deck's underside.
+        let t = interval.x + (f32(i) + 0.5) * dt;
+        tau = tau + cloud_density(ground + sun * t);
+    }
+    let transmittance = exp(-tau * dt * sky.cloud0.y);
+    // Strength lerps toward fully lit rather than scaling the transmittance, so turning it down
+    // lightens the shadows instead of shifting what counts as cloud.
+    let shadow = mix(1.0, clamp(transmittance, 0.0, 1.0), clamp(sky.cloud_shadow.w, 0.0, 1.0));
+    textureStore(cloud_shadow_out, vec2<i32>(gid.xy), vec4<f32>(shadow, 0.0, 0.0, 1.0));
 }
 
 @compute @workgroup_size(8, 8, 1)

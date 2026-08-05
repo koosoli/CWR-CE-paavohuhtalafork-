@@ -675,6 +675,18 @@ impl CameraGroup {
                     },
                     count: None,
                 },
+                // CLD-020 cloud sun-transmittance map. Filterable float: the map is coarse
+                // (~8 m per texel) and its whole job is to be sampled smoothly.
+                wgpu::BindGroupLayoutEntry {
+                    binding: 13,
+                    visibility: wgpu::ShaderStages::FRAGMENT,
+                    ty: wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
             ],
         });
         let lights_buf = device.create_buffer(&wgpu::BufferDescriptor {
@@ -755,6 +767,7 @@ impl CameraGroup {
         ao_gen: u64,
         interior_sky_view: &wgpu::TextureView,
         interior_sky_gen: u64,
+        cloud_shadow_view: &wgpu::TextureView,
     ) {
         let needed = count as u64 * self.stride;
         let grow = self.cap < needed || self.buf.is_none();
@@ -839,6 +852,10 @@ impl CameraGroup {
                     wgpu::BindGroupEntry {
                         binding: 12,
                         resource: wgpu::BindingResource::TextureView(interior_sky_view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 13,
+                        resource: wgpu::BindingResource::TextureView(cloud_shadow_view),
                     },
                 ],
             }));
@@ -4616,6 +4633,8 @@ impl Gfx3d {
         froxel_view: &wgpu::TextureView,
         sky_sh_buf: &wgpu::Buffer,
         skyvis_view: &wgpu::TextureView,
+        // CLD-020 cloud sun-transmittance map, owned by the Sky pass.
+        cloud_shadow_view: &wgpu::TextureView,
         foliage: &crate::ffi::WgrFoliage,
         // (camera index, sea level). Only the reflected camera uses this conservative
         // above-water clip; main cameras retain their existing behaviour.
@@ -4668,6 +4687,7 @@ impl Gfx3d {
                 self.depth_gen,
                 interior_sky_view,
                 self.interior_sky_gen,
+                cloud_shadow_view,
             );
             let buf = self.cameras.buf.as_ref().unwrap();
             for (i, c) in cameras.iter().enumerate() {
