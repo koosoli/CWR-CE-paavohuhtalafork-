@@ -1505,6 +1505,69 @@ Required comparison and acceptance tests:
 - [ ] Ground, vehicle, helicopter, and aircraft tests.
 - [ ] Stable alpha and dither transitions.
 
+### GRS-030 direction — the rendering UNIT is a clump, not a blade (added 2026-08-06)
+
+The items above can all be satisfied with better crossed cards, and that is exactly what was tried
+and rejected. Recording the direction so the next attempt does not re-run the same experiment.
+
+**What was tried, 2026-08-05.** Eight distinct species silhouettes, per-blade taper and bend jitter,
+a photographed blade atlas, a retuned taper (the exponents were making spears, not blades), and
+height-proportional arch. Each was a real improvement and the owner's verdict after all of them was
+still "grass silhouette never worked". The conclusion is not that the textures were wrong. It is
+that ONE INSTANCE IS ONE PLANT — two crossed ribbons of five segments — and no amount of shaping a
+single crossed plant produces the look of a meadow.
+
+**The direction.** For the first hero species, near and near-mid instances should each be a
+multi-blade three-dimensional CLUMP: several curved blade ribbons with their own heights, widths,
+bends and orientations, in several distinct clump silhouettes. Geometry carries the near silhouette;
+opacity cutouts are for fine detail and for more distant representations, not for the near
+silhouette.
+
+**Why geometry rather than cutouts, measured here rather than argued from principle:**
+
+- Enabling the alpha cut-out card path cost **+0.390 ms on the grass colour pass, +37%**.
+- Worse, putting that cutout behind a runtime flag INSIDE the shader cost **+67% with the feature
+  switched OFF**, because the mere presence of `discard` disables early-Z for the pipeline. It had
+  to be split into its own entry point and pipelines.
+- The shape work that made blades read correctly — eight profiles, jitter, arch — cost **+0.09 ms
+  total**, effectively nothing, because it is vertex-shader width and curve.
+
+So on this renderer, geometry is the cheap axis and transparency is the expensive one. That is the
+opposite of the usual instinct and it should not have to be rediscovered.
+
+**Budget the change against what is there now.** The near ring currently places 48 647 instances at
+60 vertices each, about 2.9 M vertices, for 2.18 ms of a 24.2 ms frame. A clump of eight blades
+replaces roughly eight instances, so instance count should FALL while vertex count stays in the same
+range. Placement grids (`GRID_DIM` 512, mid/far 384) and the shared species ABI with `grass.wgsl`
+are what the change actually touches.
+
+- [ ] Several distinct clump silhouettes per hero species; no obviously repeated silhouette in a
+      single view. Repeated-silhouette inspection is required evidence, not a matter of taste.
+- [ ] Species identity, proportions and colour preserved across near, mid and far, so a plant does
+      not change character as the player walks toward it.
+- [ ] Near and mid must not depend on camera-facing crossed cards.
+- [ ] Mid replaces the single photographed crossed tuft first — it is the weakest of the three and
+      the cheapest to prove.
+- [ ] Lighting: normals reconstructed AFTER wind deformation, two-sided response, species-authored
+      thickness and transmission colour rather than one shared backlighting term, root-to-tip
+      variation, terrain-colour influence at the base, and GTAO restrained on thin blades so they do
+      not read as dirty black lines.
+- [ ] Placement at three scales — biome, metre-scale patch with deliberate bare gaps, and individual
+      plant — driven by terrain material, slope and moisture. Uniform coverage is one of the fastest
+      ways to make procedural grass look artificial.
+- [ ] Motion separates coherent whole-clump sway from independent blade-tip flutter, with authored
+      per-species resting bend, stiffness, damping, gust response, wind straightening and recovery.
+- [ ] Existing tracks, flattening, explosions, helicopter downwash and the procedural fallback keep
+      working throughout. These already distinguish this grass and must not be traded away.
+- [ ] Evidence: matched ground/vehicle/helicopter/aircraft captures, overdraw heat map, triangle and
+      instance counts, grass GPU time, shadow stability, and slow-camera-rotation shimmer.
+
+**One correction to note.** An external review of this system asserted that the coverage-preserving
+mip implementation "is sound and should be retained". There is no such implementation for grass —
+alpha-to-coverage exists only on the foliage path for trees and objects, and coverage-preserving
+mips remain an unchecked `GRS-020` item. Do not plan around retaining something that has not been
+built.
+
 ## GRS-040 — Preserve helicopter downwash — REQUIRED
 
 Preserve current rotor-speed, altitude, inertia, multi-helicopter, visible deformation, and matching shadow behaviour.
