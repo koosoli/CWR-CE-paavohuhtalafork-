@@ -352,7 +352,11 @@ private:
     bool _noSplash = false;
     bool _noBanner = false;
     bool _noMenuScene = false;
-    std::string _renderBackend = "gl33";
+    // WGPU is the default backend. GL33 remains fully supported and is one flag away
+    // (--render gl33); it is the fallback, not the target. Nothing here silently falls
+    // back -- selecting a backend that fails to start is a failure, which is the whole
+    // point of CORE-NEG-001's no-silent-fallback check.
+    std::string _renderBackend = "wgpu";
     bool _enablePIII = false;
     bool _enableHWTL = false;
     bool _disableHWTL = false;

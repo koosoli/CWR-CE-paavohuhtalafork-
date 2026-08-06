@@ -42,9 +42,12 @@ The engine binaries are useless without one of them.
 ColdWarAssault.exe --render wgpu --window --dev
 ```
 
-`--render` takes `wgpu`, `gl33`, or `dummy`. **GL33 remains the default**; WGPU must be asked for
-explicitly. That is deliberate for a technical preview — the new backend is opt-in, and the old one
-is the fallback, not a deprecated path.
+`--render` takes `wgpu`, `gl33`, or `dummy`. **WGPU is the default** as of 2026-08-06; GL33 is one
+flag away with `--render gl33`. GL33 is the fallback, not a deprecated path — it is kept working,
+and it is what to reach for if WGPU will not start on your hardware.
+
+Note that nothing falls back silently. A backend that fails to start is a failure, not a quiet
+downgrade, because "it ran" must never be mistaken for "it ran on the backend you asked for".
 
 Two things about the install are not obvious and cause silent, error-free failures:
 

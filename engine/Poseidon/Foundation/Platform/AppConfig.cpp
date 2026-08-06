@@ -314,7 +314,7 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
 
         showOption(
             displayGroup
-                ->add_option("--render", _renderBackend, "Graphics backend: dummy, gl33, wgpu, auto (default: gl33)")
+                ->add_option("--render", _renderBackend, "Graphics backend: dummy, gl33, wgpu, auto (default: wgpu)")
                 ->check(CLI::IsMember({"dummy", "gl33", "wgpu", "auto"})),
             CliHelpVisibility::Full);
 
@@ -558,10 +558,17 @@ void AppConfig::ParseCommandLine(int argc, char** argv)
 
         if (!BuildInfo::ReleaseBuild)
         {
+            // ON by default in non-release builds: these binaries exist to be poked at, and
+            // needing a flag to reach the panel that every renderer setting lives behind was
+            // friction with no upside. Release builds are untouched -- the flag is not even
+            // registered there, and the guard above rejects it outright, so this cannot leak a
+            // dev panel into a shipped build.
+            _devMode = true;
             debugGroup->add_flag(
-                "--dev", _devMode,
-                serverRole ? "Enable developer and test-oriented command-line options"
-                           : "Enable the dev panel (Ctrl+` toggles; Cheats/Game/Console/Profile/Memory/Font tabs)");
+                "--dev,!--no-dev", _devMode,
+                serverRole ? "Developer and test-oriented command-line options (default: on; --no-dev disables)"
+                           : "Dev panel, Ctrl+` toggles (default: on; --no-dev disables). "
+                             "Cheats/Game/Console/Profile/Memory/Font tabs");
         }
 
         showOption(debugGroup->add_option("--vd", _viewDistanceOverride, "Override view distance (bypass 5000 clamp)")
