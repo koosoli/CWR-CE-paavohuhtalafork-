@@ -202,7 +202,7 @@ layout(std140) uniform PSConstants {
     vec4 alphaRef;    // c1: {ref, enabled, alphaToCoverage, flatDebug}
     vec4 shadowCtl;   // c2: {enable, bias, darkness, texelSize}
     vec4 constColor; // c3: per-object IsColored tint (white = no-op)
-    vec4 _pad4;
+    vec4 _lightDir;
     vec4 _pad5;
     vec4 _pad6;
     vec4 rgbEyeCoef;  // c7
@@ -266,6 +266,21 @@ void main() {
             float bw = (ci + 1 < nC) ? clamp((ciMetric - (cascadeSplits[ci] - band)) / max(band, 0.001), 0.0, 1.0) : 0.0;
             float litSum = 0.0;
             float wSum = 0.0;
+
+            vec3 lightDir = normalize(_lightDir.xyz);
+            vec3 normal = normalize(cross(dFdx(vWorldRel), dFdy(vWorldRel)));
+			float cosTheta = clamp(dot(normal, lightDir), 0.0, 1.0);
+
+			// Interleaved Gradient Noise Rotation (IGN rotation) 
+			// at ln 292 https://github.com/AMX4LIF3/Mikset/blob/main/Renderer/Graphics/shaders/main.hlsl <-- please give
+			// it a star its from my repo :) 
+			vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+			float noise = fract(magic.z * fract(dot(gl_FragCoord.xy, magic.xy)));
+
+			float sinN = sin(noise * 6.283185);
+			float cosN = cos(noise * 6.283185);
+			mat2 rotationMatrix = mat2(cosN, sinN, -sinN, cosN);
+
             for (int p = 0; p < 4; ++p) {
                 int c = ci + p;
                 if (c >= nC) break;
@@ -277,14 +292,32 @@ void main() {
                 vec3 sc = cp.xyz / cp.w;
                 vec2 suv = sc.xy * 0.5 + 0.5;
                 if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 && sc.z > 0.0 && sc.z < 1.0) {
-                    float bias = cascadeCtl.z * float(c + 1) * float(c + 1);
-                    float lit = 0.0;
-                    for (int dy = -1; dy <= 1; ++dy)
-                        for (int dx = -1; dx <= 1; ++dx)
-                            lit += (sc.z - bias > texture(shadowMap, vec3(suv + vec2(float(dx), float(dy)) * ts, float(c))).r) ? 0.0 : 1.0;
-                    litSum += w * (lit / 9.0);
-                    wSum += w;
-                }
+                    
+                    // for christ's sake use slope-scaled bias 
+					float minBias = cascadeCtl.z; 
+					float maxBias = minBias * 4.0;
+					float slopeBias = mix(maxBias, minBias, cosTheta);
+					float bias = slopeBias * float(c + 1);
+
+
+					float blurRadius = 0.5;
+					float lit = 0.0;
+
+					for (int dy = -1; dy <= 1; ++dy) {
+						for (int dx = -1; dx <= 1; ++dx) {
+							vec2 offset = rotationMatrix * (vec2(float(dx), float(dy)) * ts * blurRadius);
+							vec2 offsetUV = suv + offset;
+
+							float shadowDepth = texture(shadowMap, vec3(offsetUV, float(c))).r;
+							lit += (sc.z - bias <= shadowDepth) ? 1.0 : 0.0;
+						}
+					}
+
+					litSum += w * (lit / 9.0);
+					wSum += w;
+				}
+
+                    
             }
             if (wSum > 0.0) {
                 float lit = litSum / wSum;
@@ -321,7 +354,7 @@ layout(std140) uniform PSConstants {
     vec4 alphaRef;
     vec4 shadowCtl;   // c2: {enable, bias, darkness, texelSize}
     vec4 constColor; // c3: per-object IsColored tint (white = no-op)
-    vec4 _pad4;
+    vec4 _lightDir;
     vec4 _pad5;
     vec4 _pad6;
     vec4 rgbEyeCoef;
@@ -346,6 +379,7 @@ in vec3 vWorldRel;
 out vec4 fragColor;
 
 void main() {
+    
     // No gl_FragDepth — see PSNormal.
     vec4 t0 = texture(tex0, vUV0);
     vec4 t1 = texture(tex1, vUV1);
@@ -383,6 +417,21 @@ void main() {
             float bw = (ci + 1 < nC) ? clamp((ciMetric - (cascadeSplits[ci] - band)) / max(band, 0.001), 0.0, 1.0) : 0.0;
             float litSum = 0.0;
             float wSum = 0.0;
+            
+            vec3 lightDir = normalize(_lightDir.xyz);
+			vec3 normal = normalize(cross(dFdx(vWorldRel), dFdy(vWorldRel)));
+            float cosTheta = clamp(dot(normal, lightDir), 0.0, 1.0);
+			
+            // Interleaved Gradient Noise Rotation (IGN rotation) 
+			// at ln 292 https://github.com/AMX4LIF3/Mikset/blob/main/Renderer/Graphics/shaders/main.hlsl <-- please give
+			// it a star its from my repo :) 
+			vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+			float noise = fract(magic.z * fract(dot(gl_FragCoord.xy, magic.xy))); 
+
+			float sinN = sin(noise * 6.283185);
+			float cosN = cos(noise * 6.283185);
+			mat2 rotationMatrix = mat2(cosN, sinN, -sinN, cosN);
+
             for (int p = 0; p < 4; ++p) {
                 int c = ci + p;
                 if (c >= nC) break;
@@ -394,14 +443,29 @@ void main() {
                 vec3 sc = cp.xyz / cp.w;
                 vec2 suv = sc.xy * 0.5 + 0.5;
                 if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 && sc.z > 0.0 && sc.z < 1.0) {
-                    float bias = cascadeCtl.z * float(c + 1) * float(c + 1);
-                    float lit = 0.0;
-                    for (int dy = -1; dy <= 1; ++dy)
-                        for (int dx = -1; dx <= 1; ++dx)
-                            lit += (sc.z - bias > texture(shadowMap, vec3(suv + vec2(float(dx), float(dy)) * ts, float(c))).r) ? 0.0 : 1.0;
-                    litSum += w * (lit / 9.0);
-                    wSum += w;
-                }
+                    
+                    // for christ's sake use slope-scaled bias 
+					float minBias = cascadeCtl.z; 
+					float maxBias = minBias * 4.0;
+					float slopeBias = mix(maxBias, minBias, cosTheta);
+					float bias = slopeBias * float(c + 1);
+
+					float blurRadius = 0.5;
+					float lit = 0.0;
+
+					for (int dy = -1; dy <= 1; ++dy) {
+						for (int dx = -1; dx <= 1; ++dx) {
+							vec2 offset = rotationMatrix * (vec2(float(dx), float(dy)) * ts * blurRadius);
+							vec2 offsetUV = suv + offset;
+
+							float shadowDepth = texture(shadowMap, vec3(offsetUV, float(c))).r;
+							lit += (sc.z - bias <= shadowDepth) ? 1.0 : 0.0;
+						}
+					}
+
+					litSum += w * (lit / 9.0);
+					wSum += w;
+				}
             }
             if (wSum > 0.0) {
                 float lit = litSum / wSum;
@@ -438,7 +502,7 @@ layout(std140) uniform PSConstants {
     vec4 alphaRef;
     vec4 shadowCtl;   // c2: {enable, bias, darkness, texelSize}
     vec4 constColor; // c3: per-object IsColored tint (white = no-op)
-    vec4 _pad4;
+    vec4 _lightDir;
     vec4 grassCoef1;
     vec4 grassCoef2;
     vec4 _pad7;
@@ -502,6 +566,21 @@ void main() {
             float bw = (ci + 1 < nC) ? clamp((ciMetric - (cascadeSplits[ci] - band)) / max(band, 0.001), 0.0, 1.0) : 0.0;
             float litSum = 0.0;
             float wSum = 0.0;
+       
+            vec3 lightDir = normalize(_lightDir.xyz);
+            vec3 normal = normalize(cross(dFdx(vWorldRel), dFdy(vWorldRel)));
+            float cosTheta = clamp(dot(normal, lightDir), 0.0, 1.0);
+            
+            // Interleaved Gradient Noise Rotation (IGN rotation) 
+			// at ln 292 https://github.com/AMX4LIF3/Mikset/blob/main/Renderer/Graphics/shaders/main.hlsl <-- please give
+			// it a star its from my repo :) 
+			vec3 magic = vec3(0.06711056, 0.00583715, 52.9829189);
+			float noise = fract(magic.z * fract(dot(gl_FragCoord.xy, magic.xy)));
+
+			float sinN = sin(noise * 6.283185);
+			float cosN = cos(noise * 6.283185);
+			mat2 rotationMatrix = mat2(cosN, sinN, -sinN, cosN);
+
             for (int p = 0; p < 4; ++p) {
                 int c = ci + p;
                 if (c >= nC) break;
@@ -512,15 +591,31 @@ void main() {
                 vec4 cp = cascadeVP[c] * vec4(vWorldRel, 1.0);
                 vec3 sc = cp.xyz / cp.w;
                 vec2 suv = sc.xy * 0.5 + 0.5;
+
                 if (suv.x > 0.0 && suv.x < 1.0 && suv.y > 0.0 && suv.y < 1.0 && sc.z > 0.0 && sc.z < 1.0) {
-                    float bias = cascadeCtl.z * float(c + 1) * float(c + 1);
-                    float lit = 0.0;
-                    for (int dy = -1; dy <= 1; ++dy)
-                        for (int dx = -1; dx <= 1; ++dx)
-                            lit += (sc.z - bias > texture(shadowMap, vec3(suv + vec2(float(dx), float(dy)) * ts, float(c))).r) ? 0.0 : 1.0;
-                    litSum += w * (lit / 9.0);
-                    wSum += w;
-                }
+                    
+                    // for christ's sake use slope-scaled bias 
+					float minBias = cascadeCtl.z; 
+					float maxBias = minBias * 4.0;
+					float slopeBias = mix(maxBias, minBias, cosTheta);
+					float bias = slopeBias * float(c + 1);
+
+					float blurRadius = 0.5;
+					float lit = 0.0;
+
+					for (int dy = -1; dy <= 1; ++dy) {
+						for (int dx = -1; dx <= 1; ++dx) {
+							vec2 offset = rotationMatrix * (vec2(float(dx), float(dy)) * ts * blurRadius);
+							vec2 offsetUV = suv + offset;
+
+							float shadowDepth = texture(shadowMap, vec3(offsetUV, float(c))).r;
+							lit += (sc.z - bias <= shadowDepth) ? 1.0 : 0.0;
+						}
+					}
+
+					litSum += w * (lit / 9.0);
+					wSum += w;
+				}
             }
             if (wSum > 0.0) {
                 float lit = litSum / wSum;
@@ -1644,13 +1739,23 @@ void EngineGL33::DoSelectPixelShader(PixelShaderID ps, PixelShaderMode mode, Pix
         {
             DoSetGrassParamsPS();
         }
-        else if (ps == PSWater)
+        else if (ps == PSWater || ps == PSNormal || ps == PSDetail || ps == PSGrass)
         {
-            LightSun* sun = GScene->MainLight();
-            _psConstants.lightDir[0] = sun->SunDirection().X();
-            _psConstants.lightDir[1] = sun->SunDirection().Y();
-            _psConstants.lightDir[2] = sun->SunDirection().Z();
-            _psConstants.lightDir[3] = 0;
+            LightSun* sun = GScene ? GScene->MainLight() : nullptr;
+            if (sun)
+            {
+				_psConstants.lightDir[0] = sun->SunDirection().X();
+				_psConstants.lightDir[1] = sun->SunDirection().Y();
+				_psConstants.lightDir[2] = sun->SunDirection().Z();
+				_psConstants.lightDir[3] = 0;
+            }
+            else
+            {   // fallback values because GScene is not initialized and causes a crash
+				_psConstants.lightDir[0] = 0.0f;
+				_psConstants.lightDir[1] = 10.0f;
+				_psConstants.lightDir[2] = 0.0f;
+				_psConstants.lightDir[3] = 0;
+            }
             UploadPSConstant(PSConstants::SlotLightDir, _psConstants.lightDir);
         }
     }
