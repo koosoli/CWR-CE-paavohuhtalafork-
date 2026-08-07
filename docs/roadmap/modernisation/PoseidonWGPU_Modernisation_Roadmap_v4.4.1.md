@@ -874,8 +874,9 @@ Reading a reference project for ideas needs none of this. It applies at the poin
 
 Recorded so the next agent does not re-derive it, and does not reach for the wrong one:
 
-- **Esoterica** (MIT, `inspiration/Esoterica-main`) — a compact custom-engine starter framework. The
-  better CLOSE-UP reference: GPU-driven rendering structure, instance and cluster culling, animation
+- **Esoterica** (MIT, `inspiration/Esoterica-main`) — a compact custom-engine starter framework. It has
+  NO grass or vegetation system -- checked, the only matches are an icon-font name and a Box3D
+  internal file -- so do not send anyone there for GRS work. The better CLOSE-UP reference: GPU-driven rendering structure, instance and cluster culling, animation
   runtime internals, ragdoll and hitbox tooling, property grids, timelines and node graphs, resource
   hot-reload. Its authors describe it as a prototype rather than production software, and its
   renderer is DX12-oriented (it bundles D3D12MemoryAllocator and ships no Vulkan backend), so it
@@ -1742,6 +1743,20 @@ Default ON, own dev-tools tab, three-way debug view (off / AO / bent normal).
 
       What this needs is a quality-versus-cost decision, not another measurement. `slices x
       steps` is still the knob, and it now has a reason to be turned.
+
+      **Lead, from reading a reference project (2026-08-06).** Esoterica runs Intel's XeGTAO at
+      HALF RESOLUTION with a bilateral upsample, over a 4x-downsampled depth
+      (`Code/Engine/Render/RenderPasses/RenderPass_GTAO.cpp`). Our 6.335 ms is the horizon march,
+      which is per-pixel, so quartering the marched pixels is the largest single lever available and
+      is a bigger win than trimming `slices x steps`. Ours already has the depth-mip prefilter half
+      of that structure; what is missing is running the march at half res and upsampling.
+
+      XeGTAO also carries `ThinOccluderCompensation`, which is aimed at exactly the failure this
+      roadmap already warns about for vegetation -- thin blades reading as dirty dark lines.
+
+      Licence note before anyone copies: XeGTAO is Intel's, MIT, VENDORED INSIDE Esoterica. It is
+      not covered by Esoterica's own MIT grant and is the precise case `CORE-007` exists for. Take
+      it from Intel's own repository with its notice, or reimplement the technique.
 
 The line above about dark interiors held exactly as written: GTAO's radius is ~2 m and a room is
 larger, so interiors barely changed. That is `LIT-020`, below.
