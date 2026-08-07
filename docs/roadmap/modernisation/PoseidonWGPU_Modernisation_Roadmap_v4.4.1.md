@@ -844,6 +844,49 @@ Use TEST-004 and TEST-005 to validate every authoritative subsystem.
 - [ ] Every handoff lists changed paths, production call sites, tests, measurements, risks, compatibility impact, and remaining work.
 - [ ] Independent audit is performed by a different agent.
 - [ ] Self-authored work cannot self-approve `SHIPPABLE`.
+
+## CORE-007 — Reference-project code provenance — REQUIRED
+
+`ASSET-010` governs third-party ASSETS. Nothing governed third-party CODE, and reference projects
+are now being read for ideas and implementations (`inspiration/`), so the same discipline applies.
+
+**The trap this exists to prevent.** "Esoterica is MIT" is true of Esoterica's own files and false of
+a large part of its tree: it bundles EA (EASTL), Dear ImGui, implot, stb, pugixml, rpmalloc, mpack,
+concurrentqueue, EnkiTS, pcg, lzav, mINI, D3D12MemoryAllocator, meshoptimizer and Box3D, each under
+its own terms. A file copied from `Code/Base/ThirdParty/` is not covered by the project's own
+licence, and the mistake is invisible in review because the repository root says MIT.
+
+Before any code is copied or closely adapted from a reference project:
+
+- [ ] Record the project, its licence, the exact commit, and the file paths taken.
+- [ ] Confirm each file is authored by that project rather than bundled from a third party; where it
+      is bundled, record THAT component's licence and treat it as its own decision.
+- [ ] Retain the required copyright and permission notices, and add the entry to
+      `THIRD_PARTY_NOTICES.md`.
+- [ ] Name the Poseidon ticket and the real consumer the code is for. Reference material adopted
+      without a consumer becomes unowned code nobody can safely delete later.
+- [ ] Prefer adapting the design to Poseidon's own boundaries over transplanting files. A pattern
+      carries no licence obligation; a file does.
+
+Reading a reference project for ideas needs none of this. It applies at the point code is copied.
+
+### Reference projects — what each is good for
+
+Recorded so the next agent does not re-derive it, and does not reach for the wrong one:
+
+- **Esoterica** (MIT, `inspiration/Esoterica-main`) — a compact custom-engine starter framework. The
+  better CLOSE-UP reference: GPU-driven rendering structure, instance and cluster culling, animation
+  runtime internals, ragdoll and hitbox tooling, property grids, timelines and node graphs, resource
+  hot-reload. Its authors describe it as a prototype rather than production software, and its
+  renderer is DX12-oriented (it bundles D3D12MemoryAllocator and ships no Vulkan backend), so it
+  informs the WGPU path rather than supplying it.
+- **O3DE** (Apache-2.0) — the better WIDE-ANGLE reference: what a mature asset pipeline, scene
+  import, dependency tracking and animation authoring workflow must eventually cover. Too
+  framework-coupled to transplant.
+
+Neither is a blueprint. Poseidon keeps its own renderer, entity model, mission and network
+semantics; an engine-wide ECS or renderer transplant would break save, mission and multiplayer
+compatibility for no visible gain.
 - [ ] Conflicting tickets are blocked through ledger dependencies.
 - [ ] Agents stop and rebase or revalidate when their baseline is no longer an ancestor of the integration branch.
 - [ ] Architecture/schema merge conflicts trigger renewed validation.
